@@ -17,6 +17,7 @@ TaskHandler: TypeAlias = Callable[[TaskSnapshot], Mapping[str, Any]]
 _UNKNOWN_KIND_ERROR = {"code": "unknown_task_kind"}
 _HANDLER_FAILURE_ERROR = {"code": "task_handler_failed"}
 _MINIMUM_IDLE_WAIT_SECONDS = 0.01
+_LOGGER = logging.getLogger(__name__)
 
 
 class TaskWorker:
@@ -29,7 +30,7 @@ class TaskWorker:
         worker_id: str,
         poll_interval: float = 1.0,
     ) -> None:
-        if not worker_id.strip() or len(worker_id) > 255:
+        if not worker_id or worker_id != worker_id.strip() or len(worker_id) > 255:
             raise ValueError("Worker id must contain 1 to 255 characters")
         if not math.isfinite(poll_interval) or poll_interval < 0:
             raise ValueError("Poll interval must be finite and nonnegative")
@@ -39,7 +40,7 @@ class TaskWorker:
         self._handlers: dict[str, TaskHandler] = {}
 
     def register(self, kind: str, handler: TaskHandler) -> None:
-        if not kind.strip() or len(kind) > 64:
+        if not kind or kind != kind.strip() or len(kind) > 64:
             raise ValueError("Task kind must contain 1 to 64 characters")
         self._handlers[kind] = handler
 
@@ -54,12 +55,23 @@ class TaskWorker:
 
         try:
             result = dict(handler(task))
-        except Exception:
+        except Exception as error:
+            self._log_handler_failure(task, error)
             return self._repository.fail(task.id, _HANDLER_FAILURE_ERROR)
         try:
             return self._repository.complete(task.id, result)
-        except TaskValidationError:
+        except TaskValidationError as error:
+            self._log_handler_failure(task, error)
             return self._repository.fail(task.id, _HANDLER_FAILURE_ERROR)
+
+    @staticmethod
+    def _log_handler_failure(task: TaskSnapshot, error: Exception) -> None:
+        _LOGGER.warning(
+            "Task handler failed (task_id=%s, kind=%s, exception_type=%s)",
+            task.id,
+            task.kind,
+            type(error).__name__,
+        )
 
     def run_forever(self, stop_event: threading.Event) -> None:
         while not stop_event.is_set():

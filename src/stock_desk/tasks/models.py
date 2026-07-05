@@ -8,7 +8,7 @@ TaskStatus: TypeAlias = Literal["queued", "running", "succeeded", "failed", "can
 
 @dataclass(frozen=True, slots=True)
 class TaskSnapshot:
-    """Immutable client-facing view of a durable task."""
+    """Immutable task view with read-only outer JSON mappings."""
 
     id: str
     kind: str

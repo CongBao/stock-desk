@@ -1,7 +1,8 @@
 from pathlib import Path
 from dataclasses import FrozenInstanceError
-from datetime import timezone
+from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor
+import logging
 import math
 import threading
 from typing import Any, cast
@@ -9,6 +10,7 @@ from typing import Any, cast
 import pytest
 from sqlalchemy import event
 
+import stock_desk.tasks.repository as repository_module
 from stock_desk.storage.database import create_engine_for_url, migrate
 from stock_desk.tasks.repository import (
     TaskConflict,
@@ -116,6 +118,37 @@ def test_create_rejects_invalid_kind(tmp_path: Path, kind: str) -> None:
         repository.close()
 
 
+def test_repository_rejects_surrounding_identifier_whitespace(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    try:
+        with pytest.raises(TaskValidationError):
+            repository.create(" demo.double ", {})
+        with pytest.raises(TaskValidationError):
+            repository.claim_next(" worker-1 ")
+    finally:
+        repository.close()
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        cast(dict[str, Any], {"nested": {1: "invalid"}}),
+        cast(dict[str, Any], {"items": [{"nested": {2: "invalid"}}]}),
+    ],
+)
+def test_repository_rejects_non_string_keys_in_nested_json_objects(
+    tmp_path: Path, payload: dict[str, Any]
+) -> None:
+    repository = _repository(tmp_path)
+    try:
+        with pytest.raises(TaskValidationError):
+            repository.create("invalid.keys", payload)
+    finally:
+        repository.close()
+
+
 def test_repository_rejects_non_json_values_with_typed_validation_error(
     tmp_path: Path,
 ) -> None:
@@ -155,6 +188,50 @@ def test_progress_requires_running_task_and_valid_fraction(tmp_path: Path) -> No
         for invalid in (-0.1, 1.1, math.nan, math.inf, True):
             with pytest.raises(TaskValidationError):
                 repository.set_progress(running.id, invalid)
+    finally:
+        repository.close()
+
+
+@pytest.mark.parametrize("terminal_operation", ["complete", "fail"])
+def test_transition_timestamps_never_move_backward_when_clock_regresses(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    terminal_operation: str,
+) -> None:
+    sampled = datetime(2026, 7, 5, 12, 0, tzinfo=timezone.utc)
+    clock_values = iter(
+        [
+            sampled,
+            sampled - timedelta(seconds=1),
+            sampled - timedelta(seconds=2),
+            sampled - timedelta(seconds=3),
+            sampled - timedelta(seconds=4),
+        ]
+    )
+    monkeypatch.setattr(repository_module, "_utc_now", lambda: next(clock_values))
+    repository = _repository(tmp_path)
+    try:
+        created = repository.create("clock.test", {})
+        running = repository.claim_next("worker")
+        assert running is not None
+        assert running.started_at is not None
+        assert running.started_at >= created.created_at
+        assert running.updated_at >= created.updated_at
+
+        progressed = repository.set_progress(created.id, 0.5)
+        assert progressed.updated_at >= running.updated_at
+
+        cancelling = repository.request_cancel(created.id)
+        assert cancelling.updated_at >= progressed.updated_at
+
+        if terminal_operation == "complete":
+            terminal = repository.complete(created.id, {"ok": True})
+        else:
+            terminal = repository.fail(created.id, {"code": "failure"})
+        assert terminal.finished_at is not None
+        assert terminal.updated_at >= cancelling.updated_at
+        assert terminal.finished_at >= cancelling.updated_at
+        assert terminal.finished_at == terminal.updated_at
     finally:
         repository.close()
 
@@ -429,6 +506,31 @@ def test_worker_does_not_leak_handler_exception_details(tmp_path: Path) -> None:
         repository.close()
 
 
+def test_worker_logs_only_safe_handler_failure_diagnostics(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    repository = _repository(tmp_path)
+    try:
+        created = repository.create("secret.failure", {})
+        worker = TaskWorker(repository, worker_id="worker-1")
+
+        def leak_secret(_task: object) -> dict[str, object]:
+            raise RuntimeError("database password is hunter2")
+
+        worker.register("secret.failure", leak_secret)
+        with caplog.at_level(logging.WARNING, logger="stock_desk.tasks.worker"):
+            completed = worker.run_once()
+
+        assert completed is not None and completed.status == "failed"
+        assert created.id in caplog.text
+        assert "secret.failure" in caplog.text
+        assert "RuntimeError" in caplog.text
+        assert "hunter2" not in caplog.text
+        assert "Traceback" not in caplog.text
+    finally:
+        repository.close()
+
+
 def test_worker_converts_non_serializable_handler_result_to_failure(
     tmp_path: Path,
 ) -> None:
@@ -476,6 +578,7 @@ def test_worker_observes_cancellation_requested_by_handler(tmp_path: Path) -> No
     [
         ("", 1.0),
         ("   ", 1.0),
+        (" worker ", 1.0),
         ("x" * 256, 1.0),
         ("worker", -0.1),
         ("worker", math.nan),
@@ -493,6 +596,18 @@ def test_worker_rejects_invalid_configuration(
                 worker_id=worker_id,
                 poll_interval=poll_interval,
             )
+    finally:
+        repository.close()
+
+
+def test_worker_rejects_registration_kind_with_surrounding_whitespace(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    try:
+        worker = TaskWorker(repository, worker_id="worker")
+        with pytest.raises(ValueError):
+            worker.register(" demo.double ", demo_double)
     finally:
         repository.close()
 

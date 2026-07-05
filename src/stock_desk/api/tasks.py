@@ -20,8 +20,8 @@ class CreateTaskRequest(BaseModel):
     @field_validator("kind")
     @classmethod
     def kind_must_not_be_blank(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("Task kind must not be blank")
+        if not value or value != value.strip():
+            raise ValueError("Task kind must not be blank or padded")
         return value
 
 

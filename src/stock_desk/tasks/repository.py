@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from sqlalchemy import JSON, Engine, bindparam, case, insert, null, select, update
 from sqlalchemy.engine import RowMapping
+from sqlalchemy.sql.elements import ColumnElement
 
 from stock_desk.storage.database import create_engine_for_url, migrate
 from stock_desk.storage.models import TaskRun
@@ -45,6 +46,20 @@ def _validated_json_object(
     value: Mapping[str, Any], *, field_name: str
 ) -> dict[str, Any]:
     copied = dict(value)
+
+    def require_string_keys(item: Any) -> None:
+        if isinstance(item, Mapping):
+            for key, nested in item.items():
+                if not isinstance(key, str):
+                    raise TaskValidationError(
+                        f"Task {field_name} JSON object keys must be strings"
+                    )
+                require_string_keys(nested)
+        elif isinstance(item, (list, tuple)):
+            for nested in item:
+                require_string_keys(nested)
+
+    require_string_keys(copied)
     try:
         json.dumps(copied, allow_nan=False)
     except (TypeError, ValueError) as error:
@@ -52,6 +67,14 @@ def _validated_json_object(
             f"Task {field_name} must be a JSON-compatible object"
         ) from error
     return copied
+
+
+def _transition_time(sampled_at: datetime) -> ColumnElement[datetime]:
+    """Keep task timestamps monotonic when clocks regress or writers wait."""
+    return case(
+        (TaskRun.updated_at > sampled_at, TaskRun.updated_at),
+        else_=sampled_at,
+    )
 
 
 def _snapshot(row: RowMapping) -> TaskSnapshot:
@@ -98,7 +121,7 @@ class TaskRepository:
         return cls(create_engine_for_url(url), owns_engine=True)
 
     def create(self, kind: str, payload: Mapping[str, Any]) -> TaskSnapshot:
-        if not kind.strip() or len(kind) > 64:
+        if not kind or kind != kind.strip() or len(kind) > 64:
             raise TaskValidationError("Task kind must contain 1 to 64 characters")
         validated_payload = _validated_json_object(payload, field_name="payload")
         now = _utc_now()
@@ -143,9 +166,10 @@ class TaskRepository:
         return [_snapshot(row) for row in rows]
 
     def claim_next(self, worker_id: str) -> TaskSnapshot | None:
-        if not worker_id.strip() or len(worker_id) > 255:
+        if not worker_id or worker_id != worker_id.strip() or len(worker_id) > 255:
             raise TaskValidationError("Worker id must contain 1 to 255 characters")
         now = _utc_now()
+        transition_time = _transition_time(now)
         candidate = (
             select(TaskRun.id)
             .where(TaskRun.status == "queued", TaskRun.cancel_requested.is_(False))
@@ -163,8 +187,8 @@ class TaskRepository:
             .values(
                 status="running",
                 worker_id=worker_id,
-                started_at=now,
-                updated_at=now,
+                started_at=transition_time,
+                updated_at=transition_time,
             )
             .returning(TaskRun)
         )
@@ -183,10 +207,11 @@ class TaskRepository:
                 "Task progress must be a finite number from 0 to 1"
             )
         now = _utc_now()
+        transition_time = _transition_time(now)
         statement = (
             update(TaskRun)
             .where(TaskRun.id == task_id, TaskRun.status == "running")
-            .values(progress=float(progress), updated_at=now)
+            .values(progress=float(progress), updated_at=transition_time)
             .returning(TaskRun)
         )
         with self._engine.begin() as connection:
@@ -199,6 +224,7 @@ class TaskRepository:
     def complete(self, task_id: str, result: Mapping[str, Any]) -> TaskSnapshot:
         validated_result = _validated_json_object(result, field_name="result")
         now = _utc_now()
+        transition_time = _transition_time(now)
         cancelling = TaskRun.cancel_requested.is_(True)
         statement = (
             update(TaskRun)
@@ -213,8 +239,8 @@ class TaskRepository:
                     ),
                 ),
                 error_json=None,
-                updated_at=now,
-                finished_at=now,
+                updated_at=transition_time,
+                finished_at=transition_time,
             )
             .returning(TaskRun)
         )
@@ -230,6 +256,7 @@ class TaskRepository:
     def fail(self, task_id: str, error: Mapping[str, Any]) -> TaskSnapshot:
         validated_error = _validated_json_object(error, field_name="error")
         now = _utc_now()
+        transition_time = _transition_time(now)
         cancelling = TaskRun.cancel_requested.is_(True)
         statement = (
             update(TaskRun)
@@ -241,8 +268,8 @@ class TaskRepository:
                     (cancelling, null()),
                     else_=bindparam("_failure_error", validated_error, type_=JSON()),
                 ),
-                updated_at=now,
-                finished_at=now,
+                updated_at=transition_time,
+                finished_at=transition_time,
             )
             .returning(TaskRun)
         )
@@ -257,21 +284,22 @@ class TaskRepository:
 
     def request_cancel(self, task_id: str) -> TaskSnapshot:
         now = _utc_now()
+        transition_time = _transition_time(now)
         queued_statement = (
             update(TaskRun)
             .where(TaskRun.id == task_id, TaskRun.status == "queued")
             .values(
                 status="cancelled",
                 cancel_requested=True,
-                updated_at=now,
-                finished_at=now,
+                updated_at=transition_time,
+                finished_at=transition_time,
             )
             .returning(TaskRun)
         )
         running_statement = (
             update(TaskRun)
             .where(TaskRun.id == task_id, TaskRun.status == "running")
-            .values(cancel_requested=True, updated_at=now)
+            .values(cancel_requested=True, updated_at=transition_time)
             .returning(TaskRun)
         )
         with self._engine.begin() as connection:

@@ -79,6 +79,9 @@ def test_task_api_maps_not_found_conflict_and_validation(tmp_path: Path) -> None
             invalid_kind = client.post(
                 "/api/tasks", json={"kind": "   ", "payload": {}}
             )
+            padded_kind = client.post(
+                "/api/tasks", json={"kind": " demo.double ", "payload": {}}
+            )
 
         assert missing_get.status_code == 404
         assert missing_get.json() == {"detail": "Task not found"}
@@ -87,6 +90,7 @@ def test_task_api_maps_not_found_conflict_and_validation(tmp_path: Path) -> None
         assert conflict.json() == {"detail": "Task state conflict"}
         assert invalid_limit.status_code == 422
         assert invalid_kind.status_code == 422
+        assert padded_kind.status_code == 422
     finally:
         engine.dispose()
 
