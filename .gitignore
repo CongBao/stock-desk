@@ -1,0 +1,14 @@
+# Internal agent and planning artifacts
+.agents/
+.codex/
+.superpowers/
+docs/superpowers/
+openspec/
+outputs/
+work/
+
+# Local environment and operating-system files
+.env
+.env.*
+!.env.example
+.DS_Store
