@@ -1,0 +1,58 @@
+name: Bug report
+description: Report a reproducible defect in Stock Desk
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Thanks for the report. Search existing issues first and never include
+        secrets, credentials, personal data, or licensed market data.
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the actual and expected behavior.
+      placeholder: A concise description with sensitive values removed.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Provide the smallest repeatable command or sequence.
+      placeholder: |
+        1. Start with ...
+        2. Request ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      placeholder: v0.1.0 or commit SHA
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Python, Node.js, and native or Compose run mode.
+      placeholder: macOS 15, Python 3.12, Node.js 24, native
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized logs
+      description: Optional short logs with all secrets and identifiers removed.
+      render: shell
+  - type: checkboxes
+    id: conduct
+    attributes:
+      label: Code of Conduct
+      options:
+        - label: I agree to follow the project's Code of Conduct.
+          required: true

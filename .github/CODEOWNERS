@@ -1,0 +1,9 @@
+* @CongBao
+/src/ @CongBao
+/web/ @CongBao
+/docs/ @CongBao
+/tests/ @CongBao
+/.github/ @CongBao
+/Dockerfile @CongBao
+/compose.yaml @CongBao
+/pyproject.toml @CongBao
