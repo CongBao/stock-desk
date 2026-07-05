@@ -85,7 +85,9 @@ function WorkspaceShell() {
                 aria-live="polite"
               >
                 <span className="status-symbol" aria-hidden="true" />
-                {systemStateLabels[systemStatus.overall]}
+                <span>{systemStateLabels[systemStatus.overall]}</span>
+                <span className="status-scope">已检测：API / 任务存储</span>
+                <span className="worker-scope">Worker 未检测</span>
               </span>
             </div>
             <button

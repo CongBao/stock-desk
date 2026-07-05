@@ -358,6 +358,13 @@ def test_e2e_is_a_root_script_without_changing_the_make_contract() -> None:
     playwright = _read("playwright.config.ts")
     assert "gracefulShutdown" in playwright
     assert "signal: 'SIGTERM'" in playwright
+    foundation_e2e = _read("web/e2e/foundation.spec.ts")
+    health_probe = "request.get('/api/health')"
+    task_creation = "request.post('/api/tasks'"
+    assert health_probe in foundation_e2e
+    assert foundation_e2e.index(health_probe) < foundation_e2e.index(task_creation)
+    status_hook = _read("web/src/shared/api/useSystemStatus.ts")
+    assert "refetchInterval: 5_000" in status_hook
 
     makefile = _read("Makefile")
     targets = {
@@ -376,6 +383,10 @@ def test_e2e_is_a_root_script_without_changing_the_make_contract() -> None:
         "public-tree",
         "release-check",
     }
+    assert "scripts/clean_build_artifacts.py" in makefile
+    assert makefile.index("scripts/clean_build_artifacts.py") < makefile.index(
+        "uv build --no-build-isolation"
+    )
 
 
 def test_dependabot_covers_all_package_ecosystems_weekly() -> None:
@@ -395,6 +406,8 @@ def test_dependabot_covers_all_package_ecosystems_weekly() -> None:
 
 def test_project_metadata_is_complete_and_points_to_the_public_repository() -> None:
     project = tomllib.loads(_read("pyproject.toml"))["project"]
+    web_package = json.loads(_read("web/package.json"))
+    assert project["version"] == web_package["version"]
     assert project["description"]
     assert project["readme"] == "README.md"
     assert project["license"] == "Apache-2.0"
@@ -507,6 +520,11 @@ def test_release_workflow_is_tag_only_and_scopes_write_permission() -> None:
     assert "gh release create" in release
     assert "GH_REPO: ${{ github.repository }}" in release
     assert "sha256sum dist/* > dist/SHA256SUMS" in release
+    assert "${GITHUB_REF_NAME#v}" in release
+    assert (
+        "from scripts.verify_release import check_changelog, check_versions" in release
+    )
+    assert 'os.environ["RELEASE_VERSION"]' in release
     assert "publish" not in release.casefold()
 
 

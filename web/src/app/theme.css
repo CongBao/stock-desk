@@ -305,6 +305,18 @@ a {
   font-size: 11px;
 }
 
+.status-scope,
+.worker-scope {
+  padding-left: 8px;
+  border-left: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.worker-scope {
+  color: #fbbf24;
+}
+
 .status-symbol {
   width: 7px;
   height: 7px;

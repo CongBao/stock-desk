@@ -13,6 +13,13 @@ test('fresh user sees the live foundation shell and completed demo task', async 
   page,
   request,
 }) => {
+  await expect
+    .poll(async () => (await request.get('/api/health')).status(), {
+      message: 'API health should become ready before task creation',
+      timeout: 15_000,
+      intervals: [100, 250, 500],
+    })
+    .toBe(200);
   const created = await request.post('/api/tasks', {
     data: { kind: 'demo.double', payload: { value: 21 } },
   });
@@ -31,6 +38,10 @@ test('fresh user sees the live foundation shell and completed demo task', async 
     page.getByText('布局预览 / 非实时数据', { exact: true }),
   ).toBeVisible();
   await expect(page.getByText('系统正常', { exact: true })).toBeVisible();
+  await expect(
+    page.getByText('已检测：API / 任务存储', { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText('Worker 未检测', { exact: true })).toBeVisible();
 
   const panelToggle = page.getByRole('button', { name: '打开上下文面板' });
   await panelToggle.click();
@@ -40,6 +51,9 @@ test('fresh user sees the live foundation shell and completed demo task', async 
   await expect(page.getByRole('heading', { name: '近期任务' })).toBeVisible();
   await expect(page.getByText('API 服务可用', { exact: true })).toBeVisible();
   await expect(page.getByText('任务存储可用', { exact: true })).toBeVisible();
+  await expect(
+    page.getByText('任务 Worker：未检测', { exact: true }),
+  ).toBeVisible();
 
   const demoTask = page
     .getByRole('listitem')

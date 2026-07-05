@@ -47,8 +47,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          expected="v$(uv run --frozen python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
-          test "$GITHUB_REF_NAME" = "$expected"
+          release_version="${GITHUB_REF_NAME#v}"
+          RELEASE_VERSION="$release_version" uv run --frozen python -c 'import os; from pathlib import Path; from scripts.verify_release import check_changelog, check_versions; version = os.environ["RELEASE_VERSION"]; check_versions(Path.cwd(), version); check_changelog(Path.cwd(), version)'
       - name: Install Playwright Chromium
         run: pnpm exec playwright install --with-deps chromium
       - name: Run release gates

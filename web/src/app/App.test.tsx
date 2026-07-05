@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import {
   MemoryRouter,
@@ -113,6 +113,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -321,6 +322,13 @@ it('reports healthy only after both live endpoints pass strict decoding', async 
   ).toBeInTheDocument();
   expect(screen.getByText('API 服务可用', { exact: true })).toBeInTheDocument();
   expect(screen.getByText('任务存储可用', { exact: true })).toBeInTheDocument();
+  expect(
+    screen.getByText('已检测：API / 任务存储', { exact: true }),
+  ).toBeInTheDocument();
+  expect(screen.getAllByText(/Worker 未检测/)).not.toHaveLength(0);
+  expect(
+    screen.getByText('任务 Worker：未检测', { exact: true }),
+  ).toBeInTheDocument();
 });
 
 it('shows strictly decoded recent task state and result context', async () => {
@@ -336,6 +344,93 @@ it('shows strictly decoded recent task state and result context', async () => {
   expect(task).toHaveTextContent('进度 100%');
   expect(task).toHaveTextContent('结果：42');
   expect(task).toHaveAccessibleName(/demo\.double.*已成功/);
+});
+
+it.each([{ nested: true }, ['nested']])(
+  'keeps a task with complex result.value without rendering it: %j',
+  async (complexValue) => {
+    installHealthyFetch([
+      { ...completedTask, result: { value: complexValue } },
+    ]);
+
+    renderApp();
+
+    const task = await screen.findByRole('listitem', {
+      name: /demo\.double.*已成功/,
+    });
+    expect(task).toHaveTextContent('demo.double');
+    expect(task).not.toHaveTextContent('结果：');
+    expect(
+      await screen.findByText('系统正常', { exact: true }),
+    ).toBeInTheDocument();
+  },
+);
+
+it('stays checking when one valid endpoint remains pending', async () => {
+  let resolveTasks: ((response: Response) => void) | undefined;
+  vi.stubGlobal(
+    'fetch',
+    vi.fn((input: RequestInfo | URL) => {
+      if (requestUrl(input).endsWith('/health')) {
+        return Promise.resolve(jsonResponse(healthyResponse));
+      }
+      return new Promise<Response>((resolve) => {
+        resolveTasks = resolve;
+      });
+    }),
+  );
+
+  renderApp();
+
+  await screen.findByText('API 服务可用', { exact: true });
+  const checking = screen.getByText('系统检查中', { exact: true });
+  expect(checking.closest('[aria-live="polite"]')).toHaveTextContent(
+    '已检测：API / 任务存储',
+  );
+  expect(
+    screen.queryByText('服务降级', { exact: true }),
+  ).not.toBeInTheDocument();
+
+  act(() => {
+    resolveTasks?.(jsonResponse([]));
+  });
+
+  expect(
+    await screen.findByText('系统正常', { exact: true }),
+  ).toBeInTheDocument();
+});
+
+it('times out hung requests, retries once, and enables manual retry', async () => {
+  vi.useFakeTimers();
+  const { fetchMock } = installPendingFetch();
+
+  renderApp();
+
+  expect(screen.getByText('系统检查中', { exact: true })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: '重新检测' })).toBeDisabled();
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(10_100);
+  });
+
+  expect(fetchMock).toHaveBeenCalledTimes(4);
+  expect(screen.getByText('服务不可用', { exact: true })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: '重新检测' })).toBeEnabled();
+});
+
+it('keeps manual retry enabled during a background refresh', async () => {
+  installHealthyFetch();
+  const mounted = renderApp();
+  await screen.findByText('系统正常', { exact: true });
+  const pending = installPendingFetch();
+
+  act(() => {
+    void mounted.queryClient.refetchQueries({
+      queryKey: ['system-status'],
+    });
+  });
+  await waitFor(() => expect(pending.fetchMock).toHaveBeenCalledTimes(2));
+
+  expect(screen.getByRole('button', { name: '重新检测' })).toBeEnabled();
 });
 
 it('uses a textual degraded state when one endpoint violates the protocol', async () => {
@@ -431,4 +526,6 @@ it('aborts both in-flight endpoint requests after the final consumer unmounts', 
   await waitFor(() =>
     expect(signals.every((signal) => signal.aborted)).toBe(true),
   );
+  await new Promise((resolve) => window.setTimeout(resolve, 20));
+  expect(fetchMock).toHaveBeenCalledTimes(2);
 });

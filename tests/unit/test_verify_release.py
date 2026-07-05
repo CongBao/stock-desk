@@ -1,14 +1,21 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import io
 from pathlib import Path
 import subprocess
+import tarfile
+import tomllib
+import zipfile
 
 import pytest
 
 from scripts.verify_release import (
     GateCommand,
     ReleaseVerificationError,
+    SubprocessGateRunner,
+    check_build_artifacts,
+    check_changelog,
     check_remote,
     verify_release,
 )
@@ -16,6 +23,7 @@ from scripts.verify_release import (
 
 EXPECTED_IDENTITY = ("CongBao", "bao_cong@outlook.com")
 EXPECTED_REMOTE = "git@github.com:CongBao/stock-desk.git"
+E2E_BASE_URL = "http://127.0.0.1:8000"
 
 
 def git(repo: Path, *arguments: str, env: dict[str, str] | None = None) -> None:
@@ -39,15 +47,29 @@ class FakeGateRunner:
         if gate.command == self.fail_command:
             raise subprocess.CalledProcessError(7, gate.command)
         if gate.command == ("make", "release-check"):
-            (self.repo / "web" / "dist").mkdir(parents=True, exist_ok=True)
-            (self.repo / "web" / "dist" / "index.html").write_text(
-                "<title>stock-desk</title>", encoding="utf-8"
+            project = tomllib.loads(
+                (self.repo / "pyproject.toml").read_text(encoding="utf-8")
             )
-            (self.repo / "dist").mkdir(exist_ok=True)
-            (self.repo / "dist" / "stock_desk-0.1.0-py3-none-any.whl").write_bytes(
-                b"fixture"
-            )
-            (self.repo / "dist" / "stock_desk-0.1.0.tar.gz").write_bytes(b"fixture")
+            write_valid_artifacts(self.repo, project["project"]["version"])
+
+
+def write_valid_artifacts(repo: Path, version: str) -> None:
+    web_dist = repo / "web" / "dist"
+    web_dist.mkdir(parents=True, exist_ok=True)
+    (web_dist / "index.html").write_text(
+        "<!doctype html><title>stock-desk</title>", encoding="utf-8"
+    )
+    package_dist = repo / "dist"
+    package_dist.mkdir(exist_ok=True)
+    wheel = package_dist / f"stock_desk-{version}-py3-none-any.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr("stock_desk/__init__.py", b"__version__ = 'fixture'\n")
+    source = package_dist / f"stock_desk-{version}.tar.gz"
+    payload = b"fixture\n"
+    metadata = tarfile.TarInfo(f"stock_desk-{version}/README.md")
+    metadata.size = len(payload)
+    with tarfile.open(source, "w:gz") as archive:
+        archive.addfile(metadata, io.BytesIO(payload))
 
 
 @pytest.fixture
@@ -125,6 +147,52 @@ def test_accepts_one_explicit_canonical_push_destination(release_repo: Path) -> 
     git(release_repo, "config", "remote.origin.pushurl", EXPECTED_REMOTE)
 
     check_remote(release_repo)
+
+
+@pytest.mark.parametrize(
+    "fetch_urls",
+    [
+        (EXPECTED_REMOTE, "ssh://bad.example.invalid/fetch.git"),
+        (EXPECTED_REMOTE, EXPECTED_REMOTE),
+    ],
+)
+def test_rejects_multiple_fetch_destinations(
+    release_repo: Path, fetch_urls: tuple[str, ...]
+) -> None:
+    git(release_repo, "config", "--unset-all", "remote.origin.url")
+    for fetch_url in fetch_urls:
+        git(release_repo, "config", "--add", "remote.origin.url", fetch_url)
+
+    with pytest.raises(ReleaseVerificationError, match="origin remote") as captured:
+        check_remote(release_repo)
+
+    assert all(fetch_url not in str(captured.value) for fetch_url in fetch_urls)
+
+
+def test_subprocess_runner_merges_forced_environment_overrides(
+    release_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("INHERITED_RELEASE_MARKER", "present")
+    monkeypatch.setenv("STOCK_DESK_E2E_BASE_URL", "https://malicious.invalid")
+    captured: dict[str, object] = {}
+
+    def fake_run(command: tuple[str, ...], **options: object) -> None:
+        captured["command"] = command
+        captured.update(options)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    gate = GateCommand(
+        ("pnpm", "e2e"),
+        timeout_seconds=600,
+        environment=(("STOCK_DESK_E2E_BASE_URL", E2E_BASE_URL),),
+    )
+
+    SubprocessGateRunner(release_repo).run(gate)
+
+    environment = captured["env"]
+    assert isinstance(environment, dict)
+    assert environment["INHERITED_RELEASE_MARKER"] == "present"
+    assert environment["STOCK_DESK_E2E_BASE_URL"] == E2E_BASE_URL
 
 
 @pytest.mark.parametrize(
@@ -215,6 +283,91 @@ def test_reports_a_failed_canonical_gate(release_repo: Path) -> None:
     assert [call.command for call in runner.calls] == [("make", "release-check")]
 
 
+def test_accepts_a_future_release_with_a_different_valid_date(
+    release_repo: Path,
+) -> None:
+    pyproject = release_repo / "pyproject.toml"
+    pyproject.write_text(
+        pyproject.read_text().replace("0.1.0", "0.2.0"), encoding="utf-8"
+    )
+    web_package = release_repo / "web" / "package.json"
+    web_package.write_text(
+        web_package.read_text().replace("0.1.0", "0.2.0"), encoding="utf-8"
+    )
+    changelog = release_repo / "CHANGELOG.md"
+    changelog.write_text(
+        changelog.read_text().replace("[0.1.0] - 2026-07-05", "[0.2.0] - 2027-01-19"),
+        encoding="utf-8",
+    )
+    git(release_repo, "add", ".")
+    git(release_repo, "commit", "-q", "-m", "prepare future release")
+
+    verify_release(
+        release_repo,
+        "0.2.0",
+        FakeGateRunner(release_repo),
+        fingerprint=lambda _repo: "stable",
+    )
+
+
+@pytest.mark.parametrize(
+    "heading",
+    [
+        "## [0.1.0] - Unreleased",
+        "## [0.1.0] - 2026-7-5",
+        "## [0.1.0] - 2026-02-30",
+        "## [0.1.0] - 2026-07-05\n## [0.1.0] - 2026-07-06",
+    ],
+)
+def test_rejects_unreleased_malformed_or_duplicate_release_dates(
+    release_repo: Path, heading: str
+) -> None:
+    changelog = release_repo / "CHANGELOG.md"
+    changelog.write_text(f"# Changelog\n\n{heading}\n", encoding="utf-8")
+
+    with pytest.raises(ReleaseVerificationError, match="release changelog entry"):
+        check_changelog(release_repo, "0.1.0")
+
+
+def test_accepts_exact_valid_current_release_artifacts(release_repo: Path) -> None:
+    write_valid_artifacts(release_repo, "0.1.0")
+
+    check_build_artifacts(release_repo, "0.1.0")
+
+
+def test_rejects_wrong_or_empty_release_artifacts(release_repo: Path) -> None:
+    write_valid_artifacts(release_repo, "0.2.0")
+    with pytest.raises(ReleaseVerificationError, match="build artifact"):
+        check_build_artifacts(release_repo, "0.1.0")
+
+    write_valid_artifacts(release_repo, "0.1.0")
+    (release_repo / "dist" / "stock_desk-0.1.0-py3-none-any.whl").write_bytes(b"")
+    with pytest.raises(ReleaseVerificationError, match="build artifact"):
+        check_build_artifacts(release_repo, "0.1.0")
+
+
+def test_rejects_stale_release_archives(release_repo: Path) -> None:
+    write_valid_artifacts(release_repo, "0.1.0")
+    (release_repo / "dist" / "stock_desk-0.0.9-py3-none-any.whl").write_bytes(b"stale")
+    (release_repo / "dist" / "stock_desk-0.0.9.tar.gz").write_bytes(b"stale")
+
+    with pytest.raises(ReleaseVerificationError, match="build artifact"):
+        check_build_artifacts(release_repo, "0.1.0")
+
+
+@pytest.mark.parametrize("index_content", ["", "<title>another-app</title>"])
+def test_rejects_empty_or_wrong_web_entrypoint(
+    release_repo: Path, index_content: str
+) -> None:
+    write_valid_artifacts(release_repo, "0.1.0")
+    (release_repo / "web" / "dist" / "index.html").write_text(
+        index_content, encoding="utf-8"
+    )
+
+    with pytest.raises(ReleaseVerificationError, match="web build artifact"):
+        check_build_artifacts(release_repo, "0.1.0")
+
+
 def test_success_runs_timed_gates_and_rechecks_clean_sources(
     release_repo: Path,
 ) -> None:
@@ -224,5 +377,9 @@ def test_success_runs_timed_gates_and_rechecks_clean_sources(
 
     assert runner.calls == [
         GateCommand(("make", "release-check"), timeout_seconds=1800),
-        GateCommand(("pnpm", "e2e"), timeout_seconds=600),
+        GateCommand(
+            ("pnpm", "e2e"),
+            timeout_seconds=600,
+            environment=(("STOCK_DESK_E2E_BASE_URL", E2E_BASE_URL),),
+        ),
     ]

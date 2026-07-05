@@ -134,6 +134,10 @@ export function ContextPanel({
             <dt className="visually-hidden">任务存储</dt>
             <dd>任务存储{endpointLabels[systemStatus.tasks]}</dd>
           </div>
+          <div>
+            <dt className="visually-hidden">任务 Worker</dt>
+            <dd>任务 Worker：未检测</dd>
+          </div>
         </dl>
         <p className="last-checked">
           {systemStatus.checkedAt === null
@@ -143,7 +147,7 @@ export function ContextPanel({
         <button
           className="status-retry"
           type="button"
-          disabled={systemStatus.isFetching}
+          disabled={systemStatus.isRetryDisabled}
           onClick={() => void systemStatus.retry()}
         >
           重新检测

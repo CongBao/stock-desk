@@ -1,8 +1,10 @@
+import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 
 import { ApiError, createApiClient, type JsonValue } from './client';
 
 const apiClient = createApiClient();
+const REQUEST_TIMEOUT_MS = 5_000;
 const taskStatuses = new Set([
   'queued',
   'running',
@@ -36,7 +38,7 @@ export type SystemStatus = {
   readonly health: EndpointState;
   readonly tasks: EndpointState;
   readonly recentTasks: readonly RecentTask[];
-  readonly isFetching: boolean;
+  readonly isRetryDisabled: boolean;
   readonly checkedAt: number | null;
   readonly retry: () => Promise<void>;
 };
@@ -45,6 +47,42 @@ class ProtocolError extends Error {
   constructor() {
     super('API response did not match the public protocol');
     this.name = 'ProtocolError';
+  }
+}
+
+class RequestTimeoutError extends Error {
+  constructor() {
+    super('API request timed out');
+    this.name = 'RequestTimeoutError';
+  }
+}
+
+async function getWithTimeout(
+  path: string,
+  querySignal: AbortSignal,
+): Promise<JsonValue | undefined> {
+  const controller = new AbortController();
+  let timedOut = false;
+  const cancelFromQuery = () => controller.abort();
+  querySignal.addEventListener('abort', cancelFromQuery, { once: true });
+  if (querySignal.aborted) {
+    controller.abort();
+  }
+  const timeout = window.setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, REQUEST_TIMEOUT_MS);
+
+  try {
+    return await apiClient.get(path, { signal: controller.signal });
+  } catch (error) {
+    if (timedOut && error instanceof ApiError && error.kind === 'abort') {
+      throw new RequestTimeoutError();
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeout);
+    querySignal.removeEventListener('abort', cancelFromQuery);
   }
 }
 
@@ -94,7 +132,7 @@ function decodeResultValue(
   ) {
     return resultValue;
   }
-  throw new ProtocolError();
+  return undefined;
 }
 
 function decodeTask(value: JsonValue): RecentTask {
@@ -163,6 +201,12 @@ function overallState(
   if (health === 'checking' && tasks === 'checking') {
     return 'checking';
   }
+  if (health === 'checking' || tasks === 'checking') {
+    const knownState = health === 'checking' ? tasks : health;
+    return knownState === 'available' || knownState === 'checking'
+      ? 'checking'
+      : 'degraded';
+  }
   if (health === 'available' && tasks === 'available') {
     return 'healthy';
   }
@@ -179,10 +223,11 @@ function shouldRetry(failureCount: number, error: unknown): boolean {
 }
 
 export function useSystemStatus(): SystemStatus {
+  const [isManualRetrying, setIsManualRetrying] = useState(false);
   const healthQuery = useQuery({
     queryKey: ['system-status', 'health'],
     queryFn: async ({ signal }) =>
-      decodeHealth(await apiClient.get('/health', { signal })),
+      decodeHealth(await getWithTimeout('/health', signal)),
     retry: shouldRetry,
     retryDelay: 10,
     staleTime: 10_000,
@@ -192,15 +237,16 @@ export function useSystemStatus(): SystemStatus {
   const tasksQuery = useQuery({
     queryKey: ['system-status', 'tasks', 5],
     queryFn: async ({ signal }) =>
-      decodeTasks(await apiClient.get('/tasks?limit=5', { signal })),
+      decodeTasks(await getWithTimeout('/tasks?limit=5', signal)),
     retry: shouldRetry,
     retryDelay: 10,
     staleTime: 1_000,
-    refetchInterval: 1_500,
+    refetchInterval: 5_000,
     refetchIntervalInBackground: false,
   });
   const health = endpointState(healthQuery);
   const tasks = endpointState(tasksQuery);
+  const isInitialPending = healthQuery.isPending || tasksQuery.isPending;
   const checkedAt = Math.max(
     healthQuery.dataUpdatedAt,
     healthQuery.errorUpdatedAt,
@@ -213,10 +259,18 @@ export function useSystemStatus(): SystemStatus {
     health,
     tasks,
     recentTasks: tasksQuery.data ?? [],
-    isFetching: healthQuery.isFetching || tasksQuery.isFetching,
+    isRetryDisabled: isInitialPending || isManualRetrying,
     checkedAt: checkedAt > 0 ? checkedAt : null,
     retry: async () => {
-      await Promise.all([healthQuery.refetch(), tasksQuery.refetch()]);
+      if (isInitialPending || isManualRetrying) {
+        return;
+      }
+      setIsManualRetrying(true);
+      try {
+        await Promise.all([healthQuery.refetch(), tasksQuery.refetch()]);
+      } finally {
+        setIsManualRetrying(false);
+      }
     },
   };
 }

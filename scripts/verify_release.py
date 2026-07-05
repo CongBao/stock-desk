@@ -3,14 +3,17 @@ from __future__ import annotations
 import argparse
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import date
 import json
 import os
 from pathlib import Path
 import re
 import subprocess
 import sys
+import tarfile
 import tomllib
 from typing import Protocol
+import zipfile
 
 if __package__ in {None, ""}:
     sys.path.insert(0, os.fspath(Path(__file__).resolve().parent.parent))
@@ -22,8 +25,8 @@ from scripts.source_fingerprint import compute_source_fingerprint
 EXPECTED_GIT_NAME = "CongBao"
 EXPECTED_GIT_EMAIL = "bao_cong@outlook.com"
 EXPECTED_REMOTE = "git@github.com:CongBao/stock-desk.git"
-RELEASE_DATE = "2026-07-05"
 GIT_TIMEOUT_SECONDS = 30
+E2E_BASE_URL = "http://127.0.0.1:8000"
 VERSION_PATTERN = re.compile(
     r"^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$"
 )
@@ -33,6 +36,7 @@ VERSION_PATTERN = re.compile(
 class GateCommand:
     command: tuple[str, ...]
     timeout_seconds: int
+    environment: tuple[tuple[str, str], ...] = ()
 
 
 class GateRunner(Protocol):
@@ -48,10 +52,13 @@ class SubprocessGateRunner:
         self._repo = repo
 
     def run(self, gate: GateCommand) -> None:
+        environment = os.environ.copy()
+        environment.update(gate.environment)
         subprocess.run(  # noqa: S603
             gate.command,
             cwd=self._repo,
             check=True,
+            env=environment,
             stdin=subprocess.DEVNULL,
             timeout=gate.timeout_seconds,
         )
@@ -122,11 +129,11 @@ def check_identity(repo: Path) -> None:
 
 
 def check_remote(repo: Path) -> None:
-    fetch_url = _git(repo, "remote", "get-url", "origin").strip()
+    fetch_urls = _git(repo, "remote", "get-url", "--all", "origin").splitlines()
     push_urls = _git(
         repo, "remote", "get-url", "--push", "--all", "origin"
     ).splitlines()
-    if fetch_url != EXPECTED_REMOTE or push_urls != [EXPECTED_REMOTE]:
+    if fetch_urls != [EXPECTED_REMOTE] or push_urls != [EXPECTED_REMOTE]:
         raise ReleaseVerificationError(
             "origin remote is not the public release repository"
         )
@@ -159,9 +166,23 @@ def check_changelog(repo: Path, version: str) -> None:
         raise ReleaseVerificationError(
             "unable to read the release changelog"
         ) from error
-    dated_heading = f"## [{version}] - {RELEASE_DATE}"
-    unreleased_heading = f"## [{version}] - Unreleased"
-    if changelog.count(dated_heading) != 1 or unreleased_heading in changelog:
+    headings = re.findall(
+        rf"^## \[{re.escape(version)}\] - (?P<release_date>\S+)$",
+        changelog,
+        re.MULTILINE,
+    )
+    if (
+        len(headings) != 1
+        or re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", headings[0]) is None
+    ):
+        raise ReleaseVerificationError("release changelog entry is not finalized")
+    try:
+        parsed_date = date.fromisoformat(headings[0])
+    except ValueError as error:
+        raise ReleaseVerificationError(
+            "release changelog entry is not finalized"
+        ) from error
+    if parsed_date.isoformat() != headings[0]:
         raise ReleaseVerificationError("release changelog entry is not finalized")
 
 
@@ -184,21 +205,54 @@ def check_public_history(repo: Path) -> None:
         )
 
 
-def check_build_artifacts(repo: Path) -> None:
+def check_build_artifacts(repo: Path, version: str) -> None:
+    if VERSION_PATTERN.fullmatch(version) is None:
+        raise ReleaseVerificationError("release build artifact version is invalid")
     web_entrypoint = repo / "web" / "dist" / "index.html"
     package_dir = repo / "dist"
-    if web_entrypoint.is_symlink() or not web_entrypoint.is_file():
-        raise ReleaseVerificationError("release web build artifact is missing")
-    wheels = list(package_dir.glob("*.whl"))
-    source_archives = list(package_dir.glob("*.tar.gz"))
     if (
-        not wheels
-        or not source_archives
+        web_entrypoint.is_symlink()
+        or not web_entrypoint.is_file()
+        or web_entrypoint.stat().st_size == 0
+    ):
+        raise ReleaseVerificationError("release web build artifact is missing")
+    try:
+        web_html = web_entrypoint.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        raise ReleaseVerificationError(
+            "release web build artifact is invalid"
+        ) from error
+    if re.search(r"<title>\s*stock-desk\s*</title>", web_html, re.IGNORECASE) is None:
+        raise ReleaseVerificationError("release web build artifact is invalid")
+
+    expected_wheel = package_dir / f"stock_desk-{version}-py3-none-any.whl"
+    expected_source = package_dir / f"stock_desk-{version}.tar.gz"
+    wheels = set(package_dir.glob("*.whl"))
+    source_archives = set(package_dir.glob("*.tar.gz"))
+    if (
+        wheels != {expected_wheel}
+        or source_archives != {expected_source}
         or any(
-            path.is_symlink() or not path.is_file() for path in wheels + source_archives
+            path.is_symlink() or not path.is_file() or path.stat().st_size == 0
+            for path in (expected_wheel, expected_source)
         )
     ):
-        raise ReleaseVerificationError("release Python build artifacts are missing")
+        raise ReleaseVerificationError("release Python build artifact set is invalid")
+    try:
+        with zipfile.ZipFile(expected_wheel) as wheel:
+            if not wheel.namelist() or wheel.testzip() is not None:
+                raise ReleaseVerificationError(
+                    "release wheel build artifact is invalid"
+                )
+        with tarfile.open(expected_source, "r:gz") as source:
+            if not source.getmembers():
+                raise ReleaseVerificationError(
+                    "release source build artifact is invalid"
+                )
+    except (OSError, tarfile.TarError, zipfile.BadZipFile) as error:
+        raise ReleaseVerificationError(
+            "release Python build artifact is invalid"
+        ) from error
 
 
 def verify_release(
@@ -225,7 +279,11 @@ def verify_release(
 
     gates = (
         GateCommand(("make", "release-check"), timeout_seconds=1800),
-        GateCommand(("pnpm", "e2e"), timeout_seconds=600),
+        GateCommand(
+            ("pnpm", "e2e"),
+            timeout_seconds=600,
+            environment=(("STOCK_DESK_E2E_BASE_URL", E2E_BASE_URL),),
+        ),
     )
     for gate in gates:
         try:
@@ -246,7 +304,7 @@ def verify_release(
         raise ReleaseVerificationError(
             "release source fingerprint changed during gates"
         )
-    check_build_artifacts(resolved_repo)
+    check_build_artifacts(resolved_repo, version)
 
 
 def _parser() -> argparse.ArgumentParser:

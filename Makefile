@@ -23,6 +23,7 @@ typecheck:
 	pnpm typecheck
 
 build:
+	uv run --frozen python scripts/clean_build_artifacts.py
 	uv build --no-build-isolation
 	pnpm build
 
