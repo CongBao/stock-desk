@@ -1,10 +1,12 @@
 from collections import UserList
 from collections.abc import Iterator, Mapping, Sequence, Set
+from io import StringIO
 import logging
 from typing import Any, overload
 
 import pytest
 
+import stock_desk.security.redaction as redaction_module
 from stock_desk.security.redaction import (
     REDACTED_MARKER,
     RedactingFilter,
@@ -270,6 +272,16 @@ class HostileMetaclassError(RuntimeError, metaclass=HostileExceptionMeta):
         return f"hostile exception value {SECRET}"
 
 
+class RaisingFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        raise RuntimeError(f"hostile formatter {SECRET}")
+
+
+class HostileOutputFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        return HostileStr(SECRET)
+
+
 def _render_log(
     redactor: SecretRedactor,
     message: object,
@@ -284,7 +296,7 @@ def _render_log(
     logger.setLevel(logging.DEBUG)
     handler = logging.StreamHandler()
     handler.setFormatter(logging.Formatter("%(levelname)s %(name)s %(message)s"))
-    handler.addFilter(RedactingFilter(redactor))
+    redaction_module.configure_redacting_handler(handler, redactor)
     records: list[logging.LogRecord] = []
 
     class Capture(logging.Handler):
@@ -294,8 +306,6 @@ def _render_log(
     capture = Capture()
     capture.addFilter(RedactingFilter(redactor))
     logger.addHandler(capture)
-
-    from io import StringIO
 
     output = StringIO()
     handler.setStream(output)
@@ -390,6 +400,26 @@ def test_every_marker_is_resolved_without_registered_secret_collisions(
     for result in results:
         assert secret not in str(result)
         assert secret not in repr(result)
+
+
+@pytest.mark.parametrize(
+    "secret",
+    [f"prefix{REDACTED_MARKER}suffix", r"prefix\ue000suffix"],
+    ids=["raw-marker", "repr-fragment"],
+)
+def test_marker_resolver_rejects_marker_representations_inside_secret(
+    secret: str,
+) -> None:
+    redactor = SecretRedactor([secret])
+    marker = redactor.redacted_marker
+    representation_fragment = repr(marker)[1:-1]
+
+    assert marker != REDACTED_MARKER
+    assert marker not in secret
+    assert representation_fragment not in secret
+    cleaned = redactor.clean(secret)
+    assert secret not in str(cleaned)
+    assert secret not in repr(cleaned)
 
 
 def test_current_marker_idempotence_and_unsafe_literal_replacement() -> None:
@@ -1004,6 +1034,133 @@ def test_logging_filter_has_no_false_failure_without_secrets() -> None:
 
     assert "ordinary value=safe" in output
     assert record.getMessage() == "ordinary value=safe"
+
+
+def test_safe_handler_redacts_cross_field_composition_and_preserves_formatter() -> None:
+    redactor = SecretRedactor(["abcdef"])
+    output = StringIO()
+    handler = logging.StreamHandler(output)
+    delegate = logging.Formatter("%(left)s%(right)s")
+    handler.setFormatter(delegate)
+
+    configured = redaction_module.configure_redacting_handler(handler, redactor)
+    logger = logging.getLogger("stock_desk.tests.redaction.cross-field")
+    logger.handlers.clear()
+    logger.propagate = False
+    logger.setLevel(logging.INFO)
+    logger.addHandler(configured)
+    logger.info("unused", extra={"left": "abc", "right": "def"})
+
+    rendered = output.getvalue()
+    assert "abcdef" not in rendered
+    assert redactor.redacted_marker in rendered
+    assert isinstance(handler.formatter, redaction_module.RedactingFormatter)
+    assert handler.formatter.delegate is delegate
+    assert any(isinstance(item, RedactingFilter) for item in handler.filters)
+
+
+def test_safe_handler_redacts_formatter_literal_and_field_composition() -> None:
+    redactor = SecretRedactor(["prefixsecret"])
+    output = StringIO()
+    handler = logging.StreamHandler(output)
+    handler.setFormatter(logging.Formatter("prefix%(right)s"))
+    redaction_module.configure_redacting_handler(handler, redactor)
+    logger = logging.getLogger("stock_desk.tests.redaction.literal-field")
+    logger.handlers.clear()
+    logger.propagate = False
+    logger.setLevel(logging.INFO)
+    logger.addHandler(handler)
+
+    logger.info("unused", extra={"right": "secret"})
+
+    assert "prefixsecret" not in output.getvalue()
+    assert redactor.redacted_marker in output.getvalue()
+
+
+def test_safe_handler_redacts_composed_exception_and_stack_output() -> None:
+    redactor = SecretRedactor([SECRET, "abcdef"])
+    output = StringIO()
+    handler = logging.StreamHandler(output)
+    handler.setFormatter(
+        logging.Formatter("%(message)s|%(left)s%(right)s|%(stack_info)s")
+    )
+    redaction_module.configure_redacting_handler(handler, redactor)
+    logger = logging.getLogger("stock_desk.tests.redaction.safe-exception")
+    logger.handlers.clear()
+    logger.propagate = False
+    logger.setLevel(logging.INFO)
+    logger.addHandler(handler)
+
+    try:
+        raise RuntimeError(f"provider rejected {SECRET}")
+    except RuntimeError:
+        logger.error(
+            "failed",
+            exc_info=True,
+            stack_info=True,
+            extra={"left": "abc", "right": "def"},
+        )
+
+    rendered = output.getvalue()
+    assert SECRET not in rendered
+    assert "abcdef" not in rendered
+
+
+@pytest.mark.parametrize(
+    "delegate",
+    [RaisingFormatter(), HostileOutputFormatter()],
+    ids=["raising", "hostile-output"],
+)
+def test_final_formatter_fails_closed_for_hostile_delegates(
+    delegate: logging.Formatter,
+) -> None:
+    redactor = SecretRedactor([SECRET])
+    record = logging.makeLogRecord(
+        {"name": "hostile", "levelno": logging.INFO, "msg": "safe", "args": ()}
+    )
+    formatter = redaction_module.RedactingFormatter(redactor, delegate)
+
+    rendered = formatter.format(record)
+
+    assert SECRET not in rendered
+    assert (
+        redactor.unrenderable_log_marker in rendered
+        or redactor.redacted_marker in rendered
+    )
+
+
+def test_final_formatter_is_idempotent_for_its_resolved_marker() -> None:
+    redactor = SecretRedactor([SECRET])
+    formatter = redaction_module.RedactingFormatter(
+        redactor, logging.Formatter("%(message)s")
+    )
+    record = logging.makeLogRecord(
+        {"name": "idempotent", "levelno": logging.INFO, "msg": SECRET, "args": ()}
+    )
+
+    first = formatter.format(record)
+    record.msg = first
+    record.args = ()
+    second = formatter.format(record)
+
+    assert first == second
+    assert SECRET not in second
+
+
+def test_safe_handler_configuration_is_idempotent() -> None:
+    redactor = SecretRedactor([SECRET])
+    handler = logging.StreamHandler(StringIO())
+    delegate = logging.Formatter("%(message)s")
+    handler.setFormatter(delegate)
+
+    first = redaction_module.configure_redacting_handler(handler, redactor)
+    first_formatter = handler.formatter
+    second = redaction_module.configure_redacting_handler(handler, redactor)
+
+    assert first is handler
+    assert second is handler
+    assert handler.formatter is first_formatter
+    assert sum(isinstance(item, RedactingFilter) for item in handler.filters) == 1
 
 
 @pytest.mark.parametrize("invalid", [None, b"bytes", 123])

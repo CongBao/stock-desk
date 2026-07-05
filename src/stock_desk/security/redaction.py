@@ -195,11 +195,15 @@ class SecretRedactor:
 
 
 class RedactingFilter(logging.Filter):
-    """Sanitize all message-bearing fields before any formatter sees a record."""
+    """Sanitize structured fields before a final ``RedactingFormatter`` pass."""
 
     def __init__(self, redactor: SecretRedactor, name: str = "") -> None:
         super().__init__(name)
         self._redactor = redactor
+
+    @property
+    def redactor(self) -> SecretRedactor:
+        return self._redactor
 
     def filter(self, record: logging.LogRecord) -> bool:
         try:
@@ -228,6 +232,55 @@ class RedactingFilter(logging.Filter):
         return True
 
 
+class RedactingFormatter(logging.Formatter):
+    """Redact a delegate formatter's fully composed output as the final boundary."""
+
+    def __init__(self, redactor: SecretRedactor, delegate: logging.Formatter) -> None:
+        super().__init__()
+        self._redactor = redactor
+        self._delegate = delegate
+
+    @property
+    def redactor(self) -> SecretRedactor:
+        return self._redactor
+
+    @property
+    def delegate(self) -> logging.Formatter:
+        return self._delegate
+
+    def format(self, record: logging.LogRecord) -> str:
+        try:
+            rendered = self._delegate.format(record)
+        except Exception:
+            return self._redactor.unrenderable_log_marker
+        cleaned = self._redactor.clean(rendered)
+        if not isinstance(cleaned, str):
+            return self._redactor.unrenderable_log_marker
+        return str.__str__(cleaned)
+
+
+def configure_redacting_handler(
+    handler: logging.Handler, redactor: SecretRedactor
+) -> logging.Handler:
+    """Install structured and final-output redaction while preserving formatting."""
+    handler.acquire()
+    try:
+        current_formatter = handler.formatter or logging.Formatter()
+        if not (
+            isinstance(current_formatter, RedactingFormatter)
+            and current_formatter.redactor is redactor
+        ):
+            handler.setFormatter(RedactingFormatter(redactor, current_formatter))
+        if not any(
+            isinstance(item, RedactingFilter) and item.redactor is redactor
+            for item in handler.filters
+        ):
+            handler.addFilter(RedactingFilter(redactor))
+    finally:
+        handler.release()
+    return handler
+
+
 def _marker_candidates() -> Iterator[str]:
     for marker_range in _PRIVATE_USE_RANGES:
         for codepoint in marker_range:
@@ -241,9 +294,13 @@ def _marker_candidates() -> Iterator[str]:
 def _resolve_markers(secrets: tuple[str, ...]) -> _Markers:
     resolved: list[str] = []
     for candidate in _marker_candidates():
-        representations = (candidate, repr(candidate))
+        rendered_candidate = repr(candidate)
+        representation_fragment = rendered_candidate[1:-1]
+        representations = (candidate, rendered_candidate, representation_fragment)
         if any(
-            secret in rendered for secret in secrets for rendered in representations
+            secret in rendered or rendered in secret
+            for secret in secrets
+            for rendered in representations
         ):
             continue
         resolved.append(candidate)
