@@ -9,10 +9,27 @@ export function ContextPanel({ isOpen, onClose }: ContextPanelProps) {
   const closeButtonRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
-    if (isOpen) {
-      closeButtonRef.current?.focus();
+    if (!isOpen) {
+      return undefined;
     }
-  }, [isOpen]);
+
+    const focusTimer = window.setTimeout(() => {
+      closeButtonRef.current?.focus();
+    }, 0);
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        onClose();
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      window.clearTimeout(focusTimer);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isOpen, onClose]);
 
   return (
     <aside

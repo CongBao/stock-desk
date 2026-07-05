@@ -38,18 +38,28 @@ export function MarketPage() {
       <header className="page-heading market-heading">
         <div>
           <span className="page-kicker">MARKET WORKSPACE</span>
-          <h2>行情工作区</h2>
+          <h2 data-page-heading tabIndex={-1}>
+            行情工作区
+          </h2>
           <p>K 线为主图，公式和指标作为紧邻的副图。</p>
         </div>
         <span className="preview-badge">布局预览 / 非实时数据</span>
       </header>
 
-      <div className="market-toolbar" aria-label="行情布局工具栏预览">
+      <div
+        className="market-toolbar"
+        role="group"
+        aria-label="行情布局工具栏预览"
+      >
         <div className="instrument-placeholder">
           <span className="instrument-code">— — — — — —</span>
           <span>证券标的待数据源接入</span>
         </div>
-        <div className="toolbar-chips" aria-label="预设周期与复权方式">
+        <div
+          className="toolbar-chips"
+          role="group"
+          aria-label="预设周期与复权方式"
+        >
           <span>日线</span>
           <span>前复权</span>
           <span>公式副图</span>
@@ -65,7 +75,7 @@ export function MarketPage() {
             <span className="chart-sequence">01 / PRIMARY</span>
             <h3>K 线主图</h3>
           </div>
-          <div className="chart-legend" aria-label="图例">
+          <div className="chart-legend" role="group" aria-label="图例">
             <span className="legend-rise">上涨样式</span>
             <span className="legend-fall">下跌样式</span>
             <span className="legend-line">均线样式</span>

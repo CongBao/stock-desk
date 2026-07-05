@@ -10,7 +10,9 @@ export function PlannedPage({ route }: PlannedPageProps) {
       <header className="page-heading">
         <div>
           <span className="page-kicker">PLANNED WORKSPACE</span>
-          <h2>{route.title}</h2>
+          <h2 data-page-heading tabIndex={-1}>
+            {route.title}
+          </h2>
           <p>{route.summary}</p>
         </div>
         <span className="release-badge">计划版本 {route.release}</span>

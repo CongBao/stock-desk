@@ -1,21 +1,18 @@
 import { useRef } from 'react';
-import {
-  BrowserRouter,
-  Navigate,
-  NavLink,
-  Route,
-  Routes,
-} from 'react-router-dom';
+import { Navigate, NavLink, Route, Routes } from 'react-router-dom';
 
 import { ContextPanel } from './ContextPanel';
 import { MarketPage } from './MarketPage';
+import { NotFoundPage } from './NotFoundPage';
 import { PlannedPage } from './PlannedPage';
+import { RouteEffects } from './RouteEffects';
 import { appRoutes } from './routes';
 import { useWorkspaceStore } from './store';
+import { WorkspaceStoreProvider } from './WorkspaceStoreProvider';
 
 function NavigationRail() {
   return (
-    <aside className="navigation-rail">
+    <div className="navigation-rail">
       <div className="brand-lockup">
         <span className="brand-mark" aria-hidden="true">
           SD
@@ -46,7 +43,7 @@ function NavigationRail() {
         <span className="version-label">v0.1.0 · Foundation</span>
         <span>本地优先 · 个人使用</span>
       </div>
-    </aside>
+    </div>
   );
 }
 
@@ -92,6 +89,7 @@ function WorkspaceShell() {
             </button>
           </header>
 
+          <RouteEffects />
           <Routes>
             <Route path="/" element={<Navigate to="/market" replace />} />
             {appRoutes.map((route) => (
@@ -107,7 +105,7 @@ function WorkspaceShell() {
                 }
               />
             ))}
-            <Route path="*" element={<Navigate to="/market" replace />} />
+            <Route path="*" element={<NotFoundPage />} />
           </Routes>
         </main>
 
@@ -119,8 +117,8 @@ function WorkspaceShell() {
 
 export function App() {
   return (
-    <BrowserRouter>
+    <WorkspaceStoreProvider>
       <WorkspaceShell />
-    </BrowserRouter>
+    </WorkspaceStoreProvider>
   );
 }
