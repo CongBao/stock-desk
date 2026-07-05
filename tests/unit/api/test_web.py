@@ -1,4 +1,6 @@
+import os
 from pathlib import Path
+import stat
 
 import pytest
 from fastapi.testclient import TestClient
@@ -85,3 +87,35 @@ def test_invalid_configured_web_dist_fails_clearly(
 
     with pytest.raises(RuntimeError, match="STOCK_DESK_WEB_DIST_DIR"):
         create_app(Settings(web_dist_dir=configured))
+
+
+def test_index_symlink_resolving_outside_dist_fails_clearly(tmp_path: Path) -> None:
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    outside_index = tmp_path / "outside.html"
+    outside_index.write_text("outside", encoding="utf-8")
+    try:
+        (dist / "index.html").symlink_to(outside_index)
+    except (NotImplementedError, OSError) as error:
+        pytest.skip(f"symlink creation is unavailable: {error}")
+
+    with pytest.raises(RuntimeError, match="index.html must resolve inside"):
+        create_app(Settings(web_dist_dir=dist))
+
+
+def test_unreadable_index_fails_at_app_creation(tmp_path: Path) -> None:
+    dist = _web_dist(tmp_path)
+    index = dist / "index.html"
+    original_mode = stat.S_IMODE(index.stat().st_mode)
+    try:
+        try:
+            index.chmod(0)
+        except (NotImplementedError, OSError) as error:
+            pytest.skip(f"file permission changes are unavailable: {error}")
+        if os.access(index, os.R_OK):
+            pytest.skip("platform does not enforce owner read permissions")
+
+        with pytest.raises(RuntimeError, match="index.html must be readable"):
+            create_app(Settings(web_dist_dir=dist))
+    finally:
+        index.chmod(original_mode)

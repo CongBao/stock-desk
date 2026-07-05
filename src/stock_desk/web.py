@@ -1,4 +1,5 @@
 from pathlib import Path, PurePosixPath
+import stat
 
 from fastapi import FastAPI, HTTPException, status
 from fastapi.responses import FileResponse, Response
@@ -15,11 +16,32 @@ def _validated_dist(configured_dist: Path) -> tuple[Path, Path]:
             f"STOCK_DESK_WEB_DIST_DIR must be an existing directory: {dist}"
         )
 
-    index = dist / "index.html"
-    if not index.is_file():
+    try:
+        index = (dist / "index.html").resolve(strict=True)
+    except (OSError, RuntimeError) as error:
         raise RuntimeError(
-            f"STOCK_DESK_WEB_DIST_DIR must contain a readable index.html: {dist}"
-        )
+            f"STOCK_DESK_WEB_DIST_DIR must contain a resolvable index.html: {dist}"
+        ) from error
+
+    try:
+        index.relative_to(dist)
+    except ValueError:
+        raise RuntimeError(
+            "STOCK_DESK_WEB_DIST_DIR index.html must resolve inside "
+            f"the configured directory: {dist}"
+        ) from None
+
+    try:
+        if not stat.S_ISREG(index.stat().st_mode):
+            raise RuntimeError(
+                f"STOCK_DESK_WEB_DIST_DIR index.html must be a regular file: {index}"
+            )
+        with index.open("rb") as entrypoint:
+            entrypoint.read(1)
+    except OSError as error:
+        raise RuntimeError(
+            f"STOCK_DESK_WEB_DIST_DIR index.html must be readable: {index}"
+        ) from error
     return dist, index
 
 
