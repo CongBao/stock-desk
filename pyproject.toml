@@ -4,6 +4,7 @@ version = "0.1.0"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "alembic>=1.16,<2",
+    "cryptography>=45,<47",
     "fastapi>=0.116,<1",
     "filelock>=3.19,<4",
     "pydantic-settings>=2.10,<3",
@@ -24,6 +25,7 @@ packages = ["src/stock_desk"]
 
 [dependency-groups]
 dev = [
+    "bandit>=1.8,<2",
     "hatchling>=1.27,<2",
     "httpx2>=2,<3",
     "mypy>=1.17,<2",
@@ -42,3 +44,6 @@ target-version = "py312"
 [tool.mypy]
 python_version = "3.12"
 strict = true
+
+[tool.bandit]
+exclude_dirs = ["tests"]
