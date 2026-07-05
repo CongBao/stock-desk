@@ -35,10 +35,16 @@ from scripts.source_fingerprint import compute_source_fingerprint
 EXPECTED_GIT_NAME = "CongBao"
 EXPECTED_GIT_EMAIL = "bao_cong@outlook.com"
 EXPECTED_REMOTE = "git@github.com:CongBao/stock-desk.git"
+GITHUB_MERGE_AUTHOR_NAMES = frozenset({EXPECTED_GIT_NAME, "Cong Bao"})
+GITHUB_MERGE_COMMITTER = ("GitHub", "noreply@github.com")
 GIT_TIMEOUT_SECONDS = 30
 E2E_BASE_URL = "http://127.0.0.1:8000"
 VERSION_PATTERN = re.compile(
     r"^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$"
+)
+GITHUB_MERGE_SUBJECT_PATTERN = re.compile(
+    r"Merge pull request #(?P<pull_request>[1-9][0-9]*) "
+    r"from CongBao/(?P<branch>[A-Za-z0-9._/-]+)"
 )
 
 
@@ -114,6 +120,35 @@ def check_branch(repo: Path) -> None:
         raise ReleaseVerificationError("release branch must be main or phase/*")
 
 
+def _is_safe_github_branch(branch: str) -> bool:
+    components = branch.split("/")
+    return ".." not in branch and all(
+        component
+        and not component.startswith((".", "-"))
+        and not component.endswith((".", ".lock"))
+        for component in components
+    )
+
+
+def _is_github_merge_identity(
+    parents: str,
+    author_name: str,
+    author_email: str,
+    committer_name: str,
+    committer_email: str,
+    subject: str,
+) -> bool:
+    subject_match = GITHUB_MERGE_SUBJECT_PATTERN.fullmatch(subject)
+    return (
+        len(parents.split()) == 2
+        and author_name in GITHUB_MERGE_AUTHOR_NAMES
+        and author_email == EXPECTED_GIT_EMAIL
+        and (committer_name, committer_email) == GITHUB_MERGE_COMMITTER
+        and subject_match is not None
+        and _is_safe_github_branch(subject_match.group("branch"))
+    )
+
+
 def check_identity(repo: Path) -> None:
     configured = (
         _git(repo, "config", "--get", "user.name").strip(),
@@ -124,7 +159,12 @@ def check_identity(repo: Path) -> None:
             "configured Git identity is not the release identity"
         )
 
-    history = _git(repo, "log", "--format=%an%x00%ae%x00%cn%x00%ce", "HEAD")
+    history = _git(
+        repo,
+        "log",
+        "--format=%P%x00%an%x00%ae%x00%cn%x00%ce%x00%s",
+        "HEAD",
+    )
     expected = (
         EXPECTED_GIT_NAME,
         EXPECTED_GIT_EMAIL,
@@ -132,10 +172,33 @@ def check_identity(repo: Path) -> None:
         EXPECTED_GIT_EMAIL,
     )
     for record in history.splitlines():
-        if tuple(record.split("\0")) != expected:
+        fields = record.split("\0")
+        if len(fields) != 6:
             raise ReleaseVerificationError(
                 "reachable commit identities are not all the release identity"
             )
+        parents, author_name, author_email, committer_name, committer_email, subject = (
+            fields
+        )
+        if (
+            author_name,
+            author_email,
+            committer_name,
+            committer_email,
+        ) == expected:
+            continue
+        if _is_github_merge_identity(
+            parents,
+            author_name,
+            author_email,
+            committer_name,
+            committer_email,
+            subject,
+        ):
+            continue
+        raise ReleaseVerificationError(
+            "reachable commit identities are not all the release identity"
+        )
 
 
 def check_remote(repo: Path) -> None:
