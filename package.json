@@ -4,9 +4,13 @@
   "packageManager": "pnpm@11.7.0",
   "scripts": {
     "build": "pnpm --dir web build",
+    "e2e": "playwright test",
     "format:check": "pnpm --dir web format:check",
     "lint": "pnpm --dir web lint",
     "test": "pnpm --dir web test --run",
     "typecheck": "pnpm --dir web typecheck"
+  },
+  "devDependencies": {
+    "@playwright/test": ">=1.55.0 <2"
   }
 }

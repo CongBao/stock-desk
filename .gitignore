@@ -17,6 +17,8 @@ work/
 data/
 logs/
 reports/
+test-results/
+playwright-report/
 
 # Python
 __pycache__/

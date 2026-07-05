@@ -49,6 +49,8 @@ jobs:
           set -euo pipefail
           expected="v$(uv run --frozen python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
           test "$GITHUB_REF_NAME" = "$expected"
+      - name: Install Playwright Chromium
+        run: pnpm exec playwright install --with-deps chromium
       - name: Run release gates
         run: |
           make test
@@ -56,6 +58,7 @@ jobs:
           make typecheck
           make build
           make public-tree
+          pnpm e2e
       - name: Prepare checksummed assets
         shell: bash
         run: |

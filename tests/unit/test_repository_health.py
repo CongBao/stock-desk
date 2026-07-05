@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 import re
 import tomllib
@@ -324,6 +325,59 @@ def test_ci_runs_native_and_container_gates_with_cleanup_and_artifacts() -> None
         assert required in ci
 
 
+def test_ci_and_release_gate_the_chromium_end_to_end_slice() -> None:
+    ci_workflow = _load_github_actions_yaml(_read(".github/workflows/ci.yml"))
+    e2e = ci_workflow["jobs"]["e2e"]
+    assert e2e["permissions"] == {"contents": "read"}
+    assert 1 <= e2e["timeout-minutes"] <= 20
+    ci_e2e = "\n".join(
+        str(step.get("run", "")) for step in e2e["steps"] if isinstance(step, dict)
+    )
+    for required in (
+        "uv sync --frozen --all-groups",
+        "pnpm install --frozen-lockfile",
+        "pnpm exec playwright install --with-deps chromium",
+        "pnpm e2e",
+    ):
+        assert required in ci_e2e
+
+    release = _read(".github/workflows/release.yml")
+    assert "pnpm exec playwright install --with-deps chromium" in release
+    assert "pnpm e2e" in release
+    assert "contents: write" in release
+    assert 'tags:\n      - "v*"' in release
+
+
+def test_e2e_is_a_root_script_without_changing_the_make_contract() -> None:
+    package = json.loads(_read("package.json"))
+    assert package["scripts"]["e2e"] == "playwright test"
+    assert package["devDependencies"]["@playwright/test"].endswith("<2")
+    gitignore = _read(".gitignore").splitlines()
+    assert "test-results/" in gitignore
+    assert "playwright-report/" in gitignore
+    playwright = _read("playwright.config.ts")
+    assert "gracefulShutdown" in playwright
+    assert "signal: 'SIGTERM'" in playwright
+
+    makefile = _read("Makefile")
+    targets = {
+        match.group(1)
+        for line in makefile.splitlines()
+        if (match := re.match(r"^([a-z][a-z-]*):", line))
+    }
+    assert targets == {
+        "bootstrap",
+        "dev",
+        "test",
+        "lint",
+        "typecheck",
+        "build",
+        "smoke",
+        "public-tree",
+        "release-check",
+    }
+
+
 def test_dependabot_covers_all_package_ecosystems_weekly() -> None:
     dependabot = _load_yaml(".github/dependabot.yml")
     updates = dependabot["updates"]
@@ -412,8 +466,15 @@ def test_security_and_support_use_the_right_reporting_channels() -> None:
 
 def test_changelog_roadmap_and_architecture_match_foundation_scope() -> None:
     changelog = _read("CHANGELOG.md")
+    unreleased = re.search(
+        r"## \[Unreleased\](?P<body>.*?)## \[0\.1\.0\]",
+        changelog,
+        re.DOTALL,
+    )
+    assert unreleased is not None
+    assert unreleased.group("body").strip() == ""
     release_section = re.search(
-        r"## \[0\.1\.0\] - Unreleased(?P<body>.*)",
+        r"## \[0\.1\.0\] - 2026-07-05(?P<body>.*)",
         changelog,
         re.DOTALL,
     )

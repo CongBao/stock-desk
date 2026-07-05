@@ -1,3 +1,4 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import {
@@ -7,6 +8,68 @@ import {
 } from 'react-router-dom';
 
 import { App } from './App';
+
+const healthyResponse = {
+  name: 'stock-desk',
+  status: 'ok',
+  api_version: 'v1',
+};
+
+const completedTask = {
+  id: 'task-1',
+  kind: 'demo.double',
+  status: 'succeeded',
+  progress: 1,
+  created_at: '2026-07-05T08:00:00Z',
+  updated_at: '2026-07-05T08:00:01Z',
+  finished_at: '2026-07-05T08:00:01Z',
+  result: { value: 42 },
+};
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+function requestUrl(input: RequestInfo | URL): string {
+  if (typeof input === 'string') {
+    return input;
+  }
+  return input instanceof URL ? input.href : input.url;
+}
+
+function installHealthyFetch(tasks: readonly unknown[] = []) {
+  const fetchMock = vi.fn((input: RequestInfo | URL) =>
+    Promise.resolve(
+      requestUrl(input).endsWith('/health')
+        ? jsonResponse(healthyResponse)
+        : jsonResponse(tasks),
+    ),
+  );
+  vi.stubGlobal('fetch', fetchMock);
+  return fetchMock;
+}
+
+function installPendingFetch() {
+  const signals: AbortSignal[] = [];
+  const fetchMock = vi.fn(
+    (_input: RequestInfo | URL, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        if (init?.signal) {
+          signals.push(init.signal);
+          init.signal.addEventListener(
+            'abort',
+            () => reject(new DOMException('Aborted', 'AbortError')),
+            { once: true },
+          );
+        }
+      }),
+  );
+  vi.stubGlobal('fetch', fetchMock);
+  return { fetchMock, signals };
+}
 
 function HistoryBackControl() {
   const navigate = useNavigate();
@@ -22,20 +85,36 @@ function renderApp(
   initialEntries: MemoryRouterProps['initialEntries'] = ['/market'],
   withBackControl = false,
 ) {
-  return render(
-    <MemoryRouter initialEntries={initialEntries}>
-      {withBackControl ? <HistoryBackControl /> : null}
-      <App />
-    </MemoryRouter>,
-  );
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      queries: {
+        gcTime: 0,
+        refetchOnWindowFocus: false,
+        retry: false,
+      },
+    },
+  });
+  return {
+    queryClient,
+    ...render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={initialEntries}>
+          {withBackControl ? <HistoryBackControl /> : null}
+          <App />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    ),
+  };
 }
 
 beforeEach(() => {
+  installPendingFetch();
   vi.spyOn(window, 'scrollTo').mockImplementation(() => undefined);
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 it('shows the product identity and all primary navigation items', () => {
@@ -228,5 +307,128 @@ it('uses one navigation landmark and one complementary context landmark', () => 
   expect(screen.getByRole('link', { name: '跳到主要内容' })).toHaveAttribute(
     'href',
     '#main-content',
+  );
+});
+
+it('reports healthy only after both live endpoints pass strict decoding', async () => {
+  installHealthyFetch();
+
+  renderApp();
+
+  expect(screen.getByText('系统检查中', { exact: true })).toBeInTheDocument();
+  expect(
+    await screen.findByText('系统正常', { exact: true }),
+  ).toBeInTheDocument();
+  expect(screen.getByText('API 服务可用', { exact: true })).toBeInTheDocument();
+  expect(screen.getByText('任务存储可用', { exact: true })).toBeInTheDocument();
+});
+
+it('shows strictly decoded recent task state and result context', async () => {
+  installHealthyFetch([completedTask]);
+
+  renderApp();
+
+  const task = await screen.findByRole('listitem', {
+    name: /demo\.double.*已成功/,
+  });
+  expect(task).toHaveTextContent('demo.double');
+  expect(task).toHaveTextContent('已成功');
+  expect(task).toHaveTextContent('进度 100%');
+  expect(task).toHaveTextContent('结果：42');
+  expect(task).toHaveAccessibleName(/demo\.double.*已成功/);
+});
+
+it('uses a textual degraded state when one endpoint violates the protocol', async () => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn((input: RequestInfo | URL) =>
+      Promise.resolve(
+        requestUrl(input).endsWith('/health')
+          ? jsonResponse({ ...healthyResponse, api_version: 'v2' })
+          : jsonResponse([]),
+      ),
+    ),
+  );
+
+  renderApp();
+
+  expect(
+    await screen.findByText('服务降级', { exact: true }),
+  ).toBeInTheDocument();
+  expect(
+    await screen.findByText('API 服务协议异常', { exact: true }),
+  ).toBeInTheDocument();
+  expect(screen.getByText('任务存储可用', { exact: true })).toBeInTheDocument();
+});
+
+it('reports unavailable without exposing raw network errors', async () => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(() =>
+      Promise.reject(new Error('secret upstream token must never be rendered')),
+    ),
+  );
+
+  renderApp();
+
+  expect(
+    await screen.findByText('服务不可用', { exact: true }),
+  ).toBeInTheDocument();
+  expect(screen.queryByText(/secret upstream token/)).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: '重新检测' })).toBeEnabled();
+});
+
+it('recovers both endpoint states after a bounded retry and manual recheck', async () => {
+  let available = false;
+  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    if (!available) {
+      throw new TypeError('offline');
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, 25));
+    return requestUrl(input).endsWith('/health')
+      ? jsonResponse(healthyResponse)
+      : jsonResponse([]);
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  const user = userEvent.setup();
+
+  renderApp();
+  expect(
+    await screen.findByText('服务不可用', { exact: true }),
+  ).toBeInTheDocument();
+  expect(fetchMock).toHaveBeenCalledTimes(4);
+
+  available = true;
+  const retry = screen.getByRole('button', { name: '重新检测' });
+  await user.click(retry);
+  expect(retry).toBeDisabled();
+  expect(
+    await screen.findByText('系统正常', { exact: true }),
+  ).toBeInTheDocument();
+});
+
+it('shares endpoint queries between topbar and context panel consumers', async () => {
+  const fetchMock = installHealthyFetch();
+
+  renderApp();
+
+  await screen.findByText('系统正常', { exact: true });
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+  expect(
+    fetchMock.mock.calls.map(([input]) => requestUrl(input)).sort(),
+  ).toEqual(['/api/health', '/api/tasks?limit=5']);
+});
+
+it('aborts both in-flight endpoint requests after the final consumer unmounts', async () => {
+  const { fetchMock, signals } = installPendingFetch();
+
+  const mounted = renderApp();
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+  expect(signals).toHaveLength(2);
+
+  mounted.unmount();
+
+  await waitFor(() =>
+    expect(signals.every((signal) => signal.aborted)).toBe(true),
   );
 });

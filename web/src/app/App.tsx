@@ -9,6 +9,14 @@ import { RouteEffects } from './RouteEffects';
 import { appRoutes } from './routes';
 import { useWorkspaceStore } from './store';
 import { WorkspaceStoreProvider } from './WorkspaceStoreProvider';
+import { useSystemStatus } from '../shared/api/useSystemStatus';
+
+const systemStateLabels = {
+  checking: '系统检查中',
+  healthy: '系统正常',
+  degraded: '服务降级',
+  unavailable: '服务不可用',
+} as const;
 
 function NavigationRail() {
   return (
@@ -52,6 +60,7 @@ function WorkspaceShell() {
   const openContext = useWorkspaceStore((state) => state.openContext);
   const closeContext = useWorkspaceStore((state) => state.closeContext);
   const contextToggleRef = useRef<HTMLButtonElement>(null);
+  const systemStatus = useSystemStatus();
 
   function closeContextPanel() {
     closeContext();
@@ -70,9 +79,13 @@ function WorkspaceShell() {
           <header className="workspace-topbar">
             <div>
               <span className="topbar-kicker">STOCK DESK / FOUNDATION</span>
-              <span className="topbar-state">
+              <span
+                className="topbar-state"
+                data-state={systemStatus.overall}
+                aria-live="polite"
+              >
                 <span className="status-symbol" aria-hidden="true" />
-                本地服务基础
+                {systemStateLabels[systemStatus.overall]}
               </span>
             </div>
             <button
@@ -109,7 +122,11 @@ function WorkspaceShell() {
           </Routes>
         </main>
 
-        <ContextPanel isOpen={isContextOpen} onClose={closeContextPanel} />
+        <ContextPanel
+          isOpen={isContextOpen}
+          onClose={closeContextPanel}
+          systemStatus={systemStatus}
+        />
       </div>
     </>
   );
