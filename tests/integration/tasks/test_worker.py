@@ -149,6 +149,37 @@ def test_repository_rejects_non_string_keys_in_nested_json_objects(
         repository.close()
 
 
+def test_repository_rejects_cyclic_payload_as_typed_validation_error(
+    tmp_path: Path,
+) -> None:
+    cyclic: dict[str, Any] = {}
+    cyclic["self"] = cyclic
+    repository = _repository(tmp_path)
+    try:
+        with pytest.raises(TaskValidationError):
+            repository.create("invalid.cycle", cyclic)
+    finally:
+        repository.close()
+
+
+def test_repository_rejects_excessive_json_nesting_as_typed_validation_error(
+    tmp_path: Path,
+) -> None:
+    deeply_nested: dict[str, Any] = {}
+    cursor = deeply_nested
+    for _ in range(20_000):
+        nested: dict[str, Any] = {}
+        cursor["nested"] = nested
+        cursor = nested
+
+    repository = _repository(tmp_path)
+    try:
+        with pytest.raises(TaskValidationError):
+            repository.create("invalid.depth", deeply_nested)
+    finally:
+        repository.close()
+
+
 def test_repository_rejects_non_json_values_with_typed_validation_error(
     tmp_path: Path,
 ) -> None:
@@ -548,6 +579,34 @@ def test_worker_converts_non_serializable_handler_result_to_failure(
         assert completed is not None
         assert completed.status == "failed"
         assert completed.error == {"code": "task_handler_failed"}
+    finally:
+        repository.close()
+
+
+def test_worker_converts_cyclic_handler_result_to_sanitized_failure(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    repository = _repository(tmp_path)
+    try:
+        created = repository.create("cyclic.result", {})
+        worker = TaskWorker(repository, worker_id="worker-1")
+
+        def cyclic_result(_task: object) -> dict[str, Any]:
+            result: dict[str, Any] = {"secret": "hunter2"}
+            result["self"] = result
+            return result
+
+        worker.register("cyclic.result", cyclic_result)
+        with caplog.at_level(logging.WARNING, logger="stock_desk.tasks.worker"):
+            completed = worker.run_once()
+
+        assert completed is not None and completed.id == created.id
+        assert completed.status == "failed"
+        assert completed.error == {"code": "task_handler_failed"}
+        assert repository.get(created.id).status == "failed"
+        assert "TaskValidationError" in caplog.text
+        assert "hunter2" not in caplog.text
+        assert "Traceback" not in caplog.text
     finally:
         repository.close()
 

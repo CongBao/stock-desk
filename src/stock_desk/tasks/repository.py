@@ -1,8 +1,9 @@
+from collections.abc import Mapping
 from datetime import datetime, timezone
 import json
 import math
 from types import MappingProxyType
-from typing import Any, Mapping, cast
+from typing import Any, cast
 from uuid import uuid4
 
 from sqlalchemy import JSON, Engine, bindparam, case, insert, null, select, update
@@ -46,26 +47,34 @@ def _validated_json_object(
     value: Mapping[str, Any], *, field_name: str
 ) -> dict[str, Any]:
     copied = dict(value)
+    try:
+        json.dumps(copied, allow_nan=False)
+    except (RecursionError, TypeError, ValueError) as error:
+        raise TaskValidationError(
+            f"Task {field_name} must be a JSON-compatible object"
+        ) from error
 
-    def require_string_keys(item: Any) -> None:
+    stack: list[Any] = [copied]
+    visited_containers: set[int] = set()
+    while stack:
+        item = stack.pop()
         if isinstance(item, Mapping):
+            identity = id(item)
+            if identity in visited_containers:
+                continue
+            visited_containers.add(identity)
             for key, nested in item.items():
                 if not isinstance(key, str):
                     raise TaskValidationError(
                         f"Task {field_name} JSON object keys must be strings"
                     )
-                require_string_keys(nested)
+                stack.append(nested)
         elif isinstance(item, (list, tuple)):
-            for nested in item:
-                require_string_keys(nested)
-
-    require_string_keys(copied)
-    try:
-        json.dumps(copied, allow_nan=False)
-    except (TypeError, ValueError) as error:
-        raise TaskValidationError(
-            f"Task {field_name} must be a JSON-compatible object"
-        ) from error
+            identity = id(item)
+            if identity in visited_containers:
+                continue
+            visited_containers.add(identity)
+            stack.extend(item)
     return copied
 
 
