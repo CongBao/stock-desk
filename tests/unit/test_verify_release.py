@@ -202,6 +202,12 @@ def add_tar_text(archive: tarfile.TarFile, name: str, content: str) -> None:
     add_tar_bytes(archive, name, content.encode())
 
 
+def add_tar_directory(archive: tarfile.TarFile, name: str) -> None:
+    metadata = tarfile.TarInfo(name)
+    metadata.type = tarfile.DIRTYPE
+    archive.addfile(metadata)
+
+
 def sdist_pyproject_payload(
     version: str,
     *,
@@ -236,6 +242,8 @@ def write_sdist(
     package_payload: bytes = b"__version__ = 'fixture'\n",
     core_metadata: bytes | None = None,
     extra_members: dict[str, bytes] | None = None,
+    directory_members: tuple[str, ...] = (),
+    directories_after_files: bool = False,
     special_members: tuple[tuple[str, bytes, str], ...] = (),
 ) -> None:
     package_dist = repo / "dist"
@@ -246,6 +254,14 @@ def write_sdist(
         if unrelated_only:
             add_tar_text(archive, f"{root}/unrelated.txt", "not an sdist payload\n")
             return
+
+        def add_directories() -> None:
+            for relative_path in directory_members:
+                name = root if not relative_path else f"{root}/{relative_path}"
+                add_tar_directory(archive, name)
+
+        if not directories_after_files:
+            add_directories()
         add_tar_bytes(
             archive,
             f"{root}/pyproject.toml",
@@ -269,6 +285,8 @@ def write_sdist(
         )
         for relative_path, payload in (extra_members or {}).items():
             add_tar_bytes(archive, f"{root}/{relative_path}", payload)
+        if directories_after_files:
+            add_directories()
         for relative_path, member_type, linkname in special_members:
             member = tarfile.TarInfo(f"{root}/{relative_path}")
             member.type = member_type
@@ -1090,6 +1108,46 @@ def test_rejects_unbound_regular_sdist_member(release_repo: Path) -> None:
         release_repo,
         "0.1.0",
         extra_members={"unbound.py": b"untrusted\n"},
+    )
+
+    with pytest.raises(ReleaseVerificationError, match="source build artifact"):
+        check_build_artifacts(release_repo, "0.1.0")
+
+
+def test_accepts_safe_directory_members_in_sdist(release_repo: Path) -> None:
+    write_valid_artifacts(release_repo, "0.1.0")
+    write_sdist(
+        release_repo,
+        "0.1.0",
+        directory_members=("", "src", "src/stock_desk"),
+    )
+
+    check_build_artifacts(release_repo, "0.1.0")
+
+
+def test_rejects_unsafe_directory_member_in_sdist(release_repo: Path) -> None:
+    write_valid_artifacts(release_repo, "0.1.0")
+    write_sdist(
+        release_repo,
+        "0.1.0",
+        directory_members=("../escape",),
+    )
+
+    with pytest.raises(ReleaseVerificationError, match="source build artifact"):
+        check_build_artifacts(release_repo, "0.1.0")
+
+
+@pytest.mark.parametrize("directories_after_files", [False, True])
+def test_rejects_file_directory_prefix_shadowing_in_sdist(
+    release_repo: Path,
+    directories_after_files: bool,
+) -> None:
+    write_valid_artifacts(release_repo, "0.1.0")
+    write_sdist(
+        release_repo,
+        "0.1.0",
+        directory_members=("src/stock_desk/__init__.py/child",),
+        directories_after_files=directories_after_files,
     )
 
     with pytest.raises(ReleaseVerificationError, match="source build artifact"):

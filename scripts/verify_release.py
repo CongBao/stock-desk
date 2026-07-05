@@ -529,11 +529,32 @@ def _check_source_artifact(repo: Path, source_path: Path, version: str) -> bytes
         members_by_name = {member.name: member for member in members}
         if len(members) != len(members_by_name):
             raise _invalid_source()
-        archive_payloads: dict[str, bytes] = {}
+        member_kinds: dict[PurePosixPath, bool] = {}
+        regular_members: list[tuple[tarfile.TarInfo, PurePosixPath]] = []
         for member in members:
+            if member.name == root:
+                if not member.isdir():
+                    raise _invalid_source()
+                continue
             relative_path = _safe_sdist_relative_path(member.name, root)
-            if relative_path is None or not member.isfile():
+            if relative_path is None:
                 raise _invalid_source()
+            is_file = member.isfile()
+            if not member.isdir() and not is_file:
+                raise _invalid_source()
+            if relative_path in member_kinds:
+                raise _invalid_source()
+            member_kinds[relative_path] = is_file
+            if is_file:
+                regular_members.append((member, relative_path))
+        for relative_path in member_kinds:
+            if any(
+                member_kinds.get(parent) is True for parent in relative_path.parents
+            ):
+                raise _invalid_source()
+
+        archive_payloads: dict[str, bytes] = {}
+        for member, relative_path in regular_members:
             member_file = source.extractfile(member)
             if member_file is None:
                 raise _invalid_source()
