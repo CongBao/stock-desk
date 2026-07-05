@@ -56,10 +56,11 @@ jobs:
           make test
           make lint
           make typecheck
-          make build
           make public-tree
           make security
           pnpm e2e
+      - name: Build final release assets
+        run: make build
       - name: Verify built release artifacts
         shell: bash
         run: |
