@@ -325,6 +325,97 @@ def test_ci_runs_native_and_container_gates_with_cleanup_and_artifacts() -> None
         assert required in ci
 
 
+def test_coverage_tooling_and_numeric_thresholds_are_locked() -> None:
+    pyproject = tomllib.loads(_read("pyproject.toml"))
+    dev_dependencies = pyproject["dependency-groups"]["dev"]
+    assert any(dependency.startswith("pytest-cov") for dependency in dev_dependencies)
+    assert pyproject["tool"]["coverage"]["run"] == {
+        "branch": True,
+        "source": ["src/stock_desk", "scripts"],
+    }
+    python_threshold = pyproject["tool"]["coverage"]["report"]["fail_under"]
+    assert isinstance(python_threshold, int)
+    assert python_threshold >= 85
+    assert pyproject["tool"]["coverage"]["xml"]["output"] == "coverage.xml"
+
+    web_package = json.loads(_read("web/package.json"))
+    assert web_package["devDependencies"]["@vitest/coverage-v8"].endswith("<5")
+    assert web_package["scripts"]["test:coverage"] == "vitest run --coverage"
+    root_package = json.loads(_read("package.json"))
+    assert root_package["scripts"]["test"] == "pnpm --dir web test:coverage"
+
+    vite_config = _read("web/vite.config.ts")
+    assert "provider: 'v8'" in vite_config
+    assert "reporter: ['text', 'lcov']" in vite_config
+    assert "reportsDirectory: 'coverage'" in vite_config
+    assert "include: ['src/**/*.{ts,tsx}']" in vite_config
+    assert "exclude: ['src/**/*.d.ts', 'src/test/setup.ts']" in vite_config
+    coverage_config = vite_config.split("coverage:", maxsplit=1)[1]
+    for metric, minimum in {
+        "lines": 80,
+        "statements": 80,
+        "functions": 80,
+        "branches": 75,
+    }.items():
+        match = re.search(rf"\b{metric}:\s*(\d+)", coverage_config)
+        assert match is not None
+        assert int(match.group(1)) >= minimum
+
+
+def test_make_test_enforces_coverage_and_writes_reports() -> None:
+    makefile = _read("Makefile")
+    test_recipe = makefile.split("\ntest:\n", maxsplit=1)[1].split("\n\n", maxsplit=1)[
+        0
+    ]
+    for required in (
+        "--cov=src/stock_desk",
+        "--cov=scripts",
+        "--cov-branch",
+        "--cov-report=term-missing",
+        "--cov-report=xml:coverage.xml",
+        "--cov-fail-under=85",
+        "pnpm test",
+    ):
+        assert required in test_recipe
+
+
+def test_ci_uploads_coverage_reports_and_release_uses_canonical_test() -> None:
+    ci = _load_github_actions_yaml(_read(".github/workflows/ci.yml"))
+    python_steps = ci["jobs"]["python"]["steps"]
+    python_test = next(
+        step for step in python_steps if step.get("name") == "Test Python"
+    )
+    for required in (
+        "--cov=src/stock_desk",
+        "--cov=scripts",
+        "--cov-branch",
+        "--cov-report=xml:coverage.xml",
+        "--cov-fail-under=85",
+    ):
+        assert required in python_test["run"]
+
+    web_steps = ci["jobs"]["web"]["steps"]
+    web_test = next(step for step in web_steps if step.get("name") == "Test web")
+    assert web_test["run"] == "pnpm test"
+
+    artifact_paths = [
+        str(step.get("with", {}).get("path", ""))
+        for job in ci["jobs"].values()
+        for step in job["steps"]
+        if str(step.get("uses", "")).startswith("actions/upload-artifact@")
+    ]
+    assert any("coverage.xml" in path for path in artifact_paths)
+    assert any("web/coverage/lcov.info" in path for path in artifact_paths)
+
+    release = _load_github_actions_yaml(_read(".github/workflows/release.yml"))
+    release_steps = release["jobs"]["verify"]["steps"]
+    release_gates = next(
+        step for step in release_steps if step.get("name") == "Run release gates"
+    )
+    commands = [line.strip() for line in release_gates["run"].splitlines()]
+    assert commands[0] == "make test"
+
+
 def test_ci_and_release_gate_the_chromium_end_to_end_slice() -> None:
     ci_workflow = _load_github_actions_yaml(_read(".github/workflows/ci.yml"))
     e2e = ci_workflow["jobs"]["e2e"]

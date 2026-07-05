@@ -62,7 +62,11 @@ jobs:
       - name: Scan Python security rules
         run: uv run --frozen bandit -q -ll -r src scripts
       - name: Test Python
-        run: uv run --frozen pytest -W error --junitxml=python-test-results.xml
+        run: >-
+          uv run --frozen pytest -W error --junitxml=python-test-results.xml
+          --cov=src/stock_desk --cov=scripts --cov-branch
+          --cov-report=term-missing --cov-report=xml:coverage.xml
+          --cov-fail-under=85
       - name: Build Python package
         run: uv build --no-build-isolation
       - name: Upload Python results
@@ -72,6 +76,7 @@ jobs:
           name: python-results
           path: |
             python-test-results.xml
+            coverage.xml
             dist/
           if-no-files-found: ignore
           retention-days: 7
@@ -104,6 +109,14 @@ jobs:
         run: pnpm typecheck
       - name: Test web
         run: pnpm test
+      - name: Upload web coverage
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: web-coverage
+          path: web/coverage/lcov.info
+          if-no-files-found: error
+          retention-days: 7
       - name: Build web
         run: pnpm build
       - name: Upload web build
