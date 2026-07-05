@@ -4,6 +4,7 @@ import base64
 from dataclasses import dataclass, field
 import hashlib
 import io
+import os
 from pathlib import Path
 import subprocess
 import tarfile
@@ -37,6 +38,60 @@ def git(repo: Path, *arguments: str, env: dict[str, str] | None = None) -> None:
         text=True,
         env=env,
     )
+
+
+def git_output(repo: Path, *arguments: str, env: dict[str, str] | None = None) -> str:
+    result = subprocess.run(
+        ["git", "-C", str(repo), *arguments],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    return result.stdout.strip()
+
+
+def create_github_merge_commit(
+    repo: Path,
+    *,
+    parent_count: int = 2,
+    author_name: str = "Cong Bao",
+    author_email: str = EXPECTED_IDENTITY[1],
+    committer_name: str = "GitHub",
+    committer_email: str = "noreply@github.com",
+    subject: str = "Merge pull request #1 from CongBao/phase/0-foundation",
+) -> None:
+    head = git_output(repo, "rev-parse", "HEAD")
+    tree = git_output(repo, "rev-parse", "HEAD^{tree}")
+    parents = [head]
+    for parent_number in range(1, parent_count):
+        parents.append(
+            git_output(
+                repo,
+                "commit-tree",
+                tree,
+                "-p",
+                head,
+                "-m",
+                f"side parent {parent_number}",
+            )
+        )
+
+    identity_environment = os.environ.copy()
+    identity_environment.update(
+        {
+            "GIT_AUTHOR_NAME": author_name,
+            "GIT_AUTHOR_EMAIL": author_email,
+            "GIT_COMMITTER_NAME": committer_name,
+            "GIT_COMMITTER_EMAIL": committer_email,
+        }
+    )
+    commit_arguments = ["commit-tree", tree]
+    for parent in parents:
+        commit_arguments.extend(("-p", parent))
+    commit_arguments.extend(("-m", subject))
+    merge_commit = git_output(repo, *commit_arguments, env=identity_environment)
+    git(repo, "reset", "--hard", merge_commit)
 
 
 @dataclass
@@ -417,6 +472,159 @@ def test_rejects_a_bad_identity_anywhere_in_reachable_history(
 
     with pytest.raises(ReleaseVerificationError, match="reachable commit identities"):
         run_verifier(release_repo, FakeGateRunner(release_repo))
+
+
+@pytest.mark.parametrize("author_name", ["Cong Bao", "CongBao"])
+def test_accepts_strict_github_web_merge_identity(
+    release_repo: Path,
+    author_name: str,
+) -> None:
+    create_github_merge_commit(release_repo, author_name=author_name)
+
+    verify_release_module.check_identity(release_repo)
+
+
+@pytest.mark.parametrize(
+    (
+        "parent_count",
+        "author_name",
+        "author_email",
+        "committer_name",
+        "committer_email",
+        "subject",
+    ),
+    [
+        (
+            1,
+            "Cong Bao",
+            EXPECTED_IDENTITY[1],
+            "GitHub",
+            "noreply@github.com",
+            "Merge pull request #1 from CongBao/phase/0-foundation",
+        ),
+        (
+            3,
+            "Cong Bao",
+            EXPECTED_IDENTITY[1],
+            "GitHub",
+            "noreply@github.com",
+            "Merge pull request #1 from CongBao/phase/0-foundation",
+        ),
+        (
+            2,
+            "Someone Else",
+            EXPECTED_IDENTITY[1],
+            "GitHub",
+            "noreply@github.com",
+            "Merge pull request #1 from CongBao/phase/0-foundation",
+        ),
+        (
+            2,
+            "Cong Bao",
+            "wrong@example.com",
+            "GitHub",
+            "noreply@github.com",
+            "Merge pull request #1 from CongBao/phase/0-foundation",
+        ),
+        (
+            2,
+            "Cong Bao",
+            EXPECTED_IDENTITY[1],
+            "GitHub Actions",
+            "noreply@github.com",
+            "Merge pull request #1 from CongBao/phase/0-foundation",
+        ),
+        (
+            2,
+            "Cong Bao",
+            EXPECTED_IDENTITY[1],
+            "GitHub",
+            "github-actions[bot]@users.noreply.github.com",
+            "Merge pull request #1 from CongBao/phase/0-foundation",
+        ),
+        (
+            2,
+            "Cong Bao",
+            EXPECTED_IDENTITY[1],
+            "GitHub",
+            "noreply@github.com",
+            "Merge pull request #1 from OtherOwner/phase/0-foundation",
+        ),
+        (
+            2,
+            "Cong Bao",
+            EXPECTED_IDENTITY[1],
+            "GitHub",
+            "noreply@github.com",
+            "Merge pull request #1 from CongBao/phase/0-foundation extra",
+        ),
+        (
+            2,
+            "Cong Bao",
+            EXPECTED_IDENTITY[1],
+            "GitHub",
+            "noreply@github.com",
+            "Merge pull request #0 from CongBao/phase/0-foundation",
+        ),
+        (
+            2,
+            "Cong Bao",
+            EXPECTED_IDENTITY[1],
+            "GitHub",
+            "noreply@github.com",
+            "Merge pull request #1 from CongBao/phase/../main",
+        ),
+    ],
+    ids=[
+        "single-parent",
+        "three-parents",
+        "wrong-author-name",
+        "wrong-author-email",
+        "wrong-committer-name",
+        "wrong-committer-email",
+        "wrong-owner",
+        "malformed-subject",
+        "non-positive-pr-number",
+        "unsafe-branch",
+    ],
+)
+def test_rejects_noncanonical_github_merge_identity(
+    release_repo: Path,
+    parent_count: int,
+    author_name: str,
+    author_email: str,
+    committer_name: str,
+    committer_email: str,
+    subject: str,
+) -> None:
+    create_github_merge_commit(
+        release_repo,
+        parent_count=parent_count,
+        author_name=author_name,
+        author_email=author_email,
+        committer_name=committer_name,
+        committer_email=committer_email,
+        subject=subject,
+    )
+
+    with pytest.raises(ReleaseVerificationError, match="reachable commit identities"):
+        verify_release_module.check_identity(release_repo)
+
+
+def test_ordinary_commits_still_require_the_exact_release_identity(
+    release_repo: Path,
+) -> None:
+    create_github_merge_commit(
+        release_repo,
+        parent_count=1,
+        author_name="Cong Bao",
+        committer_name=EXPECTED_IDENTITY[0],
+        committer_email=EXPECTED_IDENTITY[1],
+        subject="ordinary commit",
+    )
+
+    with pytest.raises(ReleaseVerificationError, match="reachable commit identities"):
+        verify_release_module.check_identity(release_repo)
 
 
 def test_rejects_forbidden_paths_even_when_deleted_from_head(
