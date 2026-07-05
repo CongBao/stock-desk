@@ -13,9 +13,12 @@ from sqlalchemy.engine import Engine
 
 from stock_desk.storage.database import create_engine_for_url, downgrade, migrate
 from stock_desk.storage.models import Base
+from stock_desk.tasks.repository import TaskRepository
 
 
+HEAD_REVISION = "0002_task_observability"
 CORE_TABLES = {"app_setting", "task_event", "task_run"}
+LEGACY_CORE_TABLES = {"app_setting", "task_run"}
 APP_SETTING_COLUMNS = {"key", "encrypted_value", "updated_at"}
 TASK_RUN_COLUMNS = {
     "id",
@@ -47,6 +50,54 @@ def _dispose(engine: Engine) -> None:
     engine.dispose()
 
 
+def _current_revision(engine: Engine) -> str:
+    with engine.connect() as connection:
+        return str(
+            connection.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one()
+        )
+
+
+def _create_legacy_0001_database(database_path: Path) -> None:
+    with sqlite3.connect(database_path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE alembic_version (
+                version_num VARCHAR(32) NOT NULL,
+                CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num)
+            );
+            INSERT INTO alembic_version (version_num)
+            VALUES ('0001_core_tables');
+
+            CREATE TABLE app_setting (
+                key VARCHAR(255) NOT NULL,
+                encrypted_value TEXT NOT NULL,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                PRIMARY KEY (key)
+            );
+            CREATE TABLE task_run (
+                id VARCHAR(36) NOT NULL,
+                kind VARCHAR(64) NOT NULL,
+                status VARCHAR(32) DEFAULT 'queued' NOT NULL,
+                progress FLOAT DEFAULT '0' NOT NULL,
+                payload_json JSON DEFAULT '{}' NOT NULL,
+                result_json JSON,
+                error_json JSON,
+                cancel_requested BOOLEAN DEFAULT 0 NOT NULL,
+                worker_id VARCHAR(255),
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                started_at DATETIME,
+                finished_at DATETIME,
+                PRIMARY KEY (id)
+            );
+            CREATE INDEX ix_task_run_status_created_at
+            ON task_run (status, created_at);
+            """
+        )
+
+
 def test_upgrade_creates_core_tables(tmp_path: Path) -> None:
     url = f"sqlite:///{tmp_path / 'test.db'}"
 
@@ -55,6 +106,7 @@ def test_upgrade_creates_core_tables(tmp_path: Path) -> None:
 
     try:
         inspector = inspect(engine)
+        assert _current_revision(engine) == HEAD_REVISION
         assert CORE_TABLES <= set(inspector.get_table_names())
         assert APP_SETTING_COLUMNS == {
             column["name"] for column in inspector.get_columns("app_setting")
@@ -90,6 +142,60 @@ def test_upgrade_creates_core_tables(tmp_path: Path) -> None:
             (index["name"], tuple(index["column_names"]))
             for index in inspector.get_indexes("task_event")
         } == {("ix_task_event_task_id_occurred_at", ("task_id", "occurred_at"))}
+    finally:
+        _dispose(engine)
+
+
+def test_existing_0001_database_upgrades_to_task_observability(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "legacy-0001.db"
+    _create_legacy_0001_database(database_path)
+    url = f"sqlite:///{database_path}"
+    engine = create_engine_for_url(url)
+    try:
+        assert _current_revision(engine) == "0001_core_tables"
+        assert set(inspect(engine).get_table_names()) >= {
+            "alembic_version",
+            *LEGACY_CORE_TABLES,
+        }
+        assert "task_event" not in inspect(engine).get_table_names()
+    finally:
+        _dispose(engine)
+
+    migrate(url)
+
+    engine = create_engine_for_url(url)
+    repository = TaskRepository(engine)
+    try:
+        assert _current_revision(engine) == HEAD_REVISION
+        assert "task_event" in inspect(engine).get_table_names()
+        task = repository.create("upgrade.check", {"source": "legacy-0001"})
+        assert [event.event_name for event in repository.list_events(task.id)] == [
+            "task.created"
+        ]
+    finally:
+        repository.close()
+
+
+def test_observability_revision_downgrades_and_reupgrades(tmp_path: Path) -> None:
+    url = f"sqlite:///{tmp_path / 'observability-roundtrip.db'}"
+    migrate(url)
+
+    downgrade(url, "0001_core_tables")
+    engine = create_engine_for_url(url)
+    try:
+        assert _current_revision(engine) == "0001_core_tables"
+        assert LEGACY_CORE_TABLES <= set(inspect(engine).get_table_names())
+        assert "task_event" not in inspect(engine).get_table_names()
+    finally:
+        _dispose(engine)
+
+    migrate(url)
+    engine = create_engine_for_url(url)
+    try:
+        assert _current_revision(engine) == HEAD_REVISION
+        assert CORE_TABLES <= set(inspect(engine).get_table_names())
     finally:
         _dispose(engine)
 

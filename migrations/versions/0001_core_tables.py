@@ -73,34 +73,9 @@ def upgrade() -> None:
         ["status", "created_at"],
         unique=False,
     )
-    op.create_table(
-        "task_event",
-        sa.Column("id", sa.String(length=36), nullable=False),
-        sa.Column("task_id", sa.String(length=36), nullable=False),
-        sa.Column("event_name", sa.String(length=64), nullable=False),
-        sa.Column("level", sa.String(length=16), nullable=False),
-        sa.Column("progress", sa.Float(), nullable=True),
-        sa.Column("detail_json", sa.JSON(), server_default="{}", nullable=False),
-        sa.Column(
-            "occurred_at",
-            sa.DateTime(timezone=True),
-            server_default=sa.func.now(),
-            nullable=False,
-        ),
-        sa.ForeignKeyConstraint(["task_id"], ["task_run.id"], ondelete="CASCADE"),
-        sa.PrimaryKeyConstraint("id"),
-    )
-    op.create_index(
-        "ix_task_event_task_id_occurred_at",
-        "task_event",
-        ["task_id", "occurred_at"],
-        unique=False,
-    )
 
 
 def downgrade() -> None:
-    op.drop_index("ix_task_event_task_id_occurred_at", table_name="task_event")
-    op.drop_table("task_event")
     op.drop_index("ix_task_run_status_created_at", table_name="task_run")
     op.drop_table("task_run")
     op.drop_table("app_setting")
