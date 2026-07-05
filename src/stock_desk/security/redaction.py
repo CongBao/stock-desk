@@ -1,7 +1,7 @@
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping, Sequence
 import logging
 from threading import RLock
-from typing import Any, Final
+from typing import Any, Final, cast
 
 
 REDACTED_MARKER: Final = "[REDACTED]"
@@ -64,7 +64,7 @@ class SecretRedactor:
             return _replace_known_strings(text, secrets).encode(
                 "utf-8", errors="surrogateescape"
             )
-        if isinstance(value, (Mapping, list, tuple, set, BaseException)):
+        if isinstance(value, (Mapping, Sequence, set, BaseException)):
             identity = id(value)
             if identity in active:
                 return _CYCLE_MARKER
@@ -102,6 +102,13 @@ class SecretRedactor:
             return [child(item) for item in value]
         if isinstance(value, tuple):
             return tuple(child(item) for item in value)
+        if isinstance(value, Sequence):
+            cleaned_items = [child(item) for item in value]
+            try:
+                constructor = cast(Callable[[list[Any]], Any], type(value))
+                return constructor(cleaned_items)
+            except Exception:
+                return cleaned_items
         if isinstance(value, set):
             return {child(item) for item in value}
         if isinstance(value, BaseException):
@@ -126,6 +133,10 @@ class RedactingFilter(logging.Filter):
         for key, value in tuple(record.__dict__.items()):
             if key not in _STANDARD_LOG_RECORD_FIELDS:
                 setattr(record, key, self._redactor.clean(value))
+        for cached_field in ("message", "asctime"):
+            if hasattr(record, cached_field):
+                cached_value = getattr(record, cached_field)
+                setattr(record, cached_field, str(self._redactor.clean(cached_value)))
         if record.stack_info is not None:
             cleaned_stack = self._redactor.clean(record.stack_info)
             record.stack_info = str(cleaned_stack)

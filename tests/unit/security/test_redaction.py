@@ -1,5 +1,7 @@
+from collections import UserList
+from collections.abc import Iterator, Sequence
 import logging
-from typing import Any
+from typing import Any, overload
 
 import pytest
 
@@ -11,6 +13,44 @@ from stock_desk.security.redaction import (
 
 
 SECRET = "secret-value"
+
+
+class TokenSequence(Sequence[str]):
+    def __init__(self, values: list[str]) -> None:
+        self._values = list(values)
+
+    @overload
+    def __getitem__(self, index: int) -> str: ...
+
+    @overload
+    def __getitem__(self, index: slice) -> Sequence[str]: ...
+
+    def __getitem__(self, index: int | slice) -> str | Sequence[str]:
+        return self._values[index]
+
+    def __len__(self) -> int:
+        return len(self._values)
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._values)
+
+
+class NonReconstructableSequence(Sequence[str]):
+    def __init__(self, values: list[str], *, required: bool) -> None:
+        self._values = list(values)
+        self.required = required
+
+    @overload
+    def __getitem__(self, index: int) -> str: ...
+
+    @overload
+    def __getitem__(self, index: slice) -> Sequence[str]: ...
+
+    def __getitem__(self, index: int | slice) -> str | Sequence[str]:
+        return self._values[index]
+
+    def __len__(self) -> int:
+        return len(self._values)
 
 
 def _render_log(
@@ -95,6 +135,44 @@ def test_clean_recurses_without_mutating_input_and_preserves_shapes() -> None:
     assert isinstance(cleaned[cleaned_key][1][1], set)
     assert original[f"key-{SECRET}"][0] == SECRET
     assert SECRET in repr(original)
+
+
+def test_clean_supports_userlist_and_reconstructable_custom_sequences() -> None:
+    redactor = SecretRedactor([SECRET])
+    user_list = UserList([SECRET, "safe"])
+    custom = TokenSequence([SECRET, "safe"])
+
+    cleaned_user_list = redactor.clean(user_list)
+    cleaned_custom = redactor.clean(custom)
+
+    assert isinstance(cleaned_user_list, UserList)
+    assert isinstance(cleaned_custom, TokenSequence)
+    assert list(cleaned_user_list) == [REDACTED_MARKER, "safe"]
+    assert list(cleaned_custom) == [REDACTED_MARKER, "safe"]
+    assert list(user_list) == [SECRET, "safe"]
+    assert list(custom) == [SECRET, "safe"]
+
+
+def test_clean_falls_back_to_list_for_sequences_that_cannot_be_reconstructed() -> None:
+    redactor = SecretRedactor([SECRET])
+    original = NonReconstructableSequence([SECRET, "safe"], required=True)
+
+    cleaned = redactor.clean(original)
+
+    assert cleaned == [REDACTED_MARKER, "safe"]
+    assert list(original) == [SECRET, "safe"]
+
+
+def test_clean_handles_a_cyclic_userlist_without_leaking() -> None:
+    redactor = SecretRedactor([SECRET])
+    cyclic: UserList[Any] = UserList([SECRET])
+    cyclic.append(cyclic)
+
+    cleaned = redactor.clean(cyclic)
+
+    assert isinstance(cleaned, UserList)
+    assert SECRET not in repr(cleaned)
+    assert "[REDACTION_CYCLE]" in repr(cleaned)
 
 
 def test_clean_sanitizes_exception_arguments() -> None:
@@ -190,6 +268,40 @@ def test_logging_filter_sanitizes_cached_exception_and_stack_text() -> None:
     RedactingFilter(redactor).filter(record)
 
     assert record.exc_text is None
+    assert record.stack_info is not None
+    assert SECRET not in record.stack_info
+
+
+def test_logging_filter_clears_every_cached_and_dynamic_message_field() -> None:
+    redactor = SecretRedactor([SECRET])
+    record = logging.makeLogRecord(
+        {
+            "name": "stock_desk.tests.redaction.all-fields",
+            "levelno": logging.ERROR,
+            "levelname": "ERROR",
+            "msg": "failure token=%s",
+            "args": (SECRET,),
+            "message": f"cached message {SECRET}",
+            "asctime": f"cached time {SECRET}",
+            "exc_info": (
+                RuntimeError,
+                RuntimeError(f"exception {SECRET}"),
+                None,
+            ),
+            "exc_text": f"cached exception {SECRET}",
+            "stack_info": f"stack {SECRET}",
+        }
+    )
+
+    RedactingFilter(redactor).filter(record)
+
+    assert SECRET not in record.getMessage()
+    assert SECRET not in repr(record.args)
+    assert SECRET not in record.message
+    assert SECRET not in record.asctime
+    assert record.exc_text is None
+    assert record.exc_info is not None
+    assert SECRET not in str(record.exc_info[1])
     assert record.stack_info is not None
     assert SECRET not in record.stack_info
 

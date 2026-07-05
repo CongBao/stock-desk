@@ -44,12 +44,26 @@ def _stored_row(engine: Engine, name: str) -> tuple[str, str, str]:
     return str(row.key), str(row.encrypted_value), str(row.updated_at)
 
 
-def test_mask_secret_never_returns_plaintext() -> None:
+@pytest.mark.parametrize(
+    "value",
+    [
+        "a",
+        "abc",
+        "abcd",
+        "abcde",
+        "•••••••",
+        "abcd•••••••efgh",
+    ],
+)
+def test_mask_secret_never_returns_or_contains_plaintext(value: str) -> None:
+    masked = mask_secret(value)
+
+    assert masked != value
+    assert value not in masked
+
+
+def test_mask_secret_keeps_the_expected_long_value_hint() -> None:
     assert mask_secret("sk-123456789") == "sk-1•••••••6789"
-    for value in ("a", "abc", "abcd", "abcde"):
-        masked = mask_secret(value)
-        assert masked != value
-        assert value not in masked
 
 
 def test_secret_store_encrypts_and_exposes_only_intended_views(

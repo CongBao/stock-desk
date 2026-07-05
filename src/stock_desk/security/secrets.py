@@ -40,8 +40,12 @@ def mask_secret(value: str) -> str:
     if not isinstance(value, str) or not value:
         raise SecretValidationError("Secret value is invalid")
     if len(value) <= 8:
-        return _MASK_SEPARATOR
-    return f"{value[:4]}{_MASK_SEPARATOR}{value[-4:]}"
+        candidate = _MASK_SEPARATOR
+    else:
+        candidate = f"{value[:4]}{_MASK_SEPARATOR}{value[-4:]}"
+    if value in candidate:
+        return "[MASKED]"
+    return candidate
 
 
 def _validated_name(name: str) -> str:
