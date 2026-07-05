@@ -9,6 +9,7 @@ import pytest
 from scripts.verify_release import (
     GateCommand,
     ReleaseVerificationError,
+    check_remote,
     verify_release,
 )
 
@@ -98,6 +99,32 @@ def test_rejects_detached_head_with_a_branch_policy_diagnostic(
 
     with pytest.raises(ReleaseVerificationError, match="release branch"):
         run_verifier(release_repo, FakeGateRunner(release_repo))
+
+
+@pytest.mark.parametrize(
+    "push_urls",
+    [
+        ("ssh://bad.example.invalid/private/repository.git",),
+        (EXPECTED_REMOTE, "ssh://bad.example.invalid/second.git"),
+        (EXPECTED_REMOTE, EXPECTED_REMOTE),
+    ],
+)
+def test_rejects_any_noncanonical_or_multiple_push_destinations(
+    release_repo: Path, push_urls: tuple[str, ...]
+) -> None:
+    for push_url in push_urls:
+        git(release_repo, "config", "--add", "remote.origin.pushurl", push_url)
+
+    with pytest.raises(ReleaseVerificationError, match="origin remote") as captured:
+        check_remote(release_repo)
+
+    assert all(push_url not in str(captured.value) for push_url in push_urls)
+
+
+def test_accepts_one_explicit_canonical_push_destination(release_repo: Path) -> None:
+    git(release_repo, "config", "remote.origin.pushurl", EXPECTED_REMOTE)
+
+    check_remote(release_repo)
 
 
 @pytest.mark.parametrize(

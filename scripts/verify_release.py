@@ -122,7 +122,11 @@ def check_identity(repo: Path) -> None:
 
 
 def check_remote(repo: Path) -> None:
-    if _git(repo, "remote", "get-url", "origin").strip() != EXPECTED_REMOTE:
+    fetch_url = _git(repo, "remote", "get-url", "origin").strip()
+    push_urls = _git(
+        repo, "remote", "get-url", "--push", "--all", "origin"
+    ).splitlines()
+    if fetch_url != EXPECTED_REMOTE or push_urls != [EXPECTED_REMOTE]:
         raise ReleaseVerificationError(
             "origin remote is not the public release repository"
         )
