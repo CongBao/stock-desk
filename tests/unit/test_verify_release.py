@@ -78,6 +78,8 @@ def write_wheel(
     record_payload: bytes | None = None,
     package_payload: bytes = b"__version__ = 'fixture'\n",
     core_metadata: bytes | None = None,
+    license_payload: bytes = b"fixture license\n",
+    extra_members: dict[str, bytes] | None = None,
 ) -> None:
     package_dist = repo / "dist"
     package_dist.mkdir(exist_ok=True)
@@ -91,6 +93,7 @@ def write_wheel(
         metadata_path = f"{dist_info}/METADATA"
         wheel_path = f"{dist_info}/WHEEL"
         record_path = f"{dist_info}/RECORD"
+        license_path = f"{dist_info}/licenses/LICENSE"
         member_payloads = {
             package_path: package_payload,
             metadata_path: (
@@ -110,7 +113,9 @@ def write_wheel(
                     b"Tag: py3-none-any\n"
                 )
             ),
+            license_path: license_payload,
         }
+        member_payloads.update(extra_members or {})
         for path, payload in member_payloads.items():
             archive.writestr(path, payload)
         if record_paths is None:
@@ -176,6 +181,7 @@ def write_sdist(
     package_payload: bytes = b"__version__ = 'fixture'\n",
     core_metadata: bytes | None = None,
     extra_members: dict[str, bytes] | None = None,
+    special_members: tuple[tuple[str, bytes, str], ...] = (),
 ) -> None:
     package_dist = repo / "dist"
     package_dist.mkdir(exist_ok=True)
@@ -208,6 +214,11 @@ def write_sdist(
         )
         for relative_path, payload in (extra_members or {}).items():
             add_tar_bytes(archive, f"{root}/{relative_path}", payload)
+        for relative_path, member_type, linkname in special_members:
+            member = tarfile.TarInfo(f"{root}/{relative_path}")
+            member.type = member_type
+            member.linkname = linkname
+            archive.addfile(member)
 
 
 def write_valid_artifacts(repo: Path, version: str) -> None:
@@ -234,6 +245,7 @@ def release_repo(tmp_path: Path) -> Path:
     source_package = repo / "src" / "stock_desk"
     source_package.mkdir(parents=True)
     (source_package / "__init__.py").write_bytes(b"__version__ = 'fixture'\n")
+    (repo / "LICENSE").write_bytes(b"fixture license\n")
     (repo / "web").mkdir()
     (repo / "web" / "package.json").write_text(
         '{"name":"@stock-desk/web","version":"0.1.0"}\n',
@@ -736,6 +748,41 @@ def test_rejects_package_source_that_differs_from_the_repository(
         check_build_artifacts(release_repo, "0.1.0")
 
 
+@pytest.mark.parametrize(
+    "extra_path",
+    [
+        "sitecustomize.py",
+        "stock_desk-0.1.0.dist-info/entry_points.txt",
+    ],
+)
+def test_rejects_wheel_members_outside_the_complete_allowlist(
+    release_repo: Path, extra_path: str
+) -> None:
+    write_valid_artifacts(release_repo, "0.1.0")
+    write_wheel(
+        release_repo,
+        "0.1.0",
+        extra_members={extra_path: b"untrusted\n"},
+    )
+
+    with pytest.raises(ReleaseVerificationError, match="wheel build artifact"):
+        check_build_artifacts(release_repo, "0.1.0")
+
+
+def test_rejects_wheel_license_that_differs_from_the_repository(
+    release_repo: Path,
+) -> None:
+    write_valid_artifacts(release_repo, "0.1.0")
+    write_wheel(
+        release_repo,
+        "0.1.0",
+        license_payload=b"different license\n",
+    )
+
+    with pytest.raises(ReleaseVerificationError, match="wheel build artifact"):
+        check_build_artifacts(release_repo, "0.1.0")
+
+
 def test_rejects_invalid_sdist_pyproject_toml(release_repo: Path) -> None:
     write_valid_artifacts(release_repo, "0.1.0")
     write_sdist(release_repo, "0.1.0", pyproject_payload=b"[project\n")
@@ -809,6 +856,51 @@ def test_rejects_backend_path_sdist_without_executing_the_backend(
         check_build_artifacts(release_repo, "0.1.0")
 
     assert not side_effect.exists()
+
+
+def test_rejects_sdist_path_traversal_without_writing_outside_the_archive(
+    release_repo: Path,
+) -> None:
+    side_effect = release_repo.parent / "stock-desk-escape.py"
+    write_valid_artifacts(release_repo, "0.1.0")
+    write_sdist(
+        release_repo,
+        "0.1.0",
+        extra_members={"../../stock-desk-escape.py": b"untrusted\n"},
+    )
+
+    try:
+        with pytest.raises(ReleaseVerificationError, match="source build artifact"):
+            check_build_artifacts(release_repo, "0.1.0")
+    finally:
+        assert not side_effect.exists()
+
+
+def test_rejects_unbound_regular_sdist_member(release_repo: Path) -> None:
+    write_valid_artifacts(release_repo, "0.1.0")
+    write_sdist(
+        release_repo,
+        "0.1.0",
+        extra_members={"unbound.py": b"untrusted\n"},
+    )
+
+    with pytest.raises(ReleaseVerificationError, match="source build artifact"):
+        check_build_artifacts(release_repo, "0.1.0")
+
+
+@pytest.mark.parametrize("member_type", [tarfile.SYMTYPE, tarfile.LNKTYPE])
+def test_rejects_sdist_symbolic_and_hard_links(
+    release_repo: Path, member_type: bytes
+) -> None:
+    write_valid_artifacts(release_repo, "0.1.0")
+    write_sdist(
+        release_repo,
+        "0.1.0",
+        special_members=(("linked.py", member_type, "src/stock_desk/__init__.py"),),
+    )
+
+    with pytest.raises(ReleaseVerificationError, match="source build artifact"):
+        check_build_artifacts(release_repo, "0.1.0")
 
 
 def test_rejects_wrong_or_empty_release_artifacts(release_repo: Path) -> None:

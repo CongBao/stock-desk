@@ -340,16 +340,38 @@ def _expected_wheel_package_payloads(repo: Path) -> dict[str, bytes]:
     return payloads
 
 
+def _read_bound_repository_file(
+    repo: Path, relative_path: PurePosixPath
+) -> bytes | None:
+    candidate = repo
+    for part in relative_path.parts:
+        candidate /= part
+        if candidate.is_symlink():
+            return None
+    if not candidate.is_file():
+        return None
+    return candidate.read_bytes()
+
+
 def _check_wheel_artifact(repo: Path, wheel_path: Path, version: str) -> bytes:
     dist_info = f"stock_desk-{version}.dist-info"
     metadata_path = f"{dist_info}/METADATA"
     wheel_metadata_path = f"{dist_info}/WHEEL"
     record_path = f"{dist_info}/RECORD"
+    license_path = f"{dist_info}/licenses/LICENSE"
     required_members = {
         "stock_desk/__init__.py",
         metadata_path,
         wheel_metadata_path,
         record_path,
+        license_path,
+    }
+    expected_package_payloads = _expected_wheel_package_payloads(repo)
+    allowed_members = set(expected_package_payloads) | {
+        metadata_path,
+        wheel_metadata_path,
+        record_path,
+        license_path,
     }
     with zipfile.ZipFile(wheel_path) as wheel:
         members = wheel.namelist()
@@ -357,7 +379,8 @@ def _check_wheel_artifact(repo: Path, wheel_path: Path, version: str) -> bytes:
             wheel.testzip() is not None
             or len(members) != len(set(members))
             or not required_members.issubset(members)
-            or any(wheel.getinfo(member).is_dir() for member in required_members)
+            or set(members) != allowed_members
+            or any(member.is_dir() for member in wheel.infolist())
         ):
             raise _invalid_wheel()
         archive_payloads = {
@@ -379,7 +402,13 @@ def _check_wheel_artifact(repo: Path, wheel_path: Path, version: str) -> bytes:
             for path, payload in archive_payloads.items()
             if path.startswith("stock_desk/")
         }
-        if package_payloads != _expected_wheel_package_payloads(repo):
+        repository_license = repo / "LICENSE"
+        if (
+            package_payloads != expected_package_payloads
+            or repository_license.is_symlink()
+            or not repository_license.is_file()
+            or archive_payloads[license_path] != repository_license.read_bytes()
+        ):
             raise _invalid_wheel()
         return metadata_payload
 
@@ -406,42 +435,63 @@ def _check_sdist_pyproject(payload: bytes, version: str) -> None:
         raise _invalid_source()
 
 
+def _safe_sdist_relative_path(name: str, root: str) -> PurePosixPath | None:
+    prefix = f"{root}/"
+    if not name.startswith(prefix):
+        return None
+    relative_name = name.removeprefix(prefix)
+    relative_path = PurePosixPath(relative_name)
+    if (
+        not relative_name
+        or "\\" in relative_name
+        or "\x00" in relative_name
+        or ":" in relative_name
+        or relative_path.is_absolute()
+        or ".." in relative_path.parts
+        or relative_path.as_posix() != relative_name
+    ):
+        return None
+    return relative_path
+
+
 def _check_source_artifact(repo: Path, source_path: Path, version: str) -> bytes:
     root = f"stock_desk-{version}"
-    pyproject_path = f"{root}/pyproject.toml"
-    metadata_path = f"{root}/PKG-INFO"
-    required_members = {
-        pyproject_path,
-        metadata_path,
-        f"{root}/src/stock_desk/__init__.py",
+    required_relative_paths = {
+        "pyproject.toml",
+        "PKG-INFO",
+        "src/stock_desk/__init__.py",
     }
     with tarfile.open(source_path, "r:gz") as source:
         members = source.getmembers()
         members_by_name = {member.name: member for member in members}
-        if (
-            len(members) != len(members_by_name)
-            or not required_members.issubset(members_by_name)
-            or any(not members_by_name[name].isfile() for name in required_members)
-        ):
+        if len(members) != len(members_by_name):
             raise _invalid_source()
-        pyproject_file = source.extractfile(members_by_name[pyproject_path])
-        metadata_file = source.extractfile(members_by_name[metadata_path])
-        if pyproject_file is None or metadata_file is None:
-            raise _invalid_source()
-        pyproject_payload = pyproject_file.read()
-        if pyproject_payload != (repo / "pyproject.toml").read_bytes():
-            raise _invalid_source()
-        _check_sdist_pyproject(pyproject_payload, version)
-        metadata_payload = metadata_file.read()
-        _check_package_metadata(metadata_payload, version, "source")
-        source_prefix = f"{root}/src/stock_desk/"
-        package_payloads: dict[str, bytes] = {}
-        for name, member in members_by_name.items():
-            if name.startswith(source_prefix) and member.isfile():
-                package_file = source.extractfile(member)
-                if package_file is None:
+        archive_payloads: dict[str, bytes] = {}
+        for member in members:
+            relative_path = _safe_sdist_relative_path(member.name, root)
+            if relative_path is None or not member.isfile():
+                raise _invalid_source()
+            member_file = source.extractfile(member)
+            if member_file is None:
+                raise _invalid_source()
+            payload = member_file.read()
+            relative_name = relative_path.as_posix()
+            archive_payloads[relative_name] = payload
+            if relative_name != "PKG-INFO":
+                repository_payload = _read_bound_repository_file(repo, relative_path)
+                if repository_payload is None or payload != repository_payload:
                     raise _invalid_source()
-                package_payloads[name] = package_file.read()
+        if not required_relative_paths.issubset(archive_payloads):
+            raise _invalid_source()
+        pyproject_payload = archive_payloads["pyproject.toml"]
+        _check_sdist_pyproject(pyproject_payload, version)
+        metadata_payload = archive_payloads["PKG-INFO"]
+        _check_package_metadata(metadata_payload, version, "source")
+        package_payloads = {
+            f"{root}/{relative_name}": payload
+            for relative_name, payload in archive_payloads.items()
+            if relative_name.startswith("src/stock_desk/")
+        }
         expected_package_payloads = _read_repository_payloads(
             repo / "src" / "stock_desk", f"{root}/src/stock_desk"
         )
