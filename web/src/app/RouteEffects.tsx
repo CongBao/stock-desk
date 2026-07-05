@@ -1,16 +1,18 @@
 import { useEffect } from 'react';
-import { useLocation } from 'react-router-dom';
+import { matchPath, useLocation } from 'react-router-dom';
 
 import { appRoutes } from './routes';
 
 function getPageTitle(pathname: string): string {
-  if (pathname === '/') {
+  if (matchPath({ end: true, path: '/' }, pathname)) {
     return appRoutes[0].title;
   }
 
-  return (
-    appRoutes.find((route) => route.path === pathname)?.title ?? '页面未找到'
+  const matchedRoute = appRoutes.find((route) =>
+    matchPath({ caseSensitive: false, end: true, path: route.path }, pathname),
   );
+
+  return matchedRoute?.title ?? '页面未找到';
 }
 
 export function RouteEffects() {

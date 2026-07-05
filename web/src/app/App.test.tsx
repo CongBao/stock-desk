@@ -67,6 +67,25 @@ it('opens on a clearly labelled non-live market layout preview', async () => {
   expect(screen.getByRole('main')).toHaveAttribute('id', 'main-content');
 });
 
+it.each(['/market/', '/MARKET'])(
+  'keeps route effects aligned with market content for %s',
+  async (pathname) => {
+    renderApp([pathname]);
+
+    const heading = screen.getByRole('heading', {
+      level: 2,
+      name: '行情工作区',
+    });
+    await waitFor(() => expect(heading).toHaveFocus());
+
+    expect(
+      screen.getByRole('region', { name: 'K 线主图布局预览' }),
+    ).toBeInTheDocument();
+    expect(document.title).toBe('行情工作区 · stock-desk');
+    expect(screen.getByRole('status')).toHaveTextContent('已进入：行情工作区');
+  },
+);
+
 it('updates route title, focus, announcement, scroll, and browser history', async () => {
   const user = userEvent.setup();
   renderApp(['/market'], true);
