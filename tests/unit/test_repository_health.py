@@ -525,6 +525,22 @@ def test_ci_and_release_gate_the_chromium_end_to_end_slice() -> None:
     assert 'tags:\n      - "v*"' in release
 
 
+def test_release_builds_final_artifacts_only_after_all_source_gates() -> None:
+    workflow = _load_github_actions_yaml(_read(".github/workflows/release.yml"))
+    steps = workflow["jobs"]["verify"]["steps"]
+    step_names = [step.get("name") for step in steps]
+
+    gate_index = step_names.index("Run release gates")
+    build_index = step_names.index("Build final release assets")
+    verify_index = step_names.index("Verify built release artifacts")
+    assert gate_index < build_index < verify_index
+
+    gate_commands = str(steps[gate_index]["run"])
+    assert "pnpm e2e" in gate_commands
+    assert "make build" not in gate_commands
+    assert steps[build_index]["run"] == "make build"
+
+
 def test_e2e_is_a_root_script_without_changing_the_make_contract() -> None:
     package = json.loads(_read("package.json"))
     assert package["scripts"]["e2e"] == "playwright test"
@@ -710,7 +726,9 @@ def test_tag_release_verifies_built_artifacts_before_packaging_and_upload() -> N
     workflow = _load_github_actions_yaml(_read(".github/workflows/release.yml"))
     verify_steps = workflow["jobs"]["verify"]["steps"]
     build_step = next(
-        step for step in verify_steps if step.get("name") == "Run release gates"
+        step
+        for step in verify_steps
+        if step.get("name") == "Build final release assets"
     )
     artifact_step = next(
         step
@@ -726,7 +744,7 @@ def test_tag_release_verifies_built_artifacts_before_packaging_and_upload() -> N
         step for step in verify_steps if step.get("name") == "Upload release assets"
     )
 
-    assert "make build" in build_step["run"]
+    assert build_step["run"] == "make build"
     assert (
         verify_steps.index(build_step)
         < verify_steps.index(artifact_step)
