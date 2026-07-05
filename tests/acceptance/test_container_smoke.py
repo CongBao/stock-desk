@@ -12,6 +12,8 @@ from urllib.request import Request, urlopen
 
 import pytest
 
+from scripts.source_fingerprint import compute_source_fingerprint
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REQUIRED_DEPLOYMENT_FILES = {
@@ -43,6 +45,12 @@ def test_deployment_contract_is_complete_and_public_only() -> None:
     assert "STOCK_DESK_WEB_DIST_DIR=/app/web-dist" in dockerfile
     assert 'ENTRYPOINT ["python", "-m", "stock_desk.runtime_entrypoint"]' in dockerfile
     assert 'CMD ["uvicorn", "stock_desk.main:app"' in dockerfile
+    assert "--chown=10001:10001 /app/.venv" not in dockerfile
+    assert "--chown=10001:10001 /build/web/dist" not in dockerfile
+    assert "AS fingerprint-builder" in dockerfile
+    assert "scripts/source_fingerprint.py" in dockerfile
+    assert "/app/source-fingerprint" in dockerfile
+    assert "chmod -R a-w /app/.venv /app/web-dist" in dockerfile
     assert "COPY . " not in dockerfile
 
     compose = _read("compose.yaml")
@@ -97,6 +105,8 @@ def test_deployment_contract_is_complete_and_public_only() -> None:
         ".codex",
         ".superpowers",
         ".env",
+        "**/.env",
+        "**/.env.*",
         "data",
         "docs/superpowers",
         "node_modules",
@@ -104,6 +114,7 @@ def test_deployment_contract_is_complete_and_public_only() -> None:
         "outputs",
         "web/dist",
         "work",
+        "*.tsbuildinfo",
     ):
         assert excluded in dockerignore.splitlines()
 
@@ -134,6 +145,22 @@ def test_worker_state_validation_rejects_any_restart() -> None:
         _assert_running_without_restarts(container, service="worker")
 
 
+def test_source_fingerprint_validation_rejects_wrong_image() -> None:
+    with pytest.raises(AssertionError, match="source fingerprint"):
+        _assert_source_fingerprint(
+            "expected-fingerprint",
+            "other-checkout-fingerprint",
+            service="api",
+        )
+
+
+def _assert_source_fingerprint(expected: str, actual: str, *, service: str) -> None:
+    assert actual == expected, (
+        f"{service} source fingerprint does not match this checkout: "
+        f"expected {expected}, found {actual}"
+    )
+
+
 class HttpResult(NamedTuple):
     status: int
     content_type: str
@@ -145,6 +172,7 @@ class ComposeStack(NamedTuple):
     worker_id: str
     image_id: str
     project: str
+    source_fingerprint: str
 
 
 def _run(
@@ -171,6 +199,19 @@ def _run(
 
 def _compose(*arguments: str, timeout: float = 10) -> subprocess.CompletedProcess[str]:
     return _run(["docker", "compose", *arguments], timeout=timeout)
+
+
+def _docker_exec(
+    container_id: str,
+    *arguments: str,
+    user: tuple[int, int] | None = None,
+    timeout: float = 10,
+) -> subprocess.CompletedProcess[str]:
+    command = ["docker", "exec"]
+    if user is not None:
+        command.extend(["--user", f"{user[0]}:{user[1]}"])
+    command.extend([container_id, *arguments])
+    return _run(command, timeout=timeout)
 
 
 def _service_id(service: str) -> str:
@@ -251,6 +292,38 @@ def _project(container: dict[str, object]) -> str:
     return project
 
 
+def _pid_one_identity(container_id: str) -> tuple[int, int]:
+    result = _docker_exec(
+        container_id,
+        "python",
+        "-c",
+        "from pathlib import Path; "
+        "lines = Path('/proc/1/status').read_text().splitlines(); "
+        "uid = next(line for line in lines if line.startswith('Uid:')).split()[2]; "
+        "gid = next(line for line in lines if line.startswith('Gid:')).split()[2]; "
+        "print(uid, gid)",
+    )
+    uid_text, gid_text = result.stdout.split()
+    uid, gid = int(uid_text), int(gid_text)
+    assert uid > 0 and gid > 0
+    return uid, gid
+
+
+def _container_source_fingerprint(container_id: str) -> str:
+    identity = _pid_one_identity(container_id)
+    result = _docker_exec(
+        container_id,
+        "python",
+        "-c",
+        "from pathlib import Path; "
+        "print(Path('/app/source-fingerprint').read_text(encoding='ascii').strip())",
+        user=identity,
+    )
+    fingerprint = result.stdout.strip()
+    assert re.fullmatch(r"[0-9a-f]{64}", fingerprint)
+    return fingerprint
+
+
 def _current_stack(stack: ComposeStack) -> tuple[dict[str, object], dict[str, object]]:
     assert _service_id("api") == stack.api_id, "api container changed during smoke"
     assert _service_id("worker") == stack.worker_id, (
@@ -266,6 +339,16 @@ def _current_stack(stack: ComposeStack) -> tuple[dict[str, object], dict[str, ob
     assert _image_id(worker) == stack.image_id
     assert _project(api) == stack.project
     assert _project(worker) == stack.project
+    _assert_source_fingerprint(
+        stack.source_fingerprint,
+        _container_source_fingerprint(stack.api_id),
+        service="api",
+    )
+    _assert_source_fingerprint(
+        stack.source_fingerprint,
+        _container_source_fingerprint(stack.worker_id),
+        service="worker",
+    )
     return api, worker
 
 
@@ -321,7 +404,14 @@ def running_compose_stack() -> ComposeStack:
         "api and worker must use the exact same image"
     )
     assert _project(api) == _project(worker)
-    stack = ComposeStack(api_id, worker_id, _image_id(api), _project(api))
+    source_fingerprint = compute_source_fingerprint(REPO_ROOT)
+    stack = ComposeStack(
+        api_id,
+        worker_id,
+        _image_id(api),
+        _project(api),
+        source_fingerprint,
+    )
 
     deadline = time.monotonic() + 60
     worker_logs = ""
@@ -390,6 +480,43 @@ def test_compose_pid_one_is_nonroot(
             "if line.startswith('Uid:')); print(line.split()[2])",
         )
         assert int(result.stdout.strip()) > 0
+    _current_stack(running_compose_stack)
+
+
+@pytest.mark.container
+def test_runtime_code_is_immutable_and_data_is_writable_by_app_uid(
+    running_compose_stack: ComposeStack,
+) -> None:
+    identity = _pid_one_identity(running_compose_stack.api_id)
+    result = _docker_exec(
+        running_compose_stack.api_id,
+        "python",
+        "-c",
+        "from pathlib import Path; import site; import stock_desk.main as main; "
+        "import stock_desk.runtime_entrypoint as entrypoint; "
+        "site_dir = Path(site.getsitepackages()[0]); "
+        "pth = next(iter(sorted(site_dir.glob('*.pth')))); "
+        "targets = (Path(entrypoint.__file__), Path(main.__file__), pth, "
+        "Path('/app/web-dist/index.html'), Path('/app/source-fingerprint')); "
+        "assert all(path.stat().st_uid == 0 for path in targets); "
+        "assert all(path.stat().st_mode & 0o022 == 0 for path in targets); "
+        "denied = 0; "
+        'exec("for path in targets:\\n'
+        "    try:\\n"
+        "        with path.open('ab'):\\n"
+        "            pass\\n"
+        "    except PermissionError:\\n"
+        "        denied += 1\\n"
+        "    else:\\n"
+        "        raise RuntimeError(f'writable runtime path: {path}')\"); "
+        "assert denied == len(targets); "
+        "probe = Path('/app/data/write-policy-probe'); "
+        "probe.write_text('ok', encoding='utf-8'); assert probe.read_text() == 'ok'; "
+        "probe.unlink(); print('runtime-immutable-data-writable')",
+        user=identity,
+    )
+
+    assert result.stdout.strip() == "runtime-immutable-data-writable"
     _current_stack(running_compose_stack)
 
 

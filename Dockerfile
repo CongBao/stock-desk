@@ -4,6 +4,18 @@ ARG NODE_VERSION=22.22.1
 ARG PYTHON_VERSION=3.12.13
 ARG UV_VERSION=0.11.8
 
+FROM python:${PYTHON_VERSION}-slim-bookworm AS fingerprint-builder
+
+WORKDIR /source
+COPY .dockerignore Dockerfile alembic.ini package.json pnpm-lock.yaml pnpm-workspace.yaml pyproject.toml uv.lock ./
+COPY scripts/source_fingerprint.py ./scripts/source_fingerprint.py
+COPY migrations ./migrations
+COPY src ./src
+COPY web ./web
+RUN python scripts/source_fingerprint.py \
+    --root /source \
+    --output /source-fingerprint
+
 FROM node:${NODE_VERSION}-bookworm-slim AS web-builder
 
 ENV PNPM_HOME=/pnpm
@@ -45,8 +57,12 @@ RUN groupadd --gid 10001 stockdesk \
     && chown 10001:10001 /app/data
 
 WORKDIR /app
-COPY --from=python-builder --chown=10001:10001 /app/.venv /app/.venv
-COPY --from=web-builder --chown=10001:10001 /build/web/dist /app/web-dist
+COPY --from=python-builder /app/.venv /app/.venv
+COPY --from=web-builder /build/web/dist /app/web-dist
+COPY --from=fingerprint-builder /source-fingerprint /app/source-fingerprint
+RUN chown -R 0:0 /app/.venv /app/web-dist /app/source-fingerprint \
+    && chmod -R a-w /app/.venv /app/web-dist \
+    && chmod 0444 /app/source-fingerprint
 
 ENV PATH="/app/.venv/bin:${PATH}"
 ENV PYTHONDONTWRITEBYTECODE=1
