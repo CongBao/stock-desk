@@ -1,5 +1,5 @@
 from collections import UserList
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Sequence, Set
 import logging
 from typing import Any, overload
 
@@ -53,12 +53,51 @@ class NonReconstructableSequence(Sequence[str]):
         return len(self._values)
 
 
+class TokenSet(Set[str]):
+    def __init__(self, values: list[str]) -> None:
+        self._values = list(values)
+
+    def __contains__(self, value: object) -> bool:
+        return value in self._values
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._values)
+
+    def __len__(self) -> int:
+        return len(self._values)
+
+
+class CyclicSet(Set[Any]):
+    def __contains__(self, value: object) -> bool:
+        return value is self or value == SECRET
+
+    def __iter__(self) -> Iterator[Any]:
+        return iter((SECRET, self))
+
+    def __len__(self) -> int:
+        return 2
+
+
+class SecretStringObject:
+    def __str__(self) -> str:
+        return f"str:{SECRET}"
+
+    def __repr__(self) -> str:
+        return f"repr:{SECRET}"
+
+
+class UnrenderableObject:
+    def __str__(self) -> str:
+        raise RuntimeError(f"cannot render {SECRET}")
+
+
 def _render_log(
     redactor: SecretRedactor,
     message: object,
     *args: object,
     exc_info: bool = False,
     extra: dict[str, Any] | None = None,
+    level: int = logging.ERROR,
 ) -> tuple[str, logging.LogRecord]:
     logger = logging.getLogger(f"stock_desk.tests.redaction.{id(redactor)}")
     logger.handlers.clear()
@@ -82,7 +121,10 @@ def _render_log(
     output = StringIO()
     handler.setStream(output)
     logger.addHandler(handler)
-    logger.error(message, *args, exc_info=exc_info, extra=extra)
+    if level == logging.INFO:
+        logger.info(message, *args, exc_info=exc_info, extra=extra)
+    else:
+        logger.error(message, *args, exc_info=exc_info, extra=extra)
     return output.getvalue(), records[0]
 
 
@@ -175,6 +217,31 @@ def test_clean_handles_a_cyclic_userlist_without_leaking() -> None:
     assert "[REDACTION_CYCLE]" in repr(cleaned)
 
 
+def test_clean_supports_frozenset_and_custom_abstract_set() -> None:
+    redactor = SecretRedactor([SECRET])
+    frozen = frozenset((SECRET, "safe"))
+    custom = TokenSet([SECRET, "safe"])
+
+    cleaned_frozen = redactor.clean(frozen)
+    cleaned_custom = redactor.clean(custom)
+
+    assert isinstance(cleaned_frozen, frozenset)
+    assert isinstance(cleaned_custom, TokenSet)
+    assert cleaned_frozen == frozenset((REDACTED_MARKER, "safe"))
+    assert set(cleaned_custom) == {REDACTED_MARKER, "safe"}
+    assert SECRET in frozen
+    assert SECRET in custom
+
+
+def test_clean_handles_a_cyclic_abstract_set_without_leaking() -> None:
+    redactor = SecretRedactor([SECRET])
+
+    cleaned = redactor.clean(CyclicSet())
+
+    assert SECRET not in repr(cleaned)
+    assert "[REDACTION_CYCLE]" in repr(cleaned)
+
+
 def test_clean_sanitizes_exception_arguments() -> None:
     redactor = SecretRedactor([SECRET])
     error = ValueError("request failed", {"token": SECRET})
@@ -230,6 +297,39 @@ def test_logging_filter_sanitizes_positional_and_mapping_arguments() -> None:
         assert REDACTED_MARKER in output
         assert record.levelname == "ERROR"
         assert record.name.startswith("stock_desk.tests.redaction")
+
+
+@pytest.mark.parametrize(
+    ("message", "args"),
+    [
+        (SecretStringObject(), ()),
+        ("object=%s", (SecretStringObject(),)),
+        ("object=%r", (SecretStringObject(),)),
+    ],
+)
+def test_logging_filter_sanitizes_objects_stringified_by_formatter(
+    message: object,
+    args: tuple[object, ...],
+) -> None:
+    redactor = SecretRedactor([SECRET])
+
+    output, record = _render_log(redactor, message, *args, level=logging.INFO)
+
+    assert SECRET not in output
+    assert SECRET not in record.getMessage()
+    assert REDACTED_MARKER in output
+    assert record.args == ()
+    assert record.levelname == "INFO"
+
+
+def test_logging_filter_survives_an_object_that_cannot_be_rendered() -> None:
+    redactor = SecretRedactor([SECRET])
+
+    output, record = _render_log(redactor, UnrenderableObject())
+
+    assert SECRET not in output
+    assert SECRET not in record.getMessage()
+    assert "UNRENDERABLE" in output
 
 
 def test_logging_filter_sanitizes_exception_traceback_and_cached_text() -> None:
@@ -304,6 +404,38 @@ def test_logging_filter_clears_every_cached_and_dynamic_message_field() -> None:
     assert SECRET not in str(record.exc_info[1])
     assert record.stack_info is not None
     assert SECRET not in record.stack_info
+
+
+def test_logging_filter_sanitizes_string_metadata_used_by_custom_formatters() -> None:
+    redactor = SecretRedactor([SECRET])
+    record = logging.makeLogRecord(
+        {
+            "name": f"logger.{SECRET}",
+            "levelno": logging.INFO,
+            "levelname": "INFO",
+            "pathname": f"/tmp/{SECRET}/worker.py",
+            "filename": f"{SECRET}.py",
+            "module": f"module-{SECRET}",
+            "funcName": f"call-{SECRET}",
+            "threadName": f"thread-{SECRET}",
+            "processName": f"process-{SECRET}",
+            "msg": "safe message",
+            "args": (),
+            "thread": 7,
+            "process": 11,
+        }
+    )
+    formatter = logging.Formatter(
+        "%(name)s|%(pathname)s|%(filename)s|%(module)s|%(funcName)s|"
+        "%(threadName)s|%(processName)s|%(message)s|%(thread)d|%(process)d"
+    )
+
+    RedactingFilter(redactor).filter(record)
+    output = formatter.format(record)
+
+    assert SECRET not in output
+    assert record.thread == 7
+    assert record.process == 11
 
 
 def test_logging_filter_sanitizes_extra_nested_task_error() -> None:

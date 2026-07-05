@@ -1,4 +1,4 @@
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence, Set
 import logging
 from threading import RLock
 from typing import Any, Final, cast
@@ -7,10 +7,7 @@ from typing import Any, Final, cast
 REDACTED_MARKER: Final = "[REDACTED]"
 _CYCLE_MARKER: Final = "[REDACTION_CYCLE]"
 _DEPTH_MARKER: Final = "[REDACTION_DEPTH]"
-_STANDARD_LOG_RECORD_FIELDS: Final = frozenset(logging.makeLogRecord({}).__dict__) | {
-    "message",
-    "asctime",
-}
+_UNRENDERABLE_LOG_MESSAGE: Final = "[UNRENDERABLE_LOG_MESSAGE]"
 
 
 class SecretRedactor:
@@ -64,7 +61,7 @@ class SecretRedactor:
             return _replace_known_strings(text, secrets).encode(
                 "utf-8", errors="surrogateescape"
             )
-        if isinstance(value, (Mapping, Sequence, set, BaseException)):
+        if isinstance(value, (Mapping, Sequence, Set, BaseException)):
             identity = id(value)
             if identity in active:
                 return _CYCLE_MARKER
@@ -111,6 +108,18 @@ class SecretRedactor:
                 return cleaned_items
         if isinstance(value, set):
             return {child(item) for item in value}
+        if isinstance(value, frozenset):
+            return frozenset(child(item) for item in value)
+        if isinstance(value, Set):
+            cleaned_items = [child(item) for item in value]
+            try:
+                constructor = cast(Callable[[list[Any]], Any], type(value))
+                return constructor(cleaned_items)
+            except Exception:
+                try:
+                    return set(cleaned_items)
+                except TypeError:
+                    return cleaned_items
         if isinstance(value, BaseException):
             cleaned_args = tuple(child(argument) for argument in value.args)
             try:
@@ -128,15 +137,17 @@ class RedactingFilter(logging.Filter):
         self._redactor = redactor
 
     def filter(self, record: logging.LogRecord) -> bool:
-        record.msg = self._redactor.clean(record.msg)
-        record.args = self._redactor.clean(record.args)
+        try:
+            rendered_message = record.getMessage()
+        except Exception:
+            rendered_message = _UNRENDERABLE_LOG_MESSAGE
+        record.msg = str(self._redactor.clean(rendered_message))
+        record.args = ()
         for key, value in tuple(record.__dict__.items()):
-            if key not in _STANDARD_LOG_RECORD_FIELDS:
+            if key not in {"msg", "args", "exc_info", "exc_text", "stack_info"}:
                 setattr(record, key, self._redactor.clean(value))
-        for cached_field in ("message", "asctime"):
-            if hasattr(record, cached_field):
-                cached_value = getattr(record, cached_field)
-                setattr(record, cached_field, str(self._redactor.clean(cached_value)))
+        if hasattr(record, "message"):
+            record.message = record.msg
         if record.stack_info is not None:
             cleaned_stack = self._redactor.clean(record.stack_info)
             record.stack_info = str(cleaned_stack)

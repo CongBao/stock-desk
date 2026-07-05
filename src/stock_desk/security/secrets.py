@@ -3,7 +3,7 @@ import re
 from typing import Final
 
 from cryptography.fernet import Fernet, InvalidToken
-from sqlalchemy import Engine, select
+from sqlalchemy import Engine, case, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from stock_desk.config import Settings
@@ -13,6 +13,10 @@ from stock_desk.storage.models import AppSetting
 _SECRET_KEY_PREFIX: Final = "secret."
 _SECRET_NAME_PATTERN: Final = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
 _MASK_SEPARATOR: Final = "•••••••"
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class SecretStoreError(Exception):
@@ -81,7 +85,7 @@ class SecretStore:
         if not isinstance(value, str) or not value:
             raise SecretValidationError("Secret value is invalid")
         token = self._fernet.encrypt(value.encode("utf-8")).decode("ascii")
-        now = datetime.now(timezone.utc)
+        now = _utc_now()
         statement = sqlite_insert(AppSetting).values(
             key=key,
             encrypted_value=token,
@@ -89,7 +93,13 @@ class SecretStore:
         )
         statement = statement.on_conflict_do_update(
             index_elements=[AppSetting.key],
-            set_={"encrypted_value": token, "updated_at": now},
+            set_={
+                "encrypted_value": token,
+                "updated_at": case(
+                    (AppSetting.updated_at > now, AppSetting.updated_at),
+                    else_=now,
+                ),
+            },
         )
         with self._engine.begin() as connection:
             connection.execute(statement)

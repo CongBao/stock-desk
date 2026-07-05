@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="STOCK_DESK_",
         env_file=".env",
+        extra="ignore",
     )
 
     app_name: str = "stock-desk"

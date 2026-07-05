@@ -1,12 +1,16 @@
 from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Iterator
+from datetime import datetime, timezone
 from pathlib import Path
+import threading
+from typing import cast
 
 from cryptography.fernet import Fernet
 from pydantic import SecretStr
 import pytest
-from sqlalchemy import Engine, text
+from sqlalchemy import Engine, select, text
 
+import stock_desk.security.secrets as secrets_module
 from stock_desk.config import Settings
 from stock_desk.security.secrets import (
     SecretConfigurationError,
@@ -17,6 +21,7 @@ from stock_desk.security.secrets import (
     mask_secret,
 )
 from stock_desk.storage.database import create_engine_for_url, migrate
+from stock_desk.storage.models import AppSetting
 
 
 @pytest.fixture
@@ -42,6 +47,16 @@ def _stored_row(engine: Engine, name: str) -> tuple[str, str, str]:
             {"key": f"secret.{name}"},
         ).one()
     return str(row.key), str(row.encrypted_value), str(row.updated_at)
+
+
+def _stored_timestamp(engine: Engine, name: str) -> datetime:
+    with engine.connect() as connection:
+        stored = connection.execute(
+            select(AppSetting.updated_at).where(AppSetting.key == f"secret.{name}")
+        ).scalar_one()
+    if stored.tzinfo is None:
+        return stored.replace(tzinfo=timezone.utc)
+    return stored
 
 
 @pytest.mark.parametrize(
@@ -119,6 +134,47 @@ def test_concurrent_upsert_remains_readable(
 
     assert store.read_secret_for_server_call("shared_key") in values
     assert _stored_row(engine, "shared_key")[1] not in values
+
+
+def test_out_of_order_concurrent_upserts_never_regress_updated_at(
+    secret_database: tuple[Engine, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine, _url = secret_database
+    store = SecretStore(engine, _settings(Fernet.generate_key()))
+    older = datetime(2026, 7, 5, 8, 0, tzinfo=timezone.utc)
+    newer = datetime(2026, 7, 5, 9, 0, tzinfo=timezone.utc)
+    local = threading.local()
+    older_sampled = threading.Event()
+    allow_older_write = threading.Event()
+
+    def controlled_clock() -> datetime:
+        sampled = cast(datetime, getattr(local, "sampled"))
+        if sampled == older:
+            older_sampled.set()
+            if not allow_older_write.wait(timeout=5):
+                raise RuntimeError("Timed out coordinating secret upsert test")
+        return sampled
+
+    monkeypatch.setattr(secrets_module, "_utc_now", controlled_clock)
+
+    def save_with_timestamp(value: str, sampled: datetime) -> None:
+        local.sampled = sampled
+        store.save_secret("ordered_key", value)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        older_write = executor.submit(save_with_timestamp, "older", older)
+        assert older_sampled.wait(timeout=1)
+        newer_write = executor.submit(save_with_timestamp, "newer", newer)
+        try:
+            newer_write.result(timeout=5)
+            timestamp_after_newer_write = _stored_timestamp(engine, "ordered_key")
+        finally:
+            allow_older_write.set()
+        older_write.result(timeout=5)
+
+    assert timestamp_after_newer_write == newer
+    assert _stored_timestamp(engine, "ordered_key") >= timestamp_after_newer_write
 
 
 @pytest.mark.parametrize(

@@ -82,6 +82,19 @@ def test_master_key_can_be_loaded_from_local_dotenv(
     assert plaintext not in repr(settings)
 
 
+def test_dotenv_ignores_unrelated_keys_while_loading_recognized_settings(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / ".env").write_text(
+        "UNRELATED_TOOL_OPTION=local-only\nSTOCK_DESK_APP_NAME=Dotenv Desk\n",
+        encoding="utf-8",
+    )
+
+    settings = Settings()
+
+    assert settings.app_name == "Dotenv Desk"
+
+
 def test_get_settings_caches_until_explicitly_cleared(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
