@@ -1,7 +1,7 @@
-from collections.abc import Callable, Mapping, Sequence, Set
+from collections.abc import Mapping, Sequence, Set
 import logging
 from threading import RLock
-from typing import Any, Final, cast
+from typing import Any, Final
 
 
 REDACTED_MARKER: Final = "[REDACTED]"
@@ -117,12 +117,7 @@ class SecretRedactor:
         if isinstance(value, tuple):
             return tuple(child(item) for item in value)
         if isinstance(value, Sequence):
-            cleaned_items = [child(item) for item in value]
-            try:
-                constructor = cast(Callable[[list[Any]], Any], type(value))
-                return constructor(cleaned_items)
-            except Exception:
-                return cleaned_items
+            return [child(item) for item in value]
         if isinstance(value, set):
             cleaned_items = [child(item) for item in value]
             try:
@@ -138,19 +133,13 @@ class SecretRedactor:
         if isinstance(value, Set):
             cleaned_items = [child(item) for item in value]
             try:
-                constructor = cast(Callable[[list[Any]], Any], type(value))
-                return constructor(cleaned_items)
+                return set(cleaned_items)
             except Exception:
-                try:
-                    return set(cleaned_items)
-                except TypeError:
-                    return cleaned_items
+                return cleaned_items
         if isinstance(value, BaseException):
-            cleaned_args = tuple(child(argument) for argument in value.args)
-            try:
-                return value.__class__(*cleaned_args)
-            except Exception:
-                return RuntimeError(*cleaned_args)
+            exception_name = _replace_known_strings(type(value).__name__, secrets)
+            exception_message = _render_unknown(value, secrets)
+            return RuntimeError(f"{exception_name}: {exception_message}")
         return value
 
 

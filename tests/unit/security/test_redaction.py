@@ -120,6 +120,85 @@ class HashableSecretMapping(Mapping[str, str]):
     __hash__ = object.__hash__
 
 
+class HostileSequence(Sequence[str]):
+    def __init__(self, values: list[str]) -> None:
+        self._values = list(values)
+
+    @overload
+    def __getitem__(self, index: int) -> str: ...
+
+    @overload
+    def __getitem__(self, index: slice) -> Sequence[str]: ...
+
+    def __getitem__(self, index: int | slice) -> str | Sequence[str]:
+        return self._values[index]
+
+    def __len__(self) -> int:
+        return len(self._values)
+
+    def __str__(self) -> str:
+        return f"hostile sequence {SECRET}"
+
+    def __repr__(self) -> str:
+        return f"hostile sequence {SECRET}"
+
+
+class HostileSet(Set[str]):
+    def __init__(self, values: list[str]) -> None:
+        self._values = list(values)
+
+    def __contains__(self, value: object) -> bool:
+        return value in self._values
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._values)
+
+    def __len__(self) -> int:
+        return len(self._values)
+
+    def __str__(self) -> str:
+        return f"hostile set {SECRET}"
+
+    def __repr__(self) -> str:
+        return f"hostile set {SECRET}"
+
+
+class HostileMapping(Mapping[str, str]):
+    def __init__(self) -> None:
+        self._values = {"credential": SECRET}
+
+    def __getitem__(self, key: str) -> str:
+        return self._values[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._values)
+
+    def __len__(self) -> int:
+        return len(self._values)
+
+    def __str__(self) -> str:
+        return f"hostile mapping {SECRET}"
+
+    def __repr__(self) -> str:
+        return f"hostile mapping {SECRET}"
+
+
+class HostileList(list[str]):
+    def __str__(self) -> str:
+        return f"hostile list {SECRET}"
+
+    def __repr__(self) -> str:
+        return f"hostile list {SECRET}"
+
+
+class HostileFrozenSet(frozenset[str]):
+    def __str__(self) -> str:
+        return f"hostile frozen set {SECRET}"
+
+    def __repr__(self) -> str:
+        return f"hostile frozen set {SECRET}"
+
+
 def _render_log(
     redactor: SecretRedactor,
     message: object,
@@ -208,7 +287,7 @@ def test_clean_recurses_without_mutating_input_and_preserves_shapes() -> None:
     assert SECRET in repr(original)
 
 
-def test_clean_supports_userlist_and_reconstructable_custom_sequences() -> None:
+def test_clean_normalizes_userlist_and_custom_sequences_to_builtin_lists() -> None:
     redactor = SecretRedactor([SECRET])
     user_list = UserList([SECRET, "safe"])
     custom = TokenSequence([SECRET, "safe"])
@@ -216,8 +295,8 @@ def test_clean_supports_userlist_and_reconstructable_custom_sequences() -> None:
     cleaned_user_list = redactor.clean(user_list)
     cleaned_custom = redactor.clean(custom)
 
-    assert isinstance(cleaned_user_list, UserList)
-    assert isinstance(cleaned_custom, TokenSequence)
+    assert type(cleaned_user_list) is list
+    assert type(cleaned_custom) is list
     assert list(cleaned_user_list) == [REDACTED_MARKER, "safe"]
     assert list(cleaned_custom) == [REDACTED_MARKER, "safe"]
     assert list(user_list) == [SECRET, "safe"]
@@ -241,7 +320,7 @@ def test_clean_handles_a_cyclic_userlist_without_leaking() -> None:
 
     cleaned = redactor.clean(cyclic)
 
-    assert isinstance(cleaned, UserList)
+    assert type(cleaned) is list
     assert SECRET not in repr(cleaned)
     assert "[REDACTION_CYCLE]" in repr(cleaned)
 
@@ -255,7 +334,7 @@ def test_clean_supports_frozenset_and_custom_abstract_set() -> None:
     cleaned_custom = redactor.clean(custom)
 
     assert isinstance(cleaned_frozen, frozenset)
-    assert isinstance(cleaned_custom, TokenSet)
+    assert type(cleaned_custom) is set
     assert cleaned_frozen == frozenset((REDACTED_MARKER, "safe"))
     assert set(cleaned_custom) == {REDACTED_MARKER, "safe"}
     assert SECRET in frozen
@@ -304,9 +383,44 @@ def test_clean_sanitizes_exception_arguments() -> None:
 
     cleaned = redactor.clean(error)
 
-    assert isinstance(cleaned, ValueError)
+    assert type(cleaned) is RuntimeError
     assert SECRET not in str(cleaned)
+    assert "ValueError" in str(cleaned)
     assert SECRET in str(error)
+
+
+def test_clean_discards_hostile_user_defined_container_and_exception_types() -> None:
+    redactor = SecretRedactor([SECRET])
+
+    cleaned_sequence = redactor.clean(HostileSequence([SECRET]))
+    cleaned_set = redactor.clean(HostileSet([SECRET]))
+    cleaned_mapping = redactor.clean(HostileMapping())
+    cleaned_error = redactor.clean(SecretStringError())
+
+    assert type(cleaned_sequence) is list
+    assert type(cleaned_set) is set
+    assert type(cleaned_mapping) is dict
+    assert type(cleaned_error) is RuntimeError
+    for cleaned in (
+        cleaned_sequence,
+        cleaned_set,
+        cleaned_mapping,
+        cleaned_error,
+    ):
+        assert SECRET not in str(cleaned)
+        assert SECRET not in repr(cleaned)
+
+
+def test_clean_discards_hostile_subclasses_of_builtin_containers() -> None:
+    redactor = SecretRedactor([SECRET])
+
+    cleaned_list = redactor.clean(HostileList([SECRET]))
+    cleaned_frozen = redactor.clean(HostileFrozenSet((SECRET,)))
+
+    assert type(cleaned_list) is list
+    assert type(cleaned_frozen) is frozenset
+    assert SECRET not in repr(cleaned_list)
+    assert SECRET not in repr(cleaned_frozen)
 
 
 def test_clean_handles_cycles_and_excessive_depth_without_leaking() -> None:
@@ -450,6 +564,35 @@ def test_logging_filter_handles_unhashable_cleaned_extra_containers() -> None:
 
     assert SECRET not in output
     assert REDACTED_MARKER in output
+
+
+def test_logging_filter_discards_hostile_types_from_extra_fields() -> None:
+    redactor = SecretRedactor([SECRET])
+    record = logging.makeLogRecord(
+        {
+            "name": "stock_desk.tests.redaction.hostile-types",
+            "levelno": logging.INFO,
+            "levelname": "INFO",
+            "msg": "safe",
+            "args": (),
+            "hostile_sequence": HostileSequence([SECRET]),
+            "hostile_set": HostileSet([SECRET]),
+            "hostile_mapping": HostileMapping(),
+            "hostile_error": SecretStringError(),
+        }
+    )
+
+    RedactingFilter(redactor).filter(record)
+    output = logging.Formatter(
+        "%(message)s|%(hostile_sequence)s|%(hostile_set)s|"
+        "%(hostile_mapping)s|%(hostile_error)s"
+    ).format(record)
+
+    assert SECRET not in output
+    assert type(getattr(record, "hostile_sequence")) is list
+    assert type(getattr(record, "hostile_set")) is set
+    assert type(getattr(record, "hostile_mapping")) is dict
+    assert type(getattr(record, "hostile_error")) is RuntimeError
 
 
 def test_logging_filter_sanitizes_exception_traceback_and_cached_text() -> None:
