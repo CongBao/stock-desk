@@ -42,7 +42,7 @@ make release-check
 docker compose down --volumes --remove-orphans
 ```
 
-Run `make security` to audit only the locked production dependency graphs. It queries OSV for Python dependencies and the npm registry for Node dependencies, so it requires network access.
+Run `make security` to audit only the locked production dependency graphs. Before querying, it verifies that project manifests match their lockfiles without running package scripts. It queries OSV for Python dependencies and the npm registry for Node dependencies, so it requires network access.
 
 ## What you can use today
 

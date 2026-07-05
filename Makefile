@@ -34,7 +34,8 @@ public-tree:
 	uv run --frozen python scripts/check_public_tree.py
 
 security:
-	uv audit --frozen --no-dev
+	uv audit --locked --no-dev
+	pnpm install --lockfile-only --frozen-lockfile --ignore-scripts
 	pnpm audit --prod --audit-level high
 
 release-check: test lint typecheck build public-tree security smoke

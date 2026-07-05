@@ -424,10 +424,14 @@ def test_security_target_audits_only_locked_production_dependencies() -> None:
         "\n\n", maxsplit=1
     )[0]
     assert security_recipe.splitlines() == [
-        "\tuv audit --frozen --no-dev",
+        "\tuv audit --locked --no-dev",
+        "\tpnpm install --lockfile-only --frozen-lockfile --ignore-scripts",
         "\tpnpm audit --prod --audit-level high",
     ]
-    assert "--ignore" not in security_recipe
+    audit_commands = [
+        command for command in security_recipe.splitlines() if " audit " in command
+    ]
+    assert all("--ignore" not in command for command in audit_commands)
 
     release_check = re.search(r"^release-check:\s*(.+)$", makefile, re.MULTILINE)
     assert release_check is not None
@@ -473,7 +477,9 @@ def test_readmes_document_networked_dependency_audits() -> None:
         assert "OSV" in content
         assert "npm registry" in content
     assert "network access" in english.casefold()
+    assert "manifests match their lockfiles" in english
     assert "网络访问" in chinese
+    assert "清单与锁文件一致" in chinese
 
 
 def test_ci_and_release_gate_the_chromium_end_to_end_slice() -> None:
