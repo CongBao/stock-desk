@@ -8,6 +8,7 @@ REDACTED_MARKER: Final = "[REDACTED]"
 _CYCLE_MARKER: Final = "[REDACTION_CYCLE]"
 _DEPTH_MARKER: Final = "[REDACTION_DEPTH]"
 _UNRENDERABLE_LOG_MESSAGE: Final = "[UNRENDERABLE_LOG_MESSAGE]"
+_UNRENDERABLE_VALUE: Final = "[UNRENDERABLE_VALUE]"
 
 
 class SecretRedactor:
@@ -42,7 +43,10 @@ class SecretRedactor:
     def clean(self, value: Any) -> Any:
         with self._lock:
             secrets = self._secrets
-        return self._clean(value, secrets=secrets, depth=0, active=set())
+        try:
+            return self._clean(value, secrets=secrets, depth=0, active=set())
+        except Exception:
+            return _UNRENDERABLE_VALUE
 
     def _clean(
         self,
@@ -75,7 +79,9 @@ class SecretRedactor:
                 )
             finally:
                 active.remove(identity)
-        return value
+        if value is None or isinstance(value, (bool, int, float, complex)):
+            return value
+        return _render_unknown(value, secrets)
 
     def _clean_container(
         self,
@@ -94,7 +100,18 @@ class SecretRedactor:
             )
 
         if isinstance(value, Mapping):
-            return {child(key): child(item) for key, item in value.items()}
+            cleaned_mapping: dict[Any, Any] = {}
+            for index, (key, item) in enumerate(value.items()):
+                cleaned_key = child(key)
+                cleaned_value = child(item)
+                try:
+                    hash(cleaned_key)
+                    cleaned_mapping[cleaned_key] = cleaned_value
+                except Exception:
+                    cleaned_mapping[f"[REDACTED_UNHASHABLE_KEY:{index}]"] = (
+                        cleaned_value
+                    )
+            return cleaned_mapping
         if isinstance(value, list):
             return [child(item) for item in value]
         if isinstance(value, tuple):
@@ -107,9 +124,17 @@ class SecretRedactor:
             except Exception:
                 return cleaned_items
         if isinstance(value, set):
-            return {child(item) for item in value}
+            cleaned_items = [child(item) for item in value]
+            try:
+                return set(cleaned_items)
+            except Exception:
+                return cleaned_items
         if isinstance(value, frozenset):
-            return frozenset(child(item) for item in value)
+            cleaned_items = [child(item) for item in value]
+            try:
+                return frozenset(cleaned_items)
+            except Exception:
+                return cleaned_items
         if isinstance(value, Set):
             cleaned_items = [child(item) for item in value]
             try:
@@ -153,15 +178,14 @@ class RedactingFilter(logging.Filter):
             record.stack_info = str(cleaned_stack)
         if isinstance(record.exc_info, tuple):
             _exception_type, exception, _traceback = record.exc_info
-            cleaned = self._redactor.clean(exception)
-            if isinstance(cleaned, BaseException):
-                record.exc_info = (type(cleaned), cleaned, None)
-            else:
-                record.exc_info = (
-                    RuntimeError,
-                    RuntimeError(str(cleaned)),
-                    None,
-                )
+            try:
+                rendered_exception = str(exception)
+            except Exception:
+                rendered_exception = _UNRENDERABLE_VALUE
+            exception_name = str(self._redactor.clean(type(exception).__name__))
+            exception_message = str(self._redactor.clean(rendered_exception))
+            safe_exception = RuntimeError(f"{exception_name}: {exception_message}")
+            record.exc_info = (RuntimeError, safe_exception, None)
         record.exc_text = None
         return True
 
@@ -193,3 +217,14 @@ def _replace_known_strings(value: str, secrets: tuple[str, ...]) -> str:
         output.append(REDACTED_MARKER)
         position = found + len(secret)
     return "".join(output)
+
+
+def _render_unknown(value: Any, secrets: tuple[str, ...]) -> str:
+    try:
+        rendered = str(value)
+    except Exception:
+        try:
+            rendered = repr(value)
+        except Exception:
+            return _UNRENDERABLE_VALUE
+    return _replace_known_strings(rendered, secrets)

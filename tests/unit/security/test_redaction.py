@@ -1,5 +1,5 @@
 from collections import UserList
-from collections.abc import Iterator, Sequence, Set
+from collections.abc import Iterator, Mapping, Sequence, Set
 import logging
 from typing import Any, overload
 
@@ -89,6 +89,35 @@ class SecretStringObject:
 class UnrenderableObject:
     def __str__(self) -> str:
         raise RuntimeError(f"cannot render {SECRET}")
+
+
+class FullyUnrenderableObject:
+    def __str__(self) -> str:
+        raise RuntimeError(f"cannot stringify {SECRET}")
+
+    def __repr__(self) -> str:
+        raise RuntimeError(f"cannot represent {SECRET}")
+
+
+class SecretStringError(RuntimeError):
+    def __str__(self) -> str:
+        return f"hostile exception {SECRET}"
+
+
+class HashableSecretMapping(Mapping[str, str]):
+    def __init__(self) -> None:
+        self._values = {"credential": SECRET}
+
+    def __getitem__(self, key: str) -> str:
+        return self._values[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._values)
+
+    def __len__(self) -> int:
+        return len(self._values)
+
+    __hash__ = object.__hash__
 
 
 def _render_log(
@@ -242,6 +271,33 @@ def test_clean_handles_a_cyclic_abstract_set_without_leaking() -> None:
     assert "[REDACTION_CYCLE]" in repr(cleaned)
 
 
+def test_clean_falls_back_when_set_items_become_unhashable() -> None:
+    redactor = SecretRedactor([SECRET])
+    mapping = HashableSecretMapping()
+
+    cleaned_set = redactor.clean({mapping})
+    cleaned_frozen = redactor.clean(frozenset((mapping,)))
+
+    assert isinstance(cleaned_set, list)
+    assert isinstance(cleaned_frozen, list)
+    assert SECRET not in repr(cleaned_set)
+    assert SECRET not in repr(cleaned_frozen)
+    assert mapping["credential"] == SECRET
+
+
+def test_clean_fails_closed_when_mapping_keys_become_unhashable() -> None:
+    redactor = SecretRedactor([SECRET])
+    mapping_key = HashableSecretMapping()
+    original = {mapping_key: "safe value"}
+
+    cleaned = redactor.clean(original)
+
+    assert isinstance(cleaned, dict)
+    assert SECRET not in repr(cleaned)
+    assert list(cleaned.values()) == ["safe value"]
+    assert mapping_key in original
+
+
 def test_clean_sanitizes_exception_arguments() -> None:
     redactor = SecretRedactor([SECRET])
     error = ValueError("request failed", {"token": SECRET})
@@ -332,6 +388,70 @@ def test_logging_filter_survives_an_object_that_cannot_be_rendered() -> None:
     assert "UNRENDERABLE" in output
 
 
+def test_logging_filter_sanitizes_unsupported_extra_objects() -> None:
+    redactor = SecretRedactor([SECRET])
+    record = logging.makeLogRecord(
+        {
+            "name": "stock_desk.tests.redaction.extra-object",
+            "levelno": logging.INFO,
+            "levelname": "INFO",
+            "msg": "safe",
+            "args": (),
+            "credential": SecretStringObject(),
+        }
+    )
+
+    RedactingFilter(redactor).filter(record)
+    output = logging.Formatter("%(message)s|%(credential)s").format(record)
+
+    assert SECRET not in output
+    assert REDACTED_MARKER in output
+
+
+def test_logging_filter_fails_closed_for_unrenderable_extra_objects() -> None:
+    redactor = SecretRedactor([SECRET])
+    record = logging.makeLogRecord(
+        {
+            "name": "stock_desk.tests.redaction.unrenderable-extra",
+            "levelno": logging.INFO,
+            "levelname": "INFO",
+            "msg": "safe",
+            "args": (),
+            "credential": FullyUnrenderableObject(),
+        }
+    )
+
+    RedactingFilter(redactor).filter(record)
+    output = logging.Formatter("%(message)s|%(credential)s").format(record)
+
+    assert SECRET not in output
+    assert "UNRENDERABLE" in output
+
+
+def test_logging_filter_handles_unhashable_cleaned_extra_containers() -> None:
+    redactor = SecretRedactor([SECRET])
+    mapping = HashableSecretMapping()
+    record = logging.makeLogRecord(
+        {
+            "name": "stock_desk.tests.redaction.extra-container",
+            "levelno": logging.INFO,
+            "levelname": "INFO",
+            "msg": "safe",
+            "args": (),
+            "payload_set": {mapping},
+            "payload_map": {mapping: "safe value"},
+        }
+    )
+
+    RedactingFilter(redactor).filter(record)
+    output = logging.Formatter("%(message)s|%(payload_set)s|%(payload_map)s").format(
+        record
+    )
+
+    assert SECRET not in output
+    assert REDACTED_MARKER in output
+
+
 def test_logging_filter_sanitizes_exception_traceback_and_cached_text() -> None:
     redactor = SecretRedactor([SECRET])
     try:
@@ -349,6 +469,27 @@ def test_logging_filter_sanitizes_exception_traceback_and_cached_text() -> None:
     if record.exc_info is not None:
         assert SECRET not in str(record.exc_info[1])
     assert "RuntimeError" in output
+
+
+def test_logging_filter_sanitizes_an_exception_with_custom_stringification() -> None:
+    redactor = SecretRedactor([SECRET])
+    error = SecretStringError()
+    record = logging.makeLogRecord(
+        {
+            "name": "stock_desk.tests.redaction.hostile-exception",
+            "levelno": logging.ERROR,
+            "levelname": "ERROR",
+            "msg": "failed",
+            "args": (),
+            "exc_info": (SecretStringError, error, None),
+        }
+    )
+
+    RedactingFilter(redactor).filter(record)
+    output = logging.Formatter("%(message)s").format(record)
+
+    assert SECRET not in output
+    assert REDACTED_MARKER in output
 
 
 def test_logging_filter_sanitizes_cached_exception_and_stack_text() -> None:
