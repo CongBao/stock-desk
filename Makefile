@@ -8,7 +8,7 @@ dev:
 	uv run --frozen python scripts/dev.py
 
 test:
-	uv run --frozen pytest -W error --cov=src/stock_desk --cov=scripts --cov-branch --cov-report=term-missing --cov-report=xml:coverage.xml --cov-fail-under=85
+	uv run --frozen pytest -W error --cov=src/stock_desk --cov=scripts --cov=migrations --cov-branch --cov-report=term-missing --cov-report=xml:coverage.xml --cov-fail-under=85
 	pnpm test
 
 lint:

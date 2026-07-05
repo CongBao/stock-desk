@@ -68,7 +68,7 @@ markers = [
 
 [tool.coverage.run]
 branch = true
-source = ["src/stock_desk", "scripts"]
+source = ["src/stock_desk", "scripts", "migrations"]
 
 [tool.coverage.report]
 fail_under = 85

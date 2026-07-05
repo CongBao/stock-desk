@@ -64,7 +64,7 @@ jobs:
       - name: Test Python
         run: >-
           uv run --frozen pytest -W error --junitxml=python-test-results.xml
-          --cov=src/stock_desk --cov=scripts --cov-branch
+          --cov=src/stock_desk --cov=scripts --cov=migrations --cov-branch
           --cov-report=term-missing --cov-report=xml:coverage.xml
           --cov-fail-under=85
       - name: Build Python package

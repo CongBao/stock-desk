@@ -331,7 +331,7 @@ def test_coverage_tooling_and_numeric_thresholds_are_locked() -> None:
     assert any(dependency.startswith("pytest-cov") for dependency in dev_dependencies)
     assert pyproject["tool"]["coverage"]["run"] == {
         "branch": True,
-        "source": ["src/stock_desk", "scripts"],
+        "source": ["src/stock_desk", "scripts", "migrations"],
     }
     python_threshold = pyproject["tool"]["coverage"]["report"]["fail_under"]
     assert isinstance(python_threshold, int)
@@ -370,6 +370,7 @@ def test_make_test_enforces_coverage_and_writes_reports() -> None:
     for required in (
         "--cov=src/stock_desk",
         "--cov=scripts",
+        "--cov=migrations",
         "--cov-branch",
         "--cov-report=term-missing",
         "--cov-report=xml:coverage.xml",
@@ -388,6 +389,7 @@ def test_ci_uploads_coverage_reports_and_release_uses_canonical_test() -> None:
     for required in (
         "--cov=src/stock_desk",
         "--cov=scripts",
+        "--cov=migrations",
         "--cov-branch",
         "--cov-report=xml:coverage.xml",
         "--cov-fail-under=85",
