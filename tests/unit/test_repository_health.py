@@ -519,13 +519,51 @@ def test_release_workflow_is_tag_only_and_scopes_write_permission() -> None:
     )
     assert "gh release create" in release
     assert "GH_REPO: ${{ github.repository }}" in release
-    assert "sha256sum dist/* > dist/SHA256SUMS" in release
+    assert "sha256sum -- *.whl *.tar.gz > SHA256SUMS" in release
     assert "${GITHUB_REF_NAME#v}" in release
     assert (
         "from scripts.verify_release import check_changelog, check_versions" in release
     )
     assert 'os.environ["RELEASE_VERSION"]' in release
     assert "publish" not in release.casefold()
+
+
+def test_release_checksum_manifest_is_flat_and_verified_before_publish() -> None:
+    workflow = _load_github_actions_yaml(_read(".github/workflows/release.yml"))
+    verify_steps = workflow["jobs"]["verify"]["steps"]
+    prepare_step = next(
+        step
+        for step in verify_steps
+        if step.get("name") == "Prepare checksummed assets"
+    )
+    prepare_commands = [
+        line.strip() for line in prepare_step["run"].splitlines() if line.strip()
+    ]
+    checksum_commands = [
+        command for command in prepare_commands if command.startswith("sha256sum")
+    ]
+
+    assert checksum_commands == ["sha256sum -- *.whl *.tar.gz > SHA256SUMS"]
+    assert all("dist/" not in command for command in checksum_commands)
+    assert prepare_commands.index("cd dist") < prepare_commands.index(
+        checksum_commands[0]
+    )
+
+    release_steps = workflow["jobs"]["release"]["steps"]
+    checksum_step = next(
+        step
+        for step in release_steps
+        if step.get("name") == "Verify release asset checksums"
+    )
+    create_step_index = next(
+        index
+        for index, step in enumerate(release_steps)
+        if step.get("name") == "Create GitHub release"
+    )
+
+    assert checksum_step["working-directory"] == "release-assets"
+    assert checksum_step["run"] == "sha256sum -c SHA256SUMS"
+    assert release_steps.index(checksum_step) < create_step_index
 
 
 def test_codeowners_covers_source_web_docs_tests_and_automation() -> None:

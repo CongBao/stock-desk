@@ -53,23 +53,90 @@ class FakeGateRunner:
             write_valid_artifacts(self.repo, project["project"]["version"])
 
 
+def metadata_payload(name: str, version: str) -> str:
+    return f"Metadata-Version: 2.4\nName: {name}\nVersion: {version}\n\n"
+
+
+def write_wheel(
+    repo: Path,
+    version: str,
+    *,
+    metadata_name: str = "stock-desk",
+    metadata_version: str | None = None,
+    unrelated_only: bool = False,
+) -> None:
+    package_dist = repo / "dist"
+    package_dist.mkdir(exist_ok=True)
+    wheel = package_dist / f"stock_desk-{version}-py3-none-any.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        if unrelated_only:
+            archive.writestr("unrelated.txt", b"not a wheel payload\n")
+            return
+        dist_info = f"stock_desk-{version}.dist-info"
+        archive.writestr("stock_desk/__init__.py", b"__version__ = 'fixture'\n")
+        archive.writestr(
+            f"{dist_info}/METADATA",
+            metadata_payload(
+                metadata_name, metadata_version if metadata_version else version
+            ),
+        )
+        archive.writestr(
+            f"{dist_info}/WHEEL",
+            "Wheel-Version: 1.0\nGenerator: test fixture\nRoot-Is-Purelib: true\n",
+        )
+        archive.writestr(f"{dist_info}/RECORD", "stock_desk/__init__.py,,\n")
+
+
+def add_tar_text(archive: tarfile.TarFile, name: str, content: str) -> None:
+    payload = content.encode()
+    metadata = tarfile.TarInfo(name)
+    metadata.size = len(payload)
+    archive.addfile(metadata, io.BytesIO(payload))
+
+
+def write_sdist(
+    repo: Path,
+    version: str,
+    *,
+    metadata_name: str = "stock-desk",
+    metadata_version: str | None = None,
+    unrelated_only: bool = False,
+) -> None:
+    package_dist = repo / "dist"
+    package_dist.mkdir(exist_ok=True)
+    source = package_dist / f"stock_desk-{version}.tar.gz"
+    with tarfile.open(source, "w:gz") as archive:
+        root = f"stock_desk-{version}"
+        if unrelated_only:
+            add_tar_text(archive, f"{root}/unrelated.txt", "not an sdist payload\n")
+            return
+        add_tar_text(
+            archive,
+            f"{root}/pyproject.toml",
+            f'[project]\nname = "stock-desk"\nversion = "{version}"\n',
+        )
+        add_tar_text(
+            archive,
+            f"{root}/PKG-INFO",
+            metadata_payload(
+                metadata_name, metadata_version if metadata_version else version
+            ),
+        )
+        add_tar_text(
+            archive,
+            f"{root}/src/stock_desk/__init__.py",
+            "__version__ = 'fixture'\n",
+        )
+
+
 def write_valid_artifacts(repo: Path, version: str) -> None:
     web_dist = repo / "web" / "dist"
     web_dist.mkdir(parents=True, exist_ok=True)
     (web_dist / "index.html").write_text(
         "<!doctype html><title>stock-desk</title>", encoding="utf-8"
     )
-    package_dist = repo / "dist"
-    package_dist.mkdir(exist_ok=True)
-    wheel = package_dist / f"stock_desk-{version}-py3-none-any.whl"
-    with zipfile.ZipFile(wheel, "w") as archive:
-        archive.writestr("stock_desk/__init__.py", b"__version__ = 'fixture'\n")
-    source = package_dist / f"stock_desk-{version}.tar.gz"
-    payload = b"fixture\n"
-    metadata = tarfile.TarInfo(f"stock_desk-{version}/README.md")
-    metadata.size = len(payload)
-    with tarfile.open(source, "w:gz") as archive:
-        archive.addfile(metadata, io.BytesIO(payload))
+    write_wheel(repo, version)
+    write_sdist(repo, version)
 
 
 @pytest.fixture
@@ -333,6 +400,48 @@ def test_accepts_exact_valid_current_release_artifacts(release_repo: Path) -> No
     write_valid_artifacts(release_repo, "0.1.0")
 
     check_build_artifacts(release_repo, "0.1.0")
+
+
+@pytest.mark.parametrize("artifact", ["wheel", "sdist"])
+def test_rejects_valid_archives_with_only_unrelated_files(
+    release_repo: Path, artifact: str
+) -> None:
+    write_valid_artifacts(release_repo, "0.1.0")
+    if artifact == "wheel":
+        write_wheel(release_repo, "0.1.0", unrelated_only=True)
+    else:
+        write_sdist(release_repo, "0.1.0", unrelated_only=True)
+
+    with pytest.raises(ReleaseVerificationError, match="build artifact"):
+        check_build_artifacts(release_repo, "0.1.0")
+
+
+@pytest.mark.parametrize("artifact", ["wheel", "sdist"])
+def test_rejects_package_metadata_with_a_different_version(
+    release_repo: Path, artifact: str
+) -> None:
+    write_valid_artifacts(release_repo, "0.1.0")
+    if artifact == "wheel":
+        write_wheel(release_repo, "0.1.0", metadata_version="0.2.0")
+    else:
+        write_sdist(release_repo, "0.1.0", metadata_version="0.2.0")
+
+    with pytest.raises(ReleaseVerificationError, match="build artifact"):
+        check_build_artifacts(release_repo, "0.1.0")
+
+
+@pytest.mark.parametrize("artifact", ["wheel", "sdist"])
+def test_rejects_package_metadata_with_a_different_name(
+    release_repo: Path, artifact: str
+) -> None:
+    write_valid_artifacts(release_repo, "0.1.0")
+    if artifact == "wheel":
+        write_wheel(release_repo, "0.1.0", metadata_name="another-package")
+    else:
+        write_sdist(release_repo, "0.1.0", metadata_name="another-package")
+
+    with pytest.raises(ReleaseVerificationError, match="build artifact"):
+        check_build_artifacts(release_repo, "0.1.0")
 
 
 def test_rejects_wrong_or_empty_release_artifacts(release_repo: Path) -> None:

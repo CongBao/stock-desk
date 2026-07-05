@@ -4,6 +4,8 @@ import argparse
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
+from email.parser import BytesParser
+from email.policy import default as default_email_policy
 import json
 import os
 from pathlib import Path
@@ -205,6 +207,62 @@ def check_public_history(repo: Path) -> None:
         )
 
 
+def _check_package_metadata(
+    payload: bytes, version: str, artifact_description: str
+) -> None:
+    metadata = BytesParser(policy=default_email_policy).parsebytes(payload)
+    names = [str(value) for value in metadata.get_all("Name", [])]
+    versions = [str(value) for value in metadata.get_all("Version", [])]
+    if metadata.defects or names != ["stock-desk"] or versions != [version]:
+        raise ReleaseVerificationError(
+            f"release {artifact_description} build artifact is invalid"
+        )
+
+
+def _check_wheel_artifact(wheel_path: Path, version: str) -> None:
+    dist_info = f"stock_desk-{version}.dist-info"
+    metadata_path = f"{dist_info}/METADATA"
+    required_members = {
+        "stock_desk/__init__.py",
+        metadata_path,
+        f"{dist_info}/WHEEL",
+        f"{dist_info}/RECORD",
+    }
+    with zipfile.ZipFile(wheel_path) as wheel:
+        members = wheel.namelist()
+        if (
+            wheel.testzip() is not None
+            or len(members) != len(set(members))
+            or not required_members.issubset(members)
+            or any(wheel.getinfo(member).is_dir() for member in required_members)
+        ):
+            raise ReleaseVerificationError("release wheel build artifact is invalid")
+        _check_package_metadata(wheel.read(metadata_path), version, "wheel")
+
+
+def _check_source_artifact(source_path: Path, version: str) -> None:
+    root = f"stock_desk-{version}"
+    metadata_path = f"{root}/PKG-INFO"
+    required_members = {
+        f"{root}/pyproject.toml",
+        metadata_path,
+        f"{root}/src/stock_desk/__init__.py",
+    }
+    with tarfile.open(source_path, "r:gz") as source:
+        members = source.getmembers()
+        members_by_name = {member.name: member for member in members}
+        if (
+            len(members) != len(members_by_name)
+            or not required_members.issubset(members_by_name)
+            or any(not members_by_name[name].isfile() for name in required_members)
+        ):
+            raise ReleaseVerificationError("release source build artifact is invalid")
+        metadata_file = source.extractfile(members_by_name[metadata_path])
+        if metadata_file is None:
+            raise ReleaseVerificationError("release source build artifact is invalid")
+        _check_package_metadata(metadata_file.read(), version, "source")
+
+
 def check_build_artifacts(repo: Path, version: str) -> None:
     if VERSION_PATTERN.fullmatch(version) is None:
         raise ReleaseVerificationError("release build artifact version is invalid")
@@ -239,17 +297,15 @@ def check_build_artifacts(repo: Path, version: str) -> None:
     ):
         raise ReleaseVerificationError("release Python build artifact set is invalid")
     try:
-        with zipfile.ZipFile(expected_wheel) as wheel:
-            if not wheel.namelist() or wheel.testzip() is not None:
-                raise ReleaseVerificationError(
-                    "release wheel build artifact is invalid"
-                )
-        with tarfile.open(expected_source, "r:gz") as source:
-            if not source.getmembers():
-                raise ReleaseVerificationError(
-                    "release source build artifact is invalid"
-                )
-    except (OSError, tarfile.TarError, zipfile.BadZipFile) as error:
+        _check_wheel_artifact(expected_wheel, version)
+        _check_source_artifact(expected_source, version)
+    except (
+        KeyError,
+        OSError,
+        RuntimeError,
+        tarfile.TarError,
+        zipfile.BadZipFile,
+    ) as error:
         raise ReleaseVerificationError(
             "release Python build artifact is invalid"
         ) from error
