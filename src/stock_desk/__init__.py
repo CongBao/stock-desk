@@ -1,0 +1,1 @@
+"""Stock Desk application package."""
