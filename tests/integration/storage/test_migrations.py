@@ -8,6 +8,7 @@ from stock_desk.storage.database import create_engine_for_url, downgrade, migrat
 
 
 CORE_TABLES = {"app_setting", "task_run"}
+APP_SETTING_COLUMNS = {"key", "encrypted_value", "updated_at"}
 TASK_RUN_COLUMNS = {
     "id",
     "kind",
@@ -38,6 +39,9 @@ def test_upgrade_creates_core_tables(tmp_path: Path) -> None:
     try:
         inspector = inspect(engine)
         assert CORE_TABLES <= set(inspector.get_table_names())
+        assert APP_SETTING_COLUMNS == {
+            column["name"] for column in inspector.get_columns("app_setting")
+        }
         assert TASK_RUN_COLUMNS <= {
             column["name"] for column in inspector.get_columns("task_run")
         }
@@ -79,12 +83,21 @@ def test_migration_paths_do_not_depend_on_caller_cwd(
     nested_cwd = tmp_path / "elsewhere" / "nested"
     nested_cwd.mkdir(parents=True)
     database_path = tmp_path / "from-anywhere.db"
+    url = f"sqlite:///{database_path}"
     monkeypatch.chdir(nested_cwd)
 
-    migrate(f"sqlite:///{database_path}")
-    engine = create_engine_for_url(f"sqlite:///{database_path}")
+    migrate(url)
+    engine = create_engine_for_url(url)
 
     try:
         assert CORE_TABLES <= set(inspect(engine).get_table_names())
+    finally:
+        _dispose(engine)
+
+    downgrade(url, "base")
+    engine = create_engine_for_url(url)
+
+    try:
+        assert CORE_TABLES.isdisjoint(inspect(engine).get_table_names())
     finally:
         _dispose(engine)
