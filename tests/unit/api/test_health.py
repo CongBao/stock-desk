@@ -5,7 +5,8 @@ from stock_desk.main import create_app
 
 
 def test_health_exposes_name_and_status() -> None:
-    response = TestClient(create_app()).get("/api/health")
+    with TestClient(create_app()) as client:
+        response = client.get("/api/health")
 
     assert response.status_code == 200
     assert response.json() == {
@@ -18,7 +19,8 @@ def test_health_exposes_name_and_status() -> None:
 def test_custom_app_title_does_not_change_health_identity() -> None:
     application = create_app(Settings(app_name="My Stock Desk"))
 
-    response = TestClient(application).get("/api/health")
+    with TestClient(application) as client:
+        response = client.get("/api/health")
 
     assert application.title == "My Stock Desk"
     assert response.json()["name"] == "stock-desk"
