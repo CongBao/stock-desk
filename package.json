@@ -1,0 +1,12 @@
+{
+  "name": "stock-desk-workspace",
+  "private": true,
+  "packageManager": "pnpm@11.7.0",
+  "scripts": {
+    "build": "pnpm --dir web build",
+    "format:check": "pnpm --dir web format:check",
+    "lint": "pnpm --dir web lint",
+    "test": "pnpm --dir web test --run",
+    "typecheck": "pnpm --dir web typecheck"
+  }
+}
