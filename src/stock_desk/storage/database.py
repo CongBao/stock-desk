@@ -1,9 +1,11 @@
 from collections.abc import Callable
 from pathlib import Path
+from threading import Lock
 from urllib.parse import unquote
 
 from alembic import command
 from alembic.config import Config
+from filelock import FileLock
 from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.engine import URL, make_url
 from sqlalchemy.engine.interfaces import DBAPIConnection
@@ -14,6 +16,8 @@ _PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 _REPOSITORY_CONFIG_PATH = Path(__file__).resolve().parents[3] / "alembic.ini"
 _PACKAGED_CONFIG_PATH = _PACKAGE_ROOT / "alembic.ini"
 _SQLITE_BUSY_TIMEOUT_MS = 5_000
+_MIGRATION_LOCK_TIMEOUT_SECONDS = 30
+_MIGRATION_THREAD_LOCK = Lock()
 
 
 def _configure_sqlite_connection(
@@ -105,7 +109,29 @@ def _alembic_config(url: str) -> Config:
 def _run_alembic_command(
     operation: Callable[[Config, str], None], url: str, revision: str
 ) -> None:
-    operation(_alembic_config(url), revision)
+    """Run Alembic safely within this process and for writable SQLite files.
+
+    Alembic's context proxies require the thread lock for every backend. A portable
+    process lock is additionally safe for writable file-backed SQLite databases;
+    memory SQLite and server databases require coordination owned by their caller.
+    """
+    parsed_url = make_url(url)
+    lock_path: Path | None = None
+    if (
+        parsed_url.get_backend_name() == "sqlite"
+        and not _sqlite_is_memory(parsed_url)
+        and not _sqlite_is_read_only(parsed_url)
+    ):
+        _prepare_sqlite_file(parsed_url)
+        database_path = _sqlite_database_path(parsed_url)
+        lock_path = database_path.with_name(f"{database_path.name}.migrate.lock")
+
+    with _MIGRATION_THREAD_LOCK:
+        if lock_path is None:
+            operation(_alembic_config(url), revision)
+            return
+        with FileLock(lock_path, timeout=_MIGRATION_LOCK_TIMEOUT_SECONDS):
+            operation(_alembic_config(url), revision)
 
 
 def migrate(url: str, revision: str = "head") -> None:
