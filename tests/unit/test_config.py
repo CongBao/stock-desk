@@ -17,6 +17,7 @@ def isolate_settings_cache(
         "STOCK_DESK_DATA_DIR",
         "STOCK_DESK_DATABASE_URL",
         "STOCK_DESK_MASTER_KEY",
+        "STOCK_DESK_WEB_DIST_DIR",
     ):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.chdir(tmp_path)
@@ -32,6 +33,7 @@ def test_settings_defaults() -> None:
     assert settings.data_dir == Path("data")
     assert settings.database_url == "sqlite:///data/stock-desk.db"
     assert settings.master_key is None
+    assert settings.web_dist_dir is None
 
 
 def test_settings_use_prefixed_environment_variables(
@@ -43,12 +45,14 @@ def test_settings_use_prefixed_environment_variables(
         "STOCK_DESK_DATABASE_URL",
         "sqlite:////tmp/personal-stock-desk.db",
     )
+    monkeypatch.setenv("STOCK_DESK_WEB_DIST_DIR", "/srv/stock-desk/web")
 
     settings = Settings()
 
     assert settings.app_name == "Personal Desk"
     assert settings.data_dir == Path("/tmp/stock-desk-data")
     assert settings.database_url == "sqlite:////tmp/personal-stock-desk.db"
+    assert settings.web_dist_dir == Path("/srv/stock-desk/web")
 
 
 def test_master_key_is_loaded_as_secret_without_plaintext_representation(

@@ -8,6 +8,7 @@ from stock_desk.api.health import router as health_router
 from stock_desk.api.tasks import router as tasks_router
 from stock_desk.config import Settings, get_settings
 from stock_desk.tasks.repository import TaskRepository
+from stock_desk.web import install_web_routes
 
 
 def create_app(
@@ -43,6 +44,8 @@ def create_app(
     application.state.task_repository_provider = provide_task_repository
     application.include_router(health_router, prefix="/api")
     application.include_router(tasks_router, prefix="/api")
+    if resolved_settings.web_dist_dir is not None:
+        install_web_routes(application, resolved_settings.web_dist_dir)
     return application
 
 

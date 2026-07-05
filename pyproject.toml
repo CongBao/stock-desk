@@ -37,6 +37,9 @@ dev = [
 testpaths = ["tests"]
 pythonpath = ["."]
 filterwarnings = ["error"]
+markers = [
+    "container: opt-in tests for an already-running Docker Compose stack",
+]
 
 [tool.ruff]
 target-version = "py312"

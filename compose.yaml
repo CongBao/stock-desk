@@ -1,0 +1,45 @@
+name: stock-desk
+
+x-stock-desk-service: &stock-desk-service
+  image: stock-desk:local
+  env_file:
+    - path: .env
+      required: false
+  environment:
+    STOCK_DESK_DATA_DIR: /app/data
+    STOCK_DESK_DATABASE_URL: sqlite:////app/data/stock-desk.db
+    STOCK_DESK_WEB_DIST_DIR: /app/web-dist
+  init: true
+  restart: unless-stopped
+  user: "${STOCK_DESK_UID:-1000}:${STOCK_DESK_GID:-1000}"
+  volumes:
+    - ./data:/app/data
+
+services:
+  api:
+    <<: *stock-desk-service
+    build:
+      context: .
+      target: runtime
+    pull_policy: build
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import json, urllib.request;
+          response = urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=2);
+          assert response.status == 200 and json.load(response) ==
+          {'name': 'stock-desk', 'status': 'ok', 'api_version': 'v1'}
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  worker:
+    <<: *stock-desk-service
+    command: ["python", "-m", "stock_desk.tasks.worker"]
+    pull_policy: never

@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     data_dir: Path = Path("data")
     database_url: str = "sqlite:///data/stock-desk.db"
     master_key: SecretStr | None = None
+    web_dist_dir: Path | None = None
 
 
 @lru_cache
