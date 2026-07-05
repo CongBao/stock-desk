@@ -61,6 +61,32 @@ def test_configured_web_dist_serves_assets_with_safe_cache_headers(
     assert response.text == "console.log('stock-desk')"
 
 
+def test_static_allowlist_is_frozen_when_the_app_is_created(tmp_path: Path) -> None:
+    dist = _web_dist(tmp_path)
+    app = create_app(Settings(web_dist_dir=dist))
+    late_asset = dist / "assets" / "late.js"
+    late_asset.write_text("console.log('too late')", encoding="utf-8")
+
+    with TestClient(app) as client:
+        response = client.get("/assets/late.js")
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Not Found"}
+
+
+def test_encoded_traversal_cannot_escape_the_static_allowlist(tmp_path: Path) -> None:
+    dist = _web_dist(tmp_path)
+    outside_secret = tmp_path / "secret.txt"
+    outside_secret.write_text("not public", encoding="utf-8")
+
+    with TestClient(create_app(Settings(web_dist_dir=dist))) as client:
+        response = client.get("/assets/%2e%2e/%2e%2e/secret.txt")
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Not Found"}
+    assert "not public" not in response.text
+
+
 def test_missing_asset_and_unknown_api_remain_json_404(tmp_path: Path) -> None:
     dist = _web_dist(tmp_path)
 
@@ -101,6 +127,51 @@ def test_index_symlink_resolving_outside_dist_fails_clearly(tmp_path: Path) -> N
 
     with pytest.raises(RuntimeError, match="index.html must resolve inside"):
         create_app(Settings(web_dist_dir=dist))
+
+
+def test_static_symlink_resolving_outside_dist_fails_at_app_creation(
+    tmp_path: Path,
+) -> None:
+    dist = _web_dist(tmp_path)
+    outside_asset = tmp_path / "outside.js"
+    outside_asset.write_text("not public", encoding="utf-8")
+    try:
+        (dist / "assets" / "leak.js").symlink_to(outside_asset)
+    except (NotImplementedError, OSError) as error:
+        pytest.skip(f"symlink creation is unavailable: {error}")
+
+    with pytest.raises(RuntimeError, match="static member must not be a symlink"):
+        create_app(Settings(web_dist_dir=dist))
+
+
+def test_static_special_member_fails_at_app_creation(tmp_path: Path) -> None:
+    dist = _web_dist(tmp_path)
+    special_member = dist / "assets" / "events"
+    try:
+        os.mkfifo(special_member)
+    except (AttributeError, NotImplementedError, OSError) as error:
+        pytest.skip(f"FIFO creation is unavailable: {error}")
+
+    with pytest.raises(RuntimeError, match="static member must be a regular file"):
+        create_app(Settings(web_dist_dir=dist))
+
+
+def test_unreadable_static_member_fails_at_app_creation(tmp_path: Path) -> None:
+    dist = _web_dist(tmp_path)
+    asset = dist / "assets" / "app-abc123.js"
+    original_mode = stat.S_IMODE(asset.stat().st_mode)
+    try:
+        try:
+            asset.chmod(0)
+        except (NotImplementedError, OSError) as error:
+            pytest.skip(f"file permission changes are unavailable: {error}")
+        if os.access(asset, os.R_OK):
+            pytest.skip("platform does not enforce owner read permissions")
+
+        with pytest.raises(RuntimeError, match="static member must be readable"):
+            create_app(Settings(web_dist_dir=dist))
+    finally:
+        asset.chmod(original_mode)
 
 
 def test_unreadable_index_fails_at_app_creation(tmp_path: Path) -> None:

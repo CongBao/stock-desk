@@ -46,6 +46,7 @@ REQUIRED_FILES = {
     ".github/ISSUE_TEMPLATE/config.yml",
     ".github/pull_request_template.md",
     ".github/dependabot.yml",
+    ".github/codeql/codeql-config.yml",
     ".github/workflows/ci.yml",
     ".github/workflows/codeql.yml",
     ".github/workflows/release.yml",
@@ -297,6 +298,25 @@ def test_workflows_have_least_permissions_timeouts_and_bounded_concurrency() -> 
     assert "security-events: write" in codeql
     assert "javascript-typescript" in codeql
     assert "python" in codeql
+
+
+def test_codeql_excludes_only_nonproduction_adversarial_tests() -> None:
+    config = _load_yaml(".github/codeql/codeql-config.yml")
+    assert config == {
+        "name": "Stock Desk CodeQL configuration",
+        "paths-ignore": ["tests/**"],
+    }
+
+    workflow = _load_github_actions_yaml(_read(".github/workflows/codeql.yml"))
+    initialize_steps = [
+        step
+        for step in workflow["jobs"]["analyze"]["steps"]
+        if step.get("name") == "Initialize CodeQL"
+    ]
+    assert len(initialize_steps) == 1
+    assert initialize_steps[0]["with"]["config-file"] == (
+        "./.github/codeql/codeql-config.yml"
+    )
 
 
 def test_ci_runs_native_and_container_gates_with_cleanup_and_artifacts() -> None:
