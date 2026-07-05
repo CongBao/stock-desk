@@ -1,0 +1,1 @@
+"""Stock Desk Alembic revisions."""
