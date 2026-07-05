@@ -1,0 +1,157 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  public-tree:
+    name: Public tree and repository health
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+      - name: Set up uv
+        uses: astral-sh/setup-uv@d31148d669074a8d0a63714ba94f3201e7020bc3 # v8.3.0
+        with:
+          enable-cache: true
+      - name: Install locked Python dependencies
+        run: uv sync --frozen --all-groups
+      - name: Audit public tree
+        run: make public-tree
+      - name: Verify repository contracts
+        run: uv run --frozen pytest -W error tests/unit/test_repository_health.py
+
+  python:
+    name: Python quality, tests, and package
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+      - name: Set up uv
+        uses: astral-sh/setup-uv@d31148d669074a8d0a63714ba94f3201e7020bc3 # v8.3.0
+        with:
+          enable-cache: true
+      - name: Install locked dependencies
+        run: uv sync --frozen --all-groups
+      - name: Check Python formatting
+        run: uv run --frozen ruff format --check .
+      - name: Lint Python
+        run: uv run --frozen ruff check .
+      - name: Type-check Python
+        run: uv run --frozen mypy --strict src scripts
+      - name: Scan Python security rules
+        run: uv run --frozen bandit -q -ll -r src scripts
+      - name: Test Python
+        run: uv run --frozen pytest -W error --junitxml=python-test-results.xml
+      - name: Build Python package
+        run: uv build --no-build-isolation
+      - name: Upload Python results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: python-results
+          path: |
+            python-test-results.xml
+            dist/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  web:
+    name: Web quality, tests, and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Set up pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 11.7.0
+          run_install: false
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - name: Install locked web dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Check web formatting
+        run: pnpm format:check
+      - name: Lint web
+        run: pnpm lint
+      - name: Type-check web
+        run: pnpm typecheck
+      - name: Test web
+        run: pnpm test
+      - name: Build web
+        run: pnpm build
+      - name: Upload web build
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: web-dist
+          path: web/dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  container:
+    name: Clean Compose build and smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+      - name: Set up uv
+        uses: astral-sh/setup-uv@d31148d669074a8d0a63714ba94f3201e7020bc3 # v8.3.0
+        with:
+          enable-cache: true
+      - name: Install smoke-test dependencies
+        run: uv sync --frozen --all-groups
+      - name: Build, start, and smoke-test Compose
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          : > compose.log
+          cleanup() {
+            status=$?
+            docker compose logs --no-color > compose.log 2>&1 || true
+            docker compose down --volumes --remove-orphans || true
+            exit "$status"
+          }
+          trap cleanup EXIT
+          docker compose down --volumes --remove-orphans
+          docker compose build --pull
+          docker compose up --wait --no-build
+          make smoke
+      - name: Upload Compose logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: compose-logs
+          path: compose.log
+          if-no-files-found: error
+          retention-days: 7

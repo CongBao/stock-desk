@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/CongBao/stock-desk/security/advisories/new
+    about: Report vulnerabilities privately; do not create a public issue.
+  - name: Support guide
+    url: https://github.com/CongBao/stock-desk/blob/main/SUPPORT.md
+    about: Review support scope and the diagnostic information to provide.

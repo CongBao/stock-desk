@@ -624,6 +624,7 @@ dev = [
     { name = "httpx2" },
     { name = "mypy" },
     { name = "pytest" },
+    { name = "pyyaml" },
     { name = "ruff" },
 ]
 
@@ -645,6 +646,7 @@ dev = [
     { name = "httpx2", specifier = ">=2,<3" },
     { name = "mypy", specifier = ">=1.17,<2" },
     { name = "pytest", specifier = ">=8.4,<9" },
+    { name = "pyyaml", specifier = ">=6.0,<7" },
     { name = "ruff", specifier = ">=0.12,<1" },
 ]
 

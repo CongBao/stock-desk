@@ -1,0 +1,37 @@
+name: Feature request
+description: Propose a scoped improvement to Stock Desk
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Explain the user problem before the solution. Do not include secrets,
+        account details, personal data, or licensed market data.
+  - type: textarea
+    id: problem
+    attributes:
+      label: User problem
+      description: Who is affected, and what are they unable to do safely today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed outcome
+      description: Describe observable behavior, not private or sensitive data.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Note workarounds or smaller approaches you evaluated.
+  - type: checkboxes
+    id: conduct
+    attributes:
+      label: Code of Conduct
+      options:
+        - label: I agree to follow the project's Code of Conduct.
+          required: true

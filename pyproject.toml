@@ -1,7 +1,23 @@
 [project]
 name = "stock-desk"
 version = "0.1.0"
+description = "Local-first foundation for a personal A-share research workspace"
+readme = "README.md"
+license = "Apache-2.0"
+authors = [
+    { name = "CongBao", email = "bao_cong@outlook.com" },
+]
 requires-python = ">=3.12,<3.13"
+keywords = ["a-share", "fastapi", "react", "stock-analysis"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: FastAPI",
+    "Intended Audience :: Financial and Insurance Industry",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Office/Business :: Financial :: Investment",
+]
 dependencies = [
     "alembic>=1.16,<2",
     "cryptography>=45,<47",
@@ -11,6 +27,13 @@ dependencies = [
     "sqlalchemy>=2.0,<3",
     "uvicorn[standard]>=0.35,<1",
 ]
+
+[project.urls]
+Homepage = "https://github.com/CongBao/stock-desk"
+Documentation = "https://github.com/CongBao/stock-desk/blob/main/docs/architecture.md"
+Repository = "https://github.com/CongBao/stock-desk"
+Issues = "https://github.com/CongBao/stock-desk/issues"
+Security = "https://github.com/CongBao/stock-desk/security/advisories/new"
 
 [build-system]
 requires = ["hatchling>=1.27,<2"]
@@ -29,6 +52,7 @@ dev = [
     "hatchling>=1.27,<2",
     "httpx2>=2,<3",
     "mypy>=1.17,<2",
+    "pyyaml>=6.0,<7",
     "pytest>=8.4,<9",
     "ruff>=0.12,<1",
 ]
