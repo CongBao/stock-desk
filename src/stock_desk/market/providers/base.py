@@ -143,6 +143,11 @@ class ProviderInvalidResponse(ProviderClientError):
     safe_detail = "provider response is invalid"
 
 
+class ProviderCorrupt(ProviderClientError):
+    reason = FailureReason.CORRUPT
+    safe_detail = "provider data is corrupt"
+
+
 class ProviderNoData(ProviderClientError):
     reason = FailureReason.NO_DATA
     safe_detail = "provider returned no data"

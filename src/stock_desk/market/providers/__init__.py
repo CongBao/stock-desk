@@ -9,6 +9,7 @@ from stock_desk.market.providers.base import (
     ProviderBatchFailure,
     ProviderBarTable,
     ProviderClientError,
+    ProviderCorrupt,
     ProviderInvalidResponse,
     ProviderMissingCoverage,
     ProviderOperation,
@@ -19,6 +20,13 @@ from stock_desk.market.providers.base import (
     ProviderUnsupported,
 )
 from stock_desk.market.providers.tushare import TushareProvider
+from stock_desk.market.providers.tdx_local import (
+    TdxInspectionFailure,
+    TdxInspectionOutcome,
+    TdxInspectionSuccess,
+    TdxLocalProvider,
+    TdxMarketFileCount,
+)
 
 
 __all__ = [
@@ -32,6 +40,7 @@ __all__ = [
     "ProviderBatchFailure",
     "ProviderBarTable",
     "ProviderClientError",
+    "ProviderCorrupt",
     "ProviderInvalidResponse",
     "ProviderMissingCoverage",
     "ProviderOperation",
@@ -41,4 +50,9 @@ __all__ = [
     "ProviderUnavailable",
     "ProviderUnsupported",
     "TushareProvider",
+    "TdxInspectionFailure",
+    "TdxInspectionOutcome",
+    "TdxInspectionSuccess",
+    "TdxLocalProvider",
+    "TdxMarketFileCount",
 ]
