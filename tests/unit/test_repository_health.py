@@ -621,6 +621,18 @@ def test_project_metadata_is_complete_and_points_to_the_public_repository() -> N
     }
 
 
+def test_sdist_uses_an_explicit_source_only_allowlist() -> None:
+    pyproject = tomllib.loads(_read("pyproject.toml"))
+
+    assert pyproject["tool"]["hatch"]["build"]["targets"]["sdist"] == {
+        "include": [
+            "/alembic.ini",
+            "/migrations",
+            "/src/stock_desk",
+        ]
+    }
+
+
 def test_readmes_match_commands_and_describe_stage_zero_limits() -> None:
     english = _read("README.md")
     chinese = _read("README.zh-CN.md")
