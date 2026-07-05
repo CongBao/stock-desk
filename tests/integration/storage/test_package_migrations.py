@@ -34,6 +34,7 @@ def test_installed_wheel_can_upgrade_and_downgrade_from_foreign_cwd(
     with zipfile.ZipFile(wheel_path) as wheel:
         wheel.extractall(installed_dir)
 
+    (tmp_path / "alembic.ini").write_text("[alembic]\n", encoding="utf-8")
     foreign_cwd = tmp_path / "foreign" / "nested"
     foreign_cwd.mkdir(parents=True)
     environment = os.environ.copy()

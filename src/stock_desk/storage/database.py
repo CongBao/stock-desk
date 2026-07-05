@@ -32,13 +32,16 @@ def create_engine_for_url(url: str) -> Engine:
     return engine
 
 
+def _alembic_config_path() -> Path:
+    if _PACKAGED_CONFIG_PATH.is_file():
+        return _PACKAGED_CONFIG_PATH
+    if _REPOSITORY_CONFIG_PATH.is_file():
+        return _REPOSITORY_CONFIG_PATH
+    raise FileNotFoundError("Stock Desk Alembic configuration is not installed")
+
+
 def _alembic_config(url: str) -> Config:
-    config_path = (
-        _REPOSITORY_CONFIG_PATH
-        if _REPOSITORY_CONFIG_PATH.is_file()
-        else _PACKAGED_CONFIG_PATH
-    )
-    config = Config(str(config_path))
+    config = Config(str(_alembic_config_path()))
     config.set_main_option("sqlalchemy.url", url.replace("%", "%%"))
     return config
 
