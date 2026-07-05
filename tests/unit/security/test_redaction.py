@@ -258,6 +258,18 @@ class HostileComplex(complex):
         raise RuntimeError(f"hostile complex conversion {SECRET}")
 
 
+class HostileExceptionMeta(type):
+    def __getattribute__(cls, name: str) -> Any:
+        if name == "__name__":
+            raise RuntimeError(f"hostile metaclass {SECRET}")
+        return super().__getattribute__(name)
+
+
+class HostileMetaclassError(RuntimeError, metaclass=HostileExceptionMeta):
+    def __str__(self) -> str:
+        return f"hostile exception value {SECRET}"
+
+
 def _render_log(
     redactor: SecretRedactor,
     message: object,
@@ -295,6 +307,17 @@ def _render_log(
     return output.getvalue(), records[0]
 
 
+def _contains_exact(value: Any, target: str) -> bool:
+    if isinstance(value, Mapping):
+        return any(
+            _contains_exact(key, target) or _contains_exact(item, target)
+            for key, item in value.items()
+        )
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return any(_contains_exact(item, target) for item in value)
+    return type(value) is str and value == target
+
+
 def test_clean_replaces_strings_bytes_and_overlapping_secrets() -> None:
     redactor = SecretRedactor(["secret", SECRET, "", SECRET])
 
@@ -316,6 +339,19 @@ def test_register_adds_nonempty_unique_secrets_at_runtime() -> None:
     assert "1 secrets" in repr(redactor)
 
 
+@pytest.mark.parametrize("secret", ["a", "abc", "•••"])
+def test_register_rejects_nonempty_secrets_shorter_than_four_characters(
+    secret: str,
+) -> None:
+    redactor = SecretRedactor([])
+
+    with pytest.raises(ValueError, match="at least 4 characters"):
+        redactor.register(secret)
+
+    with pytest.raises(ValueError, match="at least 4 characters"):
+        SecretRedactor([secret])
+
+
 def test_redaction_marker_is_stable_when_a_secret_overlaps_the_marker() -> None:
     redactor = SecretRedactor(["REDACTED"])
 
@@ -324,6 +360,58 @@ def test_redaction_marker_is_stable_when_a_secret_overlaps_the_marker() -> None:
 
     assert first == REDACTED_MARKER
     assert second == REDACTED_MARKER
+
+
+@pytest.mark.parametrize("secret", ["REDACTED", "[REDACTED]", "REDACTION", "e000"])
+def test_every_marker_is_resolved_without_registered_secret_collisions(
+    secret: str,
+) -> None:
+    redactor = SecretRedactor([secret], max_depth=3)
+    cyclic: dict[str, Any] = {"value": secret}
+    cyclic["self"] = cyclic
+    nested: list[Any] = [secret]
+    cursor = nested
+    for _ in range(8):
+        child: list[Any] = [secret]
+        cursor.append(child)
+        cursor = child
+    unhashable_key = HashableSecretMapping()
+    unrenderable_log, _record = _render_log(redactor, UnrenderableObject())
+
+    results = [
+        redactor.clean(f"before {secret} after"),
+        redactor.clean(cyclic),
+        redactor.clean(nested),
+        redactor.clean(FullyUnrenderableObject()),
+        redactor.clean({unhashable_key: "safe"}),
+        unrenderable_log,
+    ]
+
+    for result in results:
+        assert secret not in str(result)
+        assert secret not in repr(result)
+
+
+def test_current_marker_idempotence_and_unsafe_literal_replacement() -> None:
+    redactor = SecretRedactor(["REDACTED"])
+
+    first = redactor.clean("[REDACTED]")
+    second = redactor.clean(first)
+
+    assert first == second
+    assert "REDACTED" not in str(first)
+    assert "REDACTED" not in repr(first)
+
+
+def test_top_level_audit_collapses_structural_representation_collisions() -> None:
+    secret = "['ok"
+    redactor = SecretRedactor([secret])
+
+    cleaned = redactor.clean(["ok"])
+
+    assert type(cleaned) is str
+    assert secret not in str(cleaned)
+    assert secret not in repr(cleaned)
 
 
 def test_clean_recurses_without_mutating_input_and_preserves_shapes() -> None:
@@ -381,7 +469,7 @@ def test_clean_handles_a_cyclic_userlist_without_leaking() -> None:
 
     assert type(cleaned) is list
     assert SECRET not in repr(cleaned)
-    assert "[REDACTION_CYCLE]" in repr(cleaned)
+    assert _contains_exact(cleaned, redactor.cycle_marker)
 
 
 def test_clean_supports_frozenset_and_custom_abstract_set() -> None:
@@ -406,7 +494,7 @@ def test_clean_handles_a_cyclic_abstract_set_without_leaking() -> None:
     cleaned = redactor.clean(CyclicSet())
 
     assert SECRET not in repr(cleaned)
-    assert "[REDACTION_CYCLE]" in repr(cleaned)
+    assert _contains_exact(cleaned, redactor.cycle_marker)
 
 
 def test_clean_falls_back_when_set_items_become_unhashable() -> None:
@@ -446,6 +534,16 @@ def test_clean_sanitizes_exception_arguments() -> None:
     assert SECRET not in str(cleaned)
     assert "ValueError" in str(cleaned)
     assert SECRET in str(error)
+
+
+def test_clean_fails_closed_for_exception_with_hostile_metaclass() -> None:
+    redactor = SecretRedactor([SECRET])
+
+    cleaned = redactor.clean(HostileMetaclassError())
+
+    assert type(cleaned) is RuntimeError
+    assert SECRET not in str(cleaned)
+    assert SECRET not in repr(cleaned)
 
 
 def test_clean_discards_hostile_user_defined_container_and_exception_types() -> None:
@@ -545,8 +643,8 @@ def test_clean_handles_cycles_and_excessive_depth_without_leaking() -> None:
 
     assert SECRET not in repr(cleaned_cycle)
     assert SECRET not in repr(cleaned_depth)
-    assert "[REDACTION_CYCLE]" in repr(cleaned_cycle)
-    assert "[REDACTION_DEPTH]" in repr(cleaned_depth)
+    assert _contains_exact(cleaned_cycle, redactor.cycle_marker)
+    assert _contains_exact(cleaned_depth, redactor.depth_marker)
 
 
 def test_clean_leaves_ordinary_values_unchanged() -> None:
@@ -605,7 +703,7 @@ def test_logging_filter_survives_an_object_that_cannot_be_rendered() -> None:
 
     assert SECRET not in output
     assert SECRET not in record.getMessage()
-    assert "UNRENDERABLE" in output
+    assert redactor.unrenderable_log_marker in output
 
 
 def test_logging_filter_sanitizes_unsupported_extra_objects() -> None:
@@ -645,7 +743,7 @@ def test_logging_filter_fails_closed_for_unrenderable_extra_objects() -> None:
     output = logging.Formatter("%(message)s|%(credential)s").format(record)
 
     assert SECRET not in output
-    assert "UNRENDERABLE" in output
+    assert redactor.unrenderable_value_marker in output
 
 
 def test_logging_filter_handles_unhashable_cleaned_extra_containers() -> None:
@@ -669,7 +767,7 @@ def test_logging_filter_handles_unhashable_cleaned_extra_containers() -> None:
     )
 
     assert SECRET not in output
-    assert REDACTED_MARKER in output
+    assert _contains_exact(getattr(record, "payload_set"), redactor.redacted_marker)
 
 
 def test_logging_filter_discards_hostile_types_from_extra_fields() -> None:
@@ -778,6 +876,28 @@ def test_logging_filter_sanitizes_an_exception_with_custom_stringification() -> 
     assert REDACTED_MARKER in output
 
 
+def test_logging_filter_fails_closed_for_exception_with_hostile_metaclass() -> None:
+    redactor = SecretRedactor([SECRET])
+    error = HostileMetaclassError()
+    record = logging.makeLogRecord(
+        {
+            "name": "stock_desk.tests.redaction.hostile-metaclass",
+            "levelno": logging.ERROR,
+            "levelname": "ERROR",
+            "msg": "failed",
+            "args": (),
+            "exc_info": (HostileMetaclassError, error, None),
+            "extra_error": error,
+        }
+    )
+
+    assert RedactingFilter(redactor).filter(record) is True
+    output = logging.Formatter("%(message)s|%(extra_error)s").format(record)
+
+    assert SECRET not in output
+    assert SECRET not in repr(record.exc_info)
+
+
 def test_logging_filter_sanitizes_cached_exception_and_stack_text() -> None:
     redactor = SecretRedactor([SECRET])
     record = logging.makeLogRecord(
@@ -876,7 +996,7 @@ def test_logging_filter_sanitizes_extra_nested_task_error() -> None:
 
     assert SECRET not in output
     assert SECRET not in repr(getattr(record, "task_error"))
-    assert REDACTED_MARKER in repr(getattr(record, "task_error"))
+    assert _contains_exact(getattr(record, "task_error"), redactor.redacted_marker)
 
 
 def test_logging_filter_has_no_false_failure_without_secrets() -> None:
