@@ -7,8 +7,9 @@ from alembic.config import Config
 from sqlalchemy import Engine, create_engine, event
 
 
-_REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
-_ALEMBIC_CONFIG_PATH = _REPOSITORY_ROOT / "alembic.ini"
+_PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+_REPOSITORY_CONFIG_PATH = Path(__file__).resolve().parents[3] / "alembic.ini"
+_PACKAGED_CONFIG_PATH = _PACKAGE_ROOT / "alembic.ini"
 
 
 def _configure_sqlite_connection(
@@ -32,7 +33,12 @@ def create_engine_for_url(url: str) -> Engine:
 
 
 def _alembic_config(url: str) -> Config:
-    config = Config(str(_ALEMBIC_CONFIG_PATH))
+    config_path = (
+        _REPOSITORY_CONFIG_PATH
+        if _REPOSITORY_CONFIG_PATH.is_file()
+        else _PACKAGED_CONFIG_PATH
+    )
+    config = Config(str(config_path))
     config.set_main_option("sqlalchemy.url", url.replace("%", "%%"))
     return config
 
