@@ -327,6 +327,41 @@ def test_bar_rejects_invalid_prices(field: str, value: Decimal) -> None:
         Bar.model_validate(payload)
 
 
+@pytest.mark.parametrize("adjustment", [Adjustment.QFQ, Adjustment.HFQ])
+def test_adjusted_bar_preserves_finite_zero_and_negative_prices(
+    adjustment: Adjustment,
+) -> None:
+    value = bar(
+        adjustment=adjustment,
+        open_price=Decimal("-0.20"),
+        high=Decimal("0.10"),
+        low=Decimal("-0.30"),
+        close=Decimal("0"),
+    )
+
+    assert value.open == Decimal("-0.2")
+    assert value.high == Decimal("0.1")
+    assert value.low == Decimal("-0.3")
+    assert value.close == Decimal("0")
+    assert '"open":"-0.2"' in value.model_dump_json()
+
+
+@pytest.mark.parametrize("adjustment", [Adjustment.QFQ, Adjustment.HFQ])
+@pytest.mark.parametrize("value", [Decimal("NaN"), Decimal("Infinity")])
+def test_adjusted_bar_still_rejects_nonfinite_prices(
+    adjustment: Adjustment,
+    value: Decimal,
+) -> None:
+    with pytest.raises(ValidationError):
+        bar(
+            adjustment=adjustment,
+            open_price=value,
+            high=value,
+            low=value,
+            close=value,
+        )
+
+
 @pytest.mark.parametrize("value", [10, 10.0, True, False, "10.00"])
 def test_python_price_inputs_require_decimal(value: object) -> None:
     payload = bar().model_dump()
@@ -356,6 +391,49 @@ def test_json_price_inputs_require_strings_and_normalize_equivalent_decimals() -
     )
 
 
+def test_adjusted_json_prices_accept_canonical_negative_syntax() -> None:
+    value = Bar.model_validate_json(
+        json_bar_payload(
+            adjustment="qfq",
+            open="-0.20",
+            high="0.10",
+            low="-0.30",
+            close="0",
+        )
+    )
+
+    assert value.open == Decimal("-0.2")
+    assert value.model_dump_json() == (
+        '{"symbol":"600000.SH","timestamp":"2026-07-06T01:30:00Z",'
+        '"period":"60m","adjustment":"qfq","open":"-0.2","high":"0.1",'
+        '"low":"-0.3","close":"0","volume":1000,"status":"unknown"}'
+    )
+
+
+def test_adjusted_negative_zero_normalizes_to_canonical_zero() -> None:
+    negative_zero = Bar.model_validate_json(
+        json_bar_payload(
+            adjustment="qfq",
+            open="-0.00",
+            high="-0.0",
+            low="-0",
+            close="0.000",
+        )
+    )
+    positive_zero = Bar.model_validate_json(
+        json_bar_payload(
+            adjustment="qfq",
+            open="0",
+            high="0",
+            low="0",
+            close="0",
+        )
+    )
+
+    assert negative_zero.model_dump_json() == positive_zero.model_dump_json()
+    assert '"open":"0"' in negative_zero.model_dump_json()
+
+
 def test_decimal_normalization_preserves_bounded_significant_digits() -> None:
     precise = Decimal("10.12345678")
     value = bar(open_price=precise, high=Decimal("20"))
@@ -373,7 +451,7 @@ def test_json_price_inputs_reject_numbers_and_booleans(value: object) -> None:
         Bar.model_validate_json(json_bar_payload(open=value))
 
 
-@pytest.mark.parametrize("value", [" 10", "10 ", "1_0"])
+@pytest.mark.parametrize("value", [" 10", "10 ", "1_0", "+10", "- 10"])
 def test_json_price_inputs_reject_noncanonical_string_syntax(value: str) -> None:
     with pytest.raises(ValidationError):
         Bar.model_validate_json(json_bar_payload(open=value))
@@ -632,7 +710,7 @@ def test_capability_gap_rejects_available_or_mismatched_failure_state() -> None:
         CapabilityGap(
             capability=MarketCapability.BARS,
             state=CapabilityState.AVAILABLE,
-            reason=FailureReason.NO_PROVIDER,
+            reason=FailureReason.UNSUPPORTED,
         )
     with pytest.raises(ValidationError, match="permission_denied"):
         CapabilityGap(
@@ -642,8 +720,56 @@ def test_capability_gap_rejects_available_or_mismatched_failure_state() -> None:
         )
 
 
-def test_available_capability_report_cannot_contain_gaps() -> None:
-    with pytest.raises(ValidationError, match="available report cannot contain gaps"):
+def test_capability_gap_rejects_router_only_no_provider_reason() -> None:
+    with pytest.raises(ValidationError, match="router-only"):
+        CapabilityGap(
+            capability=MarketCapability.BARS,
+            state=CapabilityState.UNAVAILABLE,
+            reason=FailureReason.NO_PROVIDER,
+        )
+
+
+def test_capability_report_rejects_constructed_router_only_gap() -> None:
+    router_gap = CapabilityGap.model_construct(
+        capability=MarketCapability.BARS,
+        state=CapabilityState.UNAVAILABLE,
+        reason=FailureReason.NO_PROVIDER,
+        detail=None,
+    )
+
+    with pytest.raises(ValidationError, match="router-only"):
+        CapabilityReport(
+            source=ProviderId.AKSHARE,
+            state=CapabilityState.UNAVAILABLE,
+            gaps=(router_gap,),
+        )
+
+
+def test_available_capability_report_can_explain_an_unsupported_capability() -> None:
+    report = CapabilityReport(
+        source=ProviderId.AKSHARE,
+        state=CapabilityState.AVAILABLE,
+        capabilities=frozenset({MarketCapability.BARS, MarketCapability.INSTRUMENTS}),
+        available_periods=frozenset({Period.DAY}),
+        available_adjustments=frozenset({Adjustment.NONE}),
+        markets=frozenset({Exchange.SH}),
+        data_cutoff=None,
+        gaps=(
+            CapabilityGap(
+                capability=MarketCapability.TRADING_CALENDAR,
+                state=CapabilityState.UNSUPPORTED,
+                reason=FailureReason.UNSUPPORTED,
+                detail="open dates do not prove closed-day completeness",
+            ),
+        ),
+    )
+
+    assert report.state is CapabilityState.AVAILABLE
+    assert report.gaps[0].capability is MarketCapability.TRADING_CALENDAR
+
+
+def test_available_capability_report_rejects_non_unsupported_gaps() -> None:
+    with pytest.raises(ValidationError, match="only unsupported gaps"):
         CapabilityReport(
             source=ProviderId.AKSHARE,
             state=CapabilityState.AVAILABLE,
@@ -651,10 +777,9 @@ def test_available_capability_report_cannot_contain_gaps() -> None:
             available_periods=frozenset({Period.DAY}),
             available_adjustments=frozenset({Adjustment.NONE}),
             markets=frozenset({Exchange.SH}),
-            data_cutoff=market_time(15),
             gaps=(
                 CapabilityGap(
-                    capability=MarketCapability.BARS,
+                    capability=MarketCapability.INSTRUMENTS,
                     state=CapabilityState.PERMISSION_DENIED,
                     reason=FailureReason.PERMISSION_DENIED,
                 ),
@@ -720,6 +845,21 @@ def test_capability_collections_and_gaps_are_deeply_immutable() -> None:
     assert isinstance(report.gaps, tuple)
     with pytest.raises(ValidationError, match="frozen"):
         report.state = CapabilityState.UNAVAILABLE
+
+
+def test_bar_capability_can_be_static_without_observed_cutoff() -> None:
+    report = CapabilityReport(
+        source=ProviderId.TUSHARE,
+        state=CapabilityState.AVAILABLE,
+        capabilities=frozenset({MarketCapability.BARS}),
+        available_periods=frozenset({Period.DAY}),
+        available_adjustments=frozenset({Adjustment.NONE}),
+        markets=frozenset({Exchange.SH}),
+        data_cutoff=None,
+        gaps=(),
+    )
+
+    assert report.data_cutoff is None
 
 
 @pytest.mark.parametrize(

@@ -46,11 +46,11 @@ FailureDetail = Annotated[
         pattern=r"^\S(?:.*\S)?$",
     ),
 ]
-Price = Annotated[Decimal, Field(gt=0, allow_inf_nan=False)]
+Price = Annotated[Decimal, Field(allow_inf_nan=False)]
 Volume = Annotated[int, Field(ge=0)]
 _MARKET_TIMEZONE = ZoneInfo("Asia/Shanghai")
 _MIN60_BUCKET_STARTS = frozenset({(9, 30), (10, 30), (13, 0), (14, 0)})
-_DECIMAL_STRING_PATTERN = re.compile(r"^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$")
+_DECIMAL_STRING_PATTERN = re.compile(r"^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$")
 _MAX_PRICE_INTEGER_DIGITS = 16
 _MAX_PRICE_DECIMAL_PLACES = 8
 
@@ -224,6 +224,8 @@ def _validate_price_precision(value: Decimal) -> None:
 
 def _canonical_decimal_text(value: Decimal) -> str:
     _validate_price_precision(value)
+    if value == 0:
+        return "0"
     text = format(value, "f")
     if "." in text:
         text = text.rstrip("0").rstrip(".")
@@ -273,7 +275,7 @@ class Bar(_FrozenMarketModel):
             return _normalized_decimal(value)
         if not isinstance(value, str):
             raise ValueError("JSON price inputs must be strings")
-        if len(value) > 25 or _DECIMAL_STRING_PATTERN.fullmatch(value) is None:
+        if len(value) > 26 or _DECIMAL_STRING_PATTERN.fullmatch(value) is None:
             raise ValueError("JSON price input must use canonical decimal syntax")
         try:
             return _normalized_decimal(Decimal(value))
@@ -286,6 +288,10 @@ class Bar(_FrozenMarketModel):
 
     @model_validator(mode="after")
     def validate_bar(self) -> Self:
+        if self.adjustment is Adjustment.NONE and any(
+            price <= 0 for price in (self.open, self.high, self.low, self.close)
+        ):
+            raise ValueError("unadjusted bar prices must be strictly positive")
         if self.high < max(self.open, self.close):
             raise ValueError("bar high must contain open and close")
         if self.low > min(self.open, self.close):
@@ -325,7 +331,6 @@ class CapabilityGap(_FrozenMarketModel):
                     FailureReason.PROVIDER_UNAVAILABLE,
                     FailureReason.CORRUPT,
                     FailureReason.INVALID_RESPONSE,
-                    FailureReason.NO_PROVIDER,
                 }
             ),
             CapabilityState.PERMISSION_DENIED: frozenset(
@@ -340,6 +345,8 @@ class CapabilityGap(_FrozenMarketModel):
                 }
             ),
         }
+        if self.reason is FailureReason.NO_PROVIDER:
+            raise ValueError("NO_PROVIDER is router-only")
         if self.state is CapabilityState.AVAILABLE:
             raise ValueError("capability gap cannot be available")
         if self.reason not in allowed_reasons[self.state]:
@@ -361,6 +368,8 @@ class CapabilityReport(_FrozenMarketModel):
 
     @model_validator(mode="after")
     def validate_bar_capabilities(self) -> Self:
+        if any(gap.reason is FailureReason.NO_PROVIDER for gap in self.gaps):
+            raise ValueError("NO_PROVIDER is router-only")
         has_bars = MarketCapability.BARS in self.capabilities
         has_bar_metadata = bool(
             self.available_periods
@@ -372,15 +381,16 @@ class CapabilityReport(_FrozenMarketModel):
             not self.available_periods
             or not self.available_adjustments
             or not self.markets
-            or self.data_cutoff is None
         ):
             raise ValueError(
-                "bar capability requires periods, adjustments, markets, and cutoff"
+                "bar capability requires periods, adjustments, and markets"
             )
         if not has_bars and has_bar_metadata:
             raise ValueError("bar metadata requires the bar capability")
-        if self.state is CapabilityState.AVAILABLE and self.gaps:
-            raise ValueError("available report cannot contain gaps")
+        if self.state is CapabilityState.AVAILABLE and any(
+            gap.state is not CapabilityState.UNSUPPORTED for gap in self.gaps
+        ):
+            raise ValueError("available report can contain only unsupported gaps")
         if self.state is not CapabilityState.AVAILABLE and not self.gaps:
             raise ValueError("non-available report must explain at least one gap")
         gap_capabilities = tuple(gap.capability for gap in self.gaps)

@@ -1,0 +1,53 @@
+{
+  "bars": {
+    "1d": [
+      {"ts_code": "600000.SH", "trade_date": "20240702", "open": "10.20", "high": "10.80", "low": "10.10", "close": "10.60", "vol": "0", "amount": "ignored"},
+      {"ts_code": "600000.SH", "trade_date": "20240701", "open": "10.00", "high": "10.50", "low": "9.90", "close": "10.20", "vol": "10", "amount": "ignored"}
+    ],
+    "1w": [
+      {"ts_code": "600000.SH", "trade_date": "20240705", "open": "10.00", "high": "11.00", "low": "9.80", "close": "10.70", "vol": "30"}
+    ],
+    "60m": [
+      {"ts_code": "600000.SH", "trade_time": "2024-07-01 15:00:00", "open": "10.60", "high": "10.90", "low": "10.50", "close": "10.80", "vol": "4"},
+      {"ts_code": "600000.SH", "trade_time": "2024-07-01 14:00:00", "open": "10.40", "high": "10.70", "low": "10.30", "close": "10.60", "vol": "3"},
+      {"ts_code": "600000.SH", "trade_time": "2024-07-01 11:30:00", "open": "10.20", "high": "10.50", "low": "10.10", "close": "10.40", "vol": "2"},
+      {"ts_code": "600000.SH", "trade_time": "2024-07-01 10:30:00", "open": "10.00", "high": "10.30", "low": "9.90", "close": "10.20", "vol": "1"}
+    ]
+  },
+  "market_bars": {
+    "000001.SZ": {"ts_code": "000001.SZ", "trade_date": "20240701", "open": "10.00", "high": "10.50", "low": "9.90", "close": "10.20", "vol": "1", "amount": "ignored"},
+    "920000.BJ": {"ts_code": "920000.BJ", "trade_date": "20240701", "open": "10.00", "high": "10.50", "low": "9.90", "close": "10.20", "vol": "1", "amount": "ignored"},
+    "000001.SH": {"ts_code": "000001.SH", "trade_date": "20240701", "open": "10.00", "high": "10.50", "low": "9.90", "close": "10.20", "vol": "1", "amount": "ignored"}
+  },
+  "instruments": [
+    {"ts_code": "600000.SH", "name": "浦发银行", "exchange": "SSE", "market": "主板", "list_status": "L", "list_date": "19991110", "delist_date": ""},
+    {"ts_code": "000001.SZ", "name": "平安银行", "exchange": "SZSE", "market": "主板", "list_status": "L", "list_date": "19910403", "delist_date": ""},
+    {"ts_code": "920000.BJ", "name": "北交样本", "exchange": "BSE", "market": "北交所", "list_status": "L", "list_date": "20240102", "delist_date": ""}
+  ],
+  "calendar": {
+    "SSE": [
+      {"exchange": "SSE", "cal_date": "20240701", "is_open": "1"},
+      {"exchange": "SSE", "cal_date": "20240702", "is_open": 1},
+      {"exchange": "SSE", "cal_date": "20240703", "is_open": "1"},
+      {"exchange": "SSE", "cal_date": "20240704", "is_open": 1},
+      {"exchange": "SSE", "cal_date": "20240705", "is_open": "1"},
+      {"exchange": "SSE", "cal_date": "20240706", "is_open": 0}
+    ],
+    "SZSE": [
+      {"exchange": "SZSE", "cal_date": "20240701", "is_open": "1"},
+      {"exchange": "SZSE", "cal_date": "20240702", "is_open": "1"},
+      {"exchange": "SZSE", "cal_date": "20240703", "is_open": "1"},
+      {"exchange": "SZSE", "cal_date": "20240704", "is_open": "1"},
+      {"exchange": "SZSE", "cal_date": "20240705", "is_open": "1"},
+      {"exchange": "SZSE", "cal_date": "20240706", "is_open": "0"}
+    ],
+    "BSE": [
+      {"exchange": "BSE", "cal_date": "20240701", "is_open": "1"},
+      {"exchange": "BSE", "cal_date": "20240702", "is_open": "1"},
+      {"exchange": "BSE", "cal_date": "20240703", "is_open": "1"},
+      {"exchange": "BSE", "cal_date": "20240704", "is_open": "1"},
+      {"exchange": "BSE", "cal_date": "20240705", "is_open": "1"},
+      {"exchange": "BSE", "cal_date": "20240706", "is_open": "0"}
+    ]
+  }
+}
