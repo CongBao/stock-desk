@@ -32,4 +32,4 @@ smoke:
 public-tree:
 	uv run --frozen python scripts/check_public_tree.py
 
-release-check: test lint typecheck build public-tree
+release-check: test lint typecheck build public-tree smoke

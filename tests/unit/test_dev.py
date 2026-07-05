@@ -5,8 +5,64 @@ import signal
 import subprocess
 
 import pytest
+from unittest.mock import Mock
 
 from scripts import dev
+
+
+def test_windows_graceful_stop_signals_the_process_group(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process = Mock(pid=1234)
+    process.poll.return_value = None
+    monkeypatch.setattr(dev.os, "name", "nt")
+
+    dev._signal_process(process, signal.SIGTERM)
+
+    process.send_signal.assert_called_once_with(1)
+
+
+def test_windows_hard_stop_terminates_the_descendant_tree(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process = Mock(pid=1234)
+    process.poll.return_value = None
+    run = Mock(return_value=subprocess.CompletedProcess([], 0))
+    monkeypatch.setattr(dev.os, "name", "nt")
+    monkeypatch.setattr(dev.subprocess, "run", run)
+
+    dev._hard_stop(process, timeout=0.5)
+
+    run.assert_called_once_with(
+        ["taskkill", "/PID", "1234", "/T", "/F"],
+        check=False,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=0.5,
+    )
+
+
+def test_cleanup_race_does_not_escape_and_mask_the_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process = Mock(pid=1234)
+    process.poll.return_value = None
+    process.wait.side_effect = subprocess.TimeoutExpired(["child"], 0.01)
+    monkeypatch.setattr(
+        dev,
+        "_signal_process",
+        Mock(side_effect=ProcessLookupError("already exited")),
+    )
+
+    dev._stop_children((process,), shutdown_timeout=0.01)
+
+
+def test_cleanup_poll_race_does_not_escape_and_mask_the_result() -> None:
+    process = Mock(pid=1234)
+    process.poll.side_effect = OSError("process disappeared")
+
+    dev._stop_children((process,), shutdown_timeout=0.01)
 
 
 def test_supervisor_returns_child_failure_and_stops_siblings_quickly() -> None:

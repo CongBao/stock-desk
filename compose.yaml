@@ -1,17 +1,16 @@
-name: stock-desk
-
 x-stock-desk-service: &stock-desk-service
-  image: stock-desk:local
+  image: "${STOCK_DESK_IMAGE:-stock-desk-runtime:local}"
   env_file:
     - path: .env
       required: false
   environment:
     STOCK_DESK_DATA_DIR: /app/data
     STOCK_DESK_DATABASE_URL: sqlite:////app/data/stock-desk.db
+    STOCK_DESK_GID: "${STOCK_DESK_GID:-}"
+    STOCK_DESK_UID: "${STOCK_DESK_UID:-}"
     STOCK_DESK_WEB_DIST_DIR: /app/web-dist
-  init: true
   restart: unless-stopped
-  user: "${STOCK_DESK_UID:-1000}:${STOCK_DESK_GID:-1000}"
+  user: "0:0"
   volumes:
     - ./data:/app/data
 

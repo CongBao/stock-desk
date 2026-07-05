@@ -58,4 +58,5 @@ ENV STOCK_DESK_WEB_DIST_DIR=/app/web-dist
 USER 10001:10001
 EXPOSE 8000
 
+ENTRYPOINT ["python", "-m", "stock_desk.runtime_entrypoint"]
 CMD ["uvicorn", "stock_desk.main:app", "--host", "0.0.0.0", "--port", "8000"]

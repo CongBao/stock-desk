@@ -12,6 +12,7 @@ import time
 REPO_ROOT = Path(__file__).resolve().parent.parent
 POLL_INTERVAL_SECONDS = 0.2
 SHUTDOWN_TIMEOUT_SECONDS = 5.0
+_WINDOWS_CTRL_BREAK_EVENT = 1
 
 
 def _commands() -> tuple[tuple[str, ...], ...]:
@@ -48,13 +49,57 @@ def _start(command: Sequence[str]) -> subprocess.Popen[bytes]:
     return subprocess.Popen(command, cwd=REPO_ROOT)  # noqa: S603
 
 
+def _is_running(process: subprocess.Popen[bytes]) -> bool:
+    try:
+        return process.poll() is None
+    except OSError:
+        return False
+
+
 def _signal_process(process: subprocess.Popen[bytes], signum: int) -> None:
-    if process.poll() is not None:
+    if not _is_running(process):
+        return
+    try:
+        if os.name == "posix":
+            os.killpg(process.pid, signum)
+        elif os.name == "nt" and signum == signal.SIGTERM:
+            process.send_signal(_WINDOWS_CTRL_BREAK_EVENT)
+        else:
+            process.send_signal(signum)
+    except ProcessLookupError:
+        return
+
+
+def _safe_signal(process: subprocess.Popen[bytes], signum: int) -> None:
+    try:
+        _signal_process(process, signum)
+    except OSError:
+        return
+
+
+def _hard_stop(process: subprocess.Popen[bytes], *, timeout: float) -> None:
+    if not _is_running(process):
         return
     if os.name == "posix":
-        os.killpg(process.pid, signum)
-    else:
-        process.send_signal(signum)
+        _safe_signal(process, signal.SIGKILL)
+        return
+    if os.name == "nt":
+        try:
+            subprocess.run(  # noqa: S603
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],  # noqa: S607
+                check=False,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=timeout,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return
+        return
+    try:
+        process.kill()
+    except OSError:
+        return
 
 
 def _stop_children(
@@ -63,20 +108,24 @@ def _stop_children(
     shutdown_timeout: float,
 ) -> None:
     for process in processes:
-        _signal_process(process, signal.SIGTERM)
+        _safe_signal(process, signal.SIGTERM)
 
     deadline = time.monotonic() + shutdown_timeout
     for process in processes:
         remaining = max(0.0, deadline - time.monotonic())
         try:
             process.wait(timeout=remaining)
+        except OSError:
+            continue
         except subprocess.TimeoutExpired:
-            hard_stop = signal.SIGKILL if os.name == "posix" else signal.SIGTERM
-            _signal_process(process, hard_stop)
+            _hard_stop(process, timeout=shutdown_timeout)
 
     for process in processes:
-        if process.poll() is None:
-            process.wait()
+        if _is_running(process):
+            try:
+                process.wait(timeout=shutdown_timeout)
+            except (OSError, subprocess.TimeoutExpired):
+                continue
 
 
 def supervise(
