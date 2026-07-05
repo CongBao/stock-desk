@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 from collections.abc import Callable
 import csv
 from dataclasses import dataclass
 from datetime import date
 from email.parser import BytesParser, Parser
 from email.policy import default as default_email_policy
+import hashlib
 import io
 import json
 import os
@@ -16,6 +19,7 @@ import re
 import subprocess
 import sys
 import tarfile
+import tempfile
 import tomllib
 from typing import Protocol
 import zipfile
@@ -258,7 +262,10 @@ def _is_safe_wheel_path(path: str) -> bool:
 
 
 def _check_wheel_record(
-    payload: bytes, archive_members: set[str], required_members: set[str]
+    payload: bytes,
+    archive_payloads: dict[str, bytes],
+    required_members: set[str],
+    record_path: str,
 ) -> None:
     try:
         content = payload.decode("utf-8")
@@ -273,9 +280,34 @@ def _check_wheel_record(
         len(paths) != len(path_set)
         or not all(_is_safe_wheel_path(path) for path in paths)
         or not required_members.issubset(path_set)
-        or path_set != archive_members
+        or path_set != archive_payloads.keys()
     ):
         raise _invalid_wheel()
+    for path, hash_value, size in rows:
+        if path == record_path:
+            if hash_value or size:
+                raise _invalid_wheel()
+            continue
+        encoded_digest = hash_value.removeprefix("sha256=")
+        if (
+            encoded_digest == hash_value
+            or re.fullmatch(r"[A-Za-z0-9_-]{43}", encoded_digest) is None
+            or re.fullmatch(r"[0-9]+", size) is None
+        ):
+            raise _invalid_wheel()
+        try:
+            digest = base64.urlsafe_b64decode(f"{encoded_digest}=")
+        except (ValueError, binascii.Error) as error:
+            raise _invalid_wheel() from error
+        member_payload = archive_payloads[path]
+        canonical_digest = base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
+        if (
+            len(digest) != 32
+            or canonical_digest != encoded_digest
+            or digest != hashlib.sha256(member_payload).digest()
+            or int(size) != len(member_payload)
+        ):
+            raise _invalid_wheel()
 
 
 def _check_wheel_artifact(wheel_path: Path, version: str) -> None:
@@ -299,11 +331,18 @@ def _check_wheel_artifact(wheel_path: Path, version: str) -> None:
         ):
             raise _invalid_wheel()
         _check_package_metadata(wheel.read(metadata_path), version, "wheel")
-        archive_files = {
-            member.filename for member in wheel.infolist() if not member.is_dir()
+        archive_payloads = {
+            member.filename: wheel.read(member)
+            for member in wheel.infolist()
+            if not member.is_dir()
         }
         _check_wheel_metadata(wheel.read(wheel_metadata_path))
-        _check_wheel_record(wheel.read(record_path), archive_files, required_members)
+        _check_wheel_record(
+            wheel.read(record_path),
+            archive_payloads,
+            required_members,
+            record_path,
+        )
 
 
 def _invalid_source() -> ReleaseVerificationError:
@@ -354,6 +393,44 @@ def _check_source_artifact(source_path: Path, version: str) -> None:
         _check_package_metadata(metadata_file.read(), version, "source")
 
 
+def _check_installable_artifact(
+    repo: Path, artifact_path: Path, artifact_description: str
+) -> None:
+    try:
+        with tempfile.TemporaryDirectory(
+            prefix="stock-desk-release-install-"
+        ) as target:
+            result = subprocess.run(  # noqa: S603
+                (
+                    "uv",
+                    "pip",
+                    "install",
+                    "--offline",
+                    "--no-deps",
+                    "--no-build-isolation",
+                    "--python",
+                    sys.executable,
+                    "--target",
+                    target,
+                    os.fspath(artifact_path.resolve(strict=True)),
+                ),
+                cwd=repo,
+                check=False,
+                capture_output=True,
+                text=True,
+                stdin=subprocess.DEVNULL,
+                timeout=120,
+            )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ReleaseVerificationError(
+            f"release {artifact_description} artifact is not installable"
+        ) from error
+    if result.returncode != 0:
+        raise ReleaseVerificationError(
+            f"release {artifact_description} artifact is not installable"
+        )
+
+
 def check_build_artifacts(repo: Path, version: str) -> None:
     if VERSION_PATTERN.fullmatch(version) is None:
         raise ReleaseVerificationError("release build artifact version is invalid")
@@ -402,6 +479,8 @@ def check_build_artifacts(repo: Path, version: str) -> None:
         raise ReleaseVerificationError(
             "release Python build artifact is invalid"
         ) from error
+    _check_installable_artifact(repo, expected_wheel, "wheel")
+    _check_installable_artifact(repo, expected_source, "source")
 
 
 def verify_release(

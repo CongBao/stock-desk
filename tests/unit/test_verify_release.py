@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass, field
+import hashlib
 import io
 from pathlib import Path
 import subprocess
@@ -10,6 +12,7 @@ import zipfile
 
 import pytest
 
+import scripts.verify_release as verify_release_module
 from scripts.verify_release import (
     GateCommand,
     ReleaseVerificationError,
@@ -57,6 +60,11 @@ def metadata_payload(name: str, version: str) -> str:
     return f"Metadata-Version: 2.4\nName: {name}\nVersion: {version}\n\n"
 
 
+def record_digest(payload: bytes) -> str:
+    digest = base64.urlsafe_b64encode(hashlib.sha256(payload).digest())
+    return f"sha256={digest.rstrip(b'=').decode()}"
+
+
 def write_wheel(
     repo: Path,
     version: str,
@@ -66,6 +74,8 @@ def write_wheel(
     unrelated_only: bool = False,
     wheel_payload: bytes | None = None,
     record_paths: tuple[str, ...] | None = None,
+    record_overrides: dict[str, tuple[str, str]] | None = None,
+    record_payload: bytes | None = None,
 ) -> None:
     package_dist = repo / "dist"
     package_dist.mkdir(exist_ok=True)
@@ -79,30 +89,41 @@ def write_wheel(
         metadata_path = f"{dist_info}/METADATA"
         wheel_path = f"{dist_info}/WHEEL"
         record_path = f"{dist_info}/RECORD"
-        archive.writestr(package_path, b"__version__ = 'fixture'\n")
-        archive.writestr(
-            metadata_path,
-            metadata_payload(
+        member_payloads = {
+            package_path: b"__version__ = 'fixture'\n",
+            metadata_path: metadata_payload(
                 metadata_name, metadata_version if metadata_version else version
+            ).encode(),
+            wheel_path: (
+                wheel_payload
+                if wheel_payload is not None
+                else (
+                    b"Wheel-Version: 1.0\n"
+                    b"Generator: test fixture\n"
+                    b"Root-Is-Purelib: true\n"
+                    b"Tag: py3-none-any\n"
+                )
             ),
-        )
-        archive.writestr(
-            wheel_path,
-            wheel_payload
-            if wheel_payload is not None
-            else (
-                b"Wheel-Version: 1.0\n"
-                b"Generator: test fixture\n"
-                b"Root-Is-Purelib: true\n"
-                b"Tag: py3-none-any\n"
-            ),
-        )
+        }
+        for path, payload in member_payloads.items():
+            archive.writestr(path, payload)
         if record_paths is None:
-            record_paths = (package_path, metadata_path, wheel_path, record_path)
-        archive.writestr(
-            record_path,
-            "".join(f"{path},,\n" for path in record_paths),
-        )
+            record_paths = (*member_payloads, record_path)
+        if record_payload is None:
+            rows: list[str] = []
+            for path in record_paths:
+                if path == record_path:
+                    hash_value, size = "", ""
+                elif path in member_payloads:
+                    payload = member_payloads[path]
+                    hash_value, size = record_digest(payload), str(len(payload))
+                else:
+                    hash_value, size = "", ""
+                if record_overrides and path in record_overrides:
+                    hash_value, size = record_overrides[path]
+                rows.append(f"{path},{hash_value},{size}\n")
+            record_payload = "".join(rows).encode()
+        archive.writestr(record_path, record_payload)
 
 
 def add_tar_bytes(archive: tarfile.TarFile, name: str, payload: bytes) -> None:
@@ -121,9 +142,12 @@ def sdist_pyproject_payload(
     name: str = "stock-desk",
     build_backend: str = "hatchling.build",
     build_requirement: str = "hatchling>=1.27,<2",
+    dependencies: str | None = None,
 ) -> bytes:
+    dependency_line = "" if dependencies is None else f"dependencies = {dependencies}\n"
     return (
-        f'[project]\nname = "{name}"\nversion = "{version}"\n\n'
+        f'[project]\nname = "{name}"\nversion = "{version}"\n'
+        f"{dependency_line}\n"
         "[build-system]\n"
         f'requires = ["{build_requirement}"]\n'
         f'build-backend = "{build_backend}"\n'
@@ -541,6 +565,90 @@ def test_rejects_missing_duplicate_unsafe_or_inconsistent_record_paths(
         check_build_artifacts(release_repo, "0.1.0")
 
 
+def test_rejects_record_hash_that_is_not_sha256_urlsafe_base64(
+    release_repo: Path,
+) -> None:
+    write_valid_artifacts(release_repo, "0.1.0")
+    write_wheel(
+        release_repo,
+        "0.1.0",
+        record_overrides={"stock_desk/__init__.py": ("sha256=not+urlsafe", "24")},
+    )
+
+    with pytest.raises(ReleaseVerificationError, match="wheel build artifact"):
+        check_build_artifacts(release_repo, "0.1.0")
+
+
+@pytest.mark.parametrize("size", ["not-decimal", "999"])
+def test_rejects_record_size_that_is_not_decimal_or_exact(
+    release_repo: Path, size: str
+) -> None:
+    package_payload = b"__version__ = 'fixture'\n"
+    write_valid_artifacts(release_repo, "0.1.0")
+    write_wheel(
+        release_repo,
+        "0.1.0",
+        record_overrides={
+            "stock_desk/__init__.py": (record_digest(package_payload), size)
+        },
+    )
+
+    with pytest.raises(ReleaseVerificationError, match="wheel build artifact"):
+        check_build_artifacts(release_repo, "0.1.0")
+
+
+def test_rejects_record_digest_that_does_not_match_archive_bytes(
+    release_repo: Path,
+) -> None:
+    package_payload = b"__version__ = 'fixture'\n"
+    write_valid_artifacts(release_repo, "0.1.0")
+    write_wheel(
+        release_repo,
+        "0.1.0",
+        record_overrides={
+            "stock_desk/__init__.py": (
+                record_digest(b"different content\n"),
+                str(len(package_payload)),
+            )
+        },
+    )
+
+    with pytest.raises(ReleaseVerificationError, match="wheel build artifact"):
+        check_build_artifacts(release_repo, "0.1.0")
+
+
+def test_rejects_nonempty_hash_or_size_for_record_itself(release_repo: Path) -> None:
+    record_path = "stock_desk-0.1.0.dist-info/RECORD"
+    write_valid_artifacts(release_repo, "0.1.0")
+    write_wheel(
+        release_repo,
+        "0.1.0",
+        record_overrides={record_path: (record_digest(b"record"), "6")},
+    )
+
+    with pytest.raises(ReleaseVerificationError, match="wheel build artifact"):
+        check_build_artifacts(release_repo, "0.1.0")
+
+
+def test_offline_install_rejects_a_wheel_with_an_invalid_record(
+    release_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_valid_artifacts(release_repo, "0.1.0")
+    write_wheel(
+        release_repo,
+        "0.1.0",
+        record_payload=b"invalid-record-row\n",
+    )
+    monkeypatch.setattr(
+        verify_release_module,
+        "_check_wheel_record",
+        lambda *_arguments: None,
+    )
+
+    with pytest.raises(ReleaseVerificationError, match="not installable"):
+        check_build_artifacts(release_repo, "0.1.0")
+
+
 def test_rejects_invalid_sdist_pyproject_toml(release_repo: Path) -> None:
     write_valid_artifacts(release_repo, "0.1.0")
     write_sdist(release_repo, "0.1.0", pyproject_payload=b"[project\n")
@@ -569,6 +677,20 @@ def test_rejects_incorrect_sdist_project_or_build_metadata(
     )
 
     with pytest.raises(ReleaseVerificationError, match="source build artifact"):
+        check_build_artifacts(release_repo, "0.1.0")
+
+
+def test_offline_install_rejects_invalid_pep621_sdist_metadata(
+    release_repo: Path,
+) -> None:
+    write_valid_artifacts(release_repo, "0.1.0")
+    write_sdist(
+        release_repo,
+        "0.1.0",
+        pyproject_payload=sdist_pyproject_payload("0.1.0", dependencies="[1]"),
+    )
+
+    with pytest.raises(ReleaseVerificationError, match="not installable"):
         check_build_artifacts(release_repo, "0.1.0")
 
 
