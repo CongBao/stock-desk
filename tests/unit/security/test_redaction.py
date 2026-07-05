@@ -199,6 +199,65 @@ class HostileFrozenSet(frozenset[str]):
         return f"hostile frozen set {SECRET}"
 
 
+class HostileStr(str):
+    def __len__(self) -> int:
+        raise RuntimeError(f"hostile length {SECRET}")
+
+    def __str__(self) -> str:
+        return f"hostile str {SECRET}"
+
+    def __repr__(self) -> str:
+        return f"hostile str {SECRET}"
+
+    def encode(self, *_args: object, **_kwargs: object) -> bytes:
+        raise RuntimeError(f"hostile encode {SECRET}")
+
+
+class HostileBytes(bytes):
+    def __str__(self) -> str:
+        return f"hostile bytes {SECRET}"
+
+    def __repr__(self) -> str:
+        return f"hostile bytes {SECRET}"
+
+    def decode(self, *_args: object, **_kwargs: object) -> str:
+        raw = bytes.__bytes__(self).decode("utf-8")
+        return HostileStr(raw)
+
+
+class HostileInt(int):
+    def __str__(self) -> str:
+        return f"hostile int {SECRET}"
+
+    def __repr__(self) -> str:
+        return f"hostile int {SECRET}"
+
+    def __int__(self) -> int:
+        raise RuntimeError(f"hostile int conversion {SECRET}")
+
+
+class HostileFloat(float):
+    def __str__(self) -> str:
+        return f"hostile float {SECRET}"
+
+    def __repr__(self) -> str:
+        return f"hostile float {SECRET}"
+
+    def __float__(self) -> float:
+        raise RuntimeError(f"hostile float conversion {SECRET}")
+
+
+class HostileComplex(complex):
+    def __str__(self) -> str:
+        return f"hostile complex {SECRET}"
+
+    def __repr__(self) -> str:
+        return f"hostile complex {SECRET}"
+
+    def __complex__(self) -> complex:
+        raise RuntimeError(f"hostile complex conversion {SECRET}")
+
+
 def _render_log(
     redactor: SecretRedactor,
     message: object,
@@ -423,6 +482,53 @@ def test_clean_discards_hostile_subclasses_of_builtin_containers() -> None:
     assert SECRET not in repr(cleaned_frozen)
 
 
+@pytest.mark.parametrize(
+    ("value", "expected_type", "expected_value"),
+    [
+        (HostileStr(""), str, ""),
+        (HostileStr("ordinary"), str, "ordinary"),
+        (HostileStr(SECRET), str, REDACTED_MARKER),
+        (HostileBytes(b""), bytes, b""),
+        (HostileBytes(b"ordinary"), bytes, b"ordinary"),
+        (HostileBytes(SECRET.encode()), bytes, REDACTED_MARKER.encode()),
+        (HostileInt(7), int, 7),
+        (HostileFloat(1.5), float, 1.5),
+        (HostileComplex(1, 2), complex, complex(1, 2)),
+    ],
+    ids=[
+        "empty-str",
+        "nonempty-str",
+        "secret-str",
+        "empty-bytes",
+        "nonempty-bytes",
+        "secret-bytes",
+        "int",
+        "float",
+        "complex",
+    ],
+)
+def test_clean_normalizes_hostile_scalar_subclasses_to_exact_builtins(
+    value: object,
+    expected_type: type[object],
+    expected_value: object,
+) -> None:
+    redactor = SecretRedactor([SECRET])
+
+    cleaned = redactor.clean(value)
+
+    assert type(cleaned) is expected_type
+    assert cleaned == expected_value
+    assert SECRET not in repr(cleaned)
+
+
+def test_register_normalizes_a_hostile_string_subclass() -> None:
+    redactor = SecretRedactor([])
+
+    redactor.register(HostileStr(SECRET))
+
+    assert redactor.clean(SECRET) == REDACTED_MARKER
+
+
 def test_clean_handles_cycles_and_excessive_depth_without_leaking() -> None:
     redactor = SecretRedactor([SECRET], max_depth=8)
     cyclic: dict[str, Any] = {"token": SECRET}
@@ -593,6 +699,43 @@ def test_logging_filter_discards_hostile_types_from_extra_fields() -> None:
     assert type(getattr(record, "hostile_set")) is set
     assert type(getattr(record, "hostile_mapping")) is dict
     assert type(getattr(record, "hostile_error")) is RuntimeError
+
+
+def test_logging_filter_normalizes_scalar_subclasses_for_custom_formatters() -> None:
+    redactor = SecretRedactor([SECRET])
+    record = logging.makeLogRecord(
+        {
+            "name": "stock_desk.tests.redaction.hostile-scalars",
+            "levelno": logging.INFO,
+            "levelname": "INFO",
+            "msg": "safe",
+            "args": (),
+            "empty_text": HostileStr(""),
+            "text": HostileStr(SECRET),
+            "empty_blob": HostileBytes(b""),
+            "blob": HostileBytes(SECRET.encode()),
+            "integer": HostileInt(7),
+            "decimal": HostileFloat(1.5),
+            "number": HostileComplex(1, 2),
+        }
+    )
+
+    RedactingFilter(redactor).filter(record)
+    output = logging.Formatter(
+        "%(message)s|%(empty_text)s|%(text)s|%(empty_blob)s|%(blob)s|"
+        "%(integer)d|%(decimal).2f|%(number)s"
+    ).format(record)
+
+    assert SECRET not in output
+    assert REDACTED_MARKER in output
+    assert type(getattr(record, "empty_text")) is str
+    assert type(getattr(record, "text")) is str
+    assert type(getattr(record, "empty_blob")) is bytes
+    assert type(getattr(record, "blob")) is bytes
+    assert type(getattr(record, "integer")) is int
+    assert type(getattr(record, "decimal")) is float
+    assert type(getattr(record, "number")) is complex
+    assert "|7|1.50|(1+2j)" in output
 
 
 def test_logging_filter_sanitizes_exception_traceback_and_cached_text() -> None:

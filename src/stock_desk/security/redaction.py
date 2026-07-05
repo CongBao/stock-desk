@@ -31,6 +31,7 @@ class SecretRedactor:
     def register(self, secret: str) -> None:
         if not isinstance(secret, str):
             raise TypeError("Secret must be a string")
+        secret = str.__str__(secret)
         if not secret:
             return
         with self._lock:
@@ -59,9 +60,11 @@ class SecretRedactor:
         if depth > self._max_depth:
             return _DEPTH_MARKER
         if isinstance(value, str):
-            return _replace_known_strings(value, secrets)
+            normalized_text = str.__str__(value)
+            return _replace_known_strings(normalized_text, secrets)
         if isinstance(value, bytes):
-            text = value.decode("utf-8", errors="surrogateescape")
+            normalized_bytes = bytes.__bytes__(value)
+            text = bytes.decode(normalized_bytes, "utf-8", errors="surrogateescape")
             return _replace_known_strings(text, secrets).encode(
                 "utf-8", errors="surrogateescape"
             )
@@ -79,8 +82,14 @@ class SecretRedactor:
                 )
             finally:
                 active.remove(identity)
-        if value is None or isinstance(value, (bool, int, float, complex)):
+        if value is None or type(value) is bool:
             return value
+        if isinstance(value, int):
+            return int.__int__(value)
+        if isinstance(value, float):
+            return float.__float__(value)
+        if isinstance(value, complex):
+            return complex.__complex__(value)
         return _render_unknown(value, secrets)
 
     def _clean_container(
@@ -181,6 +190,7 @@ class RedactingFilter(logging.Filter):
 
 def _replace_known_strings(value: str, secrets: tuple[str, ...]) -> str:
     """Replace secrets in one pass while treating an existing marker as opaque."""
+    value = str.__str__(value)
     if not secrets or not value:
         return value
     output: list[str] = []
