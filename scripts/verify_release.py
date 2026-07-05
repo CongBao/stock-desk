@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Callable
+import csv
 from dataclasses import dataclass
 from datetime import date
-from email.parser import BytesParser
+from email.parser import BytesParser, Parser
 from email.policy import default as default_email_policy
+import io
 import json
 import os
 from pathlib import Path
+from pathlib import PurePosixPath
 import re
 import subprocess
 import sys
@@ -219,14 +222,72 @@ def _check_package_metadata(
         )
 
 
+def _invalid_wheel() -> ReleaseVerificationError:
+    return ReleaseVerificationError("release wheel build artifact is invalid")
+
+
+def _check_wheel_metadata(payload: bytes) -> None:
+    try:
+        content = payload.decode("utf-8")
+    except UnicodeError as error:
+        raise _invalid_wheel() from error
+    metadata = Parser(policy=default_email_policy).parsestr(content)
+    wheel_versions = [str(value) for value in metadata.get_all("Wheel-Version", [])]
+    purelib_values = [str(value) for value in metadata.get_all("Root-Is-Purelib", [])]
+    tags = [str(value) for value in metadata.get_all("Tag", [])]
+    if (
+        metadata.defects
+        or wheel_versions != ["1.0"]
+        or purelib_values not in (["true"], ["false"])
+        or tags != ["py3-none-any"]
+    ):
+        raise _invalid_wheel()
+
+
+def _is_safe_wheel_path(path: str) -> bool:
+    normalized = PurePosixPath(path)
+    return (
+        bool(path)
+        and "\\" not in path
+        and "\x00" not in path
+        and ":" not in path
+        and not normalized.is_absolute()
+        and ".." not in normalized.parts
+        and normalized.as_posix() == path
+    )
+
+
+def _check_wheel_record(
+    payload: bytes, archive_members: set[str], required_members: set[str]
+) -> None:
+    try:
+        content = payload.decode("utf-8")
+        rows = list(csv.reader(io.StringIO(content, newline=""), strict=True))
+    except (UnicodeError, csv.Error) as error:
+        raise _invalid_wheel() from error
+    if any(len(row) != 3 for row in rows):
+        raise _invalid_wheel()
+    paths = [row[0] for row in rows]
+    path_set = set(paths)
+    if (
+        len(paths) != len(path_set)
+        or not all(_is_safe_wheel_path(path) for path in paths)
+        or not required_members.issubset(path_set)
+        or path_set != archive_members
+    ):
+        raise _invalid_wheel()
+
+
 def _check_wheel_artifact(wheel_path: Path, version: str) -> None:
     dist_info = f"stock_desk-{version}.dist-info"
     metadata_path = f"{dist_info}/METADATA"
+    wheel_metadata_path = f"{dist_info}/WHEEL"
+    record_path = f"{dist_info}/RECORD"
     required_members = {
         "stock_desk/__init__.py",
         metadata_path,
-        f"{dist_info}/WHEEL",
-        f"{dist_info}/RECORD",
+        wheel_metadata_path,
+        record_path,
     }
     with zipfile.ZipFile(wheel_path) as wheel:
         members = wheel.namelist()
@@ -236,15 +297,43 @@ def _check_wheel_artifact(wheel_path: Path, version: str) -> None:
             or not required_members.issubset(members)
             or any(wheel.getinfo(member).is_dir() for member in required_members)
         ):
-            raise ReleaseVerificationError("release wheel build artifact is invalid")
+            raise _invalid_wheel()
         _check_package_metadata(wheel.read(metadata_path), version, "wheel")
+        archive_files = {
+            member.filename for member in wheel.infolist() if not member.is_dir()
+        }
+        _check_wheel_metadata(wheel.read(wheel_metadata_path))
+        _check_wheel_record(wheel.read(record_path), archive_files, required_members)
+
+
+def _invalid_source() -> ReleaseVerificationError:
+    return ReleaseVerificationError("release source build artifact is invalid")
+
+
+def _check_sdist_pyproject(payload: bytes, version: str) -> None:
+    try:
+        pyproject = tomllib.loads(payload.decode("utf-8"))
+    except (UnicodeError, tomllib.TOMLDecodeError) as error:
+        raise _invalid_source() from error
+    project = pyproject.get("project")
+    build_system = pyproject.get("build-system")
+    if (
+        not isinstance(project, dict)
+        or project.get("name") != "stock-desk"
+        or project.get("version") != version
+        or not isinstance(build_system, dict)
+        or build_system.get("requires") != ["hatchling>=1.27,<2"]
+        or build_system.get("build-backend") != "hatchling.build"
+    ):
+        raise _invalid_source()
 
 
 def _check_source_artifact(source_path: Path, version: str) -> None:
     root = f"stock_desk-{version}"
+    pyproject_path = f"{root}/pyproject.toml"
     metadata_path = f"{root}/PKG-INFO"
     required_members = {
-        f"{root}/pyproject.toml",
+        pyproject_path,
         metadata_path,
         f"{root}/src/stock_desk/__init__.py",
     }
@@ -256,10 +345,12 @@ def _check_source_artifact(source_path: Path, version: str) -> None:
             or not required_members.issubset(members_by_name)
             or any(not members_by_name[name].isfile() for name in required_members)
         ):
-            raise ReleaseVerificationError("release source build artifact is invalid")
+            raise _invalid_source()
+        pyproject_file = source.extractfile(members_by_name[pyproject_path])
         metadata_file = source.extractfile(members_by_name[metadata_path])
-        if metadata_file is None:
-            raise ReleaseVerificationError("release source build artifact is invalid")
+        if pyproject_file is None or metadata_file is None:
+            raise _invalid_source()
+        _check_sdist_pyproject(pyproject_file.read(), version)
         _check_package_metadata(metadata_file.read(), version, "source")
 
 
@@ -299,6 +390,8 @@ def check_build_artifacts(repo: Path, version: str) -> None:
     try:
         _check_wheel_artifact(expected_wheel, version)
         _check_source_artifact(expected_source, version)
+    except ReleaseVerificationError:
+        raise
     except (
         KeyError,
         OSError,

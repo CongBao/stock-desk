@@ -64,6 +64,8 @@ def write_wheel(
     metadata_name: str = "stock-desk",
     metadata_version: str | None = None,
     unrelated_only: bool = False,
+    wheel_payload: bytes | None = None,
+    record_paths: tuple[str, ...] | None = None,
 ) -> None:
     package_dist = repo / "dist"
     package_dist.mkdir(exist_ok=True)
@@ -73,25 +75,59 @@ def write_wheel(
             archive.writestr("unrelated.txt", b"not a wheel payload\n")
             return
         dist_info = f"stock_desk-{version}.dist-info"
-        archive.writestr("stock_desk/__init__.py", b"__version__ = 'fixture'\n")
+        package_path = "stock_desk/__init__.py"
+        metadata_path = f"{dist_info}/METADATA"
+        wheel_path = f"{dist_info}/WHEEL"
+        record_path = f"{dist_info}/RECORD"
+        archive.writestr(package_path, b"__version__ = 'fixture'\n")
         archive.writestr(
-            f"{dist_info}/METADATA",
+            metadata_path,
             metadata_payload(
                 metadata_name, metadata_version if metadata_version else version
             ),
         )
         archive.writestr(
-            f"{dist_info}/WHEEL",
-            "Wheel-Version: 1.0\nGenerator: test fixture\nRoot-Is-Purelib: true\n",
+            wheel_path,
+            wheel_payload
+            if wheel_payload is not None
+            else (
+                b"Wheel-Version: 1.0\n"
+                b"Generator: test fixture\n"
+                b"Root-Is-Purelib: true\n"
+                b"Tag: py3-none-any\n"
+            ),
         )
-        archive.writestr(f"{dist_info}/RECORD", "stock_desk/__init__.py,,\n")
+        if record_paths is None:
+            record_paths = (package_path, metadata_path, wheel_path, record_path)
+        archive.writestr(
+            record_path,
+            "".join(f"{path},,\n" for path in record_paths),
+        )
 
 
-def add_tar_text(archive: tarfile.TarFile, name: str, content: str) -> None:
-    payload = content.encode()
+def add_tar_bytes(archive: tarfile.TarFile, name: str, payload: bytes) -> None:
     metadata = tarfile.TarInfo(name)
     metadata.size = len(payload)
     archive.addfile(metadata, io.BytesIO(payload))
+
+
+def add_tar_text(archive: tarfile.TarFile, name: str, content: str) -> None:
+    add_tar_bytes(archive, name, content.encode())
+
+
+def sdist_pyproject_payload(
+    version: str,
+    *,
+    name: str = "stock-desk",
+    build_backend: str = "hatchling.build",
+    build_requirement: str = "hatchling>=1.27,<2",
+) -> bytes:
+    return (
+        f'[project]\nname = "{name}"\nversion = "{version}"\n\n'
+        "[build-system]\n"
+        f'requires = ["{build_requirement}"]\n'
+        f'build-backend = "{build_backend}"\n'
+    ).encode()
 
 
 def write_sdist(
@@ -101,6 +137,7 @@ def write_sdist(
     metadata_name: str = "stock-desk",
     metadata_version: str | None = None,
     unrelated_only: bool = False,
+    pyproject_payload: bytes | None = None,
 ) -> None:
     package_dist = repo / "dist"
     package_dist.mkdir(exist_ok=True)
@@ -110,10 +147,12 @@ def write_sdist(
         if unrelated_only:
             add_tar_text(archive, f"{root}/unrelated.txt", "not an sdist payload\n")
             return
-        add_tar_text(
+        add_tar_bytes(
             archive,
             f"{root}/pyproject.toml",
-            f'[project]\nname = "stock-desk"\nversion = "{version}"\n',
+            pyproject_payload
+            if pyproject_payload is not None
+            else sdist_pyproject_payload(version),
         )
         add_tar_text(
             archive,
@@ -441,6 +480,95 @@ def test_rejects_package_metadata_with_a_different_name(
         write_sdist(release_repo, "0.1.0", metadata_name="another-package")
 
     with pytest.raises(ReleaseVerificationError, match="build artifact"):
+        check_build_artifacts(release_repo, "0.1.0")
+
+
+@pytest.mark.parametrize(
+    "wheel_payload",
+    [
+        b"Wheel-Version: \xff\xfe\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+        b"Wheel-Version: 2.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+    ],
+)
+def test_rejects_malformed_or_unsupported_wheel_metadata(
+    release_repo: Path, wheel_payload: bytes
+) -> None:
+    write_valid_artifacts(release_repo, "0.1.0")
+    write_wheel(release_repo, "0.1.0", wheel_payload=wheel_payload)
+
+    with pytest.raises(ReleaseVerificationError, match="wheel build artifact"):
+        check_build_artifacts(release_repo, "0.1.0")
+
+
+@pytest.mark.parametrize(
+    "record_paths",
+    [
+        (
+            "stock_desk/__init__.py",
+            "stock_desk-0.1.0.dist-info/METADATA",
+            "stock_desk-0.1.0.dist-info/WHEEL",
+        ),
+        (
+            "stock_desk/__init__.py",
+            "stock_desk-0.1.0.dist-info/METADATA",
+            "stock_desk-0.1.0.dist-info/WHEEL",
+            "stock_desk-0.1.0.dist-info/RECORD",
+            "stock_desk/__init__.py",
+        ),
+        (
+            "stock_desk/__init__.py",
+            "stock_desk-0.1.0.dist-info/METADATA",
+            "stock_desk-0.1.0.dist-info/WHEEL",
+            "stock_desk-0.1.0.dist-info/RECORD",
+            "../escape.py",
+        ),
+        (
+            "stock_desk/__init__.py",
+            "stock_desk-0.1.0.dist-info/METADATA",
+            "stock_desk-0.1.0.dist-info/WHEEL",
+            "stock_desk-0.1.0.dist-info/RECORD",
+            "stock_desk/not-in-the-wheel.py",
+        ),
+    ],
+)
+def test_rejects_missing_duplicate_unsafe_or_inconsistent_record_paths(
+    release_repo: Path, record_paths: tuple[str, ...]
+) -> None:
+    write_valid_artifacts(release_repo, "0.1.0")
+    write_wheel(release_repo, "0.1.0", record_paths=record_paths)
+
+    with pytest.raises(ReleaseVerificationError, match="wheel build artifact"):
+        check_build_artifacts(release_repo, "0.1.0")
+
+
+def test_rejects_invalid_sdist_pyproject_toml(release_repo: Path) -> None:
+    write_valid_artifacts(release_repo, "0.1.0")
+    write_sdist(release_repo, "0.1.0", pyproject_payload=b"[project\n")
+
+    with pytest.raises(ReleaseVerificationError, match="source build artifact"):
+        check_build_artifacts(release_repo, "0.1.0")
+
+
+@pytest.mark.parametrize(
+    "pyproject_payload",
+    [
+        sdist_pyproject_payload("0.1.0", build_backend="setuptools.build_meta"),
+        sdist_pyproject_payload("0.1.0", build_requirement="setuptools>=80"),
+        sdist_pyproject_payload("0.1.0", name="another-package"),
+        sdist_pyproject_payload("0.2.0"),
+    ],
+)
+def test_rejects_incorrect_sdist_project_or_build_metadata(
+    release_repo: Path, pyproject_payload: bytes
+) -> None:
+    write_valid_artifacts(release_repo, "0.1.0")
+    write_sdist(
+        release_repo,
+        "0.1.0",
+        pyproject_payload=pyproject_payload,
+    )
+
+    with pytest.raises(ReleaseVerificationError, match="source build artifact"):
         check_build_artifacts(release_repo, "0.1.0")
 
 
