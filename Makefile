@@ -1,4 +1,4 @@
-.PHONY: bootstrap dev test lint typecheck build smoke public-tree release-check
+.PHONY: bootstrap dev test lint typecheck build smoke public-tree security release-check
 
 bootstrap:
 	uv sync --frozen --all-groups
@@ -33,4 +33,8 @@ smoke:
 public-tree:
 	uv run --frozen python scripts/check_public_tree.py
 
-release-check: test lint typecheck build public-tree smoke
+security:
+	uv audit --frozen --no-dev
+	pnpm audit --prod --audit-level high
+
+release-check: test lint typecheck build public-tree security smoke

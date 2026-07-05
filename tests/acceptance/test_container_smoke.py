@@ -103,6 +103,7 @@ def test_deployment_contract_is_complete_and_public_only() -> None:
         "lint",
         "public-tree",
         "release-check",
+        "security",
         "smoke",
         "test",
         "typecheck",

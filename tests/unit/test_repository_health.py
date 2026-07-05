@@ -418,6 +418,64 @@ def test_ci_uploads_coverage_reports_and_release_uses_canonical_test() -> None:
     assert commands[0] == "make test"
 
 
+def test_security_target_audits_only_locked_production_dependencies() -> None:
+    makefile = _read("Makefile")
+    security_recipe = makefile.split("\nsecurity:\n", maxsplit=1)[1].split(
+        "\n\n", maxsplit=1
+    )[0]
+    assert security_recipe.splitlines() == [
+        "\tuv audit --frozen --no-dev",
+        "\tpnpm audit --prod --audit-level high",
+    ]
+    assert "--ignore" not in security_recipe
+
+    release_check = re.search(r"^release-check:\s*(.+)$", makefile, re.MULTILINE)
+    assert release_check is not None
+    assert "security" in release_check.group(1).split()
+
+
+def test_ci_and_release_run_the_canonical_dependency_audit_gate() -> None:
+    ci = _load_github_actions_yaml(_read(".github/workflows/ci.yml"))
+    audit_job = ci["jobs"]["dependency-audit"]
+    assert audit_job["name"] == "Locked production dependency audit"
+    assert 1 <= audit_job["timeout-minutes"] <= 10
+    audit_steps = audit_job["steps"]
+    setup_actions = {
+        str(step.get("uses", "")).split("@", maxsplit=1)[0] for step in audit_steps
+    }
+    assert {
+        "actions/checkout",
+        "astral-sh/setup-uv",
+        "pnpm/action-setup",
+        "actions/setup-node",
+    } <= setup_actions
+    audit_step = next(
+        step
+        for step in audit_steps
+        if step.get("name") == "Audit locked production dependencies"
+    )
+    assert audit_step["run"] == "make security"
+
+    release = _load_github_actions_yaml(_read(".github/workflows/release.yml"))
+    release_steps = release["jobs"]["verify"]["steps"]
+    release_gates = next(
+        step for step in release_steps if step.get("name") == "Run release gates"
+    )
+    commands = [line.strip() for line in release_gates["run"].splitlines()]
+    assert commands.count("make security") == 1
+
+
+def test_readmes_document_networked_dependency_audits() -> None:
+    english = _read("README.md")
+    chinese = _read("README.zh-CN.md")
+    for content in (english, chinese):
+        assert "make security" in content
+        assert "OSV" in content
+        assert "npm registry" in content
+    assert "network access" in english.casefold()
+    assert "网络访问" in chinese
+
+
 def test_ci_and_release_gate_the_chromium_end_to_end_slice() -> None:
     ci_workflow = _load_github_actions_yaml(_read(".github/workflows/ci.yml"))
     e2e = ci_workflow["jobs"]["e2e"]
@@ -474,6 +532,7 @@ def test_e2e_is_a_root_script_without_changing_the_make_contract() -> None:
         "build",
         "smoke",
         "public-tree",
+        "security",
         "release-check",
     }
     assert "scripts/clean_build_artifacts.py" in makefile

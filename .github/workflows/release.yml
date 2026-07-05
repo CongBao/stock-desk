@@ -58,6 +58,7 @@ jobs:
           make typecheck
           make build
           make public-tree
+          make security
           pnpm e2e
       - name: Prepare checksummed assets
         shell: bash

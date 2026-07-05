@@ -42,6 +42,8 @@ make release-check
 docker compose down --volumes --remove-orphans
 ```
 
+运行 `make security` 可只审计锁定的生产依赖图。该命令会访问 OSV 查询 Python 依赖漏洞，并访问 npm registry 查询 Node 依赖漏洞，因此需要网络访问。
+
 ## 当前可用范围
 
 - `/market` 是静态工作区/布局预览，其中图表明确不是实时数据。
