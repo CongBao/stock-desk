@@ -6,9 +6,42 @@ docs/superpowers/
 openspec/
 outputs/
 work/
+.worktrees/
 
-# Local environment and operating-system files
+# Local environment
 .env
 .env.*
 !.env.example
+
+# Runtime data and generated reports
+data/
+logs/
+reports/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+env/
+
+# Web
+node_modules/
+dist/
+coverage/
+
+# Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Operating-system files
 .DS_Store
+Thumbs.db
