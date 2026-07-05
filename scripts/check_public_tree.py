@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from collections.abc import Iterable
+from pathlib import Path
 
 
 FORBIDDEN_PREFIXES = (
@@ -21,8 +23,12 @@ def forbidden_paths(paths: Iterable[str]) -> list[str]:
 
 
 def main() -> int:
-    output = subprocess.check_output(["git", "ls-files"], text=True)
-    blocked = forbidden_paths(output.splitlines())
+    repo_root = Path(__file__).resolve().parent.parent
+    output = subprocess.check_output(
+        ["git", "-C", os.fspath(repo_root), "ls-files", "-z"]
+    )
+    tracked = (os.fsdecode(path) for path in output.split(b"\0") if path)
+    blocked = forbidden_paths(tracked)
     if blocked:
         print("Internal paths are tracked:\n" + "\n".join(blocked), file=sys.stderr)
         return 1
