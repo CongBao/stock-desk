@@ -1,18 +1,24 @@
 from collections.abc import Mapping
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import math
 from types import MappingProxyType
 from typing import Any, cast
 from uuid import uuid4
 
-from sqlalchemy import JSON, Engine, bindparam, case, insert, null, select, update
-from sqlalchemy.engine import RowMapping
+from sqlalchemy import JSON, Engine, bindparam, case, func, insert, null, select, update
+from sqlalchemy.engine import Connection, RowMapping
 from sqlalchemy.sql.elements import ColumnElement
 
 from stock_desk.storage.database import create_engine_for_url, migrate
-from stock_desk.storage.models import TaskRun
-from stock_desk.tasks.models import TaskSnapshot, TaskStatus
+from stock_desk.storage.models import TaskEvent, TaskRun
+from stock_desk.tasks.models import (
+    TaskEventLevel,
+    TaskEventSnapshot,
+    TaskMetricsSnapshot,
+    TaskSnapshot,
+    TaskStatus,
+)
 
 
 class TaskRepositoryError(Exception):
@@ -116,6 +122,53 @@ def _snapshot(row: RowMapping) -> TaskSnapshot:
     )
 
 
+def _event_snapshot(row: RowMapping) -> TaskEventSnapshot:
+    occurred_at = _aware_utc(cast(datetime, row["occurred_at"]))
+    if occurred_at is None:
+        raise RuntimeError("Task event timestamp must not be null")
+    return TaskEventSnapshot(
+        id=cast(str, row["id"]),
+        task_id=cast(str, row["task_id"]),
+        event_name=cast(str, row["event_name"]),
+        level=cast(TaskEventLevel, row["level"]),
+        progress=cast(float | None, row["progress"]),
+        detail=MappingProxyType(dict(cast(Mapping[str, Any], row["detail_json"]))),
+        occurred_at=occurred_at,
+    )
+
+
+def _append_event(
+    connection: Connection,
+    *,
+    task_id: str,
+    event_name: str,
+    level: TaskEventLevel,
+    progress: float | None,
+    detail: Mapping[str, Any],
+    occurred_at: datetime,
+) -> None:
+    safe_detail = _validated_json_object(detail, field_name="event detail")
+    latest_event_time = _aware_utc(
+        connection.execute(
+            select(func.max(TaskEvent.occurred_at)).where(TaskEvent.task_id == task_id)
+        ).scalar_one()
+    )
+    effective_time = occurred_at
+    if latest_event_time is not None and latest_event_time >= effective_time:
+        effective_time = latest_event_time + timedelta(microseconds=1)
+    connection.execute(
+        insert(TaskEvent).values(
+            id=str(uuid4()),
+            task_id=task_id,
+            event_name=event_name,
+            level=level,
+            progress=progress,
+            detail_json=safe_detail,
+            occurred_at=effective_time,
+        )
+    )
+
+
 class TaskRepository:
     """Transactional access to the durable task queue."""
 
@@ -152,7 +205,17 @@ class TaskRepository:
         statement = insert(TaskRun).values(**values).returning(TaskRun)
         with self._engine.begin() as connection:
             row = connection.execute(statement).mappings().one()
-        return _snapshot(row)
+            task = _snapshot(row)
+            _append_event(
+                connection,
+                task_id=task.id,
+                event_name="task.created",
+                level="info",
+                progress=task.progress,
+                detail={"kind": task.kind},
+                occurred_at=task.created_at,
+            )
+        return task
 
     def get(self, task_id: str) -> TaskSnapshot:
         statement = select(TaskRun).where(TaskRun.id == task_id)
@@ -173,6 +236,64 @@ class TaskRepository:
         with self._engine.connect() as connection:
             rows = connection.execute(statement).mappings().all()
         return [_snapshot(row) for row in rows]
+
+    def list_events(self, task_id: str, *, limit: int = 100) -> list[TaskEventSnapshot]:
+        if not 1 <= limit <= 100:
+            raise TaskValidationError("Task event limit must be between 1 and 100")
+        task_statement = select(TaskRun.id).where(TaskRun.id == task_id)
+        event_statement = (
+            select(TaskEvent)
+            .where(TaskEvent.task_id == task_id)
+            .order_by(TaskEvent.occurred_at.desc(), TaskEvent.id.desc())
+            .limit(limit)
+        )
+        with self._engine.connect() as connection:
+            if connection.execute(task_statement).scalar_one_or_none() is None:
+                raise TaskNotFound(f"Task {task_id} was not found")
+            rows = connection.execute(event_statement).mappings().all()
+        return [_event_snapshot(row) for row in reversed(rows)]
+
+    def metrics(self) -> TaskMetricsSnapshot:
+        status_statement = (
+            select(TaskRun.status, func.count(TaskRun.id).label("task_count"))
+            .group_by(TaskRun.status)
+            .order_by(TaskRun.status)
+        )
+        duration_ms = (
+            func.julianday(TaskRun.finished_at) - func.julianday(TaskRun.started_at)
+        ) * 86_400_000.0
+        duration_statement = select(
+            func.count(TaskRun.id).label("completed_count"),
+            func.avg(duration_ms).label("average_duration_ms"),
+            func.min(duration_ms).label("min_duration_ms"),
+            func.max(duration_ms).label("max_duration_ms"),
+        ).where(TaskRun.started_at.is_not(None), TaskRun.finished_at.is_not(None))
+        with self._engine.connect() as connection:
+            status_rows = connection.execute(status_statement).mappings().all()
+            duration_row = connection.execute(duration_statement).mappings().one()
+
+        counts: dict[TaskStatus, int] = {
+            "queued": 0,
+            "running": 0,
+            "succeeded": 0,
+            "failed": 0,
+            "cancelled": 0,
+        }
+        for row in status_rows:
+            counts[cast(TaskStatus, row["status"])] = int(row["task_count"])
+
+        def optional_float(value: object) -> float | None:
+            return float(cast(float | int, value)) if value is not None else None
+
+        return TaskMetricsSnapshot(
+            total=sum(counts.values()),
+            by_status=MappingProxyType(counts),
+            failure_count=counts["failed"],
+            completed_count=int(duration_row["completed_count"]),
+            average_duration_ms=optional_float(duration_row["average_duration_ms"]),
+            min_duration_ms=optional_float(duration_row["min_duration_ms"]),
+            max_duration_ms=optional_float(duration_row["max_duration_ms"]),
+        )
 
     def claim_next(self, worker_id: str) -> TaskSnapshot | None:
         if not worker_id or worker_id != worker_id.strip() or len(worker_id) > 255:
@@ -203,7 +324,19 @@ class TaskRepository:
         )
         with self._engine.begin() as connection:
             row = connection.execute(statement).mappings().one_or_none()
-        return _snapshot(row) if row is not None else None
+            if row is None:
+                return None
+            task = _snapshot(row)
+            _append_event(
+                connection,
+                task_id=task.id,
+                event_name="task.claimed",
+                level="info",
+                progress=task.progress,
+                detail={"worker_id": worker_id},
+                occurred_at=task.updated_at,
+            )
+        return task
 
     def set_progress(self, task_id: str, progress: float) -> TaskSnapshot:
         if (
@@ -225,8 +358,18 @@ class TaskRepository:
         )
         with self._engine.begin() as connection:
             row = connection.execute(statement).mappings().one_or_none()
-        if row is not None:
-            return _snapshot(row)
+            if row is not None:
+                task = _snapshot(row)
+                _append_event(
+                    connection,
+                    task_id=task.id,
+                    event_name="task.progressed",
+                    level="info",
+                    progress=task.progress,
+                    detail={},
+                    occurred_at=task.updated_at,
+                )
+                return task
         current = self.get(task_id)
         raise TaskConflict(f"Task {current.id} is not running")
 
@@ -255,8 +398,22 @@ class TaskRepository:
         )
         with self._engine.begin() as connection:
             row = connection.execute(statement).mappings().one_or_none()
-        if row is not None:
-            return _snapshot(row)
+            if row is not None:
+                task = _snapshot(row)
+                _append_event(
+                    connection,
+                    task_id=task.id,
+                    event_name=(
+                        "task.cancelled"
+                        if task.status == "cancelled"
+                        else "task.succeeded"
+                    ),
+                    level="info",
+                    progress=task.progress,
+                    detail={},
+                    occurred_at=task.updated_at,
+                )
+                return task
         current = self.get(task_id)
         if current.status == "succeeded":
             return current
@@ -284,8 +441,24 @@ class TaskRepository:
         )
         with self._engine.begin() as connection:
             row = connection.execute(statement).mappings().one_or_none()
-        if row is not None:
-            return _snapshot(row)
+            if row is not None:
+                task = _snapshot(row)
+                _append_event(
+                    connection,
+                    task_id=task.id,
+                    event_name=(
+                        "task.cancelled"
+                        if task.status == "cancelled"
+                        else "task.failed"
+                    ),
+                    level="info" if task.status == "cancelled" else "error",
+                    progress=task.progress,
+                    detail={}
+                    if task.status == "cancelled"
+                    else {"code": "task_failed"},
+                    occurred_at=task.updated_at,
+                )
+                return task
         current = self.get(task_id)
         if current.status == "failed":
             return current
@@ -315,8 +488,28 @@ class TaskRepository:
             row = connection.execute(queued_statement).mappings().one_or_none()
             if row is None:
                 row = connection.execute(running_statement).mappings().one_or_none()
-        if row is not None:
-            return _snapshot(row)
+            if row is not None:
+                task = _snapshot(row)
+                _append_event(
+                    connection,
+                    task_id=task.id,
+                    event_name="task.cancel_requested",
+                    level="info",
+                    progress=task.progress,
+                    detail={},
+                    occurred_at=task.updated_at,
+                )
+                if task.status == "cancelled":
+                    _append_event(
+                        connection,
+                        task_id=task.id,
+                        event_name="task.cancelled",
+                        level="info",
+                        progress=task.progress,
+                        detail={},
+                        occurred_at=task.updated_at + timedelta(microseconds=1),
+                    )
+                return task
         current = self.get(task_id)
         if current.status == "cancelled":
             return current

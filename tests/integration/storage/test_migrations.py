@@ -15,7 +15,7 @@ from stock_desk.storage.database import create_engine_for_url, downgrade, migrat
 from stock_desk.storage.models import Base
 
 
-CORE_TABLES = {"app_setting", "task_run"}
+CORE_TABLES = {"app_setting", "task_event", "task_run"}
 APP_SETTING_COLUMNS = {"key", "encrypted_value", "updated_at"}
 TASK_RUN_COLUMNS = {
     "id",
@@ -31,6 +31,15 @@ TASK_RUN_COLUMNS = {
     "updated_at",
     "started_at",
     "finished_at",
+}
+TASK_EVENT_COLUMNS = {
+    "id",
+    "task_id",
+    "event_name",
+    "level",
+    "progress",
+    "detail_json",
+    "occurred_at",
 }
 
 
@@ -53,14 +62,34 @@ def test_upgrade_creates_core_tables(tmp_path: Path) -> None:
         assert TASK_RUN_COLUMNS <= {
             column["name"] for column in inspector.get_columns("task_run")
         }
+        assert TASK_EVENT_COLUMNS == {
+            column["name"] for column in inspector.get_columns("task_event")
+        }
         assert inspector.get_pk_constraint("app_setting")["constrained_columns"] == [
             "key"
         ]
         assert inspector.get_pk_constraint("task_run")["constrained_columns"] == ["id"]
+        assert inspector.get_pk_constraint("task_event")["constrained_columns"] == [
+            "id"
+        ]
+        assert inspector.get_foreign_keys("task_event") == [
+            {
+                "name": None,
+                "constrained_columns": ["task_id"],
+                "referred_schema": None,
+                "referred_table": "task_run",
+                "referred_columns": ["id"],
+                "options": {"ondelete": "CASCADE"},
+            }
+        ]
         assert {
             (index["name"], tuple(index["column_names"]))
             for index in inspector.get_indexes("task_run")
         } >= {("ix_task_run_status_created_at", ("status", "created_at"))}
+        assert {
+            (index["name"], tuple(index["column_names"]))
+            for index in inspector.get_indexes("task_event")
+        } == {("ix_task_event_task_id_occurred_at", ("task_id", "occurred_at"))}
     finally:
         _dispose(engine)
 

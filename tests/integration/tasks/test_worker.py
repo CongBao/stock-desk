@@ -45,6 +45,206 @@ def test_task_can_be_created_claimed_and_completed(tmp_path: Path) -> None:
         repository.close()
 
 
+def test_repository_appends_ordered_immutable_events_for_success(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    try:
+        created = repository.create("demo.double", {"value": 21})
+        claimed = repository.claim_next("worker-1")
+        assert claimed is not None
+        repository.set_progress(created.id, 0.5)
+        repository.complete(created.id, {"value": 42})
+
+        events = repository.list_events(created.id)
+
+        assert [task_event.event_name for task_event in events] == [
+            "task.created",
+            "task.claimed",
+            "task.progressed",
+            "task.succeeded",
+        ]
+        assert [task_event.level for task_event in events] == [
+            "info",
+            "info",
+            "info",
+            "info",
+        ]
+        assert [task_event.progress for task_event in events] == [0.0, 0.0, 0.5, 1.0]
+        assert events[0].detail == {"kind": "demo.double"}
+        assert events[1].detail == {"worker_id": "worker-1"}
+        assert events[2].detail == {}
+        assert events[3].detail == {}
+        assert all(task_event.task_id == created.id for task_event in events)
+        assert events == sorted(events, key=lambda task_event: task_event.occurred_at)
+        with pytest.raises(FrozenInstanceError):
+            setattr(events[0], "level", "error")
+        with pytest.raises(TypeError):
+            cast(Any, events[0].detail)["secret"] = "hunter2"
+    finally:
+        repository.close()
+
+
+def test_failure_and_cancellation_events_are_structured_and_secret_safe(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    try:
+        failed_task = repository.create("secret.failure", {})
+        assert repository.claim_next("worker-failure") is not None
+        repository.fail(
+            failed_task.id,
+            {"code": "unsafe", "raw_exception": "database password is hunter2"},
+        )
+
+        queued_cancel = repository.create("cancel.queued", {})
+        repository.request_cancel(queued_cancel.id)
+
+        running_cancel = repository.create("cancel.running", {})
+        assert repository.claim_next("worker-cancel") is not None
+        repository.request_cancel(running_cancel.id)
+        repository.complete(running_cancel.id, {"discarded": True})
+
+        failed_events = repository.list_events(failed_task.id)
+        assert [task_event.event_name for task_event in failed_events] == [
+            "task.created",
+            "task.claimed",
+            "task.failed",
+        ]
+        assert failed_events[-1].level == "error"
+        assert failed_events[-1].detail == {"code": "task_failed"}
+        assert "hunter2" not in repr(failed_events)
+        assert "raw_exception" not in repr(failed_events)
+
+        assert [
+            task_event.event_name
+            for task_event in repository.list_events(queued_cancel.id)
+        ] == ["task.created", "task.cancel_requested", "task.cancelled"]
+        assert [
+            task_event.event_name
+            for task_event in repository.list_events(running_cancel.id)
+        ] == [
+            "task.created",
+            "task.claimed",
+            "task.cancel_requested",
+            "task.cancelled",
+        ]
+    finally:
+        repository.close()
+
+
+def test_event_queries_are_recently_bounded_and_require_an_existing_task(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    try:
+        created = repository.create("events", {})
+        assert repository.claim_next("worker") is not None
+        repository.set_progress(created.id, 0.25)
+        repository.complete(created.id, {})
+
+        assert [
+            task_event.event_name
+            for task_event in repository.list_events(created.id, limit=2)
+        ] == ["task.progressed", "task.succeeded"]
+        with pytest.raises(TaskValidationError):
+            repository.list_events(created.id, limit=0)
+        with pytest.raises(TaskValidationError):
+            repository.list_events(created.id, limit=101)
+        with pytest.raises(TaskNotFound):
+            repository.list_events("missing")
+    finally:
+        repository.close()
+
+
+def test_metrics_aggregate_statuses_and_terminal_durations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    base = datetime(2026, 7, 5, 12, 0, tzinfo=timezone.utc)
+    sampled_times = iter(
+        [
+            base,
+            base + timedelta(seconds=1),
+            base + timedelta(seconds=1, milliseconds=100),
+            base + timedelta(seconds=2),
+            base + timedelta(seconds=3),
+            base + timedelta(seconds=3, milliseconds=300),
+            base + timedelta(seconds=4),
+            base + timedelta(seconds=5),
+            base + timedelta(seconds=5, milliseconds=50),
+        ]
+    )
+    monkeypatch.setattr(repository_module, "_utc_now", lambda: next(sampled_times))
+    repository = _repository(tmp_path)
+    try:
+        succeeded = repository.create("succeeded", {})
+        assert repository.claim_next("worker-success") is not None
+        succeeded = repository.complete(succeeded.id, {})
+
+        failed = repository.create("failed", {})
+        assert repository.claim_next("worker-failure") is not None
+        failed = repository.fail(failed.id, {"code": "failure"})
+
+        repository.create("queued", {})
+        cancelled = repository.create("cancelled", {})
+        repository.request_cancel(cancelled.id)
+
+        metrics = repository.metrics()
+
+        assert dict(metrics.by_status) == {
+            "queued": 1,
+            "running": 0,
+            "succeeded": 1,
+            "failed": 1,
+            "cancelled": 1,
+        }
+        assert metrics.total == 4
+        assert metrics.failure_count == 1
+        assert metrics.completed_count == 2
+        assert metrics.average_duration_ms == pytest.approx(200.0, abs=0.1)
+        assert metrics.min_duration_ms == pytest.approx(100.0, abs=0.1)
+        assert metrics.max_duration_ms == pytest.approx(300.0, abs=0.1)
+        assert succeeded.duration_ms == pytest.approx(100.0)
+        assert failed.duration_ms == pytest.approx(300.0)
+        assert repository.get(cancelled.id).duration_ms is None
+    finally:
+        repository.close()
+
+
+def test_event_insert_failure_rolls_back_the_state_transition(tmp_path: Path) -> None:
+    url = f"sqlite:///{tmp_path / 'event-rollback.db'}"
+    migrate(url)
+    engine = create_engine_for_url(url)
+    repository = TaskRepository(engine)
+    try:
+        created = repository.create("rollback", {})
+
+        def reject_event_insert(
+            _connection: object,
+            _cursor: object,
+            statement: str,
+            _parameters: object,
+            _context: object,
+            _executemany: bool,
+        ) -> None:
+            if statement.lstrip().upper().startswith("INSERT INTO TASK_EVENT"):
+                raise RuntimeError("event insert rejected")
+
+        event.listen(engine, "before_cursor_execute", reject_event_insert)
+        try:
+            with pytest.raises(RuntimeError, match="event insert rejected"):
+                repository.claim_next("worker")
+        finally:
+            event.remove(engine, "before_cursor_execute", reject_event_insert)
+
+        assert repository.get(created.id).status == "queued"
+        assert [
+            task_event.event_name for task_event in repository.list_events(created.id)
+        ] == ["task.created"]
+    finally:
+        engine.dispose()
+
+
 def test_cancelled_queued_task_cannot_be_claimed(tmp_path: Path) -> None:
     repository = _repository(tmp_path)
     try:
@@ -263,6 +463,18 @@ def test_transition_timestamps_never_move_backward_when_clock_regresses(
         assert terminal.updated_at >= cancelling.updated_at
         assert terminal.finished_at >= cancelling.updated_at
         assert terminal.finished_at == terminal.updated_at
+        task_events = repository.list_events(created.id)
+        assert [task_event.event_name for task_event in task_events] == [
+            "task.created",
+            "task.claimed",
+            "task.progressed",
+            "task.cancel_requested",
+            "task.cancelled",
+        ]
+        assert all(
+            earlier.occurred_at < later.occurred_at
+            for earlier, later in zip(task_events, task_events[1:])
+        )
     finally:
         repository.close()
 

@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, Index, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Index, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -56,4 +56,25 @@ class TaskRun(Base):
     )
     finished_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+
+
+class TaskEvent(Base):
+    __tablename__ = "task_event"
+    __table_args__ = (
+        Index("ix_task_event_task_id_occurred_at", "task_id", "occurred_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_task_id)
+    task_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("task_run.id", ondelete="CASCADE"), nullable=False
+    )
+    event_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    level: Mapped[str] = mapped_column(String(16), nullable=False)
+    progress: Mapped[float | None] = mapped_column(Float, nullable=True)
+    detail_json: Mapped[dict[str, Any]] = mapped_column(
+        JSON, default=dict, nullable=False
+    )
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utc_now, nullable=False
     )
