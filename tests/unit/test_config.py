@@ -11,6 +11,12 @@ def isolate_settings_cache(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> Iterator[None]:
+    for key in (
+        "STOCK_DESK_APP_NAME",
+        "STOCK_DESK_DATA_DIR",
+        "STOCK_DESK_DATABASE_URL",
+    ):
+        monkeypatch.delenv(key, raising=False)
     monkeypatch.chdir(tmp_path)
     get_settings.cache_clear()
     yield
