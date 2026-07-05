@@ -686,6 +686,47 @@ def test_release_workflow_is_tag_only_and_scopes_write_permission() -> None:
     assert "publish" not in release.casefold()
 
 
+def test_tag_release_verifies_built_artifacts_before_packaging_and_upload() -> None:
+    workflow = _load_github_actions_yaml(_read(".github/workflows/release.yml"))
+    verify_steps = workflow["jobs"]["verify"]["steps"]
+    build_step = next(
+        step for step in verify_steps if step.get("name") == "Run release gates"
+    )
+    artifact_step = next(
+        step
+        for step in verify_steps
+        if step.get("name") == "Verify built release artifacts"
+    )
+    checksum_step = next(
+        step
+        for step in verify_steps
+        if step.get("name") == "Prepare checksummed assets"
+    )
+    upload_step = next(
+        step for step in verify_steps if step.get("name") == "Upload release assets"
+    )
+
+    assert "make build" in build_step["run"]
+    assert (
+        verify_steps.index(build_step)
+        < verify_steps.index(artifact_step)
+        < verify_steps.index(checksum_step)
+        < verify_steps.index(upload_step)
+    )
+
+    artifact_command = artifact_step["run"]
+    for required in (
+        'release_version="${GITHUB_REF_NAME#v}"',
+        'RELEASE_VERSION="$release_version"',
+        "uv run --frozen python -c",
+        "from scripts.verify_release import check_build_artifacts",
+        'version = os.environ["RELEASE_VERSION"]',
+        "check_build_artifacts(Path.cwd(), version)",
+    ):
+        assert required in artifact_command
+    assert "0.1.0" not in artifact_command
+
+
 def test_release_checksum_manifest_is_flat_and_verified_before_publish() -> None:
     workflow = _load_github_actions_yaml(_read(".github/workflows/release.yml"))
     verify_steps = workflow["jobs"]["verify"]["steps"]

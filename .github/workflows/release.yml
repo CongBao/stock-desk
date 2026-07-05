@@ -60,6 +60,12 @@ jobs:
           make public-tree
           make security
           pnpm e2e
+      - name: Verify built release artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_version="${GITHUB_REF_NAME#v}"
+          RELEASE_VERSION="$release_version" uv run --frozen python -c 'import os; from pathlib import Path; from scripts.verify_release import check_build_artifacts; version = os.environ["RELEASE_VERSION"]; check_build_artifacts(Path.cwd(), version)'
       - name: Prepare checksummed assets
         shell: bash
         run: |
