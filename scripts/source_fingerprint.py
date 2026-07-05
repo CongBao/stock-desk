@@ -11,6 +11,7 @@ import sys
 ROOT_FILES = (
     ".dockerignore",
     "Dockerfile",
+    "README.md",
     "alembic.ini",
     "package.json",
     "pnpm-lock.yaml",

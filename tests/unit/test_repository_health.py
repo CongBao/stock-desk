@@ -6,10 +6,27 @@ import re
 import tomllib
 from typing import Any
 
+import pytest
 import yaml
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+_YAML_BOOLEAN_TAG = "tag:yaml.org,2002:bool"
+
+
+class _GitHubActionsLoader(yaml.SafeLoader):
+    """Apply GitHub's YAML 1.2-style boolean rules without global mutation."""
+
+
+_GitHubActionsLoader.yaml_implicit_resolvers = {
+    initial: [resolver for resolver in resolvers if resolver[0] != _YAML_BOOLEAN_TAG]
+    for initial, resolvers in yaml.SafeLoader.yaml_implicit_resolvers.items()
+}
+_GitHubActionsLoader.add_implicit_resolver(
+    _YAML_BOOLEAN_TAG,
+    re.compile(r"^(?:true|True|TRUE|false|False|FALSE)$"),
+    list("tTfF"),
+)
 
 REQUIRED_FILES = {
     "README.md",
@@ -79,6 +96,22 @@ def _read(relative_path: str) -> str:
 
 def _load_yaml(relative_path: str) -> Any:
     return yaml.safe_load(_read(relative_path))
+
+
+def _load_github_actions_yaml(content: str) -> Any:
+    loader = _GitHubActionsLoader(content)
+    try:
+        return loader.get_single_data()
+    finally:
+        loader.dispose()
+
+
+def _workflow_triggers(workflow: Any) -> dict[str, Any]:
+    assert isinstance(workflow, dict)
+    assert "on" in workflow, "workflow must define a string 'on' key"
+    triggers = workflow["on"]
+    assert isinstance(triggers, dict), "workflow 'on' value must be a mapping"
+    return triggers
 
 
 def _workflow_paths() -> list[Path]:
@@ -181,6 +214,53 @@ def test_github_yaml_is_valid_and_issue_forms_have_safety_checks() -> None:
 
     config = _load_yaml(".github/ISSUE_TEMPLATE/config.yml")
     assert config["blank_issues_enabled"] is False
+
+
+def test_github_actions_loader_preserves_ambiguous_keys_and_real_booleans() -> None:
+    content = """\
+on:
+  push:
+On: mixed-case-key
+OFF: uppercase-key
+enabled: true
+disabled: false
+"""
+
+    workflow = _load_github_actions_yaml(content)
+
+    assert list(workflow) == ["on", "On", "OFF", "enabled", "disabled"]
+    assert workflow["enabled"] is True
+    assert workflow["disabled"] is False
+    assert yaml.safe_load("on: value\n") == {True: "value"}
+
+
+def test_workflow_trigger_validation_rejects_missing_or_misspelled_on() -> None:
+    invalid_workflows = (
+        "name: Missing\njobs: {}\n",
+        "name: Misspelled\nonn:\n  push:\njobs: {}\n",
+    )
+
+    for content in invalid_workflows:
+        with pytest.raises(AssertionError, match="string 'on' key"):
+            _workflow_triggers(_load_github_actions_yaml(content))
+
+
+def test_workflows_declare_the_expected_github_triggers() -> None:
+    expected_triggers = {
+        "ci.yml": {"push", "pull_request"},
+        "codeql.yml": {"push", "pull_request", "schedule"},
+        "release.yml": {"push"},
+    }
+    loaded_triggers: dict[str, dict[str, Any]] = {}
+
+    for workflow_path in _workflow_paths():
+        triggers = _workflow_triggers(
+            _load_github_actions_yaml(workflow_path.read_text("utf-8"))
+        )
+        loaded_triggers[workflow_path.name] = triggers
+        assert set(triggers) == expected_triggers[workflow_path.name]
+
+    assert loaded_triggers["release.yml"] == {"push": {"tags": ["v*"]}}
 
 
 def test_all_workflow_actions_use_verified_immutable_release_pins() -> None:

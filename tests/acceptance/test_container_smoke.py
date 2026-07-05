@@ -49,6 +49,24 @@ def test_deployment_contract_is_complete_and_public_only() -> None:
     assert "--chown=10001:10001 /build/web/dist" not in dockerfile
     assert "AS fingerprint-builder" in dockerfile
     assert "scripts/source_fingerprint.py" in dockerfile
+    fingerprint_stage, remaining_stages = dockerfile.split(
+        "FROM node:${NODE_VERSION}-bookworm-slim AS web-builder", maxsplit=1
+    )
+    assert "COPY .dockerignore Dockerfile README.md" in fingerprint_stage
+    python_builder = remaining_stages.split(
+        "FROM python:${PYTHON_VERSION}-slim-bookworm AS python-builder", maxsplit=1
+    )[1].split("FROM python:${PYTHON_VERSION}-slim-bookworm AS runtime", maxsplit=1)[0]
+    dependency_sync = "uv sync --frozen --no-dev --no-install-project"
+    package_readme_copy = "COPY README.md ./README.md"
+    project_sync = "uv sync --frozen --no-dev --no-editable"
+    assert dependency_sync in python_builder
+    assert package_readme_copy in python_builder
+    assert project_sync in python_builder
+    assert (
+        python_builder.index(dependency_sync)
+        < python_builder.index(package_readme_copy)
+        < python_builder.index(project_sync)
+    )
     assert "/app/source-fingerprint" in dockerfile
     assert "chmod -R a-w /app/.venv /app/web-dist" in dockerfile
     assert "COPY . " not in dockerfile

@@ -7,7 +7,7 @@ ARG UV_VERSION=0.11.8
 FROM python:${PYTHON_VERSION}-slim-bookworm AS fingerprint-builder
 
 WORKDIR /source
-COPY .dockerignore Dockerfile alembic.ini package.json pnpm-lock.yaml pnpm-workspace.yaml pyproject.toml uv.lock ./
+COPY .dockerignore Dockerfile README.md alembic.ini package.json pnpm-lock.yaml pnpm-workspace.yaml pyproject.toml uv.lock ./
 COPY scripts/source_fingerprint.py ./scripts/source_fingerprint.py
 COPY migrations ./migrations
 COPY src ./src
@@ -42,6 +42,7 @@ COPY --from=uv-bin /uv /uvx /bin/
 COPY pyproject.toml uv.lock ./
 RUN --mount=type=cache,id=uv,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-install-project
+COPY README.md ./README.md
 COPY alembic.ini ./alembic.ini
 COPY migrations ./migrations
 COPY src ./src

@@ -69,6 +69,7 @@ def test_public_inputs_include_every_build_surface(tmp_path: Path) -> None:
     assert {
         ".dockerignore",
         "Dockerfile",
+        "README.md",
         "pyproject.toml",
         "uv.lock",
         "scripts/source_fingerprint.py",
@@ -118,5 +119,17 @@ def test_fingerprint_changes_for_relevant_public_input(tmp_path: Path) -> None:
         "APP = 2\n",
         encoding="utf-8",
     )
+
+    assert fingerprint.compute_source_fingerprint(tmp_path) != baseline
+
+
+def test_fingerprint_changes_when_package_readme_changes(tmp_path: Path) -> None:
+    fingerprint = _fingerprint()
+    _minimal_public_tree(tmp_path, fingerprint)
+    readme = tmp_path / "README.md"
+    readme.write_text("first package description\n", encoding="utf-8")
+    baseline = fingerprint.compute_source_fingerprint(tmp_path)
+
+    readme.write_text("changed package description\n", encoding="utf-8")
 
     assert fingerprint.compute_source_fingerprint(tmp_path) != baseline
