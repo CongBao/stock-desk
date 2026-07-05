@@ -7,7 +7,7 @@ from collections.abc import Callable
 import csv
 from dataclasses import dataclass
 from datetime import date
-from email.parser import BytesParser, Parser
+from email.parser import Parser
 from email.policy import default as default_email_policy
 import hashlib
 import io
@@ -19,10 +19,11 @@ import re
 import subprocess
 import sys
 import tarfile
-import tempfile
 import tomllib
 from typing import Protocol
 import zipfile
+
+from packaging.metadata import Metadata
 
 if __package__ in {None, ""}:
     sys.path.insert(0, os.fspath(Path(__file__).resolve().parent.parent))
@@ -217,10 +218,13 @@ def check_public_history(repo: Path) -> None:
 def _check_package_metadata(
     payload: bytes, version: str, artifact_description: str
 ) -> None:
-    metadata = BytesParser(policy=default_email_policy).parsebytes(payload)
-    names = [str(value) for value in metadata.get_all("Name", [])]
-    versions = [str(value) for value in metadata.get_all("Version", [])]
-    if metadata.defects or names != ["stock-desk"] or versions != [version]:
+    try:
+        metadata = Metadata.from_email(payload, validate=True)
+    except (ExceptionGroup, UnicodeError, ValueError) as error:
+        raise ReleaseVerificationError(
+            f"release {artifact_description} build artifact is invalid"
+        ) from error
+    if metadata.name != "stock-desk" or str(metadata.version) != version:
         raise ReleaseVerificationError(
             f"release {artifact_description} build artifact is invalid"
         )
@@ -310,7 +314,33 @@ def _check_wheel_record(
             raise _invalid_wheel()
 
 
-def _check_wheel_artifact(wheel_path: Path, version: str) -> None:
+def _read_repository_payloads(root: Path, archive_prefix: str) -> dict[str, bytes]:
+    if root.is_symlink() or not root.is_dir():
+        raise ReleaseVerificationError("release package source tree is invalid")
+    payloads: dict[str, bytes] = {}
+    for path in sorted(root.rglob("*")):
+        relative_path = path.relative_to(root)
+        if "__pycache__" in relative_path.parts or path.suffix == ".pyc":
+            continue
+        if path.is_symlink():
+            raise ReleaseVerificationError("release package source tree is invalid")
+        if path.is_file():
+            payloads[f"{archive_prefix}/{relative_path.as_posix()}"] = path.read_bytes()
+    return payloads
+
+
+def _expected_wheel_package_payloads(repo: Path) -> dict[str, bytes]:
+    payloads = _read_repository_payloads(repo / "src" / "stock_desk", "stock_desk")
+    alembic_config = repo / "alembic.ini"
+    if alembic_config.is_file() and not alembic_config.is_symlink():
+        payloads["stock_desk/alembic.ini"] = alembic_config.read_bytes()
+    migrations = repo / "migrations"
+    if migrations.exists():
+        payloads.update(_read_repository_payloads(migrations, "stock_desk/migrations"))
+    return payloads
+
+
+def _check_wheel_artifact(repo: Path, wheel_path: Path, version: str) -> bytes:
     dist_info = f"stock_desk-{version}.dist-info"
     metadata_path = f"{dist_info}/METADATA"
     wheel_metadata_path = f"{dist_info}/WHEEL"
@@ -330,12 +360,13 @@ def _check_wheel_artifact(wheel_path: Path, version: str) -> None:
             or any(wheel.getinfo(member).is_dir() for member in required_members)
         ):
             raise _invalid_wheel()
-        _check_package_metadata(wheel.read(metadata_path), version, "wheel")
         archive_payloads = {
             member.filename: wheel.read(member)
             for member in wheel.infolist()
             if not member.is_dir()
         }
+        metadata_payload = archive_payloads[metadata_path]
+        _check_package_metadata(metadata_payload, version, "wheel")
         _check_wheel_metadata(wheel.read(wheel_metadata_path))
         _check_wheel_record(
             wheel.read(record_path),
@@ -343,6 +374,14 @@ def _check_wheel_artifact(wheel_path: Path, version: str) -> None:
             required_members,
             record_path,
         )
+        package_payloads = {
+            path: payload
+            for path, payload in archive_payloads.items()
+            if path.startswith("stock_desk/")
+        }
+        if package_payloads != _expected_wheel_package_payloads(repo):
+            raise _invalid_wheel()
+        return metadata_payload
 
 
 def _invalid_source() -> ReleaseVerificationError:
@@ -367,7 +406,7 @@ def _check_sdist_pyproject(payload: bytes, version: str) -> None:
         raise _invalid_source()
 
 
-def _check_source_artifact(source_path: Path, version: str) -> None:
+def _check_source_artifact(repo: Path, source_path: Path, version: str) -> bytes:
     root = f"stock_desk-{version}"
     pyproject_path = f"{root}/pyproject.toml"
     metadata_path = f"{root}/PKG-INFO"
@@ -389,46 +428,26 @@ def _check_source_artifact(source_path: Path, version: str) -> None:
         metadata_file = source.extractfile(members_by_name[metadata_path])
         if pyproject_file is None or metadata_file is None:
             raise _invalid_source()
-        _check_sdist_pyproject(pyproject_file.read(), version)
-        _check_package_metadata(metadata_file.read(), version, "source")
-
-
-def _check_installable_artifact(
-    repo: Path, artifact_path: Path, artifact_description: str
-) -> None:
-    try:
-        with tempfile.TemporaryDirectory(
-            prefix="stock-desk-release-install-"
-        ) as target:
-            result = subprocess.run(  # noqa: S603
-                (
-                    "uv",
-                    "pip",
-                    "install",
-                    "--offline",
-                    "--no-deps",
-                    "--no-build-isolation",
-                    "--python",
-                    sys.executable,
-                    "--target",
-                    target,
-                    os.fspath(artifact_path.resolve(strict=True)),
-                ),
-                cwd=repo,
-                check=False,
-                capture_output=True,
-                text=True,
-                stdin=subprocess.DEVNULL,
-                timeout=120,
-            )
-    except (OSError, subprocess.TimeoutExpired) as error:
-        raise ReleaseVerificationError(
-            f"release {artifact_description} artifact is not installable"
-        ) from error
-    if result.returncode != 0:
-        raise ReleaseVerificationError(
-            f"release {artifact_description} artifact is not installable"
+        pyproject_payload = pyproject_file.read()
+        if pyproject_payload != (repo / "pyproject.toml").read_bytes():
+            raise _invalid_source()
+        _check_sdist_pyproject(pyproject_payload, version)
+        metadata_payload = metadata_file.read()
+        _check_package_metadata(metadata_payload, version, "source")
+        source_prefix = f"{root}/src/stock_desk/"
+        package_payloads: dict[str, bytes] = {}
+        for name, member in members_by_name.items():
+            if name.startswith(source_prefix) and member.isfile():
+                package_file = source.extractfile(member)
+                if package_file is None:
+                    raise _invalid_source()
+                package_payloads[name] = package_file.read()
+        expected_package_payloads = _read_repository_payloads(
+            repo / "src" / "stock_desk", f"{root}/src/stock_desk"
         )
+        if package_payloads != expected_package_payloads:
+            raise _invalid_source()
+        return metadata_payload
 
 
 def check_build_artifacts(repo: Path, version: str) -> None:
@@ -465,8 +484,12 @@ def check_build_artifacts(repo: Path, version: str) -> None:
     ):
         raise ReleaseVerificationError("release Python build artifact set is invalid")
     try:
-        _check_wheel_artifact(expected_wheel, version)
-        _check_source_artifact(expected_source, version)
+        wheel_metadata = _check_wheel_artifact(repo, expected_wheel, version)
+        source_metadata = _check_source_artifact(repo, expected_source, version)
+        if wheel_metadata != source_metadata:
+            raise ReleaseVerificationError(
+                "release wheel and source metadata do not match"
+            )
     except ReleaseVerificationError:
         raise
     except (
@@ -479,8 +502,6 @@ def check_build_artifacts(repo: Path, version: str) -> None:
         raise ReleaseVerificationError(
             "release Python build artifact is invalid"
         ) from error
-    _check_installable_artifact(repo, expected_wheel, "wheel")
-    _check_installable_artifact(repo, expected_source, "source")
 
 
 def verify_release(
@@ -523,6 +544,7 @@ def verify_release(
         ) as error:
             raise ReleaseVerificationError("release gate failed") from error
 
+    check_build_artifacts(resolved_repo, version)
     check_clean_worktree(resolved_repo)
     try:
         final_fingerprint = fingerprint(resolved_repo)
@@ -532,7 +554,6 @@ def verify_release(
         raise ReleaseVerificationError(
             "release source fingerprint changed during gates"
         )
-    check_build_artifacts(resolved_repo, version)
 
 
 def _parser() -> argparse.ArgumentParser:

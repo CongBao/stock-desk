@@ -76,6 +76,8 @@ def write_wheel(
     record_paths: tuple[str, ...] | None = None,
     record_overrides: dict[str, tuple[str, str]] | None = None,
     record_payload: bytes | None = None,
+    package_payload: bytes = b"__version__ = 'fixture'\n",
+    core_metadata: bytes | None = None,
 ) -> None:
     package_dist = repo / "dist"
     package_dist.mkdir(exist_ok=True)
@@ -90,10 +92,14 @@ def write_wheel(
         wheel_path = f"{dist_info}/WHEEL"
         record_path = f"{dist_info}/RECORD"
         member_payloads = {
-            package_path: b"__version__ = 'fixture'\n",
-            metadata_path: metadata_payload(
-                metadata_name, metadata_version if metadata_version else version
-            ).encode(),
+            package_path: package_payload,
+            metadata_path: (
+                core_metadata
+                if core_metadata is not None
+                else metadata_payload(
+                    metadata_name, metadata_version if metadata_version else version
+                ).encode()
+            ),
             wheel_path: (
                 wheel_payload
                 if wheel_payload is not None
@@ -143,14 +149,19 @@ def sdist_pyproject_payload(
     build_backend: str = "hatchling.build",
     build_requirement: str = "hatchling>=1.27,<2",
     dependencies: str | None = None,
+    backend_path: str | None = None,
 ) -> bytes:
     dependency_line = "" if dependencies is None else f"dependencies = {dependencies}\n"
+    backend_path_line = (
+        "" if backend_path is None else f'backend-path = ["{backend_path}"]\n'
+    )
     return (
         f'[project]\nname = "{name}"\nversion = "{version}"\n'
         f"{dependency_line}\n"
         "[build-system]\n"
         f'requires = ["{build_requirement}"]\n'
         f'build-backend = "{build_backend}"\n'
+        f"{backend_path_line}"
     ).encode()
 
 
@@ -162,6 +173,9 @@ def write_sdist(
     metadata_version: str | None = None,
     unrelated_only: bool = False,
     pyproject_payload: bytes | None = None,
+    package_payload: bytes = b"__version__ = 'fixture'\n",
+    core_metadata: bytes | None = None,
+    extra_members: dict[str, bytes] | None = None,
 ) -> None:
     package_dist = repo / "dist"
     package_dist.mkdir(exist_ok=True)
@@ -178,18 +192,22 @@ def write_sdist(
             if pyproject_payload is not None
             else sdist_pyproject_payload(version),
         )
-        add_tar_text(
+        add_tar_bytes(
             archive,
             f"{root}/PKG-INFO",
-            metadata_payload(
+            core_metadata
+            if core_metadata is not None
+            else metadata_payload(
                 metadata_name, metadata_version if metadata_version else version
-            ),
+            ).encode(),
         )
-        add_tar_text(
+        add_tar_bytes(
             archive,
             f"{root}/src/stock_desk/__init__.py",
-            "__version__ = 'fixture'\n",
+            package_payload,
         )
+        for relative_path, payload in (extra_members or {}).items():
+            add_tar_bytes(archive, f"{root}/{relative_path}", payload)
 
 
 def write_valid_artifacts(repo: Path, version: str) -> None:
@@ -212,10 +230,10 @@ def release_repo(tmp_path: Path) -> Path:
     git(repo, "remote", "add", "origin", EXPECTED_REMOTE)
 
     (repo / ".gitignore").write_text("dist/\nweb/dist/\n", encoding="utf-8")
-    (repo / "pyproject.toml").write_text(
-        '[project]\nname = "stock-desk"\nversion = "0.1.0"\n',
-        encoding="utf-8",
-    )
+    (repo / "pyproject.toml").write_bytes(sdist_pyproject_payload("0.1.0"))
+    source_package = repo / "src" / "stock_desk"
+    source_package.mkdir(parents=True)
+    (source_package / "__init__.py").write_bytes(b"__version__ = 'fixture'\n")
     (repo / "web").mkdir()
     (repo / "web" / "package.json").write_text(
         '{"name":"@stock-desk/web","version":"0.1.0"}\n',
@@ -630,22 +648,91 @@ def test_rejects_nonempty_hash_or_size_for_record_itself(release_repo: Path) -> 
         check_build_artifacts(release_repo, "0.1.0")
 
 
-def test_offline_install_rejects_a_wheel_with_an_invalid_record(
+def test_artifact_validation_never_invokes_a_subprocess(
     release_repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     write_valid_artifacts(release_repo, "0.1.0")
-    write_wheel(
-        release_repo,
-        "0.1.0",
-        record_payload=b"invalid-record-row\n",
-    )
+
+    def fail_if_called(*_arguments: object, **_options: object) -> None:
+        pytest.fail("artifact validation must remain static")
+
     monkeypatch.setattr(
-        verify_release_module,
-        "_check_wheel_record",
-        lambda *_arguments: None,
+        subprocess,
+        "run",
+        fail_if_called,
     )
 
-    with pytest.raises(ReleaseVerificationError, match="not installable"):
+    check_build_artifacts(release_repo, "0.1.0")
+
+
+@pytest.mark.parametrize("artifact", ["wheel", "sdist"])
+def test_rejects_invalid_core_metadata_without_executing_artifacts(
+    release_repo: Path,
+    artifact: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    invalid_metadata = (
+        b"Metadata-Version: 2.4\n"
+        b"Name: stock-desk\n"
+        b"Version: 0.1.0\n"
+        b"Requires-Dist: ???\n\n"
+    )
+    write_valid_artifacts(release_repo, "0.1.0")
+    if artifact == "wheel":
+        write_wheel(release_repo, "0.1.0", core_metadata=invalid_metadata)
+    else:
+        write_sdist(release_repo, "0.1.0", core_metadata=invalid_metadata)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_arguments, **_options: subprocess.CompletedProcess((), 0),
+    )
+
+    with pytest.raises(ReleaseVerificationError, match="build artifact"):
+        check_build_artifacts(release_repo, "0.1.0")
+
+
+def test_rejects_different_wheel_and_sdist_core_metadata(
+    release_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    wheel_metadata = metadata_payload("stock-desk", "0.1.0").replace(
+        "\n\n", "\nSummary: wheel payload\n\n"
+    )
+    source_metadata = metadata_payload("stock-desk", "0.1.0").replace(
+        "\n\n", "\nSummary: source payload\n\n"
+    )
+    write_valid_artifacts(release_repo, "0.1.0")
+    write_wheel(release_repo, "0.1.0", core_metadata=wheel_metadata.encode())
+    write_sdist(release_repo, "0.1.0", core_metadata=source_metadata.encode())
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_arguments, **_options: subprocess.CompletedProcess((), 0),
+    )
+
+    with pytest.raises(ReleaseVerificationError, match="metadata"):
+        check_build_artifacts(release_repo, "0.1.0")
+
+
+@pytest.mark.parametrize("artifact", ["wheel", "sdist"])
+def test_rejects_package_source_that_differs_from_the_repository(
+    release_repo: Path,
+    artifact: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_valid_artifacts(release_repo, "0.1.0")
+    if artifact == "wheel":
+        write_wheel(release_repo, "0.1.0", package_payload=b"untrusted\n")
+    else:
+        write_sdist(release_repo, "0.1.0", package_payload=b"untrusted\n")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_arguments, **_options: subprocess.CompletedProcess((), 0),
+    )
+
+    with pytest.raises(ReleaseVerificationError, match="build artifact"):
         check_build_artifacts(release_repo, "0.1.0")
 
 
@@ -680,8 +767,8 @@ def test_rejects_incorrect_sdist_project_or_build_metadata(
         check_build_artifacts(release_repo, "0.1.0")
 
 
-def test_offline_install_rejects_invalid_pep621_sdist_metadata(
-    release_repo: Path,
+def test_rejects_invalid_pep621_sdist_metadata_without_executing_it(
+    release_repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     write_valid_artifacts(release_repo, "0.1.0")
     write_sdist(
@@ -689,9 +776,39 @@ def test_offline_install_rejects_invalid_pep621_sdist_metadata(
         "0.1.0",
         pyproject_payload=sdist_pyproject_payload("0.1.0", dependencies="[1]"),
     )
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_arguments, **_options: subprocess.CompletedProcess((), 0),
+    )
 
-    with pytest.raises(ReleaseVerificationError, match="not installable"):
+    with pytest.raises(ReleaseVerificationError, match="source build artifact"):
         check_build_artifacts(release_repo, "0.1.0")
+
+
+def test_rejects_backend_path_sdist_without_executing_the_backend(
+    release_repo: Path,
+) -> None:
+    side_effect = release_repo / "backend-was-executed"
+    backend = (
+        "from pathlib import Path\n"
+        f"Path({str(side_effect)!r}).write_text('executed', encoding='utf-8')\n"
+    ).encode()
+    write_valid_artifacts(release_repo, "0.1.0")
+    write_sdist(
+        release_repo,
+        "0.1.0",
+        pyproject_payload=sdist_pyproject_payload("0.1.0", backend_path="backend"),
+        extra_members={
+            "backend/hatchling/__init__.py": b"",
+            "backend/hatchling/build.py": backend,
+        },
+    )
+
+    with pytest.raises(ReleaseVerificationError):
+        check_build_artifacts(release_repo, "0.1.0")
+
+    assert not side_effect.exists()
 
 
 def test_rejects_wrong_or_empty_release_artifacts(release_repo: Path) -> None:
@@ -725,6 +842,35 @@ def test_rejects_empty_or_wrong_web_entrypoint(
 
     with pytest.raises(ReleaseVerificationError, match="web build artifact"):
         check_build_artifacts(release_repo, "0.1.0")
+
+
+def test_verifier_rechecks_clean_sources_after_static_artifact_validation(
+    release_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[str] = []
+    monkeypatch.setattr(
+        verify_release_module,
+        "check_clean_worktree",
+        lambda _repo: events.append("clean"),
+    )
+    monkeypatch.setattr(
+        verify_release_module,
+        "check_build_artifacts",
+        lambda _repo, _version: events.append("artifacts"),
+    )
+
+    def fingerprint(_repo: Path) -> str:
+        events.append("fingerprint")
+        return "stable"
+
+    verify_release(
+        release_repo,
+        "0.1.0",
+        FakeGateRunner(release_repo),
+        fingerprint=fingerprint,
+    )
+
+    assert events == ["clean", "fingerprint", "artifacts", "clean", "fingerprint"]
 
 
 def test_success_runs_timed_gates_and_rechecks_clean_sources(
