@@ -10,6 +10,8 @@ from stock_desk.market.partitions import (
     partition_manifest_id,
     partition_path,
 )
+from stock_desk.market.provenance import RoutingManifest, SourceTransition
+from stock_desk.market.routing import SourcePriorities, SourceRouter
 from stock_desk.market.types import (
     Adjustment,
     Bar,
@@ -58,6 +60,10 @@ __all__ = [
     "Period",
     "Provenance",
     "ProviderId",
+    "RoutingManifest",
+    "SourcePriorities",
+    "SourceRouter",
+    "SourceTransition",
     "TradingDay",
     "TradingSession",
     "TradingStatus",
