@@ -491,6 +491,7 @@ def test_worker_response_bytes_are_bounded() -> None:
 def test_worker_receive_cap_uses_configured_bound_and_recovers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # This test classifies the receive cap and recovery, not process spawn latency.
     observed_limits: list[int | None] = []
     original_recv_bytes = Connection.recv_bytes
 
@@ -502,7 +503,7 @@ def test_worker_receive_cap_uses_configured_bound_and_recovers(
 
     monkeypatch.setattr(Connection, "recv_bytes", tracked_recv_bytes)
     executor = IsolatedFormulaExecutor(
-        timeout_seconds=1.0,
+        timeout_seconds=3.0,
         worker_target=_echo_formula_worker,
         max_request_bytes=8,
         max_response_bytes=4,
@@ -516,8 +517,9 @@ def test_worker_receive_cap_uses_configured_bound_and_recovers(
 
 
 def test_rapid_worker_completion_does_not_race_with_process_exit() -> None:
+    # Keep the production timeout so loaded CI does not turn spawn latency into a race.
     executor = IsolatedFormulaExecutor(
-        timeout_seconds=1.0,
+        timeout_seconds=3.0,
         worker_target=_controllable_worker,
     )
 
