@@ -196,6 +196,74 @@ def test_tdx_preflight_derives_markets_from_nonempty_file_counts(
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX descriptor race probe")
+def test_tdx_preflight_ignores_unrelated_ancestor_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = tdx_local()
+    if not module._USE_POSIX_DESCRIPTOR_IO:
+        pytest.skip("ancestor tracking requires POSIX openat mode")
+    root = make_vipdoc_root(tmp_path)
+    (root / "sh" / "lday" / "sh600000.day").write_bytes(raw_record())
+    original_count = module._count_market_files_fd
+    mutated = False
+
+    def mutate_ancestor_after_count(descriptor: int, exchange: Exchange) -> int:
+        nonlocal mutated
+        count = original_count(descriptor, exchange)
+        if not mutated:
+            mutated = True
+            (root.parent / "unrelated-preflight-work").mkdir()
+        return count
+
+    monkeypatch.setattr(module, "_count_market_files_fd", mutate_ancestor_after_count)
+    provider = module.TdxLocalProvider(root=root, clock=lambda: FETCHED_AT)
+
+    outcome = provider.preflight()
+
+    assert mutated
+    assert isinstance(outcome, module.TdxInspectionSuccess)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX descriptor race probe")
+@pytest.mark.parametrize("directory_kind", ["root", "market", "lday"])
+def test_tdx_preflight_detects_configured_directory_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    directory_kind: str,
+) -> None:
+    module = tdx_local()
+    if not module._USE_POSIX_DESCRIPTOR_IO:
+        pytest.skip("directory tracking requires POSIX openat mode")
+    root = make_vipdoc_root(tmp_path)
+    (root / "sh" / "lday" / "sh600000.day").write_bytes(raw_record())
+    target = {
+        "root": root,
+        "market": root / "sh",
+        "lday": root / "sh" / "lday",
+    }[directory_kind]
+    original_count = module._count_market_files_fd
+    mutated = False
+
+    def mutate_directory_after_count(descriptor: int, exchange: Exchange) -> int:
+        nonlocal mutated
+        count = original_count(descriptor, exchange)
+        if not mutated:
+            mutated = True
+            (target / "inspection-mutation").mkdir()
+        return count
+
+    monkeypatch.setattr(module, "_count_market_files_fd", mutate_directory_after_count)
+    provider = module.TdxLocalProvider(root=root, clock=lambda: FETCHED_AT)
+
+    outcome = provider.preflight()
+
+    assert mutated
+    assert isinstance(outcome, module.TdxInspectionFailure)
+    assert outcome.reason is FailureReason.TRANSIENT_FAILURE
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX descriptor race probe")
 def test_tdx_preflight_never_follows_lday_replaced_by_external_symlink(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -544,6 +612,71 @@ def test_tdx_preflight_and_fetch_reject_every_symlink_component(
     assert str(root) not in outcome.detail
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX ancestor symlink security")
+def test_tdx_rejects_symlinked_ancestor_and_closes_anchor_chain(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = tdx_local()
+    if not module._USE_POSIX_DESCRIPTOR_IO:
+        pytest.skip("descriptor accounting requires POSIX openat mode")
+    actual_parent = tmp_path / "actual-parent"
+    root = make_vipdoc_root(actual_parent)
+    write_tdx_file(root, "600000.SH", golden_payload("600000.SH"))
+    alias = tmp_path / "alias-parent"
+    alias.symlink_to(actual_parent, target_is_directory=True)
+    configured = alias / "vipdoc"
+    original_open = module.os.open
+    original_close = module.os.close
+    opened: list[int] = []
+    closed: list[int] = []
+
+    def tracking_open(
+        path: object,
+        flags: int,
+        *args: object,
+        **kwargs: object,
+    ) -> int:
+        descriptor = original_open(path, flags, *args, **kwargs)
+        opened.append(descriptor)
+        return descriptor
+
+    def tracking_close(descriptor: int) -> None:
+        closed.append(descriptor)
+        original_close(descriptor)
+
+    monkeypatch.setattr(module.os, "open", tracking_open)
+    monkeypatch.setattr(module.os, "close", tracking_close)
+    provider = module.TdxLocalProvider(root=configured, clock=lambda: FETCHED_AT)
+
+    inspection = provider.preflight()
+    outcome = provider.fetch_bars(bar_query())
+
+    assert isinstance(inspection, module.TdxInspectionFailure)
+    assert inspection.reason is FailureReason.INVALID_RESPONSE
+    assert isinstance(outcome, BarFailure)
+    assert outcome.reason is FailureReason.INVALID_RESPONSE
+    assert configured.as_posix() not in inspection.detail
+    assert configured.as_posix() not in outcome.detail
+    assert opened
+    assert sorted(opened) == sorted(closed)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX root component validation")
+@pytest.mark.parametrize("component", [".", ".."])
+def test_tdx_rejects_dot_components_in_absolute_root(
+    tmp_path: Path, component: str
+) -> None:
+    module = tdx_local()
+    root = f"{tmp_path}/{component}/vipdoc"
+    provider = module.TdxLocalProvider(root=root, clock=lambda: FETCHED_AT)
+
+    outcome = provider.preflight()
+
+    assert isinstance(outcome, module.TdxInspectionFailure)
+    assert outcome.reason is FailureReason.INVALID_RESPONSE
+
+
 @pytest.mark.skipif(os.name != "posix", reason="POSIX nonregular-file probe")
 @pytest.mark.parametrize("kind", ["fifo", "socket"])
 def test_tdx_fetch_rejects_nonregular_leaf_without_blocking(
@@ -680,6 +813,72 @@ def test_tdx_snapshot_recovers_after_one_transient_append(
     assert calls == 2
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX descriptor race probe")
+def test_tdx_snapshot_ignores_unrelated_ancestor_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = tdx_local()
+    if not module._USE_POSIX_DESCRIPTOR_IO:
+        pytest.skip("ancestor tracking requires POSIX openat mode")
+    root = make_vipdoc_root(tmp_path)
+    write_tdx_file(root, "600000.SH", golden_payload("600000.SH"))
+    original_read = module._read_exact
+    calls = 0
+
+    def mutate_ancestor_after_read(descriptor: int, size: int) -> bytes:
+        nonlocal calls
+        calls += 1
+        payload = original_read(descriptor, size)
+        (root.parent / f"unrelated-read-work-{calls}").mkdir()
+        return payload
+
+    monkeypatch.setattr(module, "_read_exact", mutate_ancestor_after_read)
+    provider = module.TdxLocalProvider(root=root, clock=lambda: FETCHED_AT)
+
+    outcome = provider.fetch_bars(bar_query())
+
+    assert isinstance(outcome, BarResult)
+    assert calls == 1
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX descriptor race probe")
+@pytest.mark.parametrize("directory_kind", ["root", "market", "lday"])
+def test_tdx_snapshot_detects_configured_directory_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    directory_kind: str,
+) -> None:
+    module = tdx_local()
+    if not module._USE_POSIX_DESCRIPTOR_IO:
+        pytest.skip("directory tracking requires POSIX openat mode")
+    root = make_vipdoc_root(tmp_path)
+    write_tdx_file(root, "600000.SH", golden_payload("600000.SH"))
+    target = {
+        "root": root,
+        "market": root / "sh",
+        "lday": root / "sh" / "lday",
+    }[directory_kind]
+    original_read = module._read_exact
+    calls = 0
+
+    def mutate_directory_after_read(descriptor: int, size: int) -> bytes:
+        nonlocal calls
+        calls += 1
+        payload = original_read(descriptor, size)
+        (target / f"snapshot-mutation-{calls}").mkdir()
+        return payload
+
+    monkeypatch.setattr(module, "_read_exact", mutate_directory_after_read)
+    provider = module.TdxLocalProvider(root=root, clock=lambda: FETCHED_AT)
+
+    outcome = provider.fetch_bars(bar_query())
+
+    assert isinstance(outcome, BarFailure)
+    assert outcome.reason is FailureReason.TRANSIENT_FAILURE
+    assert calls == 2
+
+
 def test_tdx_snapshot_short_read_is_transient(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -801,9 +1000,7 @@ def test_tdx_posix_open_calls_use_nofollow_directory_and_nonblock_flags(
     )
     assert all(flags & required_leaf == required_leaf for _, flags, _ in leaf_calls)
     assert all(
-        parent is not None
-        for path, _, parent in directory_calls
-        if path != os.fspath(root)
+        parent is not None for path, _, parent in directory_calls if path != os.sep
     )
     assert all(parent is not None for _, _, parent in leaf_calls)
 
@@ -859,7 +1056,7 @@ def test_tdx_preflight_maps_unknown_os_error_to_safe_unavailable(
         *args: object,
         **kwargs: object,
     ) -> int:
-        if path == os.fspath(root):
+        if path == root.name and kwargs.get("dir_fd") is not None:
             raise OSError(errno.ENOSYS, f"unsupported {root} token=TOP-SECRET")
         return original_open(path, flags, *args, **kwargs)
 
@@ -915,6 +1112,57 @@ def test_tdx_posix_descriptor_paths_close_every_open_handle(
     assert sorted(opened) == sorted(closed)
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX close cleanup probe")
+def test_tdx_posix_traversal_close_failure_cleans_parent_and_child(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = tdx_local()
+    if not module._USE_POSIX_DESCRIPTOR_IO:
+        pytest.skip("descriptor cleanup requires POSIX openat mode")
+    root = make_vipdoc_root(tmp_path)
+    original_open = module.os.open
+    original_close = module.os.close
+    original_fstat = module.os.fstat
+    opened: list[int] = []
+    live: set[int] = set()
+    failed = False
+
+    def tracking_open(
+        path: object,
+        flags: int,
+        *args: object,
+        **kwargs: object,
+    ) -> int:
+        descriptor = original_open(path, flags, *args, **kwargs)
+        opened.append(descriptor)
+        live.add(descriptor)
+        return descriptor
+
+    def fail_first_close(descriptor: int) -> None:
+        nonlocal failed
+        if not failed:
+            failed = True
+            raise OSError(errno.EIO, "injected ancestor close failure")
+        original_close(descriptor)
+        live.discard(descriptor)
+
+    monkeypatch.setattr(module.os, "open", tracking_open)
+    monkeypatch.setattr(module.os, "close", fail_first_close)
+    provider = module.TdxLocalProvider(root=root, clock=lambda: FETCHED_AT)
+
+    outcome = provider.preflight()
+
+    assert failed
+    assert opened
+    assert isinstance(outcome, module.TdxInspectionFailure)
+    assert outcome.reason is FailureReason.PROVIDER_UNAVAILABLE
+    assert live == set()
+    for descriptor in opened:
+        with pytest.raises(OSError):
+            original_fstat(descriptor)
+
+
 @pytest.mark.skipif(os.name != "posix", reason="POSIX fstat cleanup probe")
 @pytest.mark.parametrize("target_kind", ["directory", "leaf"])
 def test_tdx_posix_open_closes_descriptor_when_fstat_fails(
@@ -938,7 +1186,7 @@ def test_tdx_posix_open_closes_descriptor_when_fstat_fails(
         **kwargs: object,
     ) -> int:
         descriptor = original_open(path, flags, *args, **kwargs)
-        if (target_kind == "directory" and path == os.fspath(root)) or (
+        if (target_kind == "directory" and path == root.name) or (
             target_kind == "leaf" and path == "sh600000.day"
         ):
             target_descriptors.append(descriptor)

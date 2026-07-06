@@ -13,6 +13,10 @@ export type ApiGetOptions = {
   readonly signal?: AbortSignal;
 };
 
+export type ApiWriteOptions = ApiGetOptions & {
+  readonly body?: JsonValue;
+};
+
 export type ApiErrorKind = 'abort' | 'http' | 'network' | 'protocol';
 
 type ApiErrorOptions = {
@@ -39,7 +43,18 @@ export class ApiError extends Error {
 }
 
 export type ApiClient = {
-  get(path: string, options?: ApiGetOptions): Promise<JsonValue | undefined>;
+  readonly get: (
+    path: string,
+    options?: ApiGetOptions,
+  ) => Promise<JsonValue | undefined>;
+  readonly post: (
+    path: string,
+    options?: ApiWriteOptions,
+  ) => Promise<JsonValue | undefined>;
+  readonly put: (
+    path: string,
+    options?: ApiWriteOptions,
+  ) => Promise<JsonValue | undefined>;
 };
 
 function joinApiPath(baseUrl: string, path: string): string {
@@ -142,67 +157,90 @@ function isAbortFailure(error: unknown, signal?: AbortSignal): boolean {
 }
 
 export function createApiClient(baseUrl = '/api'): ApiClient {
+  async function request(
+    method: 'GET' | 'POST' | 'PUT',
+    path: string,
+    options: ApiWriteOptions = {},
+  ): Promise<JsonValue | undefined> {
+    const serializedBody =
+      options.body === undefined ? undefined : JSON.stringify(options.body);
+    const callerHeaders = Object.fromEntries(
+      Object.entries(options.headers ?? {}).filter(
+        ([name]) => name.toLowerCase() !== 'content-type',
+      ),
+    );
+    const headers: Record<string, string> = {
+      Accept: 'application/json',
+      ...callerHeaders,
+    };
+    if (serializedBody !== undefined)
+      headers['Content-Type'] = 'application/json';
+    let response: Response;
+
+    try {
+      response = await fetch(joinApiPath(baseUrl, path), {
+        cache: options.cache,
+        credentials: options.credentials,
+        method,
+        headers,
+        body: serializedBody,
+        signal: options.signal,
+      });
+    } catch (error) {
+      if (isAbortFailure(error, options.signal)) {
+        throw new ApiError('API request was aborted', {
+          cause: error,
+          kind: 'abort',
+        });
+      }
+
+      throw new ApiError('API request failed before receiving a response', {
+        cause: error,
+        kind: 'network',
+      });
+    }
+
+    if (!response.ok) {
+      const details = await readHttpErrorDetails(response);
+      throw new ApiError(
+        `API request failed with status ${String(response.status)}`,
+        {
+          details,
+          kind: 'http',
+          status: response.status,
+        },
+      );
+    }
+
+    if (response.status === 204) return undefined;
+
+    if (!isJsonMediaType(response.headers.get('Content-Type') ?? '')) {
+      throw new ApiError('API response was not JSON', {
+        kind: 'protocol',
+        status: response.status,
+      });
+    }
+
+    try {
+      return await parseJson(response);
+    } catch (error) {
+      throw new ApiError('API response contained invalid JSON', {
+        cause: error,
+        kind: 'protocol',
+        status: response.status,
+      });
+    }
+  }
+
   return {
-    async get(path: string, options: ApiGetOptions = {}) {
-      let response: Response;
-
-      try {
-        response = await fetch(joinApiPath(baseUrl, path), {
-          cache: options.cache,
-          credentials: options.credentials,
-          method: 'GET',
-          headers: {
-            Accept: 'application/json',
-            ...options.headers,
-          },
-          signal: options.signal,
-        });
-      } catch (error) {
-        if (isAbortFailure(error, options.signal)) {
-          throw new ApiError('API request was aborted', {
-            cause: error,
-            kind: 'abort',
-          });
-        }
-
-        throw new ApiError('API request failed before receiving a response', {
-          cause: error,
-          kind: 'network',
-        });
-      }
-
-      if (!response.ok) {
-        const details = await readHttpErrorDetails(response);
-        throw new ApiError(
-          `API request failed with status ${String(response.status)}`,
-          {
-            details,
-            kind: 'http',
-            status: response.status,
-          },
-        );
-      }
-
-      if (response.status === 204) {
-        return undefined;
-      }
-
-      if (!isJsonMediaType(response.headers.get('Content-Type') ?? '')) {
-        throw new ApiError('API response was not JSON', {
-          kind: 'protocol',
-          status: response.status,
-        });
-      }
-
-      try {
-        return await parseJson(response);
-      } catch (error) {
-        throw new ApiError('API response contained invalid JSON', {
-          cause: error,
-          kind: 'protocol',
-          status: response.status,
-        });
-      }
+    get(path, options = {}) {
+      return request('GET', path, options);
+    },
+    post(path, options = {}) {
+      return request('POST', path, options);
+    },
+    put(path, options = {}) {
+      return request('PUT', path, options);
     },
   };
 }

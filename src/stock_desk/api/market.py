@@ -363,7 +363,12 @@ async def market_request_validation_handler(
 ) -> Response:
     if not isinstance(error, RequestValidationError):
         raise error
-    if request.url.path == "/api/market" or request.url.path.startswith("/api/market/"):
+    if (
+        request.url.path == "/api/market"
+        or request.url.path.startswith("/api/market/")
+        or request.url.path == "/api/settings"
+        or request.url.path.startswith("/api/settings/")
+    ):
         return _invalid()
     return await request_validation_exception_handler(request, error)
 

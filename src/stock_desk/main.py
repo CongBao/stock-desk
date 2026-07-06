@@ -13,6 +13,12 @@ from stock_desk.api.market import (
     market_request_validation_handler,
     router as market_router,
 )
+from stock_desk.api.settings import (
+    SourceSettingsServices,
+    SourceSettingsStorageError,
+    router as settings_router,
+    source_settings_storage_exception_handler,
+)
 from stock_desk.api.tasks import router as tasks_router
 from stock_desk.config import Settings, get_settings
 from stock_desk.tasks.repository import TaskRepository
@@ -23,12 +29,15 @@ def create_app(
     settings: Settings | None = None,
     task_repository: TaskRepository | None = None,
     market_services: MarketServices | None = None,
+    source_settings_services: SourceSettingsServices | None = None,
 ) -> FastAPI:
     resolved_settings = settings if settings is not None else get_settings()
     owned_repository: TaskRepository | None = None
     repository_lock = Lock()
     owned_market_services: MarketServices | None = None
     market_services_lock = Lock()
+    owned_source_settings_services: SourceSettingsServices | None = None
+    source_settings_services_lock = Lock()
 
     def provide_task_repository() -> TaskRepository:
         nonlocal owned_repository
@@ -54,6 +63,18 @@ def create_app(
                 )
             return owned_market_services
 
+    def provide_source_settings_services() -> SourceSettingsServices:
+        nonlocal owned_source_settings_services
+        if source_settings_services is not None:
+            return source_settings_services
+        with source_settings_services_lock:
+            if owned_source_settings_services is None:
+                owned_source_settings_services = SourceSettingsServices.open(
+                    database_url=resolved_settings.database_url,
+                    settings=resolved_settings,
+                )
+            return owned_source_settings_services
+
     @asynccontextmanager
     async def lifespan(_application: FastAPI) -> AsyncIterator[None]:
         try:
@@ -63,6 +84,8 @@ def create_app(
                 owned_repository.close()
             if owned_market_services is not None:
                 owned_market_services.close()
+            if owned_source_settings_services is not None:
+                owned_source_settings_services.close()
 
     application = FastAPI(
         title=resolved_settings.app_name,
@@ -71,13 +94,21 @@ def create_app(
     )
     application.state.task_repository_provider = provide_task_repository
     application.state.market_services_provider = provide_market_services
+    application.state.source_settings_services_provider = (
+        provide_source_settings_services
+    )
     application.add_exception_handler(
         RequestValidationError,
         market_request_validation_handler,
     )
+    application.add_exception_handler(
+        SourceSettingsStorageError,
+        source_settings_storage_exception_handler,
+    )
     application.include_router(health_router, prefix="/api")
     application.include_router(tasks_router, prefix="/api")
     application.include_router(market_router, prefix="/api")
+    application.include_router(settings_router, prefix="/api")
     if resolved_settings.web_dist_dir is not None:
         install_web_routes(application, resolved_settings.web_dist_dir)
     return application

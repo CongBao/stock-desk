@@ -59,9 +59,9 @@ export const appRoutes = [
     label: '设置',
     path: '/settings',
     icon: '设',
-    title: '设置',
-    release: 'v0.1.0',
-    summary: '管理本地应用基础配置与后续数据源连接。',
-    description: '本阶段仅建立设置入口，不采集或展示任何密钥。',
+    title: '数据源设置',
+    release: 'v0.2.0',
+    summary: '配置市场数据源优先级、Tushare 凭证与本地通达信目录。',
+    description: '诊断来源能力与权限缺口，并为不同数据类别设置独立回退顺序。',
   },
 ] as const satisfies readonly AppRoute[];

@@ -8,6 +8,7 @@ import {
 } from 'react-router-dom';
 
 import { App } from './App';
+import { settingsResponse } from '../features/settings/testFixtures';
 
 const healthyResponse = {
   name: 'stock-desk',
@@ -153,6 +154,30 @@ it('opens on the cache-only three-column market workspace', async () => {
   expect(screen.getByText('本地缓存')).toBeInTheDocument();
   expect(screen.queryByText(/布局预览/u)).not.toBeInTheDocument();
   expect(screen.getByRole('main')).toHaveAttribute('id', 'main-content');
+});
+
+it('routes settings to the real data-source workspace', async () => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn((input: RequestInfo | URL) => {
+      const url = requestUrl(input);
+      return Promise.resolve(
+        url.endsWith('/settings/sources')
+          ? jsonResponse(settingsResponse)
+          : url.endsWith('/health')
+            ? jsonResponse(healthyResponse)
+            : jsonResponse([]),
+      );
+    }),
+  );
+
+  renderApp(['/settings']);
+
+  expect(
+    await screen.findByRole('heading', { level: 2, name: '数据源设置' }),
+  ).toBeInTheDocument();
+  expect(screen.queryByText(/能力按阶段交付/u)).not.toBeInTheDocument();
+  await waitFor(() => expect(document.title).toBe('数据源设置 · stock-desk'));
 });
 
 it.each(['/market/', '/MARKET'])(

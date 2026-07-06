@@ -2,6 +2,7 @@ import { useRef } from 'react';
 import { Navigate, NavLink, Route, Routes } from 'react-router-dom';
 
 import { MarketPage } from '../features/market/MarketPage';
+import { DataSourcesPage } from '../features/settings/DataSourcesPage';
 import { useSystemStatus } from '../shared/api/useSystemStatus';
 import { ContextPanel } from './ContextPanel';
 import { NotFoundPage } from './NotFoundPage';
@@ -114,6 +115,8 @@ function WorkspaceShell() {
                 element={
                   route.path === '/market' ? (
                     <MarketPage />
+                  ) : route.path === '/settings' ? (
+                    <DataSourcesPage />
                   ) : (
                     <PlannedPage route={route} />
                   )

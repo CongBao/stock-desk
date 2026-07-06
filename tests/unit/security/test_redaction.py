@@ -1,8 +1,16 @@
 from collections import UserList
 from collections.abc import Iterator, Mapping, Sequence, Set
+from concurrent.futures import ThreadPoolExecutor
+import gc
 from io import StringIO
 import logging
+from logging.handlers import QueueHandler, QueueListener, SocketHandler
+from multiprocessing.reduction import ForkingPickler
+import pickle
+from queue import Queue
+from threading import Barrier, Event
 from typing import Any, overload
+import weakref
 
 import pytest
 
@@ -1163,9 +1171,851 @@ def test_safe_handler_configuration_is_idempotent() -> None:
     assert sum(isinstance(item, RedactingFilter) for item in handler.filters) == 1
 
 
+def test_process_redaction_runs_after_logger_and_handler_filters() -> None:
+    secret = "filter-injected-secret"
+    output = StringIO()
+    handler = logging.StreamHandler(output)
+    logger = logging.getLogger("scoped.filters")
+    logger.handlers.clear()
+    logger.filters.clear()
+    logger.propagate = False
+    logger.setLevel(logging.WARNING)
+
+    class LoggerInjection(logging.Filter):
+        def filter(self, record: logging.LogRecord) -> logging.LogRecord:
+            replacement = logging.makeLogRecord(record.__dict__)
+            replacement.msg = f"logger={secret}"
+            replacement.args = ()
+            return replacement
+
+    class HandlerInjection(logging.Filter):
+        def filter(self, record: logging.LogRecord) -> logging.LogRecord:
+            assert secret in record.getMessage()
+            replacement = logging.makeLogRecord(record.__dict__)
+            replacement.msg = f"handler={secret}"
+            replacement.args = ()
+            return replacement
+
+    logger_filter = LoggerInjection()
+    handler_filter = HandlerInjection()
+    logger.addFilter(logger_filter)
+    handler.addFilter(handler_filter)
+    logger.addHandler(handler)
+    try:
+        with redaction_module.scoped_log_redaction(secret):
+            logger.warning("safe input")
+    finally:
+        logger.removeHandler(handler)
+        logger.removeFilter(logger_filter)
+        handler.close()
+
+    assert secret not in output.getvalue()
+    assert REDACTED_MARKER in output.getvalue()
+
+
+def test_process_redaction_scrubs_formatter_constants_and_restores_formatter() -> None:
+    secret = "formatter-constant-secret"
+    output = StringIO()
+    handler = logging.StreamHandler(output)
+    formatter = logging.Formatter(f"constant={secret} %(message)s")
+    handler.setFormatter(formatter)
+    logger = logging.getLogger("scoped.formatter-constant")
+    logger.handlers.clear()
+    logger.propagate = False
+    logger.setLevel(logging.WARNING)
+    logger.addHandler(handler)
+    try:
+        with redaction_module.scoped_log_redaction(secret):
+            logger.warning("safe input")
+    finally:
+        logger.removeHandler(handler)
+        handler.close()
+
+    assert secret not in output.getvalue()
+    assert REDACTED_MARKER in output.getvalue()
+    assert handler.formatter is formatter
+
+
+@pytest.mark.parametrize(
+    "entrypoint",
+    ["normal", "call_handlers", "direct_handler", "logger_subclass"],
+)
+def test_process_redaction_covers_standard_logging_dispatch_entrypoints(
+    entrypoint: str,
+) -> None:
+    secret = f"dispatch-{entrypoint}-secret"
+    output = StringIO()
+    handler = logging.StreamHandler(output)
+    logger = logging.getLogger(f"scoped.dispatch.{entrypoint}")
+    logger.handlers.clear()
+    logger.propagate = False
+    logger.setLevel(logging.WARNING)
+    logger.addHandler(handler)
+    record = logging.LogRecord(
+        logger.name,
+        logging.WARNING,
+        __file__,
+        1,
+        "secret=%s",
+        (secret,),
+        None,
+    )
+
+    class DirectLogger(logging.Logger):
+        def handle(self, direct_record: logging.LogRecord) -> None:
+            self.callHandlers(direct_record)
+
+    try:
+        with redaction_module.scoped_log_redaction(secret):
+            if entrypoint == "normal":
+                logger.warning("secret=%s", secret)
+            elif entrypoint == "call_handlers":
+                logger.callHandlers(record)
+            elif entrypoint == "direct_handler":
+                handler.handle(record)
+            else:
+                direct_logger = DirectLogger(f"{logger.name}.subclass")
+                direct_logger.handlers.append(handler)
+                direct_logger.propagate = False
+                direct_logger.handle(record)
+    finally:
+        logger.removeHandler(handler)
+        handler.close()
+
+    assert secret not in output.getvalue()
+    assert REDACTED_MARKER in output.getvalue()
+
+
+def test_process_redaction_survives_runtime_logger_handle_replacement() -> None:
+    secret = "runtime-logger-replacement-secret"
+    output = StringIO()
+    handler = logging.StreamHandler(output)
+    logger = logging.getLogger("scoped.runtime-logger-replacement")
+    logger.handlers.clear()
+    logger.propagate = False
+    logger.setLevel(logging.WARNING)
+    logger.addHandler(handler)
+    original_handle = logging.Logger.handle
+
+    def replacement_handle(
+        current_logger: logging.Logger, record: logging.LogRecord
+    ) -> None:
+        current_logger.callHandlers(record)
+
+    try:
+        with redaction_module.scoped_log_redaction(secret):
+            logging.Logger.handle = replacement_handle
+            logger.warning("secret=%s", secret)
+    finally:
+        logging.Logger.handle = original_handle
+        logger.removeHandler(handler)
+        handler.close()
+
+    assert secret not in output.getvalue()
+    assert REDACTED_MARKER in output.getvalue()
+
+
+def test_process_redaction_preserves_handler_logrecord_return_and_state() -> None:
+    secret = "replacement-record-secret"
+    output = StringIO()
+    handler = logging.StreamHandler(output)
+    formatter = logging.Formatter("%(message)s")
+    handler.setFormatter(formatter)
+    original = logging.makeLogRecord(
+        {"name": "scoped.replacement", "levelno": logging.WARNING, "msg": "safe"}
+    )
+    replacement = logging.makeLogRecord(
+        {
+            "name": "scoped.replacement",
+            "levelno": logging.WARNING,
+            "msg": secret,
+            "args": (),
+        }
+    )
+
+    class ReplaceRecord(logging.Filter):
+        def filter(self, _record: logging.LogRecord) -> logging.LogRecord:
+            return replacement
+
+    replacing_filter = ReplaceRecord()
+    handler.addFilter(replacing_filter)
+    filters = tuple(handler.filters)
+
+    with redaction_module.scoped_log_redaction(secret):
+        result = handler.handle(original)
+
+    assert result is replacement
+    assert secret not in output.getvalue()
+    assert handler.formatter is formatter
+    assert tuple(handler.filters) == filters
+    handler.close()
+
+
+@pytest.mark.parametrize("filter_result", ["truthy", "replacement"])
+def test_process_redaction_emits_exact_python312_selected_record_identity(
+    filter_result: str,
+) -> None:
+    secret = f"identity-{filter_result}-secret"
+    emitted: list[logging.LogRecord] = []
+    original = logging.makeLogRecord(
+        {
+            "name": "scoped.identity",
+            "levelno": logging.WARNING,
+            "msg": secret,
+            "args": (),
+        }
+    )
+    replacement = logging.makeLogRecord(
+        {
+            "name": "scoped.identity.replacement",
+            "levelno": logging.WARNING,
+            "msg": secret,
+            "args": (),
+        }
+    )
+
+    class CaptureHandler(logging.Handler):
+        def filter(self, _record: logging.LogRecord) -> bool | logging.LogRecord:
+            return True if filter_result == "truthy" else replacement
+
+        def emit(self, record: logging.LogRecord) -> None:
+            emitted.append(record)
+
+    handler = CaptureHandler()
+    with redaction_module.scoped_log_redaction(secret):
+        result = handler.handle(original)
+
+    expected = original if filter_result == "truthy" else replacement
+    assert emitted == [expected]
+    assert emitted[0] is expected
+    assert result is (True if filter_result == "truthy" else replacement)
+    assert secret not in expected.getMessage()
+    handler.close()
+
+
+def test_process_redaction_preserves_false_filter_return_without_emission() -> None:
+    secret = "filtered-handler-secret"
+    output = StringIO()
+    handler = logging.StreamHandler(output)
+    formatter = logging.Formatter("%(message)s")
+    handler.setFormatter(formatter)
+
+    class RejectRecord(logging.Filter):
+        def filter(self, _record: logging.LogRecord) -> bool:
+            return False
+
+    rejecting_filter = RejectRecord()
+    handler.addFilter(rejecting_filter)
+    record = logging.makeLogRecord(
+        {"name": "scoped.filtered", "levelno": logging.WARNING, "msg": secret}
+    )
+
+    with redaction_module.scoped_log_redaction(secret):
+        result = handler.handle(record)
+
+    assert result is False
+    assert output.getvalue() == ""
+    assert handler.formatter is formatter
+    assert handler.filters == [rejecting_filter]
+    handler.close()
+
+
+def test_process_redaction_never_overwrites_concurrent_formatter_update() -> None:
+    secret = "concurrent-formatter-secret"
+    entered_emit = Event()
+    release_emit = Event()
+    output = StringIO()
+
+    class BlockingStreamHandler(logging.StreamHandler[Any]):
+        def emit(self, record: logging.LogRecord) -> None:
+            entered_emit.set()
+            assert release_emit.wait(timeout=5)
+            super().emit(record)
+
+    handler = BlockingStreamHandler(output)
+    old_formatter = logging.Formatter("old=%(message)s")
+    new_formatter = logging.Formatter(f"new={secret} %(message)s")
+    handler.setFormatter(old_formatter)
+    record = logging.makeLogRecord(
+        {
+            "name": "scoped.concurrent-formatter",
+            "levelno": logging.WARNING,
+            "msg": secret,
+            "args": (),
+        }
+    )
+
+    with redaction_module.scoped_log_redaction(secret):
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            handled = executor.submit(handler.handle, record)
+            assert entered_emit.wait(timeout=5)
+            handler.setFormatter(new_formatter)
+            release_emit.set()
+            assert handled.result(timeout=5) is record
+
+    assert handler.formatter is new_formatter
+    assert secret not in output.getvalue()
+    assert output.getvalue().startswith("new=")
+    handler.close()
+
+
+def test_process_format_hook_inactive_delegates_exact_formatter_result() -> None:
+    sentinel = HostileStr("inactive-formatter-result")
+
+    class IdentityFormatter(logging.Formatter):
+        def format(self, _record: logging.LogRecord) -> str:
+            return sentinel
+
+    handler = logging.Handler()
+    handler.setFormatter(IdentityFormatter())
+    record = logging.makeLogRecord(
+        {"name": "scoped.inactive-format", "levelno": logging.INFO, "msg": "safe"}
+    )
+
+    rendered = handler.format(record)
+
+    assert rendered is sentinel
+    handler.close()
+
+
+def test_process_format_hook_preserves_formatter_exception_semantics() -> None:
+    secret = "formatter-exception-secret"
+
+    class FormattingFailure(RuntimeError):
+        pass
+
+    class FailingFormatter(logging.Formatter):
+        def format(self, _record: logging.LogRecord) -> str:
+            raise FormattingFailure("expected formatter failure")
+
+    class FormattingHandler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            self.format(record)
+
+    handler = FormattingHandler()
+    handler.setFormatter(FailingFormatter())
+    record = logging.makeLogRecord(
+        {"name": "scoped.format-failure", "levelno": logging.INFO, "msg": secret}
+    )
+
+    with redaction_module.scoped_log_redaction(secret):
+        with pytest.raises(FormattingFailure, match="expected formatter failure"):
+            handler.handle(record)
+
+    assert isinstance(handler.formatter, FailingFormatter)
+    handler.close()
+
+
+def test_process_redaction_restores_handler_state_and_lock_on_emit_exception() -> None:
+    secret = "raising-handler-secret"
+    formatter = logging.Formatter("%(message)s")
+    events: list[str] = []
+    formatter_seen: logging.Formatter | None = None
+
+    class EmissionFailure(RuntimeError):
+        pass
+
+    class RaisingHandler(logging.Handler):
+        def acquire(self) -> None:
+            events.append("acquire")
+            super().acquire()
+
+        def release(self) -> None:
+            events.append("release")
+            super().release()
+
+        def emit(self, _record: logging.LogRecord) -> None:
+            nonlocal formatter_seen
+            events.append("emit")
+            formatter_seen = self.formatter
+            raise EmissionFailure("expected")
+
+    handler = RaisingHandler()
+    handler.setFormatter(formatter)
+    record = logging.makeLogRecord(
+        {"name": "scoped.raise", "levelno": logging.WARNING, "msg": secret}
+    )
+
+    with redaction_module.scoped_log_redaction(secret):
+        with pytest.raises(EmissionFailure, match="expected"):
+            handler.handle(record)
+
+    assert formatter_seen is formatter
+    assert handler.formatter is formatter
+    assert events[-3:] == ["acquire", "emit", "release"]
+    handler.close()
+
+
+def test_delayed_record_retains_longest_first_context_until_record_gc() -> None:
+    short = "delayed-prefix-secret"
+    long = "delayed-prefix-secret-with-suffix"
+    visible_suffix = "-with-suffix"
+    records: list[logging.LogRecord] = []
+
+    class DelayedHandler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    handler = DelayedHandler()
+    handler.setFormatter(logging.Formatter(f"constant={long} %(message)s"))
+    record = logging.makeLogRecord(
+        {
+            "name": "scoped.delayed",
+            "levelno": logging.WARNING,
+            "msg": long,
+            "args": (),
+        }
+    )
+    with redaction_module.scoped_log_redaction(short):
+        with redaction_module.scoped_log_redaction(long):
+            handler.handle(record)
+
+    assert records == [record]
+    context = record.__dict__[redaction_module._RECORD_REDACTOR_ATTRIBUTE]
+    assert not isinstance(context, SecretRedactor)
+    assert short not in repr(context)
+    assert long not in repr(context)
+    assert repr(context) == "LogRedactionContext(active=True)"
+    rendered = handler.format(record)
+    assert short not in rendered
+    assert long not in rendered
+    assert visible_suffix not in rendered
+
+    context_reference = weakref.ref(context)
+    records.clear()
+    del context
+    del record
+    gc.collect()
+    assert context_reference() is None
+    handler.close()
+
+
+def test_delayed_record_context_transfers_to_downstream_filter_replacement() -> None:
+    secret = "delayed-replacement-secret"
+    delayed: list[logging.LogRecord] = []
+
+    class DelayedHandler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            delayed.append(record)
+
+    source_handler = DelayedHandler()
+    original = logging.makeLogRecord(
+        {
+            "name": "scoped.delayed-replacement",
+            "levelno": logging.WARNING,
+            "msg": secret,
+            "args": (),
+        }
+    )
+    with redaction_module.scoped_log_redaction(secret):
+        source_handler.handle(original)
+
+    replacement = logging.makeLogRecord(
+        {
+            "name": "scoped.delayed-replacement.filtered",
+            "levelno": logging.WARNING,
+            "msg": secret,
+            "args": (),
+        }
+    )
+
+    class ReplaceDelayedRecord(logging.Filter):
+        def filter(self, _record: logging.LogRecord) -> logging.LogRecord:
+            return replacement
+
+    output = StringIO()
+    output_handler = logging.StreamHandler(output)
+    output_handler.setFormatter(logging.Formatter(f"constant={secret} %(message)s"))
+    output_handler.addFilter(ReplaceDelayedRecord())
+    result = output_handler.handle(delayed[0])
+
+    assert result is replacement
+    assert secret not in replacement.getMessage()
+    assert secret not in output.getvalue()
+    assert REDACTED_MARKER in output.getvalue()
+    source_handler.close()
+    output_handler.close()
+
+
+def test_delayed_record_context_unions_with_active_overlapping_secret() -> None:
+    snapshot_secret = "delayed-union-secret"
+    active_secret = "delayed-union-secret-with-suffix"
+    visible_suffix = "-with-suffix"
+    delayed: list[logging.LogRecord] = []
+
+    class DelayedHandler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            delayed.append(record)
+
+    source_handler = DelayedHandler()
+    record = logging.makeLogRecord(
+        {
+            "name": "scoped.delayed-union",
+            "levelno": logging.WARNING,
+            "msg": snapshot_secret,
+            "args": (),
+        }
+    )
+    with redaction_module.scoped_log_redaction(snapshot_secret):
+        source_handler.handle(record)
+
+    class InjectActiveSecret(logging.Filter):
+        def filter(self, filtered: logging.LogRecord) -> bool:
+            filtered.msg = active_secret
+            filtered.args = ()
+            return True
+
+    output = StringIO()
+    output_handler = logging.StreamHandler(output)
+    output_handler.addFilter(InjectActiveSecret())
+    output_handler.setFormatter(
+        logging.Formatter(
+            f"snapshot={snapshot_secret} active={active_secret} %(message)s"
+        )
+    )
+    with redaction_module.scoped_log_redaction(active_secret):
+        result = output_handler.handle(delayed[0])
+
+    assert result is delayed[0]
+    assert snapshot_secret not in output.getvalue()
+    assert active_secret not in output.getvalue()
+    assert visible_suffix not in output.getvalue()
+    source_handler.close()
+    output_handler.close()
+
+
+def test_socket_handler_pickle_reduces_record_context_to_builtin_none() -> None:
+    secret = "socket-pickle-secret"
+    payloads: list[bytes] = []
+
+    class CapturingSocketHandler(SocketHandler):
+        def emit(self, record: logging.LogRecord) -> None:
+            payloads.append(self.makePickle(record))
+
+    handler = CapturingSocketHandler("localhost", 0)
+    record = logging.makeLogRecord(
+        {
+            "name": "scoped.socket-pickle",
+            "levelno": logging.WARNING,
+            "msg": secret,
+            "args": (),
+        }
+    )
+    with redaction_module.scoped_log_redaction(secret):
+        handler.handle(record)
+
+    assert len(payloads) == 1
+    payload = payloads[0]
+    assert secret.encode() not in payload
+    assert b"security.redaction" not in payload
+    assert b"LogRedactionContext" not in payload
+    assert b"SecretRedactor" not in payload
+    restored = pickle.loads(payload[4:])
+    assert secret not in repr(restored)
+    assert restored[redaction_module._RECORD_REDACTOR_ATTRIBUTE] is None
+    handler.close()
+
+
+def test_queue_handler_prepared_record_is_multiprocessing_pickle_safe() -> None:
+    secret = "multiprocessing-queue-secret"
+    records: Queue[logging.LogRecord] = Queue()
+    handler = QueueHandler(records)
+    record = logging.makeLogRecord(
+        {
+            "name": "scoped.multiprocessing-queue",
+            "levelno": logging.WARNING,
+            "msg": secret,
+            "args": (),
+        }
+    )
+    with redaction_module.scoped_log_redaction(secret):
+        handler.handle(record)
+
+    prepared = records.get_nowait()
+    assert secret not in prepared.getMessage()
+    payload = bytes(ForkingPickler.dumps(prepared))
+    assert secret.encode() not in payload
+    assert b"security.redaction" not in payload
+    assert b"LogRedactionContext" not in payload
+    assert b"SecretRedactor" not in payload
+    restored = pickle.loads(payload)
+    assert secret not in restored.getMessage()
+    assert restored.__dict__[redaction_module._RECORD_REDACTOR_ATTRIBUTE] is None
+    handler.close()
+
+
+def test_queue_handler_record_keeps_redaction_context_after_scope_closes() -> None:
+    secret = "queued-handler-secret"
+    records: Queue[logging.LogRecord] = Queue()
+    queue_handler = QueueHandler(records)
+    output = StringIO()
+    output_handler = logging.StreamHandler(output)
+    output_handler.setFormatter(logging.Formatter(f"constant={secret} %(message)s"))
+    listener = QueueListener(records, output_handler)
+    logger = logging.getLogger("scoped.queue")
+    logger.handlers.clear()
+    logger.propagate = False
+    logger.setLevel(logging.WARNING)
+    logger.addHandler(queue_handler)
+    try:
+        with redaction_module.scoped_log_redaction(secret):
+            logger.warning("payload=%s", secret)
+        listener.start()
+        listener.stop()
+    finally:
+        logger.removeHandler(queue_handler)
+        queue_handler.close()
+        output_handler.close()
+
+    assert secret not in output.getvalue()
+    assert REDACTED_MARKER in output.getvalue()
+
+
 @pytest.mark.parametrize("invalid", [None, b"bytes", 123])
 def test_register_rejects_non_string_values(invalid: object) -> None:
     redactor = SecretRedactor([])
 
     with pytest.raises(TypeError):
         redactor.register(invalid)  # type: ignore[arg-type]
+
+
+def test_scoped_log_redaction_preserves_custom_factory_and_does_not_accumulate() -> (
+    None
+):
+    original = logging.getLogRecordFactory()
+    calls: list[str] = []
+    output = StringIO()
+    handler = logging.StreamHandler(output)
+    logger = logging.getLogger("scoped.custom")
+    logger.handlers.clear()
+    logger.propagate = False
+    logger.setLevel(logging.WARNING)
+    logger.addHandler(handler)
+
+    def custom_factory(*args: Any, **kwargs: Any) -> logging.LogRecord:
+        calls.append(str(args[0]))
+        record = original(*args, **kwargs)
+        record.custom_factory_marker = "preserved"
+        return record
+
+    logging.setLogRecordFactory(custom_factory)
+    wrappers: list[object] = []
+    references: list[weakref.ReferenceType[Any]] = []
+    try:
+        for index in range(32):
+            token = f"replacement-secret-{index:02d}"
+            with redaction_module.scoped_log_redaction(token) as lease:
+                references.append(weakref.ref(lease))
+                wrappers.append(logging.Handler.handle)
+                assert logging.getLogRecordFactory() is custom_factory
+                logger.warning("token=%s", token)
+            del lease
+            assert logging.getLogRecordFactory() is custom_factory
+        gc.collect()
+    finally:
+        logging.setLogRecordFactory(original)
+        logger.removeHandler(handler)
+        handler.close()
+
+    assert calls == ["scoped.custom"] * 32
+    assert len({id(wrapper) for wrapper in wrappers}) == 1
+    assert all(reference() is None for reference in references)
+    for index in range(32):
+        assert f"replacement-secret-{index:02d}" not in output.getvalue()
+
+
+def test_overlapping_scoped_log_redaction_redacts_union_across_threads() -> None:
+    first_secret = "first-overlap-secret"
+    second_secret = "second-overlap-secret"
+    entered = Barrier(2)
+    logged = Barrier(2)
+    output = StringIO()
+    handler = logging.StreamHandler(output)
+    logger = logging.getLogger("scoped.concurrent")
+    logger.handlers.clear()
+    logger.propagate = False
+    logger.setLevel(logging.WARNING)
+    logger.addHandler(handler)
+
+    def render(secret: str) -> None:
+        with redaction_module.scoped_log_redaction(secret):
+            entered.wait(timeout=5)
+            logger.warning("%s %s", first_secret, second_secret)
+            logged.wait(timeout=5)
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            tuple(executor.map(render, (first_secret, second_secret)))
+    finally:
+        logger.removeHandler(handler)
+        handler.close()
+
+    assert first_secret not in output.getvalue()
+    assert second_secret not in output.getvalue()
+
+
+def test_handle_boundary_survives_factory_replacement_and_direct_records() -> None:
+    secret = "factory-independent-secret"
+    original_factory = logging.getLogRecordFactory()
+    output = StringIO()
+    handler = logging.StreamHandler(output)
+    logger = logging.getLogger("scoped.handle.factory-replacement")
+    logger.handlers.clear()
+    logger.propagate = False
+    logger.setLevel(logging.WARNING)
+    logger.addHandler(handler)
+
+    def replacement_factory(*args: Any, **kwargs: Any) -> logging.LogRecord:
+        return original_factory(*args, **kwargs)
+
+    try:
+        with redaction_module.scoped_log_redaction(secret):
+            logging.setLogRecordFactory(replacement_factory)
+            logger.warning("normal=%s", secret)
+            direct = logging.LogRecord(
+                logger.name,
+                logging.WARNING,
+                __file__,
+                1,
+                "direct=%s",
+                (secret,),
+                None,
+            )
+            logger.handle(direct)
+    finally:
+        logging.setLogRecordFactory(original_factory)
+        logger.removeHandler(handler)
+        handler.close()
+
+    assert secret not in output.getvalue()
+
+
+def test_overlapping_prefix_secrets_use_one_longest_first_union() -> None:
+    short = "prefix-secret"
+    long = "prefix-secret-with-suffix"
+    visible_suffix = "-with-suffix"
+    output = StringIO()
+    handler = logging.StreamHandler(output)
+    logger = logging.getLogger("scoped.prefix")
+    logger.handlers.clear()
+    logger.propagate = False
+    logger.setLevel(logging.WARNING)
+    logger.addHandler(handler)
+    record = logging.LogRecord(
+        logger.name,
+        logging.WARNING,
+        __file__,
+        1,
+        "%s",
+        (long,),
+        None,
+    )
+
+    try:
+        with redaction_module.scoped_log_redaction(short):
+            with redaction_module.scoped_log_redaction(long):
+                captured_wrapper = logging.Handler.handle
+                logger.handle(record)
+
+        assert short not in output.getvalue()
+        assert long not in output.getvalue()
+        assert visible_suffix not in output.getvalue()
+
+        after_scope = logging.LogRecord(
+            "scoped.prefix.after",
+            logging.WARNING,
+            __file__,
+            1,
+            "ordinary",
+            (),
+            None,
+        )
+        captured_wrapper(handler, after_scope)
+        assert output.getvalue().endswith("ordinary\n")
+    finally:
+        logger.removeHandler(handler)
+        handler.close()
+
+
+def test_log_secret_lease_refresh_keeps_one_stable_nonrecursive_handler_hook() -> None:
+    output = StringIO()
+    handler = logging.StreamHandler(output)
+    stable_handle_hook = logging.Handler.handle
+    stable_format_hook = logging.Handler.format
+    lease = redaction_module.LogSecretLease()
+    last_secret = ""
+    try:
+        for index in range(32):
+            last_secret = f"lease-refresh-secret-{index:02d}"
+            lease.replace(last_secret)
+            record = logging.makeLogRecord(
+                {
+                    "name": "scoped.lease-refresh",
+                    "levelno": logging.WARNING,
+                    "msg": last_secret,
+                    "args": (),
+                }
+            )
+            handler.handle(record)
+            assert logging.Handler.handle is stable_handle_hook
+            assert logging.Handler.format is stable_format_hook
+            assert last_secret not in output.getvalue()
+            output.seek(0)
+            output.truncate(0)
+    finally:
+        lease.close()
+
+    handler.handle(
+        logging.makeLogRecord(
+            {
+                "name": "scoped.lease-refresh.closed",
+                "levelno": logging.WARNING,
+                "msg": last_secret,
+                "args": (),
+            }
+        )
+    )
+    assert last_secret in output.getvalue()
+    handler.close()
+
+
+def test_lifetime_secret_leases_union_replace_close_and_collect() -> None:
+    first = "first-service-secret"
+    second = "second-service-secret"
+    scoped = "invocation-secret"
+    output = StringIO()
+    handler = logging.StreamHandler(output)
+    logger = logging.getLogger("scoped.lifetime")
+    logger.handlers.clear()
+    logger.propagate = False
+    logger.setLevel(logging.WARNING)
+    logger.addHandler(handler)
+
+    first_lease = redaction_module.LogSecretLease(first)
+    second_lease = redaction_module.LogSecretLease(second)
+    try:
+        with redaction_module.scoped_log_redaction(scoped):
+            logger.warning("all=%s %s %s", first, second, scoped)
+        assert all(
+            secret not in output.getvalue() for secret in (first, second, scoped)
+        )
+
+        output.seek(0)
+        output.truncate(0)
+        first_lease.replace("replacement-service-secret")
+        logger.warning("old=%s new=%s", first, "replacement-service-secret")
+        assert first in output.getvalue()
+        assert "replacement-service-secret" not in output.getvalue()
+
+        reference = weakref.ref(second_lease)
+        del second_lease
+        gc.collect()
+        assert reference() is None
+        output.seek(0)
+        output.truncate(0)
+        logger.warning("collected=%s", second)
+        assert second in output.getvalue()
+    finally:
+        first_lease.close()
+        logger.removeHandler(handler)
+        handler.close()

@@ -15,7 +15,7 @@ const DIGEST = `sha256:${'a'.repeat(64)}`;
 const barsResponse = backendBarsResponse;
 
 function clientReturning(value: JsonValue): {
-  client: ApiClient;
+  client: Pick<ApiClient, 'get'>;
   get: ReturnType<typeof vi.fn>;
 } {
   const get = vi.fn(() => Promise.resolve(value));

@@ -201,10 +201,25 @@ def _close_descriptors(descriptors: tuple[int, ...]) -> None:
         raise cleanup_error
 
 
-def _open_directory_chain(root: Path, exchange: Exchange) -> tuple[int, int, int]:
+def _open_directory_chain(root: Path, exchange: Exchange) -> tuple[int, ...]:
     descriptors: list[int] = []
     try:
-        descriptors.append(_open_directory_fd(root))
+        if root.anchor != os.sep or not root.is_absolute():
+            raise ProviderInvalidResponse()
+        components = root.parts[1:]
+        if any(not component or component in {".", ".."} for component in components):
+            raise ProviderInvalidResponse()
+        descriptors.append(_open_directory_fd(os.sep))
+        for component in components:
+            child = _open_directory_fd(component, parent_fd=descriptors[-1])
+            try:
+                os.close(descriptors[-1])
+            except Exception:
+                opened = tuple(descriptors) + (child,)
+                descriptors.clear()
+                _close_descriptors(opened)
+                raise
+            descriptors[:] = [child]
         descriptors.append(
             _open_directory_fd(
                 _MARKET_DIRECTORY[exchange],
@@ -215,7 +230,7 @@ def _open_directory_chain(root: Path, exchange: Exchange) -> tuple[int, int, int
     except Exception:
         _close_descriptors(tuple(descriptors))
         raise
-    return descriptors[0], descriptors[1], descriptors[2]
+    return tuple(descriptors)
 
 
 def _stat_signature(metadata: os.stat_result) -> tuple[int, int, int, int, int]:
@@ -229,7 +244,7 @@ def _stat_signature(metadata: os.stat_result) -> tuple[int, int, int, int, int]:
 
 
 def _chain_signatures(
-    descriptors: tuple[int, int, int],
+    descriptors: tuple[int, ...],
 ) -> tuple[tuple[int, int, int, int, int], ...]:
     return tuple(_stat_signature(os.fstat(descriptor)) for descriptor in descriptors)
 
@@ -335,7 +350,7 @@ def _verify_leaf_path(
     expected_chain: tuple[tuple[int, int, int, int, int], ...],
     expected_leaf: tuple[int, int, int, int, int],
 ) -> None:
-    descriptors: tuple[int, int, int] | None = None
+    descriptors: tuple[int, ...] | None = None
     leaf: int | None = None
     try:
         descriptors = _open_directory_chain(root, exchange)
@@ -406,8 +421,16 @@ class TdxLocalProvider:
     name = ProviderId.TDX_LOCAL
 
     def __init__(self, *, root: str | os.PathLike[str], clock: Clock) -> None:
-        self._root = Path(root)
+        raw_root = os.fspath(root)
+        self._root = Path(raw_root)
+        self._has_forbidden_posix_component = os.name == "posix" and any(
+            component in {".", ".."} for component in raw_root.split(os.sep)
+        )
         self._clock = clock
+
+    def _validate_root(self) -> None:
+        if not self._root.is_absolute() or self._has_forbidden_posix_component:
+            raise ProviderInvalidResponse()
 
     def capabilities(self) -> CapabilityReport:
         return CapabilityReport(
@@ -436,8 +459,7 @@ class TdxLocalProvider:
 
     def preflight(self) -> TdxInspectionOutcome:
         try:
-            if not self._root.is_absolute():
-                raise ProviderInvalidResponse()
+            self._validate_root()
             windows_backend = (
                 _WINDOWS_BACKEND_FACTORY()
                 if not _USE_POSIX_DESCRIPTOR_IO and _PLATFORM == "nt"
@@ -485,8 +507,7 @@ class TdxLocalProvider:
                 error=ProviderUnsupported(),
             )
         try:
-            if not self._root.is_absolute():
-                raise ProviderInvalidResponse()
+            self._validate_root()
             directory = _MARKET_DIRECTORY[exchange]
             payload = _read_stable_snapshot(
                 self._root,

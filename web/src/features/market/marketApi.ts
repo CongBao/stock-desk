@@ -1474,7 +1474,7 @@ function queryPath(
 }
 
 export function createMarketApi(
-  client: ApiClient = createApiClient(),
+  client: Pick<ApiClient, 'get'> = createApiClient(),
 ): MarketApi {
   return {
     async searchInstruments({ query, limit = 20, signal }) {
