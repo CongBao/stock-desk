@@ -29,12 +29,10 @@ make build
 make public-tree
 ```
 
-For the complete release gate, Docker Compose must already be running because `make release-check` includes the opt-in container smoke test:
+For the complete release gate, Docker must be running. The command starts an isolated Compose stack for the smoke test and removes it on exit:
 
 ```bash
-docker compose up --build --wait
 make release-check
-docker compose down --volumes --remove-orphans
 ```
 
 ## Pull requests

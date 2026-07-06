@@ -11,6 +11,7 @@ from stock_desk.market.scheduler import (
     MarketUpdateScheduleConflict,
     MarketUpdateScheduleNotFound,
     MarketUpdateScheduleValidationError,
+    next_due_at,
 )
 from stock_desk.storage.models import MarketUpdateOccurrence, MarketUpdateSchedule
 
@@ -178,6 +179,61 @@ def test_schedule_repository_disable_reenable_and_monotonic_updated_at(
         assert reenabled.enabled is True
         assert disabled.updated_at == future
         assert reenabled.updated_at == future
+    finally:
+        engine.dispose()
+
+
+def test_schedule_repository_replace_is_idempotent_and_updates_frozen_payload(
+    tmp_path: Path,
+) -> None:
+    _url, engine, repository, _tasks = scheduler_database(tmp_path)
+    schedule_id = str(uuid4())
+    try:
+        created = repository.replace(
+            schedule_id=schedule_id,
+            local_time=time(18, 0),
+            payload=valid_update_payload(symbols=["600000.SH"]),
+            enabled=True,
+        )
+        replaced = repository.replace(
+            schedule_id=schedule_id,
+            local_time=time(19, 30),
+            payload=valid_update_payload(symbols=["000001.SZ"]),
+            enabled=False,
+        )
+
+        assert created.id == replaced.id == schedule_id
+        assert replaced.local_time == time(19, 30)
+        assert replaced.enabled is False
+        assert replaced.payload["symbols"] == ("000001.SZ",)
+        assert [item.id for item in repository.list()] == [schedule_id]
+    finally:
+        engine.dispose()
+
+
+def test_next_due_skips_every_date_already_enqueued_after_clock_rollback(
+    tmp_path: Path,
+) -> None:
+    _url, engine, repository, _tasks = scheduler_database(tmp_path)
+    schedule_id = str(uuid4())
+    try:
+        repository.create(
+            local_time=time(18, 0),
+            payload=valid_update_payload(),
+            schedule_id=schedule_id,
+        )
+        with engine.begin() as connection:
+            connection.execute(
+                update(MarketUpdateSchedule)
+                .where(MarketUpdateSchedule.id == schedule_id)
+                .values(last_enqueued_local_date=date(2026, 7, 10))
+            )
+        schedule = repository.get(schedule_id)
+
+        assert next_due_at(
+            schedule,
+            now=datetime(2026, 7, 6, 8, 0, tzinfo=timezone.utc),
+        ) == datetime(2026, 7, 11, 10, 0, tzinfo=timezone.utc)
     finally:
         engine.dispose()
 

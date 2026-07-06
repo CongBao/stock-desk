@@ -385,3 +385,36 @@ def test_fetch_bars_rejects_forged_outcome_state_table(case: str) -> None:
     assert isinstance(outcome, RoutedBarSuccess)
     assert outcome.manifest.attempts[0].reason is FailureReason.INVALID_RESPONSE
     assert selected.bar_queries == [BAR_QUERY]
+
+
+@pytest.mark.parametrize(
+    ("period", "expected"),
+    [
+        (Period.DAY, (ProviderId.TDX_LOCAL, ProviderId.TUSHARE)),
+        (Period.WEEK, (ProviderId.AKSHARE, ProviderId.BAOSTOCK)),
+        (Period.MIN60, (ProviderId.BAOSTOCK, ProviderId.TUSHARE)),
+    ],
+)
+def test_fetch_bars_uses_period_specific_priority_in_failure_audit(
+    period: Period,
+    expected: tuple[ProviderId, ...],
+) -> None:
+    from stock_desk.market.provenance import RoutedBarFailure
+    from stock_desk.market.routing import SourcePriorities, SourceRouter
+
+    router = SourceRouter(
+        (),
+        priorities=SourcePriorities(
+            bars=(ProviderId.TUSHARE,),
+            daily_bars=(ProviderId.TDX_LOCAL, ProviderId.TUSHARE),
+            weekly_bars=(ProviderId.AKSHARE, ProviderId.BAOSTOCK),
+            minute_bars=(ProviderId.BAOSTOCK, ProviderId.TUSHARE),
+            instruments=(),
+            trading_calendar=(),
+        ),
+    )
+
+    outcome = router.fetch_bars(BAR_QUERY.model_copy(update={"period": period}))
+
+    assert isinstance(outcome, RoutedBarFailure)
+    assert outcome.audit.priority == expected

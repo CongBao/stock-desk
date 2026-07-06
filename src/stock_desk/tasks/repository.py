@@ -11,6 +11,7 @@ from sqlalchemy.engine import Connection, RowMapping
 from sqlalchemy.sql.elements import ColumnElement
 
 from stock_desk.storage.database import (
+    DatabaseIdentity,
     DatabaseIdentityError,
     connection_database_identity,
     create_engine_for_url,
@@ -345,6 +346,10 @@ class TaskRepository:
             raise TaskValidationError(
                 "Task database identity could not be determined"
             ) from error
+
+    @property
+    def database_identity(self) -> DatabaseIdentity:
+        return self._database_identity
 
     @classmethod
     def open(cls, url: str) -> "TaskRepository":

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timezone
 from pathlib import Path
 import re
 from threading import Lock
@@ -44,6 +44,15 @@ from stock_desk.market.lake import (
     manifest_record_id,
 )
 from stock_desk.market.provenance import RoutingManifest, Sha256Digest
+from stock_desk.market.scheduler import (
+    MARKET_UPDATE_TIMEZONE,
+    MarketUpdateScheduleNotFound,
+    MarketUpdateScheduleRepository,
+    MarketUpdateScheduleSnapshot,
+    MarketUpdateScheduleStorageError,
+    MarketUpdateScheduleValidationError,
+    next_due_at,
+)
 from stock_desk.market.pools import (
     CustomPoolSummary,
     CustomPoolState,
@@ -75,7 +84,16 @@ from stock_desk.market.types import (
     ProviderId,
     UtcDatetime,
 )
-from stock_desk.market.update import MARKET_UPDATE_TASK_KIND, MarketUpdateRequest
+from stock_desk.market.update import (
+    MARKET_UPDATE_TASK_KIND,
+    MARKET_CATALOG_UPDATE_TASK_KIND,
+    MarketUpdateItemConflict,
+    MarketUpdateItemNotFound,
+    MarketUpdateItemRepository,
+    MarketUpdateItemSnapshot,
+    MarketUpdateItemStorageError,
+    MarketUpdateRequest,
+)
 from stock_desk.storage.database import DatabaseIdentity, create_engine_for_url, migrate
 from stock_desk.tasks.repository import TaskValidationError
 
@@ -92,10 +110,14 @@ class MarketServices:
         self.instruments = InstrumentRepository(engine)
         self.pools = PoolRepository(engine)
         self.lake = MarketLake(engine=engine, root=root)
+        self.update_items = MarketUpdateItemRepository(engine)
+        self.schedules = MarketUpdateScheduleRepository(engine)
         identities = (
             self.instruments.database_identity,
             self.pools.database_identity,
             self.lake.database_identity,
+            self.update_items.database_identity,
+            self.schedules.database_identity,
         )
         if identities[1:] != identities[:-1]:
             raise ValueError("market services database identities do not match")
@@ -321,12 +343,46 @@ class MarketUpdateRequestDTO(_MarketDTO):
         )
 
 
+class MarketUpdateItemResponse(_MarketDTO):
+    task_id: str
+    ordinal: Annotated[int, Field(ge=0)]
+    symbol: CanonicalSymbol
+    status: Literal["succeeded", "failed", "cancelled"]
+    manifest_record_id: str | None
+    dataset_version: str | None
+    reason: str | None
+    created_at: UtcDatetime
+
+
+class DailyScheduleRequest(_MarketDTO):
+    enabled: bool
+    local_time: Annotated[str, Field(pattern=r"^(?:[01][0-9]|2[0-3]):[0-5][0-9]$")]
+    payload: MarketUpdateRequestDTO
+
+    def parsed_time(self) -> time:
+        return time.fromisoformat(self.local_time)
+
+
+class DailyScheduleResponse(_MarketDTO):
+    id: str
+    enabled: bool
+    timezone: Literal["Asia/Shanghai"]
+    local_time: str
+    payload: MarketUpdateRequestDTO
+    symbols_frozen: Literal[True]
+    last_enqueued_local_date: date | None
+    next_due_at: UtcDatetime | None
+    created_at: UtcDatetime
+    updated_at: UtcDatetime
+
+
 _MARKET_ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
     status.HTTP_404_NOT_FOUND: {"model": MarketErrorResponse},
     status.HTTP_409_CONFLICT: {"model": MarketErrorResponse},
     status.HTTP_422_UNPROCESSABLE_CONTENT: {"model": MarketErrorResponse},
     status.HTTP_500_INTERNAL_SERVER_ERROR: {"model": MarketErrorResponse},
 }
+_DAILY_SCHEDULE_ID = "00000000-0000-0000-0000-000000000001"
 
 
 def _error(
@@ -355,6 +411,36 @@ def _invalid() -> JSONResponse:
         status.HTTP_422_UNPROCESSABLE_CONTENT,
         issues=[],
     )
+
+
+def _update_item_response(item: MarketUpdateItemSnapshot) -> dict[str, object]:
+    return {
+        "task_id": item.task_id,
+        "ordinal": item.ordinal,
+        "symbol": item.symbol,
+        "status": item.status,
+        "manifest_record_id": item.manifest_record_id,
+        "dataset_version": item.dataset_version,
+        "reason": item.reason,
+        "created_at": item.created_at,
+    }
+
+
+def _schedule_response(
+    schedule: MarketUpdateScheduleSnapshot,
+) -> dict[str, object]:
+    return {
+        "id": schedule.id,
+        "enabled": schedule.enabled,
+        "timezone": schedule.timezone,
+        "local_time": schedule.local_time.strftime("%H:%M"),
+        "payload": dict(schedule.payload),
+        "symbols_frozen": True,
+        "last_enqueued_local_date": schedule.last_enqueued_local_date,
+        "next_due_at": next_due_at(schedule),
+        "created_at": schedule.created_at,
+        "updated_at": schedule.updated_at,
+    }
 
 
 async def market_request_validation_handler(
@@ -840,9 +926,12 @@ def get_bars(
 )
 def create_market_update(
     repository: RepositoryDependency,
+    services: MarketServicesDependency,
     payload: MarketUpdateRequestDTO,
 ) -> TaskResponse | JSONResponse:
     try:
+        if repository.database_identity != services.database_identity:
+            return _error("storage_mismatch", status.HTTP_500_INTERNAL_SERVER_ERROR)
         request = payload.to_domain()
         task = repository.create(
             MARKET_UPDATE_TASK_KIND,
@@ -851,3 +940,85 @@ def create_market_update(
         return TaskResponse.from_snapshot(task)
     except (ValidationError, TypeError, ValueError, TaskValidationError):
         return _invalid()
+
+
+@router.post(
+    "/catalog/updates",
+    response_model=TaskResponse,
+    status_code=status.HTTP_201_CREATED,
+    responses=_MARKET_ERROR_RESPONSES,
+)
+def create_market_catalog_update(
+    repository: RepositoryDependency,
+    services: MarketServicesDependency,
+) -> TaskResponse | JSONResponse:
+    try:
+        if repository.database_identity != services.database_identity:
+            return _error("storage_mismatch", status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return TaskResponse.from_snapshot(
+            repository.create(MARKET_CATALOG_UPDATE_TASK_KIND, {})
+        )
+    except TaskValidationError:
+        return _invalid()
+
+
+@router.get(
+    "/updates/{task_id}/items",
+    response_model=list[MarketUpdateItemResponse],
+    responses=_MARKET_ERROR_RESPONSES,
+)
+def list_market_update_items(
+    task_id: Annotated[str, ApiPath(min_length=1, max_length=64)],
+    services: MarketServicesDependency,
+) -> list[dict[str, object]] | JSONResponse:
+    try:
+        return [
+            _update_item_response(item)
+            for item in services.update_items.list_for_task(task_id)
+        ]
+    except MarketUpdateItemNotFound:
+        return _error("not_found", status.HTTP_404_NOT_FOUND)
+    except MarketUpdateItemConflict:
+        return _error("conflict", status.HTTP_409_CONFLICT)
+    except MarketUpdateItemStorageError:
+        return _error("internal_error", status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@router.get(
+    "/schedules/daily",
+    response_model=DailyScheduleResponse,
+    responses=_MARKET_ERROR_RESPONSES,
+)
+def get_daily_market_schedule(
+    services: MarketServicesDependency,
+) -> dict[str, object] | JSONResponse:
+    try:
+        return _schedule_response(services.schedules.get(_DAILY_SCHEDULE_ID))
+    except MarketUpdateScheduleNotFound:
+        return _error("not_found", status.HTTP_404_NOT_FOUND)
+    except MarketUpdateScheduleStorageError:
+        return _error("internal_error", status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@router.put(
+    "/schedules/daily",
+    response_model=DailyScheduleResponse,
+    responses=_MARKET_ERROR_RESPONSES,
+)
+def put_daily_market_schedule(
+    body: DailyScheduleRequest,
+    services: MarketServicesDependency,
+) -> dict[str, object] | JSONResponse:
+    try:
+        schedule = services.schedules.replace(
+            schedule_id=_DAILY_SCHEDULE_ID,
+            local_time=body.parsed_time(),
+            payload=body.payload.to_domain().model_dump(mode="json"),
+            timezone=MARKET_UPDATE_TIMEZONE,
+            enabled=body.enabled,
+        )
+        return _schedule_response(schedule)
+    except (MarketUpdateScheduleValidationError, ValidationError, ValueError):
+        return _invalid()
+    except MarketUpdateScheduleStorageError:
+        return _error("internal_error", status.HTTP_500_INTERNAL_SERVER_ERROR)

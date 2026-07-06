@@ -34,11 +34,17 @@ Stock Desk tries the next provider only when the current provider is unavailable
 
 Eastmoney is intentionally shown as a reserved fallback but its Stage 1 adapter is not implemented. Its connection test therefore reports `unsupported` rather than implying live coverage.
 
+Production updates read a fresh, immutable settings snapshot at task start. The snapshot selects separate daily/weekly/60-minute priorities and carries a secret-free configuration fingerprint into the task result; a multi-symbol task cannot mix policies after a concurrent settings save. Configured providers that lack a token, local path, or optional SDK remain in the routing attempt list with a typed safe failure. The worker constructs only usable adapters, runs capability/fetch/close inside the active redaction scope, and attempts every close in reverse order.
+
+The market page explicitly creates `market.catalog.update` and `market.update` tasks. Catalog refresh writes a provenance-backed instrument snapshot and Full-A pool first, then independently refreshes current major-index and provider-discovered industry compositions through AKShare. A partial composition failure is itemized and preserves the last valid preset snapshot. Chart GET requests never invoke providers: they read only the local immutable cache.
+
 ## Local TDX
 
 The TDX setting must be an absolute path of at least four characters to a plausible local `vipdoc` directory. On POSIX systems the reader opens the filesystem anchor and traverses every path component with descriptor-relative `O_NOFOLLOW` directory opens, so a symbolic link anywhere in the ancestor chain is rejected. Dot components, relative or implausibly short paths, surrounding whitespace, control characters, overlong paths, missing layouts, corrupt records, non-directories, and reparse points are rejected or reported as capability gaps. Windows retains its handle-based reparse/final-path validation. The diagnostic performs the same local preflight used by the provider; it never returns the configured path in an error.
 
 Local TDX is a fallback for supported local bar files. It is not a source for the instrument catalogue or trading calendar, and unsupported periods remain visible as gaps.
+
+For Compose, set `STOCK_DESK_TDX_HOST_PATH` to the host directory containing `vipdoc`, then configure `/app/tdx` in the UI. API and worker share that read-only mount.
 
 ## Connection diagnostics
 
@@ -79,6 +85,10 @@ All endpoints are under `/api`:
 | `GET /settings/sources/tushare` | Read masked Tushare configuration status. |
 | `PUT /settings/sources/tushare` | Save a new write-only token, or preserve it when omitted. |
 | `POST /settings/sources/{source}/test` | Run a bounded capability diagnostic for one provider. |
+| `POST /market/catalog/updates` | Queue an explicit instrument/preset refresh. |
+| `POST /market/updates` | Queue an explicit symbol or frozen-pool bar update. |
+| `GET /market/updates/{task_id}/items` | Read durable per-symbol results. |
+| `GET/PUT /market/schedules/daily` | Read or replace the singleton Asia/Shanghai daily schedule. |
 
 Requests use `application/json`. Contracts are strict: unknown fields, invalid enums, duplicate providers, unsafe paths, and malformed stored settings are rejected without echoing request values. Lazy migration, engine creation, and database-identity failures return the same fixed JSON `503` storage response. Tushare probe outcomes are accepted only when their source, exact query or operation context, successful batch item type, and calendar coverage match the category being tested. Generic reports are likewise bound to the requested provider/source identity, so evidence lookup cannot be redirected by a mismatched report. The supported provider identifiers are `tushare`, `akshare`, `baostock`, `tdx_local`, and `eastmoney`.
 

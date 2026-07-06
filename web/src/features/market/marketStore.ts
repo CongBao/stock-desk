@@ -15,7 +15,7 @@ export type MarketState = {
   readonly selectedInstrument: MarketInstrumentSelection | null;
   readonly selectedPoolId: string | null;
   readonly selectInstrument: (instrument: MarketInstrumentSelection) => void;
-  readonly selectPool: (poolId: string) => void;
+  readonly selectPool: (poolId: string | null) => void;
   readonly setAdjustment: (adjustment: MarketAdjustment) => void;
   readonly setPeriod: (period: MarketPeriod) => void;
 };

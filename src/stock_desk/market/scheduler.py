@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import date, datetime, time, timezone as datetime_timezone
+from datetime import date, datetime, time, timedelta, timezone as datetime_timezone
 from typing import Any, Final, Literal, TypeAlias, cast
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
@@ -10,9 +10,16 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import Engine, case, insert, select, update
 from sqlalchemy.engine import Connection, RowMapping
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from stock_desk.market.update import MARKET_UPDATE_TASK_KIND, MarketUpdateRequest
-from stock_desk.storage.database import create_engine_for_url, migrate
+from stock_desk.storage.database import (
+    DatabaseIdentity,
+    DatabaseIdentityError,
+    connection_database_identity,
+    create_engine_for_url,
+    migrate,
+)
 from stock_desk.storage.models import (
     MarketUpdateOccurrence,
     MarketUpdateSchedule,
@@ -43,6 +50,10 @@ class MarketUpdateScheduleConflict(MarketUpdateScheduleError):
 
 class MarketUpdateScheduleValidationError(MarketUpdateScheduleError, ValueError):
     """A schedule does not satisfy the strict public contract."""
+
+
+class MarketUpdateScheduleStorageError(MarketUpdateScheduleError):
+    """The schedule database identity changed or became unavailable."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,6 +204,29 @@ class MarketUpdateScheduleRepository:
     def __init__(self, engine: Engine, *, owns_engine: bool = False) -> None:
         self._engine = engine
         self._owns_engine = owns_engine
+        try:
+            with engine.connect() as connection:
+                self._database_identity = connection_database_identity(connection)
+        except DatabaseIdentityError:
+            raise MarketUpdateScheduleStorageError(
+                "Market update schedule storage is unavailable"
+            ) from None
+
+    @property
+    def database_identity(self) -> DatabaseIdentity:
+        return self._database_identity
+
+    def _validate_connection(self, connection: Connection) -> None:
+        try:
+            identity = connection_database_identity(connection)
+        except DatabaseIdentityError:
+            raise MarketUpdateScheduleStorageError(
+                "Market update schedule storage is unavailable"
+            ) from None
+        if identity != self._database_identity:
+            raise MarketUpdateScheduleStorageError(
+                "Market update schedule database identity changed"
+            )
 
     @classmethod
     def open(cls, url: str) -> MarketUpdateScheduleRepository:
@@ -232,7 +266,58 @@ class MarketUpdateScheduleRepository:
         )
         try:
             with self._engine.begin() as connection:
+                self._validate_connection(connection)
                 row = connection.execute(statement).mappings().one()
+        except IntegrityError as error:
+            raise MarketUpdateScheduleConflict(
+                "Market update schedule conflicts with persisted state"
+            ) from error
+        return _schedule_snapshot(row)
+
+    def replace(
+        self,
+        *,
+        schedule_id: str,
+        local_time: time,
+        payload: Mapping[str, Any],
+        timezone: str = MARKET_UPDATE_TIMEZONE,
+        enabled: bool = True,
+    ) -> MarketUpdateScheduleSnapshot:
+        """Create or atomically replace one stable daily schedule identity."""
+        validated_id = _validated_schedule_id(schedule_id)
+        validated_timezone = _validated_timezone(timezone)
+        validated_time = _validated_local_time(local_time)
+        validated_payload = _validated_payload(payload)
+        validated_enabled = _validated_enabled(enabled)
+        now = datetime.now(datetime_timezone.utc)
+        transition_time = case(
+            (MarketUpdateSchedule.updated_at > now, MarketUpdateSchedule.updated_at),
+            else_=now,
+        )
+        statement = sqlite_insert(MarketUpdateSchedule).values(
+            id=validated_id,
+            enabled=validated_enabled,
+            timezone=validated_timezone,
+            local_time=validated_time,
+            payload_json=validated_payload,
+            last_enqueued_local_date=None,
+            created_at=now,
+            updated_at=now,
+        )
+        returning_statement = statement.on_conflict_do_update(
+            index_elements=[MarketUpdateSchedule.id],
+            set_={
+                "enabled": validated_enabled,
+                "timezone": validated_timezone,
+                "local_time": validated_time,
+                "payload_json": validated_payload,
+                "updated_at": transition_time,
+            },
+        ).returning(MarketUpdateSchedule)
+        try:
+            with self._engine.begin() as connection:
+                self._validate_connection(connection)
+                row = connection.execute(returning_statement).mappings().one()
         except IntegrityError as error:
             raise MarketUpdateScheduleConflict(
                 "Market update schedule conflicts with persisted state"
@@ -242,6 +327,7 @@ class MarketUpdateScheduleRepository:
     def get(self, schedule_id: str) -> MarketUpdateScheduleSnapshot:
         validated_id = _validated_schedule_id(schedule_id)
         with self._engine.connect() as connection:
+            self._validate_connection(connection)
             row = (
                 connection.execute(
                     select(MarketUpdateSchedule).where(
@@ -262,6 +348,7 @@ class MarketUpdateScheduleRepository:
             MarketUpdateSchedule.id,
         )
         with self._engine.connect() as connection:
+            self._validate_connection(connection)
             rows = connection.execute(statement).mappings().all()
         return tuple(_schedule_snapshot(row) for row in rows)
 
@@ -272,6 +359,7 @@ class MarketUpdateScheduleRepository:
             MarketUpdateSchedule.id,
         )
         with self._engine.connect() as connection:
+            self._validate_connection(connection)
             return tuple(connection.execute(statement).scalars())
 
     def set_enabled(
@@ -293,6 +381,7 @@ class MarketUpdateScheduleRepository:
             .returning(MarketUpdateSchedule)
         )
         with self._engine.begin() as connection:
+            self._validate_connection(connection)
             row = connection.execute(statement).mappings().one_or_none()
         if row is None:
             raise MarketUpdateScheduleNotFound("Market update schedule was not found")
@@ -315,6 +404,7 @@ class MarketUpdateScheduleRepository:
             )
         )
         with self._engine.connect() as connection:
+            self._validate_connection(connection)
             if connection.execute(schedule_statement).scalar_one_or_none() is None:
                 raise MarketUpdateScheduleNotFound(
                     "Market update schedule was not found"
@@ -338,6 +428,33 @@ def _validated_clock_sample(value: object) -> datetime:
     if offset is None:
         raise ValueError("Scheduler clock must return an aware datetime")
     return normalized
+
+
+def next_due_at(
+    schedule: MarketUpdateScheduleSnapshot,
+    *,
+    now: datetime | None = None,
+) -> datetime | None:
+    if not schedule.enabled:
+        return None
+    sampled = _validated_clock_sample(
+        datetime.now(datetime_timezone.utc) if now is None else now
+    )
+    shanghai = ZoneInfo(MARKET_UPDATE_TIMEZONE)
+    local_now = sampled.astimezone(shanghai)
+    candidate_date = local_now.date()
+    if (
+        datetime.combine(candidate_date, schedule.local_time, tzinfo=shanghai)
+        <= local_now
+    ):
+        candidate_date += timedelta(days=1)
+    if (
+        schedule.last_enqueued_local_date is not None
+        and candidate_date <= schedule.last_enqueued_local_date
+    ):
+        candidate_date = schedule.last_enqueued_local_date + timedelta(days=1)
+    candidate = datetime.combine(candidate_date, schedule.local_time, tzinfo=shanghai)
+    return candidate.astimezone(datetime_timezone.utc)
 
 
 class MarketUpdateScheduler:
@@ -382,6 +499,7 @@ class MarketUpdateScheduler:
     ) -> TaskSnapshot | None:
         connection = self._schedules._engine.connect()
         try:
+            self._schedules._validate_connection(connection)
             connection.exec_driver_sql("BEGIN IMMEDIATE")
             row = self._schedule_row(connection, schedule_id)
             if row is None:
@@ -476,4 +594,5 @@ class MarketUpdateScheduler:
             MarketUpdateOccurrence.local_date == local_date,
         )
         with self._schedules._engine.connect() as connection:
+            self._schedules._validate_connection(connection)
             return connection.execute(statement).scalar_one_or_none() is not None

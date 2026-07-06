@@ -205,6 +205,31 @@ function axisPointerIndex(
   return null;
 }
 
+type ZoomRange = { readonly start: number; readonly end: number };
+
+function dataZoomRange(event: unknown): ZoomRange | null {
+  if (typeof event !== 'object' || event === null) return null;
+  const raw = event as Record<string, unknown>;
+  const batch = raw['batch'];
+  const candidate: unknown =
+    Array.isArray(batch) && batch.length > 0 ? (batch as unknown[])[0] : raw;
+  if (typeof candidate !== 'object' || candidate === null) return null;
+  const values = candidate as Record<string, unknown>;
+  const start = values['start'];
+  const end = values['end'];
+  if (
+    typeof start !== 'number' ||
+    typeof end !== 'number' ||
+    !Number.isFinite(start) ||
+    !Number.isFinite(end) ||
+    start < 0 ||
+    end > 100 ||
+    start > end
+  )
+    return null;
+  return { start, end };
+}
+
 function directionLabel(bar: MarketBar): string {
   return bar.direction === 'rise'
     ? '上涨 ▲'
@@ -357,6 +382,7 @@ export function MarketChart({
     readonly bars: readonly MarketBar[];
     readonly index: number;
   } | null>(null);
+  const [zoom, setZoom] = useState<ZoomRange>({ start: 0, end: 100 });
   barsRef.current = bars;
   const hasBars = bars !== undefined && bars.length > 0;
   const activeBar =
@@ -380,12 +406,18 @@ export function MarketChart({
         setPointer({ bars: currentBars, index });
       }
     };
+    const handleDataZoom = (event: unknown) => {
+      const next = dataZoomRange(event);
+      if (next !== null) setZoom(next);
+    };
     chart.on('updateAxisPointer', handleAxisPointer);
+    chart.on('dataZoom', handleDataZoom);
     const observer = new ResizeObserver(() => chart.resize());
     observer.observe(containerRef.current);
     return () => {
       observer.disconnect();
       chart.off('updateAxisPointer', handleAxisPointer);
+      chart.off('dataZoom', handleDataZoom);
       chart.dispose();
       instanceRef.current = null;
     };
@@ -393,13 +425,12 @@ export function MarketChart({
 
   useEffect(() => {
     if (!hasBars || instanceRef.current === null || bars === undefined) return;
-    instanceRef.current.setOption(
-      buildMarketChartOption(bars) as EChartsCoreOption,
-      {
-        lazyUpdate: true,
-        notMerge: true,
-      },
-    );
+    const option = buildMarketChartOption(bars);
+    instanceRef.current.setOption(option as EChartsCoreOption, {
+      lazyUpdate: true,
+      notMerge: true,
+    });
+    setZoom({ start: option.dataZoom[0].start, end: option.dataZoom[0].end });
   }, [bars, hasBars]);
 
   return (
@@ -418,17 +449,28 @@ export function MarketChart({
               <span data-direction="rise">▲ 上涨（红）</span>
               <span data-direction="fall">▼ 下跌（绿）</span>
             </div>
+            {hasBars ? (
+              <span
+                className="market-chart-zoom-state"
+                role="status"
+                aria-label="图表缩放范围"
+                aria-live="polite"
+              >
+                可见范围 {Math.round(zoom.start)}%–{Math.round(zoom.end)}%
+              </span>
+            ) : null}
             <button
               type="button"
               disabled={!hasBars}
               aria-label="重置图表缩放"
-              onClick={() =>
+              onClick={() => {
                 instanceRef.current?.dispatchAction({
                   type: 'dataZoom',
                   start: 0,
                   end: 100,
-                })
-              }
+                });
+                setZoom({ start: 0, end: 100 });
+              }}
             >
               重置视图
             </button>

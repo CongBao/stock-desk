@@ -173,6 +173,34 @@ _INSTRUMENT_COLUMNS = frozenset(
     {"code", "code_name", "ipoDate", "outDate", "type", "status"}
 )
 _CALENDAR_COLUMNS = frozenset({"calendar_date", "is_trading_day"})
+_NON_STOCK_TYPES = frozenset({"2", "3", "4", "5"})
+_A_SHARE_PREFIXES = {
+    Exchange.SH: ("600", "601", "603", "605", "688", "689"),
+    Exchange.SZ: ("000", "001", "002", "003", "300", "301"),
+    Exchange.BJ: ("43", "83", "87", "88", "92"),
+}
+_B_SHARE_PREFIXES = {Exchange.SH: ("900",), Exchange.SZ: ("200",)}
+
+
+def _provider_stock_code(raw: object) -> tuple[Exchange, str]:
+    if not isinstance(raw, str) or len(raw) != 9 or raw[2] != ".":
+        raise ValueError
+    exchanges = {"sh": Exchange.SH, "sz": Exchange.SZ, "bj": Exchange.BJ}
+    exchange = exchanges.get(raw[:2])
+    digits = raw[3:]
+    if (
+        exchange is None
+        or len(digits) != 6
+        or not digits.isascii()
+        or not digits.isdigit()
+    ):
+        raise ValueError
+    return exchange, digits
+
+
+def _is_b_share_code(raw: object) -> bool:
+    exchange, digits = _provider_stock_code(raw)
+    return digits.startswith(_B_SHARE_PREFIXES.get(exchange, ()))
 
 
 def _sdk_temporal_identity(
@@ -323,12 +351,17 @@ class BaoStockProvider:
         try:
             table = self._client.query_stock_basic(code="")
             rows = records_from_table(table, required=_INSTRUMENT_COLUMNS)
-            instruments = tuple(
-                sorted(
-                    (self._instrument(row) for row in rows),
-                    key=lambda item: item.symbol,
-                )
-            )
+            selected: list[Instrument] = []
+            for row in rows:
+                raw_type = row["type"]
+                if raw_type in _NON_STOCK_TYPES:
+                    continue
+                if raw_type != "1":
+                    raise ValueError
+                if _is_b_share_code(row["code"]):
+                    continue
+                selected.append(self._instrument(row))
+            instruments = tuple(sorted(selected, key=lambda item: item.symbol))
             if not instruments:
                 raise ProviderNoData()
             require_unique(tuple(item.symbol for item in instruments))
@@ -420,20 +453,10 @@ class BaoStockProvider:
 
     @staticmethod
     def _instrument(row: dict[str, object]) -> Instrument:
-        raw_code = row["code"]
-        if not isinstance(raw_code, str) or len(raw_code) != 9 or raw_code[2] != ".":
-            raise ValueError
-        exchanges = {"sh": Exchange.SH, "sz": Exchange.SZ, "bj": Exchange.BJ}
-        exchange = exchanges.get(raw_code[:2])
-        digits = raw_code[3:]
-        if (
-            exchange is None
-            or len(digits) != 6
-            or not digits.isascii()
-            or not digits.isdigit()
-        ):
-            raise ValueError
+        exchange, digits = _provider_stock_code(row["code"])
         if row["type"] != "1":
+            raise ProviderUnsupported()
+        if not digits.startswith(_A_SHARE_PREFIXES[exchange]):
             raise ProviderUnsupported()
         listed_on = parse_date(row["ipoDate"])
         delisted_on = parse_optional_date(row["outDate"])

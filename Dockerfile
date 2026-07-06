@@ -41,13 +41,13 @@ WORKDIR /app
 COPY --from=uv-bin /uv /uvx /bin/
 COPY pyproject.toml uv.lock ./
 RUN --mount=type=cache,id=uv,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --no-install-project
+    uv sync --frozen --no-dev --no-install-project --extra providers
 COPY README.md ./README.md
 COPY alembic.ini ./alembic.ini
 COPY migrations ./migrations
 COPY src ./src
 RUN --mount=type=cache,id=uv,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --no-editable
+    uv sync --frozen --no-dev --no-editable --extra providers
 
 FROM python:${PYTHON_VERSION}-slim-bookworm AS runtime
 

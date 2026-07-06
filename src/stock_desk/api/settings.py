@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
+import hashlib
 import json
 from pathlib import Path
 from threading import RLock
@@ -210,6 +212,33 @@ class SourceSettingsStorageError(RuntimeError):
     """The settings database no longer matches its frozen identity."""
 
 
+@dataclass(frozen=True, slots=True)
+class RuntimeSourceSettings:
+    """Secret-safe immutable configuration used by one update invocation."""
+
+    priorities: SourcePriorities
+    configuration_fingerprint: str
+    _tushare_token: str | None = field(repr=False)
+    _tdx_path: Path | None = field(repr=False)
+
+    def credentials_for(self, source: ProviderId) -> tuple[str | None, Path | None]:
+        if source is ProviderId.TUSHARE:
+            return self._tushare_token, None
+        if source is ProviderId.TDX_LOCAL:
+            return None, self._tdx_path
+        return None, None
+
+    def redaction_values(self) -> tuple[str, ...]:
+        return tuple(
+            value
+            for value in (
+                self._tushare_token,
+                str(self._tdx_path) if self._tdx_path is not None else None,
+            )
+            if value is not None
+        )
+
+
 def _canonical_public(settings: PublicSourceSettings) -> str:
     encoded = json.dumps(
         settings.model_dump(mode="json"),
@@ -265,6 +294,10 @@ class SourceSettingsServices:
 
     def __repr__(self) -> str:
         return "SourceSettingsServices(configured=True)"
+
+    @property
+    def database_identity(self) -> DatabaseIdentity:
+        return self._database_identity
 
     @classmethod
     def open(
@@ -335,25 +368,24 @@ class SourceSettingsServices:
                     AppSetting.key == PUBLIC_SOURCE_SETTINGS_KEY
                 )
             ).scalar_one_or_none()
+        resolved = self._decode_public_stored(stored)
+        self._set_leased_tdx_path(resolved.tdx_path)
+        return resolved
+
+    def _decode_public_stored(self, stored: object) -> PublicSourceSettings:
         if stored is None:
-            resolved = PublicSourceSettings()
-            self._set_leased_tdx_path(resolved.tdx_path)
-            return resolved
+            return PublicSourceSettings()
         if (
             not isinstance(stored, str)
             or len(stored.encode("utf-8")) > _PUBLIC_SETTINGS_MAX_BYTES
         ):
-            self._set_leased_tdx_path(None)
             raise PublicSettingsCorrupt("Stored source settings are invalid")
         try:
             decoded = PublicSourceSettings.model_validate_json(stored)
         except Exception:
-            self._set_leased_tdx_path(None)
             raise PublicSettingsCorrupt("Stored source settings are invalid") from None
         if _canonical_public(decoded) != stored:
-            self._set_leased_tdx_path(None)
             raise PublicSettingsCorrupt("Stored source settings are invalid")
-        self._set_leased_tdx_path(decoded.tdx_path)
         return decoded
 
     def save_public(
@@ -504,6 +536,73 @@ class SourceSettingsServices:
             tdx_path=public.tdx_path,
             tushare=self.tushare_status(),
         )
+
+    def runtime_snapshot(self) -> RuntimeSourceSettings:
+        """Read a fresh public/secret snapshot without exposing it through an API DTO."""
+        with self._state_lock:
+            self._ensure_available()
+            store: SecretStore | None
+            try:
+                store = self._secret_store()
+            except SecureStorageUnavailable:
+                store = None
+            token: str | None = None
+            with self._checked_connection() as connection:
+                connection.exec_driver_sql("BEGIN")
+                stored_rows: dict[str, str] = {
+                    key: value
+                    for key, value in connection.execute(
+                        select(AppSetting.key, AppSetting.encrypted_value).where(
+                            AppSetting.key.in_(
+                                (
+                                    PUBLIC_SOURCE_SETTINGS_KEY,
+                                    f"secret.{_TUSHARE_SECRET_NAME}",
+                                )
+                            )
+                        )
+                    ).tuples()
+                }
+                public = self._decode_public_stored(
+                    stored_rows.get(PUBLIC_SOURCE_SETTINGS_KEY)
+                )
+                if store is not None:
+                    try:
+                        token = store.read_secret_for_server_call_in_transaction(
+                            _TUSHARE_SECRET_NAME,
+                            connection,
+                        )
+                    except (SecretDecryptionError, SecretNotFoundError):
+                        token = None
+                    except SecretStorageError:
+                        self._poison()
+                        raise SourceSettingsStorageError(
+                            "Source settings storage is unavailable"
+                        ) from None
+                connection.rollback()
+            self._set_leased_token(token)
+            tdx_path = Path(public.tdx_path) if public.tdx_path is not None else None
+            self._set_leased_tdx_path(public.tdx_path)
+            encoded_fingerprint = json.dumps(
+                {
+                    "public": public.model_dump(mode="json"),
+                    "tushare_secret": hashlib.sha256(
+                        str(
+                            stored_rows.get(f"secret.{_TUSHARE_SECRET_NAME}", "")
+                        ).encode("utf-8")
+                    ).hexdigest(),
+                },
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8")
+            return RuntimeSourceSettings(
+                priorities=public.priorities,
+                configuration_fingerprint=(
+                    f"sha256:{hashlib.sha256(encoded_fingerprint).hexdigest()}"
+                ),
+                _tushare_token=token,
+                _tdx_path=tdx_path,
+            )
 
     def diagnose(self, source: ProviderId) -> SourceDiagnostic:
         with self._state_lock:

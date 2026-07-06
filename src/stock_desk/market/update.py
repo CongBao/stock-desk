@@ -8,8 +8,14 @@ from typing import Annotated, Any, Final, Literal, Self, TypeAlias, cast
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 from sqlalchemy import Engine, insert, literal, select
-from sqlalchemy.engine import RowMapping
+from sqlalchemy.engine import Connection, RowMapping
 from sqlalchemy.exc import IntegrityError
+
+from stock_desk.storage.database import (
+    DatabaseIdentity,
+    DatabaseIdentityError,
+    connection_database_identity,
+)
 
 from stock_desk.market.lake import MarketLake, StoredRoutingManifest
 from stock_desk.market.provenance import RoutedBarFailure, RoutedBarSuccess
@@ -31,6 +37,7 @@ from stock_desk.tasks.worker import TaskWorker
 
 
 MARKET_UPDATE_TASK_KIND: Final[str] = "market.update"
+MARKET_CATALOG_UPDATE_TASK_KIND: Final[str] = "market.catalog.update"
 _CANCELLED_REASON: Final[str] = "cancel_requested"
 _FINALIZING_PROGRESS: Final[float] = 0.99
 _SYMBOL_ADAPTER = TypeAdapter(CanonicalSymbol)
@@ -53,6 +60,10 @@ class MarketUpdateItemConflict(MarketUpdateItemError):
 
 class MarketUpdateItemValidationError(MarketUpdateItemError, ValueError):
     """An update item does not satisfy its strict public shape."""
+
+
+class MarketUpdateItemStorageError(MarketUpdateItemError):
+    """The update-item database identity changed or became unavailable."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,6 +163,29 @@ class MarketUpdateItemRepository:
 
     def __init__(self, engine: Engine) -> None:
         self._engine = engine
+        try:
+            with engine.connect() as connection:
+                self._database_identity = connection_database_identity(connection)
+        except DatabaseIdentityError:
+            raise MarketUpdateItemStorageError(
+                "Market update item storage is unavailable"
+            ) from None
+
+    @property
+    def database_identity(self) -> DatabaseIdentity:
+        return self._database_identity
+
+    def _validate_connection(self, connection: Connection) -> None:
+        try:
+            identity = connection_database_identity(connection)
+        except DatabaseIdentityError:
+            raise MarketUpdateItemStorageError(
+                "Market update item storage is unavailable"
+            ) from None
+        if identity != self._database_identity:
+            raise MarketUpdateItemStorageError(
+                "Market update item database identity changed"
+            )
 
     def _insert(
         self,
@@ -167,6 +201,7 @@ class MarketUpdateItemRepository:
         ordinal, symbol = _validated_item_identity(ordinal, symbol)
         try:
             with self._engine.begin() as connection:
+                self._validate_connection(connection)
                 eligible_task = select(
                     TaskRun.id,
                     literal(ordinal),
@@ -285,6 +320,7 @@ class MarketUpdateItemRepository:
             .order_by(MarketUpdateItem.ordinal)
         )
         with self._engine.connect() as connection:
+            self._validate_connection(connection)
             task = connection.execute(
                 select(TaskRun.kind).where(TaskRun.id == task_id)
             ).scalar_one_or_none()
@@ -313,6 +349,13 @@ class UpdateService:
         self._lake = lake
         self._tasks = tasks
         self._items = MarketUpdateItemRepository(engine)
+        identities = (
+            lake.database_identity,
+            tasks.database_identity,
+            self._items.database_identity,
+        )
+        if identities[1:] != identities[:-1]:
+            raise ValueError("market update database identities do not match")
 
     @staticmethod
     def _progress(processed: int, total: int, *, persisting: bool) -> float:

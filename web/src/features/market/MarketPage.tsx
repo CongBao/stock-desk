@@ -1,8 +1,16 @@
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
+import { useState } from 'react';
 
 import { MarketChart } from './MarketChart';
-import { isMarketNotFound, marketApi, type MarketApi } from './marketApi';
+import {
+  isMarketNotFound,
+  marketApi,
+  type MarketApi,
+  type MarketPoolDetail,
+} from './marketApi';
+import { MarketOperationsPanel } from './MarketOperationsPanel';
+import { marketWorkflowApi, type MarketWorkflowApi } from './marketWorkflowApi';
 import {
   useMarketStore,
   type MarketAdjustment,
@@ -15,6 +23,7 @@ import { StockSearch } from './StockSearch';
 type MarketPageProps = {
   readonly api?: MarketApi;
   readonly searchDebounceMs?: number;
+  readonly workflowApi?: MarketWorkflowApi;
 };
 
 const periods: readonly { value: MarketPeriod; label: string }[] = [
@@ -26,7 +35,11 @@ const periods: readonly { value: MarketPeriod; label: string }[] = [
 export function MarketPage({
   api = marketApi,
   searchDebounceMs,
+  workflowApi = marketWorkflowApi,
 }: MarketPageProps) {
+  const [selectedPool, setSelectedPool] = useState<MarketPoolDetail | null>(
+    null,
+  );
   const selectedInstrument = useMarketStore(
     (state) => state.selectedInstrument,
   );
@@ -95,6 +108,7 @@ export function MarketPage({
             selectedPoolId={selectedPoolId}
             onSelectPool={selectPool}
             onSelectInstrument={selectInstrument}
+            onPoolDetail={setSelectedPool}
           />
         </aside>
 
@@ -163,6 +177,30 @@ export function MarketPage({
           aria-label="数据证据与快捷操作"
         >
           <ProvenancePanel data={bars.data} />
+          <MarketOperationsPanel
+            api={workflowApi}
+            marketApiClient={api}
+            onPoolDeleted={() => {
+              setSelectedPool(null);
+              selectPool(null);
+            }}
+            selectedInstrument={selectedInstrument}
+            selectedPool={
+              selectedPool === null
+                ? null
+                : {
+                    id: selectedPool.poolId,
+                    name: selectedPool.name,
+                    symbols: selectedPool.members.map(
+                      (member) => member.symbol,
+                    ),
+                    kind: selectedPool.kind,
+                    revision: selectedPool.revision,
+                  }
+            }
+            period={period}
+            adjustment={adjustment}
+          />
           <section
             className="market-quick-actions"
             aria-labelledby="quick-actions-title"
@@ -171,7 +209,9 @@ export function MarketPage({
             <h3 id="quick-actions-title">快捷操作</h3>
             <Link to="/settings">数据源与设置</Link>
             <Link to="/tasks">查看更新任务</Link>
-            <p>数据更新入口正在完善；当前仅展示已写入本地的可审计缓存。</p>
+            <p>
+              可在本页明确启动目录或行情更新；浏览图表不会静默访问外部数据源。
+            </p>
           </section>
         </aside>
       </div>

@@ -378,6 +378,7 @@ def test_coverage_tooling_and_numeric_thresholds_are_locked() -> None:
     assert pyproject["tool"]["coverage"]["run"] == {
         "branch": True,
         "source": ["src/stock_desk", "scripts", "migrations"],
+        "omit": ["scripts/e2e_dev.py"],
     }
     python_threshold = pyproject["tool"]["coverage"]["report"]["fail_under"]
     assert isinstance(python_threshold, int)
@@ -433,6 +434,8 @@ def test_ci_uploads_coverage_reports_and_release_uses_canonical_test() -> None:
         step for step in python_steps if step.get("name") == "Test Python"
     )
     for required in (
+        "--ignore=tests/acceptance/test_market_flow.py",
+        "--ignore=tests/performance/test_chart_query.py",
         "--cov=src/stock_desk",
         "--cov=scripts",
         "--cov=migrations",
@@ -441,6 +444,22 @@ def test_ci_uploads_coverage_reports_and_release_uses_canonical_test() -> None:
         "--cov-fail-under=85",
     ):
         assert required in python_test["run"]
+    assert (
+        next(
+            step
+            for step in python_steps
+            if step.get("name") == "Test Stage 1 market acceptance"
+        )["run"]
+        == "make acceptance"
+    )
+    assert (
+        next(
+            step
+            for step in python_steps
+            if step.get("name") == "Benchmark cached ten-year chart query"
+        )["run"]
+        == "make benchmark"
+    )
 
     web_steps = ci["jobs"]["web"]["steps"]
     web_test = next(step for step in web_steps if step.get("name") == "Test web")
@@ -462,6 +481,9 @@ def test_ci_uploads_coverage_reports_and_release_uses_canonical_test() -> None:
     )
     commands = [line.strip() for line in release_gates["run"].splitlines()]
     assert commands[0] == "make test"
+    assert "make acceptance" in commands
+    assert "make benchmark" in commands
+    assert "make e2e-market" in commands
 
 
 def test_security_target_audits_only_locked_production_dependencies() -> None:
@@ -537,16 +559,19 @@ def test_ci_and_release_gate_the_chromium_end_to_end_slice() -> None:
         str(step.get("run", "")) for step in e2e["steps"] if isinstance(step, dict)
     )
     for required in (
-        "uv sync --frozen --all-groups",
+        "uv sync --frozen --all-groups --extra providers",
         "pnpm install --frozen-lockfile",
         "pnpm exec playwright install --with-deps chromium",
-        "pnpm e2e",
+        "make e2e-foundation",
+        "make e2e-market",
     ):
         assert required in ci_e2e
 
     release = _read(".github/workflows/release.yml")
+    assert "uv sync --frozen --all-groups --extra providers" in release
     assert "pnpm exec playwright install --with-deps chromium" in release
-    assert "pnpm e2e" in release
+    assert "make e2e-foundation" in release
+    assert "make e2e-market" in release
     assert "contents: write" in release
     assert 'tags:\n      - "v*"' in release
 
@@ -562,7 +587,8 @@ def test_release_builds_final_artifacts_only_after_all_source_gates() -> None:
     assert gate_index < build_index < verify_index
 
     gate_commands = str(steps[gate_index]["run"])
-    assert "pnpm e2e" in gate_commands
+    assert "make e2e-foundation" in gate_commands
+    assert "make e2e-market" in gate_commands
     assert "make build" not in gate_commands
     assert steps[build_index]["run"] == "make build"
 
@@ -576,7 +602,8 @@ def test_e2e_is_a_root_script_without_changing_the_make_contract() -> None:
     assert "playwright-report/" in gitignore
     playwright = _read("playwright.config.ts")
     assert "gracefulShutdown" in playwright
-    assert "signal: 'SIGTERM'" in playwright
+    assert 'signal: "SIGTERM"' in playwright
+    assert "scripts/e2e_dev.py" in playwright
     foundation_e2e = _read("web/e2e/foundation.spec.ts")
     health_probe = "request.get('/api/health')"
     task_creation = "request.post('/api/tasks'"
@@ -589,16 +616,23 @@ def test_e2e_is_a_root_script_without_changing_the_make_contract() -> None:
     targets = {
         match.group(1)
         for line in makefile.splitlines()
-        if (match := re.match(r"^([a-z][a-z-]*):", line))
+        if (match := re.match(r"^([a-z][a-z0-9-]*):", line))
     }
     assert targets == {
+        "acceptance",
+        "benchmark",
         "bootstrap",
+        "check-public-tree",
         "dev",
+        "e2e",
+        "e2e-foundation",
+        "e2e-market",
         "test",
         "lint",
         "typecheck",
         "build",
         "smoke",
+        "container-smoke",
         "public-tree",
         "security",
         "release-check",
@@ -659,7 +693,7 @@ def test_sdist_uses_an_explicit_source_only_allowlist() -> None:
     }
 
 
-def test_readmes_match_commands_and_describe_stage_zero_limits() -> None:
+def test_readmes_match_commands_and_describe_stage_one_limits() -> None:
     english = _read("README.md")
     chinese = _read("README.zh-CN.md")
     shared_facts = (
@@ -680,6 +714,9 @@ def test_readmes_match_commands_and_describe_stage_zero_limits() -> None:
         "/settings",
         "demo.double",
         "STOCK_DESK_MASTER_KEY",
+        "make acceptance",
+        "make benchmark",
+        "make e2e-market",
     )
     for fact in shared_facts:
         assert fact in english
@@ -687,6 +724,7 @@ def test_readmes_match_commands_and_describe_stage_zero_limits() -> None:
 
     for content in (english, chinese):
         assert "Stage 0" in content
+        assert "Stage 1" in content
         assert "Apache-2.0" in content
         assert "Docker" in content
         assert "uv" in content
@@ -694,7 +732,7 @@ def test_readmes_match_commands_and_describe_stage_zero_limits() -> None:
         assert (
             "not investment advice" in content.casefold() or "不构成投资建议" in content
         )
-        assert "running" in content.casefold() or "运行中" in content
+        assert "cache" in content.casefold() or "缓存" in content
 
 
 def test_security_and_support_use_the_right_reporting_channels() -> None:
@@ -709,28 +747,30 @@ def test_security_and_support_use_the_right_reporting_channels() -> None:
     assert private_report_url in support
 
 
-def test_changelog_roadmap_and_architecture_match_foundation_scope() -> None:
+def test_changelog_roadmap_and_architecture_match_current_release_scope() -> None:
     changelog = _read("CHANGELOG.md")
     unreleased = re.search(
-        r"## \[Unreleased\](?P<body>.*?)## \[0\.1\.0\]",
+        r"## \[Unreleased\](?P<body>.*?)## \[0\.2\.0\]",
         changelog,
         re.DOTALL,
     )
     assert unreleased is not None
     assert unreleased.group("body").strip() == ""
     release_section = re.search(
-        r"## \[0\.1\.0\] - 2026-07-05(?P<body>.*)",
+        r"## \[0\.2\.0\] - 2026-07-06(?P<body>.*?)## \[0\.1\.0\]",
         changelog,
         re.DOTALL,
     )
     assert release_section is not None
     assert "### Added" in release_section.group("body")
-    assert "Stage 0" in release_section.group("body")
+    assert "Stage 1" in release_section.group("body")
 
     roadmap = _read("ROADMAP.md")
     for stage in range(6):
         assert f"| {stage} —" in roadmap
-    assert roadmap.count("| Planned |") == 5
+    assert roadmap.count("| Complete |") == 2
+    assert roadmap.count("| Current |") == 0
+    assert roadmap.count("| Planned |") == 4
 
     architecture = _read("docs/architecture.md")
     for boundary in ("FastAPI", "worker", "SQLite", "security", "trust boundary"):

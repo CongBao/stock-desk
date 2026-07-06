@@ -165,6 +165,9 @@ class SecretStore:
 
     def _read_secret_locked(self, name: str) -> str:
         token = self._read_token(name)
+        return self._decrypt_token(token)
+
+    def _decrypt_token(self, token: str) -> str:
         try:
             plaintext = self._fernet.decrypt(token.encode("ascii"))
             return plaintext.decode("utf-8")
@@ -172,6 +175,37 @@ class SecretStore:
             raise SecretDecryptionError(
                 "Stored secret could not be decrypted"
             ) from None
+
+    def read_secret_for_server_call_in_transaction(
+        self,
+        name: str,
+        connection: Connection,
+    ) -> str:
+        """Decrypt a secret from the caller's already-open database snapshot."""
+        with self._state_lock:
+            self._ensure_available()
+            if (
+                connection.closed
+                or connection.engine is not self._engine
+                or not connection.in_transaction()
+            ):
+                raise SecretStorageError("Secret storage connection is invalid")
+            self._validate_connection(connection)
+            token = connection.execute(
+                select(AppSetting.encrypted_value).where(
+                    AppSetting.key == _setting_key(name)
+                )
+            ).scalar_one_or_none()
+            if token is None:
+                raise SecretNotFoundError("Secret is not configured")
+            if (
+                type(token) is not str
+                or not token
+                or len(token) > _MAX_ENCRYPTED_SECRET_LENGTH
+                or not token.isascii()
+            ):
+                raise SecretDecryptionError("Stored secret could not be decrypted")
+            return self._decrypt_token(token)
 
     def masked_secret(self, name: str) -> str:
         with self._state_lock:

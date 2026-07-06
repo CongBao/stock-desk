@@ -1102,6 +1102,49 @@ def test_empty_instrument_batches_return_no_data(
     assert instruments.reason is FailureReason.NO_DATA
 
 
+def test_baostock_catalog_filters_non_stock_and_b_share_rows() -> None:
+    case = next(
+        case for case in _provider_cases() if case.source is ProviderId.BAOSTOCK
+    )
+    fixture = load_fixture(case.fixture_name)
+    fixture["instruments"].extend(
+        (
+            {
+                "code": "sh.000001",
+                "code_name": "上证指数",
+                "ipoDate": "1990-12-19",
+                "outDate": "",
+                "type": "2",
+                "status": "1",
+            },
+            {
+                "code": "sh.900901",
+                "code_name": "B股样本",
+                "ipoDate": "1992-02-21",
+                "outDate": "",
+                "type": "1",
+                "status": "1",
+            },
+        )
+    )
+    provider = cast(
+        MarketDataProvider,
+        case.provider_type(
+            client=case.client_type(fixture),
+            clock=lambda: FETCHED_AT,
+        ),
+    )
+
+    outcome = provider.fetch_instruments()
+
+    assert isinstance(outcome, ProviderBatch)
+    assert tuple(item.symbol for item in outcome.items) == (
+        "000001.SZ",
+        "600000.SH",
+        "920000.BJ",
+    )
+
+
 def test_akshare_unknown_board_is_rejected_without_guessing() -> None:
     case = next(case for case in _provider_cases() if case.source is ProviderId.AKSHARE)
     fixture = load_fixture("akshare")

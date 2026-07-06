@@ -46,6 +46,7 @@ from stock_desk.market.types import (
     Exchange,
     FailureReason,
     MarketCapability,
+    Period,
     Instrument,
     ProviderId,
     TradingDay,
@@ -61,6 +62,9 @@ class SourcePriorities(BaseModel):
         ProviderId.BAOSTOCK,
         ProviderId.TDX_LOCAL,
     )
+    daily_bars: tuple[ProviderId, ...] | None = None
+    weekly_bars: tuple[ProviderId, ...] | None = None
+    minute_bars: tuple[ProviderId, ...] | None = None
     instruments: tuple[ProviderId, ...] = (
         ProviderId.TUSHARE,
         ProviderId.AKSHARE,
@@ -73,11 +77,29 @@ class SourcePriorities(BaseModel):
 
     @model_validator(mode="after")
     def validate_unique_categories(self) -> Self:
-        for category in ("bars", "instruments", "trading_calendar"):
+        for category in (
+            "bars",
+            "daily_bars",
+            "weekly_bars",
+            "minute_bars",
+            "instruments",
+            "trading_calendar",
+        ):
             values = getattr(self, category)
+            if values is None:
+                continue
             if len(values) != len(frozenset(values)):
                 raise ValueError(f"{category} priority contains a duplicate provider")
         return self
+
+    def for_period(self, period: object) -> tuple[ProviderId, ...]:
+        if period is Period.DAY:
+            return self.daily_bars or self.bars
+        if period is Period.WEEK:
+            return self.weekly_bars or self.bars
+        if period is Period.MIN60:
+            return self.minute_bars or self.bars
+        raise ValueError("unsupported market bar period")
 
     def for_category(self, category: MarketCapability) -> tuple[ProviderId, ...]:
         if category is MarketCapability.BARS:
@@ -271,7 +293,7 @@ class SourceRouter:
         previous_manifest: RoutingManifest | None = None,
     ) -> RoutedBarSuccess | RoutedBarFailure:
         category = MarketCapability.BARS
-        priority = self._priorities.bars
+        priority = self._priorities.for_period(query.period)
         attempts: list[RoutingAttempt] = []
         request = BarRoutingRequest(query=query)
         previous_manifest = _validated_previous_manifest(

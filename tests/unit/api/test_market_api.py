@@ -16,6 +16,11 @@ from stock_desk.api.market import MarketServices
 from stock_desk.config import Settings
 from stock_desk.main import create_app
 from stock_desk.market.instruments import InstrumentRepository
+from stock_desk.market.scheduler import MarketUpdateScheduleStorageError
+from stock_desk.market.update import (
+    MarketUpdateItemRepository,
+    MarketUpdateItemStorageError,
+)
 from stock_desk.storage.database import create_engine_for_url, migrate
 from stock_desk.tasks.repository import TaskRepository
 from tests.integration.market.lake_read_test_helpers import corrupt_catalog
@@ -285,6 +290,74 @@ def test_market_update_endpoint_creates_durable_task_and_existing_cancel_works(
     assert body["status"] == "queued"
     assert cancelled.status_code == 200
     assert cancelled.json()["status"] == "cancelled"
+
+
+def test_market_catalog_update_endpoint_creates_empty_payload_task(
+    tmp_path: Path,
+) -> None:
+    with market_api(tmp_path) as context:
+        response = context.client.post("/api/market/catalog/updates")
+
+    assert response.status_code == 201
+    assert response.json()["kind"] == "market.catalog.update"
+    assert response.json()["payload"] == {}
+    assert response.json()["status"] == "queued"
+
+
+def test_market_update_items_and_daily_schedule_are_durable_market_apis(
+    tmp_path: Path,
+) -> None:
+    payload = {
+        "symbols": ["600000.SH"],
+        "period": "1d",
+        "adjustment": "qfq",
+        "start": "2024-01-01T16:00:00Z",
+        "end": "2024-01-03T16:00:00Z",
+    }
+    with market_api(tmp_path) as context:
+        created = context.client.post("/api/market/updates", json=payload).json()
+        assert context.tasks.claim_next("api-result-test") is not None
+        MarketUpdateItemRepository(context.services.engine).record_failure(
+            task_id=created["id"],
+            ordinal=0,
+            symbol="600000.SH",
+            reason="routing:no_provider",
+        )
+        items = context.client.get(f"/api/market/updates/{created['id']}/items")
+        saved = context.client.put(
+            "/api/market/schedules/daily",
+            json={"enabled": True, "local_time": "18:30", "payload": payload},
+        )
+        replaced = context.client.put(
+            "/api/market/schedules/daily",
+            json={
+                "enabled": False,
+                "local_time": "19:00",
+                "payload": {**payload, "symbols": ["000001.SZ"]},
+            },
+        )
+        fetched = context.client.get("/api/market/schedules/daily")
+
+    assert items.status_code == 200
+    assert items.json() == [
+        {
+            "task_id": created["id"],
+            "ordinal": 0,
+            "symbol": "600000.SH",
+            "status": "failed",
+            "manifest_record_id": None,
+            "dataset_version": None,
+            "reason": "routing:no_provider",
+            "created_at": items.json()[0]["created_at"],
+        }
+    ]
+    assert saved.status_code == 200
+    assert saved.json()["symbols_frozen"] is True
+    assert replaced.status_code == 200
+    assert replaced.json()["enabled"] is False
+    assert replaced.json()["local_time"] == "19:00"
+    assert replaced.json()["payload"]["symbols"] == ["000001.SZ"]
+    assert fetched.json() == replaced.json()
 
 
 def test_market_update_endpoint_rejects_over_two_million_bucket_work(
@@ -638,6 +711,46 @@ def test_market_openapi_has_enforceable_success_request_and_error_schemas(
         ]
         == 100_000
     )
+
+
+def test_update_item_and_schedule_storage_failures_return_fixed_500(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    with market_api(tmp_path) as context:
+        task = context.tasks.create(
+            "market.update",
+            {
+                "symbols": ["600000.SH"],
+                "period": "1d",
+                "adjustment": "qfq",
+                "start": "2026-01-01T00:00:00Z",
+                "end": "2026-02-01T00:00:00Z",
+            },
+        )
+
+        monkeypatch.setattr(
+            context.services.update_items,
+            "list_for_task",
+            lambda _task_id: (_ for _ in ()).throw(
+                MarketUpdateItemStorageError("private storage detail")
+            ),
+        )
+        item_response = context.client.get(f"/api/market/updates/{task.id}/items")
+
+        monkeypatch.setattr(
+            context.services.schedules,
+            "get",
+            lambda _schedule_id: (_ for _ in ()).throw(
+                MarketUpdateScheduleStorageError("private storage detail")
+            ),
+        )
+        schedule_response = context.client.get("/api/market/schedules/daily")
+
+    assert item_response.status_code == 500
+    assert item_response.json() == {"code": "internal_error"}
+    assert schedule_response.status_code == 500
+    assert schedule_response.json() == {"code": "internal_error"}
 
 
 def test_pool_symbol_boundary_preserves_item_issues_and_rejects_oversize(

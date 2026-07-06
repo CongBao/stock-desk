@@ -1143,7 +1143,7 @@ a {
   grid-template-columns:
     minmax(160px, 0.58fr)
     minmax(360px, 2fr)
-    minmax(170px, 0.68fr);
+    minmax(240px, 0.9fr);
   gap: 8px;
   min-width: 0;
   align-items: start;
@@ -1169,6 +1169,7 @@ a {
 .market-chart-card,
 .formula-subchart,
 .provenance-panel,
+.market-operations,
 .market-quick-actions,
 .cache-miss-guidance {
   border: 1px solid var(--border);
@@ -1282,6 +1283,7 @@ a {
 
 .stock-pool-panel,
 .provenance-panel,
+.market-operations,
 .market-quick-actions {
   padding: 13px;
 }
@@ -1298,6 +1300,7 @@ a {
 
 .stock-pool-panel h3,
 .provenance-panel h3,
+.market-operations h3,
 .market-quick-actions h3,
 .formula-subchart h3,
 .market-chart-header h3 {
@@ -1715,6 +1718,127 @@ a {
 .market-quick-actions {
   display: grid;
   gap: 8px;
+}
+
+.market-operations {
+  display: grid;
+  gap: 10px;
+  font-size: 10px;
+}
+
+.market-operations > p,
+.market-operations fieldset p {
+  margin: 0;
+  color: var(--text-muted);
+  line-height: 1.55;
+}
+
+.market-operation-actions,
+.market-date-range {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.market-operations button,
+.market-operations input {
+  min-height: 34px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  color: var(--text-primary);
+  background: rgba(7, 17, 31, 0.75);
+  font: inherit;
+}
+
+.market-operations button {
+  padding: 6px 8px;
+  cursor: pointer;
+}
+
+.market-operations button:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.market-operations fieldset {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 9px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+
+.market-operations label {
+  display: grid;
+  gap: 4px;
+  color: var(--text-secondary);
+}
+
+.market-operations label:has(input[type='radio']),
+.market-operations label:has(input[type='checkbox']) {
+  grid-template-columns: auto 1fr;
+  align-items: center;
+}
+
+.market-operations input[type='radio'],
+.market-operations input[type='checkbox'] {
+  min-height: auto;
+}
+
+.market-operations dialog {
+  z-index: 30;
+  width: min(92vw, 460px);
+  max-height: 82vh;
+  padding: 18px;
+  overflow: auto;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  color: var(--text-primary);
+  background: #091727;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.55);
+}
+
+.market-operations dialog::backdrop {
+  background: rgba(2, 8, 18, 0.72);
+}
+
+.market-operations dialog ol,
+.market-operations dialog ul,
+.market-operations [aria-label='逐证券更新结果'] {
+  display: grid;
+  gap: 5px;
+  max-height: 240px;
+  margin: 10px 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+
+.market-operations dialog li {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  justify-content: space-between;
+}
+
+.pool-delete-confirmation {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  padding: 10px;
+  border: 1px solid rgba(239, 68, 68, 0.55);
+  border-radius: 7px;
+  background: rgba(127, 29, 29, 0.18);
+}
+
+.pool-delete-confirmation p {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+.market-operations progress {
+  width: 100%;
 }
 
 .market-quick-actions a {

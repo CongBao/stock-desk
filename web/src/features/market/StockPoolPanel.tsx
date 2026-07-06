@@ -1,5 +1,5 @@
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import { marketApi, type MarketApi, type MarketPoolDetail } from './marketApi';
 import type { MarketInstrumentSelection } from './marketStore';
@@ -9,6 +9,7 @@ type StockPoolPanelProps = {
   readonly onSelectInstrument: (instrument: MarketInstrumentSelection) => void;
   readonly onSelectPool: (poolId: string) => void;
   readonly selectedPoolId: string | null;
+  readonly onPoolDetail?: (detail: MarketPoolDetail | null) => void;
 };
 
 const poolKindLabels = { preset: '预设', custom: '自定义' } as const;
@@ -97,9 +98,13 @@ export function StockPoolPanel({
   onSelectInstrument,
   onSelectPool,
   selectedPoolId,
+  onPoolDetail,
 }: StockPoolPanelProps) {
   const [localPoolId, setLocalPoolId] = useState<string | null>(null);
   const activePoolId = localPoolId ?? selectedPoolId;
+  useEffect(() => {
+    if (selectedPoolId === null) setLocalPoolId(null);
+  }, [selectedPoolId]);
   const pools = useInfiniteQuery({
     queryKey: ['market', 'pools'],
     initialPageParam: undefined as string | undefined,
@@ -116,6 +121,14 @@ export function StockPoolPanel({
     },
   });
   const summaries = pools.data?.pages.flatMap((page) => page.items) ?? [];
+
+  useEffect(() => {
+    if (activePoolId === null || detail.data?.poolId !== activePoolId) {
+      onPoolDetail?.(null);
+      return;
+    }
+    onPoolDetail?.(detail.data);
+  }, [activePoolId, detail.data, onPoolDetail]);
 
   function selectPool(poolId: string) {
     setLocalPoolId(poolId);

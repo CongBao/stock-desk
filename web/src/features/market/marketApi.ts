@@ -1070,7 +1070,9 @@ function decodePoolSummary(value: JsonValue, path: string): MarketPoolSummary {
   return result;
 }
 
-function decodePoolDetail(value: JsonValue | undefined): MarketPoolDetail {
+export function decodePoolDetail(
+  value: JsonValue | undefined,
+): MarketPoolDetail {
   const item = record(value, 'pool');
   const summary = decodePoolSummary(item, 'pool');
   const members = arrayValue(

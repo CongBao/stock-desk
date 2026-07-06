@@ -89,7 +89,7 @@ def create_app(
 
     application = FastAPI(
         title=resolved_settings.app_name,
-        version="0.1.0",
+        version="0.2.0",
         lifespan=lifespan,
     )
     application.state.task_repository_provider = provide_task_repository

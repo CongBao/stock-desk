@@ -43,6 +43,10 @@ export class ApiError extends Error {
 }
 
 export type ApiClient = {
+  readonly delete?: (
+    path: string,
+    options?: ApiWriteOptions,
+  ) => Promise<JsonValue | undefined>;
   readonly get: (
     path: string,
     options?: ApiGetOptions,
@@ -158,7 +162,7 @@ function isAbortFailure(error: unknown, signal?: AbortSignal): boolean {
 
 export function createApiClient(baseUrl = '/api'): ApiClient {
   async function request(
-    method: 'GET' | 'POST' | 'PUT',
+    method: 'DELETE' | 'GET' | 'POST' | 'PUT',
     path: string,
     options: ApiWriteOptions = {},
   ): Promise<JsonValue | undefined> {
@@ -233,6 +237,9 @@ export function createApiClient(baseUrl = '/api'): ApiClient {
   }
 
   return {
+    delete(path, options = {}) {
+      return request('DELETE', path, options);
+    },
     get(path, options = {}) {
       return request('GET', path, options);
     },

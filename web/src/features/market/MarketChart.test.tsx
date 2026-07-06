@@ -171,9 +171,11 @@ it('renders canonical price text without exposing Number rounding', () => {
 
 it('initializes, resizes, resets, and disposes the tree-shaken chart instance', () => {
   let axisPointerHandler: ((event: unknown) => void) | undefined;
+  let dataZoomHandler: ((event: unknown) => void) | undefined;
   chartMocks.on.mockImplementation(
     (eventName: string, handler: (event: unknown) => void) => {
       if (eventName === 'updateAxisPointer') axisPointerHandler = handler;
+      if (eventName === 'dataZoom') dataZoomHandler = handler;
     },
   );
   const { unmount } = render(<MarketChart bars={bars} />);
@@ -204,18 +206,30 @@ it('initializes, resizes, resets, and disposes the tree-shaken chart instance', 
     screen.getByRole('status', { name: '当前 K 线 OHLCV' }),
   ).toHaveTextContent('上涨 ▲');
 
+  expect(
+    screen.getByRole('status', { name: '图表缩放范围' }),
+  ).toHaveTextContent('0%–100%');
+  act(() => dataZoomHandler?.({ batch: [{ start: 35, end: 80 }] }));
+  expect(
+    screen.getByRole('status', { name: '图表缩放范围' }),
+  ).toHaveTextContent('35%–80%');
+
   fireEvent.click(screen.getByRole('button', { name: '重置图表缩放' }));
   expect(chartMocks.dispatchAction).toHaveBeenCalledWith({
     type: 'dataZoom',
     start: 0,
     end: 100,
   });
+  expect(
+    screen.getByRole('status', { name: '图表缩放范围' }),
+  ).toHaveTextContent('0%–100%');
 
   unmount();
   expect(chartMocks.off).toHaveBeenCalledWith(
     'updateAxisPointer',
     expect.any(Function),
   );
+  expect(chartMocks.off).toHaveBeenCalledWith('dataZoom', expect.any(Function));
   expect(chartMocks.dispose).toHaveBeenCalledOnce();
 });
 
@@ -245,8 +259,8 @@ it('keeps the cached canvas and chart instance through a background error and re
   expect(chartMocks.setOption).toHaveBeenCalledTimes(2);
 
   unmount();
-  expect(chartMocks.on).toHaveBeenCalledOnce();
-  expect(chartMocks.off).toHaveBeenCalledOnce();
+  expect(chartMocks.on).toHaveBeenCalledTimes(2);
+  expect(chartMocks.off).toHaveBeenCalledTimes(2);
   expect(chartMocks.dispose).toHaveBeenCalledOnce();
 });
 

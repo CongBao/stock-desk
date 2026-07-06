@@ -27,6 +27,25 @@ const completedTask = {
   result: { value: 42 },
 };
 
+const disabledDailySchedule = {
+  id: '00000000-0000-0000-0000-000000000001',
+  enabled: false,
+  timezone: 'Asia/Shanghai',
+  local_time: '18:00',
+  payload: {
+    symbols: ['600000.SH'],
+    period: '1d',
+    adjustment: 'qfq',
+    start: '2024-01-01T00:00:00Z',
+    end: '2024-01-03T00:00:00Z',
+  },
+  symbols_frozen: true,
+  last_enqueued_local_date: null,
+  next_due_at: null,
+  created_at: '2026-07-06T08:00:00Z',
+  updated_at: '2026-07-06T08:00:00Z',
+};
+
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -47,9 +66,11 @@ function installHealthyFetch(tasks: readonly unknown[] = []) {
     return Promise.resolve(
       url.includes('/market/pools')
         ? jsonResponse({ items: [], next_cursor: null })
-        : url.endsWith('/health')
-          ? jsonResponse(healthyResponse)
-          : jsonResponse(tasks),
+        : url.endsWith('/market/schedules/daily')
+          ? jsonResponse(disabledDailySchedule)
+          : url.endsWith('/health')
+            ? jsonResponse(healthyResponse)
+            : jsonResponse(tasks),
     );
   });
   vi.stubGlobal('fetch', fetchMock);
@@ -61,16 +82,18 @@ function installPendingFetch() {
   const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) =>
     requestUrl(input).includes('/market/pools')
       ? Promise.resolve(jsonResponse({ items: [], next_cursor: null }))
-      : new Promise<Response>((_resolve, reject) => {
-          if (init?.signal) {
-            signals.push(init.signal);
-            init.signal.addEventListener(
-              'abort',
-              () => reject(new DOMException('Aborted', 'AbortError')),
-              { once: true },
-            );
-          }
-        }),
+      : requestUrl(input).endsWith('/market/schedules/daily')
+        ? Promise.resolve(jsonResponse(disabledDailySchedule))
+        : new Promise<Response>((_resolve, reject) => {
+            if (init?.signal) {
+              signals.push(init.signal);
+              init.signal.addEventListener(
+                'abort',
+                () => reject(new DOMException('Aborted', 'AbortError')),
+                { once: true },
+              );
+            }
+          }),
   );
   vi.stubGlobal('fetch', fetchMock);
   return { fetchMock, signals };
@@ -389,6 +412,17 @@ it('shows strictly decoded recent task state and result context', async () => {
   expect(task).toHaveAccessibleName(/demo\.double.*已成功/);
 });
 
+it('renders an explicit empty result without confusing it with a missing result', async () => {
+  installHealthyFetch([{ ...completedTask, result: { value: null } }]);
+
+  renderApp();
+
+  const task = await screen.findByRole('listitem', {
+    name: /demo\.double.*已成功/,
+  });
+  expect(task).toHaveTextContent('结果：空');
+});
+
 it.each([{ nested: true }, ['nested']])(
   'keeps a task with complex result.value without rendering it: %j',
   async (complexValue) => {
@@ -455,7 +489,10 @@ it('times out hung requests, retries once, and enables manual retry', async () =
     await vi.advanceTimersByTimeAsync(10_100);
   });
 
-  expect(fetchMock).toHaveBeenCalledTimes(5);
+  const systemCalls = fetchMock.mock.calls.filter(([input]) =>
+    /^\/api\/(?:health|tasks\?)/u.test(requestUrl(input)),
+  );
+  expect(systemCalls).toHaveLength(4);
   expect(screen.getByText('服务不可用', { exact: true })).toBeInTheDocument();
   expect(screen.getByRole('button', { name: '重新检测' })).toBeEnabled();
 });
@@ -534,7 +571,10 @@ it('recovers both endpoint states after a bounded retry and manual recheck', asy
   expect(
     await screen.findByText('服务不可用', { exact: true }),
   ).toBeInTheDocument();
-  expect(fetchMock).toHaveBeenCalledTimes(5);
+  const systemCalls = fetchMock.mock.calls.filter(([input]) =>
+    /^\/api\/(?:health|tasks\?)/u.test(requestUrl(input)),
+  );
+  expect(systemCalls).toHaveLength(4);
 
   available = true;
   const retry = screen.getByRole('button', { name: '重新检测' });
@@ -553,7 +593,7 @@ it('shares endpoint queries between topbar and context panel consumers', async (
   await screen.findByText('系统正常', { exact: true });
   const systemCalls = fetchMock.mock.calls
     .map(([input]) => requestUrl(input))
-    .filter((url) => !url.includes('/market/pools'));
+    .filter((url) => /^\/api\/(?:health|tasks\?)/u.test(url));
   expect(systemCalls).toHaveLength(2);
   expect(systemCalls.sort()).toEqual(['/api/health', '/api/tasks?limit=5']);
 });
@@ -562,7 +602,7 @@ it('aborts both in-flight endpoint requests after the final consumer unmounts', 
   const { fetchMock, signals } = installPendingFetch();
 
   const mounted = renderApp();
-  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4));
   expect(signals).toHaveLength(2);
 
   mounted.unmount();
@@ -571,5 +611,5 @@ it('aborts both in-flight endpoint requests after the final consumer unmounts', 
     expect(signals.every((signal) => signal.aborted)).toBe(true),
   );
   await new Promise((resolve) => window.setTimeout(resolve, 20));
-  expect(fetchMock).toHaveBeenCalledTimes(3);
+  expect(fetchMock).toHaveBeenCalledTimes(4);
 });
