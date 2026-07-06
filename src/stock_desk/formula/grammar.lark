@@ -1,0 +1,55 @@
+start: statement+
+
+statement: IDENTIFIER assignment expression ";"
+assignment: ":=" -> hidden_assignment
+          | ":"  -> visible_assignment
+
+?expression: or_expression
+
+?or_expression: and_expression
+              | or_expression "OR"i and_expression -> or_operation
+
+?and_expression: comparison
+               | and_expression "AND"i comparison -> and_operation
+
+?comparison: sum
+           | comparison "=" sum  -> equal
+           | comparison "==" sum -> equal
+           | comparison "<>" sum -> not_equal
+           | comparison "!=" sum -> not_equal
+           | comparison "<" sum  -> less_than
+           | comparison "<=" sum -> less_or_equal
+           | comparison ">" sum  -> greater_than
+           | comparison ">=" sum -> greater_or_equal
+
+?sum: product
+    | sum "+" product -> add
+    | sum "-" product -> subtract
+
+?product: unary
+        | product "*" unary -> multiply
+        | product "/" unary -> divide
+        | product "%" unary -> modulo
+
+?unary: atom
+      | "+" unary -> positive
+      | "-" unary -> negative
+      | "NOT"i unary -> not_operation
+
+?atom: NUMBER -> number
+     | STRING -> string
+     | call
+     | IDENTIFIER -> name
+     | "(" expression ")"
+
+call: IDENTIFIER "(" [expression ("," expression)*] ")"
+
+IDENTIFIER: /[A-Za-z][A-Za-z0-9_]*/
+NUMBER: /(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?/
+STRING: /"(?:[^"\\]|\\.)*"/ | /'(?:[^'\\]|\\.)*'/
+
+COMMENT: /\/\/[^\r\n]*/
+
+%import common.WS
+%ignore WS
+%ignore COMMENT

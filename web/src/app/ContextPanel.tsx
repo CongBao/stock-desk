@@ -124,7 +124,7 @@ export function ContextPanel({
           </div>
           <div>
             <dt className="visually-hidden">公式引擎</dt>
-            <dd>公式引擎等待 v0.3.0</dd>
+            <dd>公式引擎 tdx-v1 已就绪</dd>
           </div>
           <div>
             <dt className="visually-hidden">API 服务</dt>

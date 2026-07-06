@@ -2,9 +2,9 @@
 
 # Stock Desk
 
-Stock Desk `v0.2.0` is a local-first A-share market workspace. Stage 1 provides configurable Tushare, AKShare, BaoStock, and local TDX adapters; durable catalog and bar updates; local Parquet/DuckDB-backed chart reads; provenance; preset and custom stock pools; daily schedules; and interactive daily, weekly, and 60-minute K-line/volume charts.
+Stock Desk `v0.3.0` is a local-first A-share market and formula workspace. Stage 1 provides configurable market sources, durable updates, provenance, pools, schedules, and interactive daily, weekly, and 60-minute charts. Stage 2 adds a constrained TDX-compatible formula engine, immutable versions, and a desktop-first three-column Formula Studio with K-line, subchart, and BUY/SELL previews.
 
-Formula execution, backtesting, and LLM-assisted analysis are planned later stages. Their navigation entries are previews, not completed capabilities. See the [roadmap](ROADMAP.md).
+Backtesting and LLM-assisted analysis are planned later stages. Their navigation entries are previews, not completed capabilities. See the [roadmap](ROADMAP.md).
 
 ## Quick start
 
@@ -27,7 +27,7 @@ docker compose down --volumes --remove-orphans
 
 The API health endpoint is [http://localhost:8000/api/health](http://localhost:8000/api/health), and its interactive documentation is at [http://localhost:8000/docs](http://localhost:8000/docs). Persistent native/container data lives under `data/`; API and worker must share the same database and market-lake paths.
 
-The Stage 0 foundation remains available: the `/market`, `/formulas`, `/backtests`, `/analysis`, `/tasks`, and `/settings` workspace routes share one shell, and the `demo.double` durable task remains useful for worker diagnostics. Stage 1 completes the market-data route; the other research routes are still previews.
+The Stage 0 foundation remains available: the `/market`, `/formulas`, `/backtests`, `/analysis`, `/tasks`, and `/settings` workspace routes share one shell, and the `demo.double` durable task remains useful for worker diagnostics. Stage 1 completes market data and Stage 2 completes formulas; backtests and analysis remain previews.
 
 ## Configure data sources
 
@@ -57,9 +57,18 @@ Tushare, AKShare, and BaoStock depend on their upstream services, permissions, n
 
 Chart browsing is cache-only. A cache miss shows guidance and never triggers a silent external fetch. One requested series is selected from one provider; Stock Desk does not splice provider series together.
 
+## Use Formula Studio
+
+1. Open `/formulas` and choose the built-in MACD template, paste a supported TDX formula, or insert fields and functions from the searchable library.
+2. Edit named parameters through forms, use Monaco completion and function help, then run validation. Unsupported or future/repainting behavior is located and blocks save and preview.
+3. Save an immutable version before running an explicit preview. The right column keeps K-line as the main chart and renders formula output in its declared main overlay or independent subchart with BUY/SELL markers.
+4. Save later revisions as new versions, inspect read-only history, or copy a version into an independent formula. Chart and direct preview use the same engine and provenance-pinned snapshot.
+
+The supported subset and runtime semantics are published in the [formula compatibility reference](docs/formula-compatibility.md). Condition-screening formulas, color-K formulas, and AI formula generation/explanation/repair are intentionally absent.
+
 ## Current scope and safety
 
-Stage 1 includes instruments, Full-A/major-index/industry/custom pools, manual and daily bar updates, provenance, and cached daily/weekly/60-minute charts with none/qfq/hfq adjustment. It does not include real-time quotes, a dynamic screener, drawing tools, formulas, backtests, portfolios, trading, or LLM analysis.
+Stage 2 includes the Stage 1 market workspace plus technical/trading formulas, immutable versions, validation, parameters, and consistent chart previews. It does not include real-time quotes, a dynamic screener, drawing tools, formula-driven backtests, portfolios, trading, or LLM analysis.
 
 This is a trusted, single-user local service without authentication, authorization, or TLS. Keep it on loopback, do not commit `.env`, tokens, the master key, local TDX paths, databases, or downloaded market data, and never paste them into issues. See [data-source details](docs/data-sources.md), [security](SECURITY.md), and [architecture](docs/architecture.md).
 
@@ -68,7 +77,9 @@ This is a trusted, single-user local service without authentication, authorizati
 ```bash
 make test
 make acceptance
+make acceptance-formula
 make benchmark
+make benchmark-formula
 make lint
 make typecheck
 make build
@@ -76,4 +87,4 @@ make public-tree
 make security
 ```
 
-After installing Chromium with `pnpm exec playwright install chromium`, run `make e2e-market` for the real API/worker Stage 1 browser flow. `make security` requires network access: it checks Python dependencies with OSV and JavaScript production dependencies through the npm registry after verifying that manifests match their lockfiles. With Docker running, `make release-check` runs both browser slices, security, and an isolated container smoke gate; it starts and cleans up its own Compose stack. The project is licensed under Apache-2.0. Stock Desk is research software, not investment advice; verify data and decisions independently.
+After installing Chromium with `pnpm exec playwright install chromium`, run `make e2e-market` and `make e2e-formula` for the real Stage 1/2 browser flows. `make security` requires network access: it checks Python dependencies with OSV and JavaScript production dependencies through the npm registry after verifying that manifests match their lockfiles. With Docker running, `make release-check` runs all browser slices, security, and an isolated container smoke gate; it starts and cleans up its own Compose stack. The project is licensed under Apache-2.0. Stock Desk is research software, not investment advice; verify data and decisions independently.

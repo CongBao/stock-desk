@@ -278,7 +278,15 @@ def _normalized_decimal(value: Decimal) -> Decimal:
     return Decimal(_canonical_decimal_text(value))
 
 
-def _is_canonical_bucket_start(timestamp: datetime, period: Period) -> bool:
+def is_canonical_bucket_start(timestamp: datetime, period: Period) -> bool:
+    if (
+        type(timestamp) is not datetime
+        or timestamp.tzinfo is None
+        or timestamp.utcoffset() is None
+    ):
+        raise TypeError("canonical bucket timestamp must be an aware datetime")
+    if type(period) is not Period:
+        raise TypeError("canonical bucket period must be an exact Period")
     local_timestamp = timestamp.astimezone(_MARKET_TIMEZONE)
     if local_timestamp.second != 0 or local_timestamp.microsecond != 0:
         return False
@@ -336,7 +344,7 @@ class Bar(_FrozenMarketModel):
             raise ValueError("bar high must contain open and close")
         if self.low > min(self.open, self.close):
             raise ValueError("bar low must contain open and close")
-        if not _is_canonical_bucket_start(self.timestamp, self.period):
+        if not is_canonical_bucket_start(self.timestamp, self.period):
             raise ValueError("bar timestamp must be a canonical bucket start")
         return self
 

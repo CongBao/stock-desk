@@ -10,6 +10,23 @@ import {
 import { App } from './App';
 import { settingsResponse } from '../features/settings/testFixtures';
 
+vi.mock('../features/formulas/FormulaStudioPage', () => ({
+  FormulaStudioPage: () => (
+    <article>
+      <h2
+        ref={(node) => {
+          node?.focus();
+        }}
+        data-page-heading
+        tabIndex={-1}
+      >
+        公式工作台
+      </h2>
+      <span>v0.3.0 · Formula Studio</span>
+    </article>
+  ),
+}));
+
 const healthyResponse = {
   name: 'stock-desk',
   status: 'ok',
@@ -240,15 +257,20 @@ it('updates route title, focus, announcement, scroll, and browser history', asyn
   const formulaLink = screen.getByRole('link', { name: '自定义公式' });
   await user.click(formulaLink);
 
-  const formulaHeading = screen.getByRole('heading', {
+  const formulaHeading = await screen.findByRole('heading', {
     level: 2,
-    name: '自定义公式',
+    name: '公式工作台',
   });
   await waitFor(() => expect(formulaHeading).toHaveFocus());
   expect(formulaLink).toHaveAttribute('aria-current', 'page');
+  expect(document.querySelector('.app-shell')).toHaveAttribute(
+    'data-workspace',
+    'formulas',
+  );
   expect(document.title).toBe('自定义公式 · stock-desk');
   expect(screen.getByRole('status')).toHaveTextContent('已进入：自定义公式');
-  expect(screen.getByText('计划版本 v0.3.0')).toBeInTheDocument();
+  expect(screen.getAllByText('v0.3.0 · Formula Studio')).not.toHaveLength(0);
+  expect(screen.getByText('公式引擎 tdx-v1 已就绪')).toBeVisible();
 
   await user.click(screen.getByRole('button', { name: '测试返回' }));
 
@@ -260,6 +282,10 @@ it('updates route title, focus, announcement, scroll, and browser history', asyn
   expect(screen.getByRole('link', { name: '行情' })).toHaveAttribute(
     'aria-current',
     'page',
+  );
+  expect(document.querySelector('.app-shell')).toHaveAttribute(
+    'data-workspace',
+    'default',
   );
   expect(document.title).toBe('行情工作区 · stock-desk');
   expect(window.scrollTo).toHaveBeenCalledWith({
@@ -575,14 +601,17 @@ it('reports unavailable without exposing raw network errors', async () => {
 
 it('recovers both endpoint states after a bounded retry and manual recheck', async () => {
   let available = false;
-  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+  const releaseResponses: Array<() => void> = [];
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
     if (!available) {
-      throw new TypeError('offline');
+      return Promise.reject(new TypeError('offline'));
     }
-    await new Promise((resolve) => window.setTimeout(resolve, 25));
-    return requestUrl(input).endsWith('/health')
-      ? jsonResponse(healthyResponse)
-      : jsonResponse([]);
+    return new Promise<Response>((resolve) => {
+      const response = requestUrl(input).endsWith('/health')
+        ? jsonResponse(healthyResponse)
+        : jsonResponse([]);
+      releaseResponses.push(() => resolve(response));
+    });
   });
   vi.stubGlobal('fetch', fetchMock);
   const user = userEvent.setup();
@@ -600,6 +629,12 @@ it('recovers both endpoint states after a bounded retry and manual recheck', asy
   const retry = screen.getByRole('button', { name: '重新检测' });
   await user.click(retry);
   expect(retry).toBeDisabled();
+  expect(releaseResponses).toHaveLength(2);
+  act(() => {
+    for (const release of releaseResponses) {
+      release();
+    }
+  });
   expect(
     await screen.findByText('系统正常', { exact: true }),
   ).toBeInTheDocument();

@@ -1,9 +1,15 @@
-import { BarChart, CandlestickChart } from 'echarts/charts';
+import {
+  BarChart,
+  CandlestickChart,
+  LineChart,
+  ScatterChart,
+} from 'echarts/charts';
 import {
   AriaComponent,
   AxisPointerComponent,
   DataZoomComponent,
   GridComponent,
+  LegendComponent,
   TooltipComponent,
 } from 'echarts/components';
 import {
@@ -20,7 +26,10 @@ import type { MarketBar } from './marketApi';
 use([
   CandlestickChart,
   BarChart,
+  LineChart,
+  ScatterChart,
   GridComponent,
+  LegendComponent,
   TooltipComponent,
   DataZoomComponent,
   AxisPointerComponent,
@@ -101,6 +110,19 @@ export type MarketChartOption = {
       readonly data: readonly ChartSeriesDataItem[];
     },
   ];
+};
+
+export type FormulaChartLayer = {
+  readonly placement: 'main' | 'subchart';
+  readonly timestamps: readonly string[];
+  readonly numericOutputs: readonly {
+    readonly name: string;
+    readonly values: readonly (number | null)[];
+  }[];
+  readonly signals: readonly {
+    readonly name: 'BUY' | 'SELL';
+    readonly values: readonly (boolean | null)[];
+  }[];
 };
 
 function escapeHtml(value: string): string {
@@ -238,6 +260,14 @@ function directionLabel(bar: MarketBar): string {
       : '平盘 ◆';
 }
 
+function signalMarkerOffset(bar: MarketBar): number {
+  return Math.max(
+    Math.abs(bar.high - bar.low) * 0.05,
+    Math.max(Math.abs(bar.high), Math.abs(bar.low)) * 0.005,
+    1e-8,
+  );
+}
+
 // eslint-disable-next-line react-refresh/only-export-components
 export function buildMarketChartOption(
   bars: readonly MarketBar[],
@@ -364,15 +394,151 @@ export function buildMarketChartOption(
   };
 }
 
+// Extends the market contract without creating a second candlestick implementation.
+// Formula timestamps are aligned explicitly so a sparse preview cannot shift signals.
+// eslint-disable-next-line react-refresh/only-export-components
+export function buildFormulaMarketChartOption(
+  bars: readonly MarketBar[],
+  formula: FormulaChartLayer,
+): EChartsCoreOption {
+  const base = buildMarketChartOption(bars);
+  const byTimestamp = new Map(
+    formula.timestamps.map((timestamp, index) => [timestamp, index] as const),
+  );
+  const isSubchart = formula.placement === 'subchart';
+  const grid = isSubchart
+    ? [
+        { left: 62, right: 24, top: 30, height: '43%' },
+        { left: 62, right: 24, top: '53%', height: '10%' },
+        { left: 62, right: 24, top: '68%', height: '18%' },
+      ]
+    : base.grid;
+  const xAxis = isSubchart
+    ? [
+        ...(base.xAxis as unknown as object[]).map((axis, index) => ({
+          ...axis,
+          axisLabel:
+            index === 1
+              ? { show: false }
+              : (axis as { axisLabel?: object }).axisLabel,
+        })),
+        {
+          type: 'category',
+          data: bars.map((bar) => bar.timestamp),
+          gridIndex: 2,
+          boundaryGap: true,
+          axisLine: { lineStyle: { color: '#29425e' } },
+          axisLabel: {
+            color: '#71849c',
+            hideOverlap: true,
+            formatter: (value: string) => formatTime(value),
+          },
+          axisTick: { show: false },
+        },
+      ]
+    : base.xAxis;
+  const yAxis = isSubchart
+    ? [
+        ...(base.yAxis as unknown as object[]),
+        {
+          scale: true,
+          gridIndex: 2,
+          position: 'right',
+          axisLabel: { color: '#71849c' },
+          splitNumber: 3,
+          splitLine: { lineStyle: { color: '#1e3550' } },
+        },
+      ]
+    : base.yAxis;
+  const palette = ['#38bdf8', '#f59e0b', '#a78bfa', '#fb7185', '#2dd4bf'];
+  const formulaSeries = formula.numericOutputs.map((output, outputIndex) => ({
+    name: output.name,
+    type: 'line' as const,
+    xAxisIndex: isSubchart ? 2 : 0,
+    yAxisIndex: isSubchart ? 2 : 0,
+    showSymbol: false,
+    connectNulls: false,
+    smooth: false,
+    lineStyle: { width: 1.5, color: palette[outputIndex % palette.length] },
+    itemStyle: { color: palette[outputIndex % palette.length] },
+    data: bars.map((bar) => {
+      const index = byTimestamp.get(bar.timestamp);
+      return index === undefined ? null : (output.values[index] ?? null);
+    }),
+  }));
+  const signalSeries = formula.signals.map((signal) => {
+    const isBuy = signal.name === 'BUY';
+    return {
+      name: isBuy ? 'BUY 买点' : 'SELL 卖点',
+      type: 'scatter' as const,
+      xAxisIndex: 0,
+      yAxisIndex: 0,
+      symbol: isBuy ? 'triangle' : 'pin',
+      symbolRotate: isBuy ? 0 : 180,
+      symbolSize: isBuy ? 12 : 15,
+      itemStyle: { color: isBuy ? RISE_COLOR : FALL_COLOR },
+      data: bars.flatMap((bar) => {
+        const index = byTimestamp.get(bar.timestamp);
+        if (index === undefined || signal.values[index] !== true) return [];
+        const offset = signalMarkerOffset(bar);
+        return [[bar.timestamp, isBuy ? bar.low - offset : bar.high + offset]];
+      }),
+    };
+  });
+  const visibleStart = base.dataZoom[0].start;
+  return {
+    ...base,
+    aria: {
+      enabled: true,
+      decal: { show: true },
+      description:
+        '证券 K 线主图、成交量、公式输出及买卖信号。上涨与买点使用红色，下跌与卖点使用绿色。',
+    },
+    legend: {
+      top: 5,
+      right: 24,
+      textStyle: { color: '#8296ae', fontSize: 9 },
+      data: [
+        ...formula.numericOutputs.map((output) => output.name),
+        'BUY 买点',
+        'SELL 卖点',
+      ],
+    },
+    grid,
+    xAxis,
+    yAxis,
+    axisPointer: { link: [{ xAxisIndex: isSubchart ? [0, 1, 2] : [0, 1] }] },
+    dataZoom: [
+      {
+        ...base.dataZoom[0],
+        xAxisIndex: isSubchart ? [0, 1, 2] : [0, 1],
+        start: visibleStart,
+      },
+      {
+        ...base.dataZoom[1],
+        xAxisIndex: isSubchart ? [0, 1, 2] : [0, 1],
+        start: visibleStart,
+      },
+    ],
+    series: [...base.series, ...formulaSeries, ...signalSeries],
+  };
+}
+
 type MarketChartProps = {
   readonly bars: readonly MarketBar[] | undefined;
   readonly errorMessage?: string;
+  readonly formula?: FormulaChartLayer;
+  readonly formulaEmptyMessage?: string;
+  readonly formulaEmptyPlacement?: FormulaChartLayer['placement'];
   readonly isLoading?: boolean;
 };
 
 export function MarketChart({
   bars,
   errorMessage,
+  formula,
+  formulaEmptyMessage,
+  formulaEmptyPlacement = 'subchart',
   isLoading = false,
 }: MarketChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -425,13 +591,23 @@ export function MarketChart({
 
   useEffect(() => {
     if (!hasBars || instanceRef.current === null || bars === undefined) return;
-    const option = buildMarketChartOption(bars);
+    const option =
+      formula === undefined
+        ? buildMarketChartOption(bars)
+        : buildFormulaMarketChartOption(bars, formula);
     instanceRef.current.setOption(option as EChartsCoreOption, {
       lazyUpdate: true,
       notMerge: true,
     });
-    setZoom({ start: option.dataZoom[0].start, end: option.dataZoom[0].end });
-  }, [bars, hasBars]);
+    const zoomOptions = option.dataZoom as readonly {
+      readonly start?: number;
+      readonly end?: number;
+    }[];
+    setZoom({
+      start: zoomOptions[0]?.start ?? 0,
+      end: zoomOptions[0]?.end ?? 100,
+    });
+  }, [bars, formula, hasBars]);
 
   return (
     <div className="market-chart-stack">
@@ -442,7 +618,13 @@ export function MarketChart({
         <header className="market-chart-header">
           <div>
             <span className="chart-sequence">MAIN / CACHE ONLY</span>
-            <h3 id="market-chart-title">K 线与成交量</h3>
+            <h3 id="market-chart-title">
+              {formula === undefined
+                ? 'K 线与成交量'
+                : formula.placement === 'main'
+                  ? 'K 线主图与公式叠加'
+                  : 'K 线主图与公式副图'}
+            </h3>
           </div>
           <div className="market-chart-tools">
             <div className="market-chart-legend" aria-label="涨跌图例">
@@ -511,7 +693,11 @@ export function MarketChart({
               ref={containerRef}
               className="market-chart-canvas"
               role="img"
-              aria-label={`${bars[0]?.symbol ?? '证券'} K 线与成交量交互图`}
+              aria-label={`${bars[0]?.symbol ?? '证券'} ${
+                formula === undefined
+                  ? 'K 线与成交量'
+                  : 'K 线、公式输出与买卖信号'
+              }交互图`}
             />
           ) : errorMessage ? (
             <p className="market-chart-state" role="alert">
@@ -529,16 +715,36 @@ export function MarketChart({
         </div>
       </section>
 
-      <section className="formula-subchart" aria-label="公式结果副图">
-        <header>
-          <div>
-            <span className="chart-sequence">SUB / FORMULA</span>
-            <h3>公式结果副图</h3>
-          </div>
-          <span className="planned-inline">后续阶段</span>
-        </header>
-        <p>公式能力将在后续阶段接入；当前不生成指标线或交易信号。</p>
-      </section>
+      {formula === undefined ? (
+        <section
+          className="formula-subchart"
+          aria-label={
+            formulaEmptyPlacement === 'main' ? '公式主图叠加' : '公式结果副图'
+          }
+        >
+          <header>
+            <div>
+              <span className="chart-sequence">
+                {formulaEmptyPlacement === 'main'
+                  ? 'MAIN / FORMULA'
+                  : 'SUB / FORMULA'}
+              </span>
+              <h3>
+                {formulaEmptyPlacement === 'main'
+                  ? '公式主图叠加'
+                  : '公式结果副图'}
+              </h3>
+            </div>
+            <span className="planned-inline">
+              {formulaEmptyMessage === undefined ? '后续阶段' : '待预览'}
+            </span>
+          </header>
+          <p>
+            {formulaEmptyMessage ??
+              '公式能力将在后续阶段接入；当前不生成指标线或交易信号。'}
+          </p>
+        </section>
+      ) : null}
     </div>
   );
 }

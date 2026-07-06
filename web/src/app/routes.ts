@@ -26,7 +26,8 @@ export const appRoutes = [
     title: '自定义公式',
     release: 'v0.3.0',
     summary: '以表单和可视化反馈为主的通达信兼容公式工作台。',
-    description: '公式编辑、校验与信号预览将在公式阶段交付。',
+    description:
+      '从函数与模板库构建公式，保存不可变版本并预览主图、副图与买卖点。',
   },
   {
     label: '策略回测',

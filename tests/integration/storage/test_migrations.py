@@ -3,6 +3,8 @@ import json
 from pathlib import Path
 import sqlite3
 from stat import S_IMODE
+import subprocess
+import sys
 import threading
 
 from alembic.autogenerate import compare_metadata
@@ -13,11 +15,11 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.exc import DBAPIError
 
 from stock_desk.storage.database import create_engine_for_url, downgrade, migrate
-from stock_desk.storage.models import Base
+from stock_desk.storage.metadata import Base
 from stock_desk.tasks.repository import TaskRepository
 
 
-HEAD_REVISION = "0004_instruments_and_pools"
+HEAD_REVISION = "0005_formula_catalog"
 INSTRUMENT_TABLES = {
     "instrument_dataset",
     "instrument_dataset_item",
@@ -39,7 +41,14 @@ CATALOG_TABLES = {
     *INSTRUMENT_TABLES,
     *POOL_TABLES,
 }
-CORE_TABLES = {"app_setting", "task_event", "task_run", *CATALOG_TABLES}
+FORMULA_TABLES = {"formula", "formula_draft", "formula_version"}
+CORE_TABLES = {
+    "app_setting",
+    "task_event",
+    "task_run",
+    *CATALOG_TABLES,
+    *FORMULA_TABLES,
+}
 LEGACY_CORE_TABLES = {"app_setting", "task_run"}
 APP_SETTING_COLUMNS = {"key", "encrypted_value", "updated_at"}
 TASK_RUN_COLUMNS = {
@@ -196,6 +205,43 @@ MARKET_TABLE_COLUMNS = {
         "created_at",
     },
 }
+FORMULA_TABLE_COLUMNS = {
+    "formula": {
+        "id",
+        "name",
+        "formula_type",
+        "placement",
+        "latest_version",
+        "created_at",
+        "updated_at",
+    },
+    "formula_version": {
+        "id",
+        "formula_id",
+        "version",
+        "name",
+        "formula_type",
+        "placement",
+        "source",
+        "parameter_schema_json",
+        "compatibility_version",
+        "engine_version",
+        "checksum",
+        "validation_result_json",
+        "copied_from_version_id",
+        "created_at",
+    },
+    "formula_draft": {
+        "formula_id",
+        "revision",
+        "source",
+        "source_checksum",
+        "parameter_schema_json",
+        "validation_result_json",
+        "executable_version_id",
+        "updated_at",
+    },
+}
 IMMUTABLE_TRIGGER_NAMES = {
     f"trg_{table}_{operation}"
     for table in (
@@ -215,6 +261,15 @@ IMMUTABLE_TRIGGER_NAMES = {
 UPDATE_ITEM_OWNER_TRIGGER = "trg_market_update_item_owner_running"
 UPDATE_ITEM_DUPLICATE_TRIGGER = "trg_market_update_item_immutable_insert"
 MARKET_TRIGGER_NAMES = {*IMMUTABLE_TRIGGER_NAMES, UPDATE_ITEM_OWNER_TRIGGER}
+FORMULA_TRIGGER_NAMES = {
+    "trg_formula_version_immutable_insert",
+    "trg_formula_version_immutable_update",
+    "trg_formula_version_immutable_delete",
+    "trg_formula_version_owner",
+    "trg_formula_draft_executable_insert",
+    "trg_formula_draft_executable_update",
+}
+ALL_TRIGGER_NAMES = {*MARKET_TRIGGER_NAMES, *FORMULA_TRIGGER_NAMES}
 
 
 def _dispose(engine: Engine) -> None:
@@ -338,6 +393,10 @@ def test_upgrade_creates_core_tables(tmp_path: Path) -> None:
             assert expected_columns == {
                 column["name"] for column in inspector.get_columns(table)
             }
+        for table, expected_columns in FORMULA_TABLE_COLUMNS.items():
+            assert expected_columns == {
+                column["name"] for column in inspector.get_columns(table)
+            }
         assert inspector.get_pk_constraint("app_setting")["constrained_columns"] == [
             "key"
         ]
@@ -363,7 +422,7 @@ def test_upgrade_creates_core_tables(tmp_path: Path) -> None:
             (index["name"], tuple(index["column_names"]))
             for index in inspector.get_indexes("task_event")
         } == {("ix_task_event_task_id_occurred_at", ("task_id", "occurred_at"))}
-        assert _trigger_names(engine) == MARKET_TRIGGER_NAMES
+        assert _trigger_names(engine) == ALL_TRIGGER_NAMES
     finally:
         _dispose(engine)
 
@@ -505,6 +564,52 @@ def test_market_catalog_has_exact_keys_constraints_and_indexes(tmp_path: Path) -
             "deferrable": True,
             "initially": "DEFERRED",
         }
+    finally:
+        _dispose(engine)
+
+
+def test_formula_catalog_has_exact_keys_constraints_indexes_and_triggers(
+    tmp_path: Path,
+) -> None:
+    url = f"sqlite:///{tmp_path / 'formula-shape.db'}"
+    migrate(url)
+    engine = create_engine_for_url(url)
+    try:
+        inspector = inspect(engine)
+        assert inspector.get_pk_constraint("formula")["constrained_columns"] == ["id"]
+        assert inspector.get_pk_constraint("formula_version")[
+            "constrained_columns"
+        ] == ["id"]
+        assert inspector.get_pk_constraint("formula_draft")["constrained_columns"] == [
+            "formula_id"
+        ]
+        assert _unique_signatures(engine, "formula_version") == {
+            ("formula_id", "id"),
+            ("formula_id", "version"),
+        }
+        assert _index_signatures(engine, "formula_version") == {
+            ("ix_formula_version_formula", ("formula_id", "version"), False)
+        }
+        draft_foreign_keys = {
+            (
+                tuple(item["constrained_columns"]),
+                str(item["referred_table"]),
+                tuple(item["referred_columns"]),
+            )
+            for item in inspector.get_foreign_keys("formula_draft")
+        }
+        assert draft_foreign_keys == {
+            (("formula_id",), "formula", ("id",)),
+            (
+                ("formula_id", "executable_version_id"),
+                "formula_version",
+                ("formula_id", "id"),
+            ),
+        }
+        assert FORMULA_TRIGGER_NAMES <= _trigger_names(engine)
+        owner_sql = _trigger_sql(engine, "trg_formula_version_owner")
+        assert "name = NEW.name" in owner_sql
+        assert "latest_version = NEW.version" in owner_sql
     finally:
         _dispose(engine)
 
@@ -961,7 +1066,7 @@ def test_market_update_item_insert_guard_has_both_immutable_keys(
         assert "task_id = NEW.task_id" in trigger_sql
         assert "ordinal = NEW.ordinal" in trigger_sql
         assert "symbol = NEW.symbol" in trigger_sql
-        assert len(_trigger_names(engine)) == len(MARKET_TRIGGER_NAMES)
+        assert len(_trigger_names(engine)) == len(ALL_TRIGGER_NAMES)
     finally:
         _dispose(engine)
 
@@ -1052,7 +1157,32 @@ def test_existing_0002_database_upgrades_to_market_catalog(tmp_path: Path) -> No
     try:
         assert _current_revision(engine) == HEAD_REVISION
         assert CATALOG_TABLES <= set(inspect(engine).get_table_names())
+        assert FORMULA_TABLES <= set(inspect(engine).get_table_names())
+        assert _trigger_names(engine) == ALL_TRIGGER_NAMES
+    finally:
+        _dispose(engine)
+
+
+def test_formula_revision_downgrades_to_0004_and_reupgrades(tmp_path: Path) -> None:
+    url = f"sqlite:///{tmp_path / 'formula-roundtrip.db'}"
+    migrate(url)
+
+    downgrade(url, "0004_instruments_and_pools")
+    engine = create_engine_for_url(url)
+    try:
+        assert _current_revision(engine) == "0004_instruments_and_pools"
+        assert FORMULA_TABLES.isdisjoint(inspect(engine).get_table_names())
+        assert FORMULA_TRIGGER_NAMES.isdisjoint(_trigger_names(engine))
         assert _trigger_names(engine) == MARKET_TRIGGER_NAMES
+    finally:
+        _dispose(engine)
+
+    migrate(url)
+    engine = create_engine_for_url(url)
+    try:
+        assert _current_revision(engine) == HEAD_REVISION
+        assert FORMULA_TABLES <= set(inspect(engine).get_table_names())
+        assert _trigger_names(engine) == ALL_TRIGGER_NAMES
     finally:
         _dispose(engine)
 
@@ -1078,7 +1208,7 @@ def test_instrument_revision_downgrades_to_0003_and_reupgrades(tmp_path: Path) -
     try:
         assert _current_revision(engine) == HEAD_REVISION
         assert INSTRUMENT_TABLES <= set(inspect(engine).get_table_names())
-        assert _trigger_names(engine) == MARKET_TRIGGER_NAMES
+        assert _trigger_names(engine) == ALL_TRIGGER_NAMES
     finally:
         _dispose(engine)
 
@@ -1101,7 +1231,7 @@ def test_market_catalog_revision_downgrades_and_reupgrades(tmp_path: Path) -> No
     try:
         assert _current_revision(engine) == HEAD_REVISION
         assert CATALOG_TABLES <= set(inspect(engine).get_table_names())
-        assert _trigger_names(engine) == MARKET_TRIGGER_NAMES
+        assert _trigger_names(engine) == ALL_TRIGGER_NAMES
     finally:
         _dispose(engine)
 
@@ -1337,6 +1467,25 @@ def test_alembic_schema_matches_orm_metadata(tmp_path: Path) -> None:
             assert compare_metadata(context, Base.metadata) == []
     finally:
         _dispose(engine)
+
+
+def test_market_lake_can_be_the_first_import_in_a_fresh_process() -> None:
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import stock_desk.market.lake; "
+                "from stock_desk.storage.metadata import Base; "
+                "assert {'formula','formula_draft','formula_version'} "
+                "<= set(Base.metadata.tables)"
+            ),
+        ],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
 
 
 def test_sqlite_connections_enable_safety_pragmas(tmp_path: Path) -> None:

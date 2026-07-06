@@ -4,6 +4,7 @@ import backendBarsResponse from './fixtures/backend-bars-response.json';
 import backendInstrumentsResponse from './fixtures/backend-instruments-response.json';
 import backendPeriodBarsResponses from './fixtures/backend-period-bars-responses.json';
 import backendPresetPoolResponse from './fixtures/backend-preset-pool-response.json';
+import { FormulaProtocolError } from '../formulas/formulaApi';
 import {
   createMarketApi,
   decodeRoutingManifest,
@@ -63,6 +64,167 @@ it('decodes a bounded cached bar response and preserves routing evidence', async
     reason: 'timeout',
   });
   expect(result.provenance.dataCutoff).toBe('2024-01-03T00:00:00Z');
+});
+
+function atomicFormulaBarsResponse(): JsonValue {
+  const response = structuredClone(barsResponse) as Record<string, unknown>;
+  const query = response['query'] as Record<string, string>;
+  const bars = response['bars'] as Record<string, unknown>[];
+  response['formula'] = {
+    schema_version: 'stock-desk-signal-series-v1',
+    signal_series_id: DIGEST,
+    formula_id: 'formula-1',
+    formula_version_id: 'version-1',
+    formula_version: 1,
+    formula_checksum: DIGEST,
+    engine_version: 'formula-engine-v1',
+    compatibility_version: 'tdx-v1',
+    symbol: query['symbol'],
+    source: (response['provenance'] as Record<string, string>)['source'],
+    period: query['period'],
+    adjustment: query['adjustment'],
+    dataset_version: response['dataset_version'],
+    route_version: response['route_version'],
+    manifest_record_id: response['manifest_record_id'],
+    data_cutoff: (response['provenance'] as Record<string, string>)[
+      'data_cutoff'
+    ],
+    query_start: query['start'],
+    query_end: query['end'],
+    parameters: [{ name: 'N', kind: 'integer', value: '2' }],
+    timestamps: bars.map((bar) => bar['timestamp']),
+    numeric_outputs: [{ name: 'X', values: [1.5], warmup_null_count: 0 }],
+    signals: [
+      { name: 'BUY', values: [true], warmup_null_count: 0 },
+      { name: 'SELL', values: [false], warmup_null_count: 0 },
+    ],
+    runtime_diagnostics: [],
+  };
+  return response as JsonValue;
+}
+
+it('decodes bars and formula from one atomic snapshot with strict identity binding', async () => {
+  const { client, get } = clientReturning(atomicFormulaBarsResponse());
+
+  const result = await createMarketApi(client).getBars({
+    symbol: '600000.SH',
+    period: '1d',
+    adjustment: 'qfq',
+    formulaVersionId: 'version-1',
+    formulaParameters: { N: 2 },
+  });
+
+  expect(get).toHaveBeenCalledWith(
+    '/market/bars?symbol=600000.SH&period=1d&adjustment=qfq&formula_version_id=version-1&formula_parameters=%7B%22N%22%3A2%7D',
+    { signal: undefined },
+  );
+  expect(result.formula).toMatchObject({
+    formulaVersionId: 'version-1',
+    datasetVersion: result.datasetVersion,
+    routeVersion: result.routeVersion,
+    manifestRecordId: result.manifestRecordId,
+    timestamps: result.bars.map((bar) => bar.timestamp),
+  });
+});
+
+it('rejects an atomic formula result bound to a different market snapshot', async () => {
+  const response = atomicFormulaBarsResponse() as Record<string, unknown>;
+  (response['formula'] as Record<string, unknown>)['dataset_version'] =
+    `sha256:${'f'.repeat(64)}`;
+
+  await expect(
+    createMarketApi(clientReturning(response as JsonValue).client).getBars({
+      symbol: '600000.SH',
+      period: '1d',
+      adjustment: 'qfq',
+      formulaVersionId: 'version-1',
+      formulaParameters: { N: 2 },
+    }),
+  ).rejects.toBeInstanceOf(MarketProtocolError);
+});
+
+it.each([
+  ['wrong', { N: 3 }],
+  ['extra', { N: 2, EXTRA: 1 }],
+  ['missing', {}],
+] as const)(
+  'rejects %s formula parameters that are not the atomic result identity',
+  async (_case, formulaParameters) => {
+    await expect(
+      createMarketApi(
+        clientReturning(atomicFormulaBarsResponse()).client,
+      ).getBars({
+        symbol: '600000.SH',
+        period: '1d',
+        adjustment: 'qfq',
+        formulaVersionId: 'version-1',
+        formulaParameters,
+      }),
+    ).rejects.toBeInstanceOf(MarketProtocolError);
+  },
+);
+
+it('compares number parameter identity after canonical signed-zero normalization', async () => {
+  const response = atomicFormulaBarsResponse() as Record<string, unknown>;
+  (response['formula'] as Record<string, unknown>)['parameters'] = [
+    { name: 'F', kind: 'number', value: '0' },
+  ];
+
+  const result = await createMarketApi(
+    clientReturning(response as JsonValue).client,
+  ).getBars({
+    symbol: '600000.SH',
+    period: '1d',
+    adjustment: 'qfq',
+    formulaVersionId: 'version-1',
+    formulaParameters: { F: -0 },
+  });
+
+  expect(result.formula?.parameters).toEqual([
+    { name: 'F', kind: 'number', value: '0' },
+  ]);
+});
+
+it('accepts integral-valued large number parameters after response-kind binding', async () => {
+  const response = atomicFormulaBarsResponse() as Record<string, unknown>;
+  (response['formula'] as Record<string, unknown>)['parameters'] = [
+    { name: 'F', kind: 'number', value: '9007199254740992.0' },
+  ];
+
+  const result = await createMarketApi(
+    clientReturning(response as JsonValue).client,
+  ).getBars({
+    symbol: '600000.SH',
+    period: '1d',
+    adjustment: 'qfq',
+    formulaVersionId: 'version-1',
+    formulaParameters: { F: 2 ** 53 },
+  });
+
+  expect(result.formula?.parameters[0]).toEqual({
+    name: 'F',
+    kind: 'number',
+    value: '9007199254740992.0',
+  });
+});
+
+it('rejects an integral-valued large transport number when response kind is integer', async () => {
+  const response = atomicFormulaBarsResponse() as Record<string, unknown>;
+  (response['formula'] as Record<string, unknown>)['parameters'] = [
+    { name: 'N', kind: 'integer', value: '9007199254740992' },
+  ];
+  const { client, get } = clientReturning(response as JsonValue);
+
+  await expect(
+    createMarketApi(client).getBars({
+      symbol: '600000.SH',
+      period: '1d',
+      adjustment: 'qfq',
+      formulaVersionId: 'version-1',
+      formulaParameters: { N: 2 ** 53 },
+    }),
+  ).rejects.toBeInstanceOf(FormulaProtocolError);
+  expect(get).toHaveBeenCalledOnce();
 });
 
 it('accepts the fixed JSON emitted by the backend bar and routing models', async () => {

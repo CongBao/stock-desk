@@ -1,5 +1,11 @@
-import { useRef } from 'react';
-import { Navigate, NavLink, Route, Routes } from 'react-router-dom';
+import { lazy, Suspense, useRef } from 'react';
+import {
+  Navigate,
+  NavLink,
+  Route,
+  Routes,
+  useLocation,
+} from 'react-router-dom';
 
 import { MarketPage } from '../features/market/MarketPage';
 import { DataSourcesPage } from '../features/settings/DataSourcesPage';
@@ -11,6 +17,11 @@ import { RouteEffects } from './RouteEffects';
 import { appRoutes } from './routes';
 import { useWorkspaceStore } from './store';
 import { WorkspaceStoreProvider } from './WorkspaceStoreProvider';
+
+const FormulaStudioPage = lazy(async () => {
+  const module = await import('../features/formulas/FormulaStudioPage');
+  return { default: module.FormulaStudioPage };
+});
 
 const systemStateLabels = {
   checking: '系统检查中',
@@ -49,7 +60,7 @@ function NavigationRail() {
       </nav>
 
       <div className="rail-footer">
-        <span className="version-label">v0.2.0 · Market Data</span>
+        <span className="version-label">v0.3.0 · Formula Studio</span>
         <span>本地优先 · 个人使用</span>
       </div>
     </div>
@@ -57,6 +68,7 @@ function NavigationRail() {
 }
 
 function WorkspaceShell() {
+  const location = useLocation();
   const isContextOpen = useWorkspaceStore((state) => state.isContextOpen);
   const openContext = useWorkspaceStore((state) => state.openContext);
   const closeContext = useWorkspaceStore((state) => state.closeContext);
@@ -73,7 +85,12 @@ function WorkspaceShell() {
       <a className="skip-link" href="#main-content">
         跳到主要内容
       </a>
-      <div className="app-shell">
+      <div
+        className="app-shell"
+        data-workspace={
+          location.pathname === '/formulas' ? 'formulas' : 'default'
+        }
+      >
         <NavigationRail />
 
         <main id="main-content" className="workspace" tabIndex={-1}>
@@ -115,6 +132,16 @@ function WorkspaceShell() {
                 element={
                   route.path === '/market' ? (
                     <MarketPage />
+                  ) : route.path === '/formulas' ? (
+                    <Suspense
+                      fallback={
+                        <p className="workspace-route-loading" role="status">
+                          正在加载公式工作台…
+                        </p>
+                      }
+                    >
+                      <FormulaStudioPage />
+                    </Suspense>
                   ) : route.path === '/settings' ? (
                     <DataSourcesPage />
                   ) : (

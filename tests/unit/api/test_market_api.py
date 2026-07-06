@@ -10,6 +10,7 @@ from typing import Iterator
 from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
+import pytest
 from sqlalchemy import event, text
 
 from stock_desk.api.market import MarketServices
@@ -243,6 +244,25 @@ def test_bars_are_cache_only_with_full_series_exact_and_stable_misses(
     assert one_bound.json() == {"code": "invalid_request", "issues": []}
     assert missing.status_code == 404
     assert missing.json() == {"code": "not_found"}
+
+
+@pytest.mark.parametrize("formula_parameters", ['{"N":2}', "{"])
+def test_bars_reject_formula_parameters_without_formula_version(
+    tmp_path: Path, formula_parameters: str
+) -> None:
+    with market_api(tmp_path) as context:
+        response = context.client.get(
+            "/api/market/bars",
+            params={
+                "symbol": "600000.SH",
+                "period": "1d",
+                "adjustment": "qfq",
+                "formula_parameters": formula_parameters,
+            },
+        )
+
+    assert response.status_code == 422
+    assert response.json() == {"code": "invalid_request", "issues": []}
 
 
 def test_bars_map_newest_cache_corruption_to_generic_500(tmp_path: Path) -> None:

@@ -61,13 +61,16 @@ jobs:
         run: |
           make test
           make acceptance
+          make acceptance-formula
           make benchmark
+          make benchmark-formula
           make lint
           make typecheck
           make public-tree
           make security
           make e2e-foundation
           make e2e-market
+          make e2e-formula
       - name: Build final release assets
         run: make build
       - name: Verify built release artifacts

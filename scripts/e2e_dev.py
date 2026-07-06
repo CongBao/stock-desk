@@ -59,16 +59,16 @@ def _routed(period: Period, adjustment: Adjustment) -> RoutedBarSuccess:
     start_day = date(2024, 1, 1)
     if period is Period.DAY:
         timestamps = tuple(
-            _local(start_day + timedelta(days=index)) for index in range(30)
+            _local(start_day + timedelta(days=index)) for index in range(80)
         )
     elif period is Period.WEEK:
         timestamps = tuple(
-            _local(start_day + timedelta(days=7 * index)) for index in range(30)
+            _local(start_day + timedelta(days=7 * index)) for index in range(80)
         )
     else:
         timestamps = tuple(
             _local(start_day + timedelta(days=index), time(9, 30))
-            for index in range(30)
+            for index in range(80)
         )
     query = BarQuery(
         symbol="600000.SH",
@@ -78,32 +78,39 @@ def _routed(period: Period, adjustment: Adjustment) -> RoutedBarSuccess:
         end=timestamps[-1]
         + (timedelta(hours=1) if period is Period.MIN60 else timedelta(days=1)),
     )
-    bars = tuple(
-        Bar(
-            symbol=query.symbol,
-            timestamp=timestamp,
-            period=period,
-            adjustment=adjustment,
-            open=Decimal("10"),
-            high=Decimal("11"),
-            low=Decimal("9"),
-            close=Decimal("10.5") + Decimal(index) / Decimal("100"),
-            volume=1_000 + index,
-            status=TradingStatus.NORMAL,
+    bars = []
+    previous = Decimal("10")
+    for index, timestamp in enumerate(timestamps):
+        phase = index % 20
+        wave = phase if phase <= 10 else 20 - phase
+        close = Decimal("9.5") + Decimal(wave) / Decimal("10")
+        bars.append(
+            Bar(
+                symbol=query.symbol,
+                timestamp=timestamp,
+                period=period,
+                adjustment=adjustment,
+                open=previous,
+                high=max(previous, close) + Decimal("0.2"),
+                low=min(previous, close) - Decimal("0.2"),
+                close=close,
+                volume=1_000 + index,
+                status=TradingStatus.NORMAL,
+            )
         )
-        for index, timestamp in enumerate(timestamps)
-    )
-    observed = _local(date(2024, 12, 31), time(16))
+        previous = close
+    bar_series = tuple(bars)
+    observed = _local(timestamps[-1].astimezone(SHANGHAI).date(), time(16))
     version = dataset_version(
         source=ProviderId.TUSHARE,
         operation="bars",
         request={"query": query},
         data_cutoff=observed,
-        items=bars,
+        items=bar_series,
     )
     result = BarResult(
         query=query,
-        bars=bars,
+        bars=bar_series,
         coverage_start=query.start,
         coverage_end=query.end,
         provenance=Provenance(
