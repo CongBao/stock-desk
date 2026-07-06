@@ -423,6 +423,26 @@ it('renders an explicit empty result without confusing it with a missing result'
   expect(task).toHaveTextContent('结果：空');
 });
 
+it('labels a running task as unfinished without inventing a result', async () => {
+  installHealthyFetch([
+    {
+      ...completedTask,
+      status: 'running',
+      progress: 0.5,
+      finished_at: null,
+      result: null,
+    },
+  ]);
+
+  renderApp();
+
+  const task = await screen.findByRole('listitem', {
+    name: /demo\.double.*运行中/,
+  });
+  expect(task).toHaveTextContent('完成 未结束');
+  expect(task).not.toHaveTextContent('结果：');
+});
+
 it.each([{ nested: true }, ['nested']])(
   'keeps a task with complex result.value without rendering it: %j',
   async (complexValue) => {
