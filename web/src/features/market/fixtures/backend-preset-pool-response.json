@@ -1,0 +1,92 @@
+{
+  "page": {
+    "items": [
+      {
+        "pool_id": "preset:all-a",
+        "kind": "preset",
+        "name": "全量 A 股",
+        "category": "all_a",
+        "revision": null,
+        "member_count": 1,
+        "snapshot_id": "sha256:498e863485711c2d1d81724280f5595f7a2445d7005ccbf076e8649aa9c218e2",
+        "provenance": {
+          "manifest_record_id": "sha256:0d9eab67c84f60c7f8a01d52217edfee568e8367a96a35db4bf35ff7b8961945",
+          "dataset_version": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+          "route_version": "sha256:08bfbc2d0edf885bad8cf46b5c10e57a57777e38035e189ce94326cfd8c06a0a",
+          "source": "akshare",
+          "fetched_at": "2024-01-04T10:00:00Z",
+          "data_cutoff": "2024-01-04T09:00:00Z",
+          "routing_manifest": {
+            "schema_version": "stock-desk-routing-manifest-v1",
+            "category": "instruments",
+            "request": {},
+            "priority": ["akshare"],
+            "attempts": [],
+            "selected_source": "akshare",
+            "upstream_dataset_version": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+            "upstream_fetched_at": "2024-01-04T10:00:00Z",
+            "upstream_data_cutoff": "2024-01-04T09:00:00Z",
+            "upstream_adjustment": null,
+            "route_version": "sha256:08bfbc2d0edf885bad8cf46b5c10e57a57777e38035e189ce94326cfd8c06a0a",
+            "transition": null
+          },
+          "instrument_dataset_version": "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+        }
+      }
+    ],
+    "next_cursor": null
+  },
+  "detail": {
+    "pool_id": "preset:all-a",
+    "kind": "preset",
+    "name": "全量 A 股",
+    "category": "all_a",
+    "revision": null,
+    "member_count": 1,
+    "snapshot_id": "sha256:498e863485711c2d1d81724280f5595f7a2445d7005ccbf076e8649aa9c218e2",
+    "provenance": {
+      "manifest_record_id": "sha256:0d9eab67c84f60c7f8a01d52217edfee568e8367a96a35db4bf35ff7b8961945",
+      "dataset_version": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+      "route_version": "sha256:08bfbc2d0edf885bad8cf46b5c10e57a57777e38035e189ce94326cfd8c06a0a",
+      "source": "akshare",
+      "fetched_at": "2024-01-04T10:00:00Z",
+      "data_cutoff": "2024-01-04T09:00:00Z",
+      "routing_manifest": {
+        "schema_version": "stock-desk-routing-manifest-v1",
+        "category": "instruments",
+        "request": {},
+        "priority": ["akshare"],
+        "attempts": [],
+        "selected_source": "akshare",
+        "upstream_dataset_version": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+        "upstream_fetched_at": "2024-01-04T10:00:00Z",
+        "upstream_data_cutoff": "2024-01-04T09:00:00Z",
+        "upstream_adjustment": null,
+        "route_version": "sha256:08bfbc2d0edf885bad8cf46b5c10e57a57777e38035e189ce94326cfd8c06a0a",
+        "transition": null
+      },
+      "instrument_dataset_version": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+      "composition": {
+        "preset_key": "all-a",
+        "category": "all_a",
+        "display_name": "全量 A 股",
+        "symbols": ["600000.SH"],
+        "source": "tushare",
+        "dataset_version": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+        "route_version": "sha256:71656b131fe3ccdd376b515fe48276553144a83a780608a7e32577746c96003a",
+        "fetched_at": "2024-01-03T08:00:00Z",
+        "data_cutoff": "2024-01-03T07:00:00Z",
+        "complete": true
+      }
+    },
+    "members": [
+      {
+        "ordinal": 0,
+        "symbol": "600000.SH",
+        "name": "浦发银行",
+        "instrument_kind": "stock",
+        "listing_status": "listed"
+      }
+    ]
+  }
+}

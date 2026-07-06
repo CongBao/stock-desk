@@ -1,15 +1,15 @@
 import { useRef } from 'react';
 import { Navigate, NavLink, Route, Routes } from 'react-router-dom';
 
+import { MarketPage } from '../features/market/MarketPage';
+import { useSystemStatus } from '../shared/api/useSystemStatus';
 import { ContextPanel } from './ContextPanel';
-import { MarketPage } from './MarketPage';
 import { NotFoundPage } from './NotFoundPage';
 import { PlannedPage } from './PlannedPage';
 import { RouteEffects } from './RouteEffects';
 import { appRoutes } from './routes';
 import { useWorkspaceStore } from './store';
 import { WorkspaceStoreProvider } from './WorkspaceStoreProvider';
-import { useSystemStatus } from '../shared/api/useSystemStatus';
 
 const systemStateLabels = {
   checking: '系统检查中',
@@ -48,7 +48,7 @@ function NavigationRail() {
       </nav>
 
       <div className="rail-footer">
-        <span className="version-label">v0.1.0 · Foundation</span>
+        <span className="version-label">v0.2.0 · Market Data</span>
         <span>本地优先 · 个人使用</span>
       </div>
     </div>
@@ -78,7 +78,7 @@ function WorkspaceShell() {
         <main id="main-content" className="workspace" tabIndex={-1}>
           <header className="workspace-topbar">
             <div>
-              <span className="topbar-kicker">STOCK DESK / FOUNDATION</span>
+              <span className="topbar-kicker">STOCK DESK / MARKET DATA</span>
               <span
                 className="topbar-state"
                 data-state={systemStatus.overall}

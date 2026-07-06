@@ -1,4 +1,29 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
+import { readFileSync } from 'node:fs';
+
+const backendBarsResponseBody = readFileSync(
+  new URL(
+    '../src/features/market/fixtures/backend-bars-response.json',
+    import.meta.url,
+  ),
+  'utf8',
+);
+const backendInstrumentsResponseBody = readFileSync(
+  new URL(
+    '../src/features/market/fixtures/backend-instruments-response.json',
+    import.meta.url,
+  ),
+  'utf8',
+);
+const backendPresetPoolResponse = JSON.parse(
+  readFileSync(
+    new URL(
+      '../src/features/market/fixtures/backend-preset-pool-response.json',
+      import.meta.url,
+    ),
+    'utf8',
+  ),
+) as { readonly page: unknown; readonly detail: unknown };
 
 const navigationLabels = [
   '行情',
@@ -8,6 +33,18 @@ const navigationLabels = [
   '任务中心',
   '设置',
 ] as const;
+
+async function pageHasHorizontalOverflow(page: Page): Promise<boolean> {
+  return page.evaluate(() => {
+    const browserGlobal = globalThis as unknown as {
+      document: {
+        documentElement: { clientWidth: number; scrollWidth: number };
+      };
+    };
+    const root = browserGlobal.document.documentElement;
+    return root.scrollWidth > root.clientWidth;
+  });
+}
 
 test('fresh user sees the live foundation shell and completed demo task', async ({
   page,
@@ -32,11 +69,25 @@ test('fresh user sees the live foundation shell and completed demo task', async 
     page.getByRole('heading', { level: 1, name: 'stock-desk' }),
   ).toBeVisible();
   for (const label of navigationLabels) {
-    await expect(page.getByRole('link', { name: label })).toBeVisible();
+    await expect(
+      page.getByRole('link', { name: label, exact: true }),
+    ).toBeVisible();
   }
   await expect(
-    page.getByText('布局预览 / 非实时数据', { exact: true }),
+    page.getByRole('complementary', { name: '证券选择与股票池' }),
   ).toBeVisible();
+  await expect(
+    page.getByRole('region', { name: '行情图表工作区' }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole('complementary', { name: '数据证据与快捷操作' }),
+  ).toBeVisible();
+  await expect(
+    page.getByText('先从搜索或股票池选择证券', { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole('region', { name: '公式结果副图' }),
+  ).toContainText('当前不生成指标线或交易信号');
   await expect(page.getByText('系统正常', { exact: true })).toBeVisible();
   await expect(
     page.getByText('已检测：API / 任务存储', { exact: true }),
@@ -77,6 +128,165 @@ test('fresh user sees the live foundation shell and completed demo task', async 
   await expect(
     page.getByRole('heading', { level: 2, name: '行情工作区' }),
   ).toBeFocused();
+});
+
+test('desktop market terminal keeps all three work areas aligned without overflow', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto('/market');
+
+  const left = page.getByRole('complementary', { name: '证券选择与股票池' });
+  const center = page.getByRole('region', { name: '行情图表工作区' });
+  const right = page.getByRole('complementary', {
+    name: '数据证据与快捷操作',
+  });
+  await expect(left).toBeVisible();
+  await expect(center).toBeVisible();
+  await expect(right).toBeVisible();
+
+  for (const width of [1440, 1366, 1280]) {
+    await page.setViewportSize({ width, height: 900 });
+    const [leftBox, centerBox, rightBox] = await Promise.all([
+      left.boundingBox(),
+      center.boundingBox(),
+      right.boundingBox(),
+    ]);
+    expect(leftBox).not.toBeNull();
+    expect(centerBox).not.toBeNull();
+    expect(rightBox).not.toBeNull();
+    if (!leftBox || !centerBox || !rightBox) {
+      throw new Error(
+        `Expected every ${width}px work area to have a bounding box`,
+      );
+    }
+    expect(leftBox.x).toBeLessThan(centerBox.x);
+    expect(centerBox.x).toBeLessThan(rightBox.x);
+    expect(Math.abs(leftBox.y - centerBox.y)).toBeLessThanOrEqual(1);
+    expect(Math.abs(centerBox.y - rightBox.y)).toBeLessThanOrEqual(1);
+    expect(await pageHasHorizontalOverflow(page)).toBe(false);
+  }
+});
+
+test('cached market canvas survives a failed background refresh and recovers once', async ({
+  page,
+  context,
+}) => {
+  let barsShouldFail = false;
+  await page.route('**/api/market/instruments?**', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: backendInstrumentsResponseBody,
+    });
+  });
+  await page.route('**/api/market/pools?**', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ items: [], next_cursor: null }),
+    });
+  });
+  await page.route('**/api/market/bars?**', async (route) => {
+    if (barsShouldFail) {
+      await route.fulfill({
+        status: 500,
+        contentType: 'application/json',
+        body: JSON.stringify({ detail: 'test-only refresh failure' }),
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: backendBarsResponseBody,
+    });
+  });
+
+  await page.goto('/market');
+  const search = page.getByRole('combobox', { name: '搜索证券' });
+  await search.fill('浦发');
+  await page
+    .getByRole('option', { name: '浦发银行 600000.SH', exact: true })
+    .click();
+  const chartCanvas = page.locator('.market-chart-canvas canvas');
+  await expect(chartCanvas).toHaveCount(1);
+
+  barsShouldFail = true;
+  await context.setOffline(true);
+  await context.setOffline(false);
+  await expect(
+    page.getByRole('alert').filter({ hasText: '行情数据读取失败' }),
+  ).toBeVisible();
+  await expect(chartCanvas).toHaveCount(1);
+
+  barsShouldFail = false;
+  await context.setOffline(true);
+  await context.setOffline(false);
+  await expect(
+    page.getByRole('alert').filter({ hasText: '行情数据读取失败' }),
+  ).toHaveCount(0);
+  await expect(chartCanvas).toHaveCount(1);
+});
+
+test('market hashes render through the bounded fallback without crypto.subtle', async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    const cryptoPrototype = Object.getPrototypeOf(globalThis.crypto) as object;
+    Object.defineProperty(cryptoPrototype, 'subtle', {
+      configurable: true,
+      get: () => undefined,
+    });
+  });
+  await page.route('**/api/market/instruments?**', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: backendInstrumentsResponseBody,
+    });
+  });
+  await page.route('**/api/market/pools?**', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(backendPresetPoolResponse.page),
+    });
+  });
+  await page.route('**/api/market/pools/*', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(backendPresetPoolResponse.detail),
+    });
+  });
+  await page.route('**/api/market/bars?**', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: backendBarsResponseBody,
+    });
+  });
+
+  await page.goto('/market');
+  expect(await page.evaluate(() => globalThis.crypto.subtle)).toBeUndefined();
+  await page.getByRole('button', { name: /全量 A 股/u }).click();
+  await expect(
+    page.getByRole('button', { name: /浦发银行.*600000\.SH/u }),
+  ).toBeVisible();
+
+  const search = page.getByRole('combobox', { name: '搜索证券' });
+  await search.fill('浦发');
+  await page
+    .getByRole('option', { name: '浦发银行 600000.SH', exact: true })
+    .click();
+  await expect(page.locator('.market-chart-canvas canvas')).toHaveCount(1);
+  await expect(page.getByText('股票池暂不可用', { exact: true })).toHaveCount(
+    0,
+  );
+  await expect(
+    page.getByText('股票池详情暂不可用', { exact: true }),
+  ).toHaveCount(0);
 });
 
 test('degraded health can recover through the accessible manual retry', async ({

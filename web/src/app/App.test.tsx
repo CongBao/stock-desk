@@ -41,31 +41,35 @@ function requestUrl(input: RequestInfo | URL): string {
 }
 
 function installHealthyFetch(tasks: readonly unknown[] = []) {
-  const fetchMock = vi.fn((input: RequestInfo | URL) =>
-    Promise.resolve(
-      requestUrl(input).endsWith('/health')
-        ? jsonResponse(healthyResponse)
-        : jsonResponse(tasks),
-    ),
-  );
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const url = requestUrl(input);
+    return Promise.resolve(
+      url.includes('/market/pools')
+        ? jsonResponse({ items: [], next_cursor: null })
+        : url.endsWith('/health')
+          ? jsonResponse(healthyResponse)
+          : jsonResponse(tasks),
+    );
+  });
   vi.stubGlobal('fetch', fetchMock);
   return fetchMock;
 }
 
 function installPendingFetch() {
   const signals: AbortSignal[] = [];
-  const fetchMock = vi.fn(
-    (_input: RequestInfo | URL, init?: RequestInit) =>
-      new Promise<Response>((_resolve, reject) => {
-        if (init?.signal) {
-          signals.push(init.signal);
-          init.signal.addEventListener(
-            'abort',
-            () => reject(new DOMException('Aborted', 'AbortError')),
-            { once: true },
-          );
-        }
-      }),
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) =>
+    requestUrl(input).includes('/market/pools')
+      ? Promise.resolve(jsonResponse({ items: [], next_cursor: null }))
+      : new Promise<Response>((_resolve, reject) => {
+          if (init?.signal) {
+            signals.push(init.signal);
+            init.signal.addEventListener(
+              'abort',
+              () => reject(new DOMException('Aborted', 'AbortError')),
+              { once: true },
+            );
+          }
+        }),
   );
   vi.stubGlobal('fetch', fetchMock);
   return { fetchMock, signals };
@@ -134,16 +138,20 @@ it('shows the product identity and all primary navigation items', () => {
   }
 });
 
-it('opens on a clearly labelled non-live market layout preview', async () => {
+it('opens on the cache-only three-column market workspace', async () => {
   renderApp(['/']);
 
   expect(
-    await screen.findByRole('region', { name: 'K 线主图布局预览' }),
+    await screen.findByRole('complementary', { name: '证券选择与股票池' }),
   ).toBeInTheDocument();
   expect(
-    screen.getByRole('region', { name: '公式副图布局预览' }),
+    screen.getByRole('region', { name: '行情图表工作区' }),
   ).toBeInTheDocument();
-  expect(screen.getByText('布局预览 / 非实时数据')).toBeInTheDocument();
+  expect(
+    screen.getByRole('complementary', { name: '数据证据与快捷操作' }),
+  ).toBeInTheDocument();
+  expect(screen.getByText('本地缓存')).toBeInTheDocument();
+  expect(screen.queryByText(/布局预览/u)).not.toBeInTheDocument();
   expect(screen.getByRole('main')).toHaveAttribute('id', 'main-content');
 });
 
@@ -159,10 +167,14 @@ it.each(['/market/', '/MARKET'])(
     await waitFor(() => expect(heading).toHaveFocus());
 
     expect(
-      screen.getByRole('region', { name: 'K 线主图布局预览' }),
+      screen.getByRole('region', { name: '行情图表工作区' }),
     ).toBeInTheDocument();
     expect(document.title).toBe('行情工作区 · stock-desk');
-    expect(screen.getByRole('status')).toHaveTextContent('已进入：行情工作区');
+    expect(
+      screen
+        .getAllByRole('status')
+        .find((status) => status.textContent === '已进入：行情工作区'),
+    ).toBeDefined();
   },
 );
 
@@ -295,14 +307,20 @@ it('creates isolated drawer state for every App mount', async () => {
   ).toHaveAttribute('data-open', 'false');
 });
 
-it('uses one navigation landmark and one complementary context landmark', () => {
+it('uses one navigation/main landmark and named complementary work areas', () => {
   renderApp();
 
   expect(screen.getAllByRole('navigation')).toHaveLength(1);
   expect(screen.getAllByRole('main')).toHaveLength(1);
-  expect(screen.getAllByRole('complementary')).toHaveLength(1);
+  expect(screen.getAllByRole('complementary')).toHaveLength(3);
   expect(
     screen.getByRole('complementary', { name: '上下文状态' }),
+  ).toBeInTheDocument();
+  expect(
+    screen.getByRole('complementary', { name: '证券选择与股票池' }),
+  ).toBeInTheDocument();
+  expect(
+    screen.getByRole('complementary', { name: '数据证据与快捷操作' }),
   ).toBeInTheDocument();
   expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1);
   expect(screen.getByRole('link', { name: '跳到主要内容' })).toHaveAttribute(
@@ -412,7 +430,7 @@ it('times out hung requests, retries once, and enables manual retry', async () =
     await vi.advanceTimersByTimeAsync(10_100);
   });
 
-  expect(fetchMock).toHaveBeenCalledTimes(4);
+  expect(fetchMock).toHaveBeenCalledTimes(5);
   expect(screen.getByText('服务不可用', { exact: true })).toBeInTheDocument();
   expect(screen.getByRole('button', { name: '重新检测' })).toBeEnabled();
 });
@@ -491,7 +509,7 @@ it('recovers both endpoint states after a bounded retry and manual recheck', asy
   expect(
     await screen.findByText('服务不可用', { exact: true }),
   ).toBeInTheDocument();
-  expect(fetchMock).toHaveBeenCalledTimes(4);
+  expect(fetchMock).toHaveBeenCalledTimes(5);
 
   available = true;
   const retry = screen.getByRole('button', { name: '重新检测' });
@@ -508,17 +526,18 @@ it('shares endpoint queries between topbar and context panel consumers', async (
   renderApp();
 
   await screen.findByText('系统正常', { exact: true });
-  expect(fetchMock).toHaveBeenCalledTimes(2);
-  expect(
-    fetchMock.mock.calls.map(([input]) => requestUrl(input)).sort(),
-  ).toEqual(['/api/health', '/api/tasks?limit=5']);
+  const systemCalls = fetchMock.mock.calls
+    .map(([input]) => requestUrl(input))
+    .filter((url) => !url.includes('/market/pools'));
+  expect(systemCalls).toHaveLength(2);
+  expect(systemCalls.sort()).toEqual(['/api/health', '/api/tasks?limit=5']);
 });
 
 it('aborts both in-flight endpoint requests after the final consumer unmounts', async () => {
   const { fetchMock, signals } = installPendingFetch();
 
   const mounted = renderApp();
-  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
   expect(signals).toHaveLength(2);
 
   mounted.unmount();
@@ -527,5 +546,5 @@ it('aborts both in-flight endpoint requests after the final consumer unmounts', 
     expect(signals.every((signal) => signal.aborted)).toBe(true),
   );
   await new Promise((resolve) => window.setTimeout(resolve, 20));
-  expect(fetchMock).toHaveBeenCalledTimes(2);
+  expect(fetchMock).toHaveBeenCalledTimes(3);
 });

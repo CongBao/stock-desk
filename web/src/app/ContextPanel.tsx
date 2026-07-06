@@ -120,7 +120,7 @@ export function ContextPanel({
         <dl className="status-list">
           <div>
             <dt className="visually-hidden">行情数据</dt>
-            <dd>行情数据等待 v0.2.0</dd>
+            <dd>行情数据：按需读取本地缓存</dd>
           </div>
           <div>
             <dt className="visually-hidden">公式引擎</dt>
@@ -205,7 +205,7 @@ export function ContextPanel({
         </span>
         <div>
           <h3 id="current-stage-title">当前阶段</h3>
-          <p>正在建立可访问、可扩展的应用壳层与本地服务基础。</p>
+          <p>行情数据工作区已接入搜索、股票池、K 线和来源追溯。</p>
         </div>
       </section>
 
@@ -215,13 +215,13 @@ export function ContextPanel({
         </span>
         <div>
           <h3 id="data-note-title">数据说明</h3>
-          <p>当前页面不连接数据源，也不展示证券价格或交易信号。</p>
+          <p>行情页只读取已写入本地的缓存，不静默请求外部实时行情。</p>
         </div>
       </section>
 
       <div className="context-footer">
         <span className="context-footer-mark" aria-hidden="true" />
-        <span>System boundary ready</span>
+        <span>Market data boundary active</span>
       </div>
     </aside>
   );

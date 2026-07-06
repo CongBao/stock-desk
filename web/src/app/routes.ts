@@ -15,8 +15,9 @@ export const appRoutes = [
     icon: '市',
     title: '行情工作区',
     release: 'v0.2.0',
-    summary: 'K 线主图与公式副图的工作区层级预览。',
-    description: '市场数据和真实绘图能力将在行情阶段接入。',
+    summary: '搜索证券或选择股票池，查看本地缓存 K 线、成交量与来源证据。',
+    description:
+      '支持日线、周线和 60 分钟周期，以及不复权、前复权和后复权切换。',
   },
   {
     label: '自定义公式',
