@@ -8,7 +8,18 @@ import json
 from collections.abc import Iterator, Mapping, Sequence
 from typing import Any, Generic, TypeVar, cast
 
-from sqlalchemy import Engine, and_, func, insert, literal, or_, select, tuple_, update
+from sqlalchemy import (
+    Engine,
+    and_,
+    case,
+    func,
+    insert,
+    literal,
+    or_,
+    select,
+    tuple_,
+    update,
+)
 from sqlalchemy.engine import Connection, RowMapping
 from sqlalchemy.sql import Select
 from pydantic import ValidationError
@@ -84,6 +95,17 @@ class BacktestTradeSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class BacktestReplayRecord:
+    run_id: str
+    snapshot: BacktestSnapshot
+    result_hash: str | None
+    status: str
+    symbol: BacktestSymbolSnapshot
+    trade: BacktestTradeSnapshot
+    realized: bool
+
+
+@dataclass(frozen=True, slots=True)
 class BacktestFailureSnapshot:
     symbol: str
     ordinal: int
@@ -139,6 +161,16 @@ class BacktestReportSnapshot:
     warmup_policy_version: str
     metrics: Mapping[str, object]
     disclaimer: str
+    outcomes: BacktestOutcomeSnapshot
+
+
+@dataclass(frozen=True, slots=True)
+class BacktestOutcomeSnapshot:
+    total: int
+    succeeded: int
+    failed: int
+    data_insufficient: int
+    unprocessed: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -181,6 +213,7 @@ class BacktestExportRecord:
 
 
 _TERMINAL_STATUSES = frozenset({"succeeded", "partial_failed", "failed", "cancelled"})
+_ACTIVE_STATUSES = frozenset({"queued", "running"})
 _CURSOR_VERSION = 1
 _MAX_CURSOR_LENGTH = 512
 
@@ -190,6 +223,15 @@ def _decimal_text(value: object) -> str:
     if "." in text:
         text = text.rstrip("0").rstrip(".")
     return "0" if text in {"", "-0"} else text
+
+
+def _is_sha256_digest(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 71
+        and value.startswith("sha256:")
+        and all(character in "0123456789abcdef" for character in value[7:])
+    )
 
 
 def _provenance_summary(
@@ -327,7 +369,10 @@ def _decode_cursor(
         or not isinstance(value.get("key"), list)
     ):
         raise BacktestConflict("backtest cursor is invalid")
-    return cast(list[object], value["key"])
+    key = cast(list[object], value["key"])
+    if any(type(item) is int and not 0 <= item <= 2**63 - 1 for item in key):
+        raise BacktestConflict("backtest cursor is invalid")
+    return key
 
 
 def _json_depth(value: object, *, depth: int = 0) -> int:
@@ -669,6 +714,47 @@ class BacktestRepository:
                     BacktestAggregateMetricRow.metric_key == "overview",
                 )
             ).scalar_one_or_none()
+            outcome_row = connection.execute(
+                select(
+                    func.sum(
+                        case(
+                            (
+                                and_(
+                                    BacktestSymbolRow.input_kind == "runnable",
+                                    BacktestSymbolRow.status == "succeeded",
+                                ),
+                                1,
+                            ),
+                            else_=0,
+                        )
+                    ),
+                    func.sum(
+                        case(
+                            (
+                                and_(
+                                    BacktestSymbolRow.input_kind == "runnable",
+                                    BacktestSymbolRow.status == "failed",
+                                ),
+                                1,
+                            ),
+                            else_=0,
+                        )
+                    ),
+                    func.sum(
+                        case(
+                            (
+                                and_(
+                                    BacktestSymbolRow.input_kind == "gap",
+                                    BacktestSymbolRow.status == "failed",
+                                ),
+                                1,
+                            ),
+                            else_=0,
+                        )
+                    ),
+                    func.sum(case((BacktestSymbolRow.status == "pending", 1), else_=0)),
+                ).where(BacktestSymbolRow.run_id == run_id)
+            ).one()
         snapshot = BacktestSnapshot.model_validate_json(
             json.dumps(raw_snapshot, allow_nan=False)
         )
@@ -680,6 +766,24 @@ class BacktestRepository:
             status_sources,
             provenance_digest,
         ) = _provenance_summary(snapshot)
+        outcomes = BacktestOutcomeSnapshot(
+            total=overview.total,
+            succeeded=int(outcome_row[0] or 0),
+            failed=int(outcome_row[1] or 0),
+            data_insufficient=int(outcome_row[2] or 0),
+            unprocessed=int(outcome_row[3] or 0),
+        )
+        if (
+            outcomes.succeeded
+            + outcomes.failed
+            + outcomes.data_insufficient
+            + outcomes.unprocessed
+            != outcomes.total
+            or outcomes.succeeded + outcomes.failed + outcomes.data_insufficient
+            != overview.processed
+            or outcomes.failed + outcomes.data_insufficient != overview.failed
+        ):
+            raise BacktestRepositoryError("backtest outcome counts are inconsistent")
         return BacktestReportSnapshot(
             overview=overview,
             formula_version_id=snapshot.formula_version_id,
@@ -719,6 +823,124 @@ class BacktestRepository:
                 )
             ),
             disclaimer="independent trade samples, not portfolio return",
+            outcomes=outcomes,
+        )
+
+    def get_replay_record(
+        self, run_id: str, symbol: str, trade_ordinal: int
+    ) -> BacktestReplayRecord:
+        if type(trade_ordinal) is not int or not 0 <= trade_ordinal <= 2**63 - 1:
+            raise BacktestConflict("backtest trade ordinal is invalid")
+        with self._engine.connect() as connection:
+            run_row = (
+                connection.execute(
+                    select(
+                        BacktestRunRow.id,
+                        BacktestRunRow.snapshot_id,
+                        BacktestRunRow.snapshot_json,
+                        BacktestRunRow.result_hash,
+                        BacktestRunRow.status,
+                    ).where(BacktestRunRow.id == run_id)
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if run_row is None:
+                raise BacktestNotFound("backtest run was not found")
+            raw_symbol = (
+                connection.execute(
+                    select(BacktestSymbolRow).where(
+                        BacktestSymbolRow.run_id == run_id,
+                        BacktestSymbolRow.symbol == symbol,
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if raw_symbol is None:
+                raise BacktestNotFound("backtest symbol was not found")
+            row = (
+                connection.execute(
+                    select(BacktestTradeRow).where(
+                        BacktestTradeRow.run_id == run_id,
+                        BacktestTradeRow.symbol == symbol,
+                        BacktestTradeRow.ordinal == trade_ordinal,
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+        stored_run_id = run_row["id"]
+        if stored_run_id != run_id:
+            raise BacktestRepositoryError("backtest replay run identity is invalid")
+        status_value = run_row["status"]
+        if not isinstance(status_value, str) or status_value not in (
+            _ACTIVE_STATUSES | _TERMINAL_STATUSES
+        ):
+            raise BacktestRepositoryError("backtest replay run state is invalid")
+        if status_value not in _TERMINAL_STATUSES:
+            raise BacktestConflict("backtest replay is not ready")
+        if row is None:
+            raise BacktestNotFound("backtest trade was not found")
+        try:
+            snapshot = BacktestSnapshot.model_validate_json(
+                json.dumps(run_row["snapshot_json"], allow_nan=False)
+            )
+        except (TypeError, ValueError, ValidationError) as error:
+            raise BacktestRepositoryError("backtest snapshot is invalid") from error
+        if run_row["snapshot_id"] != snapshot.snapshot_id:
+            raise BacktestRepositoryError(
+                "backtest replay snapshot identity is invalid"
+            )
+        result_hash = run_row["result_hash"]
+        if status_value in {"succeeded", "partial_failed"}:
+            if not _is_sha256_digest(result_hash):
+                raise BacktestRepositoryError(
+                    "backtest replay result identity is invalid"
+                )
+        elif result_hash is not None:
+            raise BacktestRepositoryError("backtest replay result identity is invalid")
+        symbol_ordinal = cast(int, raw_symbol["ordinal"])
+        if not 0 <= symbol_ordinal < len(snapshot.symbol_inputs):
+            raise BacktestRepositoryError("backtest symbol ordinal is invalid")
+        reference = _persisted_reference(
+            raw_symbol["reference_json"], input_kind=raw_symbol["input_kind"]
+        )
+        if snapshot.symbol_inputs[symbol_ordinal] != reference:
+            raise BacktestRepositoryError("backtest symbol provenance is inconsistent")
+        symbol_row = BacktestSymbolSnapshot(
+            ordinal=symbol_ordinal,
+            symbol=cast(str, raw_symbol["symbol"]),
+            reference=reference,
+            status=cast(str, raw_symbol["status"]),
+            signal_series_id=cast(str | None, raw_symbol["signal_series_id"]),
+            warmup_start=_utc(cast(datetime | None, raw_symbol["warmup_start"])),
+            failure_reason=cast(str | None, raw_symbol["failure_reason"]),
+        )
+        payload = row["payload_json"]
+        if not isinstance(payload, Mapping):
+            raise BacktestRepositoryError("backtest trade payload is invalid")
+        _validate_json_payload(
+            payload,
+            field_name="backtest trade",
+            max_bytes=256 * 1024,
+        )
+        realized = row["realized"]
+        if type(realized) is not bool:
+            raise BacktestRepositoryError("backtest trade state is invalid")
+        return BacktestReplayRecord(
+            run_id=run_id,
+            snapshot=snapshot,
+            result_hash=cast(str | None, result_hash),
+            status=status_value,
+            symbol=symbol_row,
+            trade=BacktestTradeSnapshot(
+                symbol=cast(str, row["symbol"]),
+                ordinal=cast(int, row["ordinal"]),
+                payload=dict(cast(Mapping[str, object], payload)),
+                symbol_ordinal=symbol_row.ordinal,
+            ),
+            realized=realized,
         )
 
     def page(
@@ -728,6 +950,7 @@ class BacktestRepository:
         collection: str,
         limit: int,
         cursor: str | None,
+        dimension: str | None = None,
     ) -> BacktestPage[object]:
         if type(limit) is not int or not 1 <= limit <= 100:
             raise BacktestConflict("backtest page limit is invalid")
@@ -740,8 +963,18 @@ class BacktestRepository:
             "symbols",
         }:
             raise BacktestConflict("backtest collection is invalid")
+        if dimension is not None and (
+            collection != "groups"
+            or dimension not in {"symbol", "entry_month", "entry_year"}
+        ):
+            raise BacktestConflict("backtest group dimension is invalid")
         self.get_overview(run_id)
-        key = _decode_cursor(cursor, collection=collection, run_id=run_id)
+        cursor_collection = (
+            f"groups:{dimension}"
+            if collection == "groups" and dimension is not None
+            else collection
+        )
+        key = _decode_cursor(cursor, collection=cursor_collection, run_id=run_id)
         with self._engine.connect() as connection:
             items, has_more = self._page_rows(
                 connection,
@@ -749,13 +982,14 @@ class BacktestRepository:
                 collection=collection,
                 limit=limit,
                 key=key,
+                dimension=dimension,
             )
         next_cursor = None
         after_cursor = cursor
         encoded_last = None
         if items:
             encoded_last = _encode_cursor(
-                collection, run_id, self._page_key(collection, items[-1])
+                cursor_collection, run_id, self._page_key(collection, items[-1])
             )
             after_cursor = encoded_last
         if has_more and items:
@@ -950,6 +1184,7 @@ class BacktestRepository:
         collection: str,
         limit: int,
         key: list[object] | None,
+        dimension: str | None = None,
     ) -> tuple[tuple[object, ...], bool]:
         if collection == "symbols":
             symbol_statement = select(BacktestSymbolRow).where(
@@ -989,8 +1224,14 @@ class BacktestRepository:
             group_statement = select(BacktestGroupMetricRow).where(
                 BacktestGroupMetricRow.run_id == run_id
             )
+            if dimension is not None:
+                group_statement = group_statement.where(
+                    BacktestGroupMetricRow.dimension == dimension
+                )
             if key is not None:
                 if len(key) != 2 or not all(isinstance(item, str) for item in key):
+                    raise BacktestConflict("backtest cursor is invalid")
+                if dimension is not None and key[0] != dimension:
                     raise BacktestConflict("backtest cursor is invalid")
                 group_statement = group_statement.where(
                     or_(

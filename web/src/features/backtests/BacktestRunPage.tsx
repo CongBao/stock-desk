@@ -8,7 +8,9 @@ import {
   type BacktestApi,
   type BacktestLog,
   type BacktestOverview,
+  type BacktestReportApi,
 } from './backtestApi';
+import { BacktestReportPage } from './BacktestReportPage';
 import { backtestPollDelay, backtestPollDelays } from './backtestPolling';
 import { RunProgress } from './RunProgress';
 
@@ -18,6 +20,20 @@ const terminalStatuses = new Set([
   'failed',
   'cancelled',
 ]);
+
+function supportsReports(
+  api: BacktestApi,
+): api is BacktestApi & BacktestReportApi {
+  const candidate = api as Partial<BacktestReportApi>;
+  return (
+    typeof candidate.getReport === 'function' &&
+    typeof candidate.getTrades === 'function' &&
+    typeof candidate.getGroups === 'function' &&
+    typeof candidate.getFailures === 'function' &&
+    typeof candidate.getReportLogs === 'function' &&
+    typeof candidate.getReplay === 'function'
+  );
+}
 export function BacktestRunPage({
   api = backtestApi,
   pollDelays = backtestPollDelays,
@@ -281,11 +297,15 @@ export function BacktestRunPage({
               aria-labelledby="report-shell-heading"
             >
               <h3 id="report-shell-heading">回测结果</h3>
-              <p>
-                {run.status === 'succeeded'
-                  ? '运行已完成，结论与交易明细可继续查看。'
-                  : '运行已结束；报告将保留所有已持久化的部分结果、失败和日志。'}
-              </p>
+              {supportsReports(api) ? (
+                <BacktestReportPage api={api} runId={runId} />
+              ) : (
+                <p>
+                  {run.status === 'succeeded'
+                    ? '运行已完成，结论与交易明细可继续查看。'
+                    : '运行已结束；报告将保留所有已持久化的部分结果、失败和日志。'}
+                </p>
+              )}
             </section>
           ) : null}
         </>

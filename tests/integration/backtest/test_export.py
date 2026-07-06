@@ -21,7 +21,11 @@ from stock_desk.backtest.models import (
     BacktestTradeRow,
 )
 from stock_desk.backtest.repository import BacktestRepository
-from stock_desk.backtest.repository import BacktestConflict
+from stock_desk.backtest.repository import (
+    BacktestConflict,
+    BacktestRepositoryError,
+    _encode_cursor,
+)
 from stock_desk.backtest.service import BacktestService
 from stock_desk.api.backtests import BacktestServices
 from stock_desk.api.market import MarketServices
@@ -145,6 +149,11 @@ def _completed_repository(
             },
         )
         if complete:
+            connection.execute(
+                update(BacktestSymbolRow)
+                .where(BacktestSymbolRow.run_id == RUN_ID)
+                .values(status="succeeded", updated_at=FINISHED)
+            )
             connection.execute(
                 update(BacktestRunRow)
                 .where(BacktestRunRow.id == RUN_ID)
@@ -296,6 +305,91 @@ def test_repository_report_pages_and_cursors_use_public_snapshots(
         )
     with pytest.raises(BacktestConflict, match="limit"):
         repository.list_runs_page(limit=101, cursor=None)
+
+
+def test_group_pages_filter_in_sql_and_reject_cross_dimension_cursor(
+    tmp_path: Path,
+) -> None:
+    repository = _completed_repository(tmp_path)
+
+    symbol_page = repository.page(
+        RUN_ID,
+        collection="groups",
+        limit=1,
+        cursor=None,
+        dimension="symbol",
+    )
+    month_page = repository.page(
+        RUN_ID,
+        collection="groups",
+        limit=1,
+        cursor=None,
+        dimension="entry_month",
+    )
+
+    assert symbol_page.items
+    assert all(item.dimension == "symbol" for item in symbol_page.items)
+    assert month_page.items == ()
+    assert symbol_page.next_cursor is not None
+    with pytest.raises(BacktestConflict, match="cursor"):
+        repository.page(
+            RUN_ID,
+            collection="groups",
+            limit=1,
+            cursor=symbol_page.next_cursor,
+            dimension="entry_month",
+        )
+
+
+def test_cursor_rejects_oversized_integer_before_sql_execution(tmp_path: Path) -> None:
+    repository = _completed_repository(tmp_path)
+    forged = _encode_cursor(
+        "trades",
+        RUN_ID,
+        [10**100, 0, "600000.SH"],
+    )
+
+    with pytest.raises(BacktestConflict, match="cursor"):
+        repository.page(
+            RUN_ID,
+            collection="trades",
+            limit=1,
+            cursor=forged,
+        )
+
+
+def test_report_rejects_impossible_succeeded_gap_outcome(tmp_path: Path) -> None:
+    repository = _completed_repository(tmp_path)
+    with repository._engine.begin() as connection:  # noqa: SLF001 - corruption regression
+        connection.exec_driver_sql("DROP TRIGGER trg_backtest_symbol_terminal_update")
+        connection.execute(
+            update(BacktestSymbolRow)
+            .where(BacktestSymbolRow.run_id == RUN_ID)
+            .values(input_kind="gap")
+        )
+
+    with pytest.raises(BacktestRepositoryError, match="outcome counts"):
+        repository.report(RUN_ID)
+
+
+def test_filtered_group_cursor_key_must_match_requested_dimension(
+    tmp_path: Path,
+) -> None:
+    repository = _completed_repository(tmp_path)
+    forged = _encode_cursor(
+        "groups:symbol",
+        RUN_ID,
+        ["entry_month", ""],
+    )
+
+    with pytest.raises(BacktestConflict, match="cursor"):
+        repository.page(
+            RUN_ID,
+            collection="groups",
+            limit=1,
+            cursor=forged,
+            dimension="symbol",
+        )
 
 
 def test_paginated_failure_and_log_details_are_allowlisted_and_secret_safe(

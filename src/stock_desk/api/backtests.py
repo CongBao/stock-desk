@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator, Mapping
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
+import json
 import math
 import re
 from typing import Annotated, Any, Literal, cast
@@ -28,6 +29,7 @@ from stock_desk.backtest.repository import (
     BacktestGroupSnapshot,
     BacktestLogSnapshot,
     BacktestNotFound,
+    BacktestOutcomeSnapshot,
     BacktestOverviewSnapshot,
     BacktestPage,
     BacktestReportSnapshot,
@@ -46,6 +48,7 @@ from stock_desk.backtest.service import (
     SubmittedBacktest,
 )
 from stock_desk.formula.service import FormulaService
+from stock_desk.formula.signal_series import MAX_PUBLIC_OUTPUTS
 from stock_desk.formula.repository import (
     FormulaConflict,
     FormulaNotFound,
@@ -338,6 +341,33 @@ class BacktestProvenanceSummaryResponse(_BacktestDTO):
     digest: str
 
 
+class BacktestOutcomeResponse(_BacktestDTO):
+    total: Annotated[StrictInt, Field(ge=1, le=10_000)]
+    succeeded: Annotated[StrictInt, Field(ge=0, le=10_000)]
+    failed: Annotated[StrictInt, Field(ge=0, le=10_000)]
+    data_insufficient: Annotated[StrictInt, Field(ge=0, le=10_000)]
+    unprocessed: Annotated[StrictInt, Field(ge=0, le=10_000)]
+
+    @model_validator(mode="after")
+    def validate_total(self) -> BacktestOutcomeResponse:
+        if (
+            self.succeeded + self.failed + self.data_insufficient + self.unprocessed
+            != self.total
+        ):
+            raise ValueError("backtest outcomes do not reconcile")
+        return self
+
+    @classmethod
+    def from_snapshot(cls, item: BacktestOutcomeSnapshot) -> BacktestOutcomeResponse:
+        return cls(
+            total=item.total,
+            succeeded=item.succeeded,
+            failed=item.failed,
+            data_insufficient=item.data_insufficient,
+            unprocessed=item.unprocessed,
+        )
+
+
 class BacktestReportResponse(_BacktestDTO):
     overview: BacktestOverviewResponse
     formula_version_id: str
@@ -357,6 +387,21 @@ class BacktestReportResponse(_BacktestDTO):
     warmup_policy_version: str
     metrics: dict[str, object]
     disclaimer: str
+    outcomes: BacktestOutcomeResponse
+
+    @model_validator(mode="after")
+    def validate_outcomes(self) -> BacktestReportResponse:
+        if (
+            self.outcomes.total != self.overview.total
+            or self.outcomes.succeeded
+            + self.outcomes.failed
+            + self.outcomes.data_insufficient
+            != self.overview.processed
+            or self.outcomes.failed + self.outcomes.data_insufficient
+            != self.overview.failed
+        ):
+            raise ValueError("backtest report outcomes do not match overview")
+        return self
 
     @classmethod
     def from_snapshot(cls, item: BacktestReportSnapshot) -> BacktestReportResponse:
@@ -395,6 +440,7 @@ class BacktestReportResponse(_BacktestDTO):
             warmup_policy_version=item.warmup_policy_version,
             metrics=dict(item.metrics),
             disclaimer=item.disclaimer,
+            outcomes=BacktestOutcomeResponse.from_snapshot(item.outcomes),
         )
 
 
@@ -431,6 +477,148 @@ class BacktestSymbolResponse(_BacktestDTO):
     status: str
     signal_series_id: str | None
     provenance: dict[str, object]
+
+
+ReplayTimestamp = Annotated[
+    str,
+    Field(
+        min_length=20,
+        max_length=40,
+        pattern=(
+            r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}"
+            r"(?:\.[0-9]+)?(?:Z|[+-][0-9]{2}:[0-9]{2})$"
+        ),
+    ),
+]
+ReplayDecimal = Annotated[
+    str,
+    Field(
+        min_length=1,
+        max_length=64,
+        pattern=r"^-?(?:0|[1-9][0-9]*)(?:\.[0-9]*[1-9])?$",
+    ),
+]
+
+
+class BacktestReplayBarResponse(_BacktestDTO):
+    symbol: CanonicalSymbol
+    timestamp: ReplayTimestamp
+    period: Literal["1d", "1w", "60m"]
+    adjustment: Literal["none", "qfq", "hfq"]
+    open: ReplayDecimal
+    high: ReplayDecimal
+    low: ReplayDecimal
+    close: ReplayDecimal
+    volume: Annotated[StrictInt, Field(ge=0, le=2**63 - 1)]
+    status: Literal["unknown", "normal", "suspended", "limit_up", "limit_down"]
+
+
+class BacktestReplayNumericOutputResponse(_BacktestDTO):
+    name: Annotated[str, Field(pattern=r"^[A-Z][A-Z0-9_]{0,63}$")]
+    values: Annotated[tuple[float | None, ...], Field(max_length=500)]
+
+
+class BacktestReplaySignalResponse(_BacktestDTO):
+    name: Literal["BUY", "SELL"]
+    values: Annotated[tuple[bool | None, ...], Field(max_length=500)]
+
+
+class BacktestReplayFormulaResponse(_BacktestDTO):
+    signal_series_id: SnapshotId
+    formula_version_id: UUIDIdentity
+    formula_checksum: SnapshotId
+    engine_version: Annotated[str, Field(min_length=1, max_length=64)]
+    compatibility_version: Annotated[str, Field(min_length=1, max_length=64)]
+    numeric_outputs: Annotated[
+        tuple[BacktestReplayNumericOutputResponse, ...],
+        Field(max_length=MAX_PUBLIC_OUTPUTS),
+    ]
+    signals: Annotated[tuple[BacktestReplaySignalResponse, ...], Field(max_length=2)]
+
+
+class BacktestReplayFillMarkerResponse(_BacktestDTO):
+    side: Literal["buy", "sell"]
+    signal_at: ReplayTimestamp
+    filled_at: ReplayTimestamp
+    anchor_ordinal: Annotated[StrictInt, Field(ge=0)]
+    reference_open: ReplayDecimal
+    fill_price: ReplayDecimal
+    quantity: Annotated[StrictInt, Field(gt=0)]
+
+
+class BacktestReplayExecutionEvidenceResponse(_BacktestDTO):
+    side: Literal["buy", "sell"]
+    filled_at: ReplayTimestamp
+    bar: BacktestReplayBarResponse
+
+
+class BacktestReplayPinResponse(_BacktestDTO):
+    manifest_record_id: SnapshotId
+    dataset_version: SnapshotId
+    route_version: SnapshotId
+    source: Annotated[str, Field(min_length=1, max_length=32)]
+    data_cutoff: ReplayTimestamp
+
+
+class BacktestReplayProvenanceResponse(_BacktestDTO):
+    signal: BacktestReplayPinResponse
+    execution: BacktestReplayPinResponse
+    status: BacktestReplayPinResponse
+
+
+class BacktestReplayResponse(_BacktestDTO):
+    run_id: UUIDIdentity
+    snapshot_id: SnapshotId
+    result_hash: SnapshotId | None
+    symbol: CanonicalSymbol
+    trade_ordinal: Annotated[StrictInt, Field(ge=0)]
+    period: Literal["1d", "1w", "60m"]
+    adjustment: Literal["none", "qfq", "hfq"]
+    bars: Annotated[tuple[BacktestReplayBarResponse, ...], Field(max_length=500)]
+    formula: BacktestReplayFormulaResponse
+    trade: Annotated[dict[str, object], Field(max_length=64)]
+    fill_markers: Annotated[
+        tuple[BacktestReplayFillMarkerResponse, ...], Field(max_length=2)
+    ]
+    execution_evidence: Annotated[
+        tuple[BacktestReplayExecutionEvidenceResponse, ...], Field(max_length=2)
+    ]
+    provenance: BacktestReplayProvenanceResponse
+    next_cursor: Annotated[str | None, Field(max_length=512)]
+
+    @model_validator(mode="after")
+    def validate_alignment(self) -> BacktestReplayResponse:
+        count = len(self.bars)
+        if tuple(item.name for item in self.formula.signals) != ("BUY", "SELL"):
+            raise ValueError("backtest replay signals are invalid")
+        if any(len(item.values) != count for item in self.formula.numeric_outputs):
+            raise ValueError("backtest replay numeric outputs are not aligned")
+        if any(len(item.values) != count for item in self.formula.signals):
+            raise ValueError("backtest replay signals are not aligned")
+        if len(self.fill_markers) != len(self.execution_evidence):
+            raise ValueError("backtest replay fills are not aligned")
+        marker_pairs = tuple((item.side, item.filled_at) for item in self.fill_markers)
+        evidence_pairs = tuple(
+            (item.side, item.filled_at) for item in self.execution_evidence
+        )
+        if marker_pairs != evidence_pairs or len(
+            {item.side for item in self.fill_markers}
+        ) != len(self.fill_markers):
+            raise ValueError("backtest replay fills are mismatched")
+        realized = self.trade.get("realized")
+        if type(realized) is not bool or len(self.fill_markers) != (
+            2 if realized else 1
+        ):
+            raise ValueError("backtest replay fills do not match trade state")
+        expected_execution_period = "1d" if self.period == "1w" else self.period
+        if any(
+            item.bar.period != expected_execution_period
+            or item.bar.symbol != self.symbol
+            or item.bar.adjustment != self.adjustment
+            for item in self.execution_evidence
+        ):
+            raise ValueError("backtest replay execution evidence is invalid")
+        return self
 
 
 class BacktestGroupPageResponse(_BacktestDTO):
@@ -692,13 +880,35 @@ class BacktestServices:
         collection: str,
         limit: int,
         cursor: str | None,
+        dimension: str | None = None,
     ) -> BacktestPage[object]:
         return self.service.page(
-            run_id, collection=collection, limit=limit, cursor=cursor
+            run_id,
+            collection=collection,
+            limit=limit,
+            cursor=cursor,
+            dimension=dimension,
         )
 
     def export(self, run_id: str, *, section: str, format: str) -> Iterator[bytes]:
         return stream_export(self.repository, run_id, section=section, format=format)
+
+    def replay(
+        self,
+        run_id: str,
+        symbol: str,
+        trade_ordinal: int,
+        *,
+        limit: int,
+        cursor: str | None,
+    ) -> dict[str, object]:
+        return self.service.replay(
+            run_id,
+            symbol,
+            trade_ordinal,
+            limit=limit,
+            cursor=cursor,
+        )
 
 
 class BacktestServiceDatabaseMismatch(RuntimeError):
@@ -903,9 +1113,20 @@ def _page_parameters(
     collection: str,
     limit: int,
     cursor: str | None,
+    dimension: str | None = None,
 ) -> BacktestPage[object] | JSONResponse:
     try:
-        return services.page(run_id, collection=collection, limit=limit, cursor=cursor)
+        if dimension is None:
+            return services.page(
+                run_id, collection=collection, limit=limit, cursor=cursor
+            )
+        return services.page(
+            run_id,
+            collection=collection,
+            limit=limit,
+            cursor=cursor,
+            dimension=dimension,
+        )
     except Exception as error:
         return _exception(error)
 
@@ -916,8 +1137,13 @@ def list_backtest_groups(
     services: BacktestServicesDependency,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
     cursor: Annotated[str | None, Query(min_length=1, max_length=512)] = None,
+    dimension: Annotated[
+        Literal["symbol", "entry_month", "entry_year"] | None, Query()
+    ] = None,
 ) -> BacktestGroupPageResponse | JSONResponse:
-    page = _page_parameters(services, run_id, "groups", limit, cursor)
+    page = _page_parameters(
+        services, run_id, "groups", limit, cursor, dimension=dimension
+    )
     if isinstance(page, JSONResponse):
         return page
     return BacktestGroupPageResponse(
@@ -954,6 +1180,52 @@ def list_backtest_trades(
 ) -> BacktestTradePageResponse | JSONResponse:
     page = _page_parameters(services, run_id, "trades", limit, cursor)
     return page if isinstance(page, JSONResponse) else _trade_page_response(page)
+
+
+@router.get(
+    "/{run_id}/trades/{symbol}/{trade_ordinal}/replay",
+    response_model=BacktestReplayResponse,
+)
+def get_backtest_trade_replay(
+    run_id: RunIdPath,
+    symbol: Annotated[
+        str, Path(pattern=r"^[0-9]{6}\.(?:SH|SZ|BJ)$", min_length=9, max_length=9)
+    ],
+    trade_ordinal: Annotated[int, Path(ge=0, le=2**63 - 1)],
+    services: BacktestServicesDependency,
+    limit: Annotated[int, Query(ge=1, le=500)] = 200,
+    cursor: Annotated[str | None, Query(min_length=1, max_length=512)] = None,
+) -> BacktestReplayResponse | JSONResponse:
+    try:
+        raw = services.replay(
+            run_id,
+            symbol,
+            trade_ordinal,
+            limit=limit,
+            cursor=cursor,
+        )
+        try:
+            response = BacktestReplayResponse.model_validate_json(
+                json.dumps(
+                    raw,
+                    allow_nan=False,
+                    ensure_ascii=True,
+                    separators=(",", ":"),
+                )
+            )
+        except (RecursionError, TypeError, ValueError, OverflowError) as error:
+            raise BacktestRepositoryError(
+                "backtest replay response is invalid"
+            ) from error
+        if (
+            response.run_id != run_id
+            or response.symbol != symbol
+            or response.trade_ordinal != trade_ordinal
+        ):
+            raise BacktestRepositoryError("backtest replay identity is invalid")
+        return response
+    except Exception as error:
+        return _exception(error)
 
 
 @router.get("/{run_id}/open", response_model=BacktestTradePageResponse)

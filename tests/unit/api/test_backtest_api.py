@@ -7,6 +7,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+import stock_desk.api.backtests as backtest_api
 
 from fastapi.testclient import TestClient
 
@@ -14,6 +15,7 @@ from stock_desk.backtest.repository import (
     BacktestFailureSnapshot,
     BacktestGroupSnapshot,
     BacktestLogSnapshot,
+    BacktestOutcomeSnapshot,
     BacktestOverviewSnapshot,
     BacktestPage,
     BacktestReportSnapshot,
@@ -185,6 +187,13 @@ class _ReadServices(_CreateServices):
             warmup_policy_version="formula-warmup-v1",
             metrics={"realized_count": 2, "win_rate": "0.5"},
             disclaimer="independent trade samples, not portfolio return",
+            outcomes=BacktestOutcomeSnapshot(
+                total=3,
+                succeeded=2,
+                failed=0,
+                data_insufficient=1,
+                unprocessed=0,
+            ),
         )
 
     def page(
@@ -282,10 +291,51 @@ def test_report_and_each_result_collection_use_separate_cursor_pages() -> None:
         "digest": "sha256:" + "f" * 64,
     }
     assert report.json()["execution_rules_version"] == "a-share-v1"
+    assert report.json()["outcomes"] == {
+        "total": 3,
+        "succeeded": 2,
+        "failed": 0,
+        "data_insufficient": 1,
+        "unprocessed": 0,
+    }
     for name, response in pages.items():
         assert response.status_code == 200
         assert response.json()["next_cursor"] == f"next-{name}"
         assert len(response.json()["items"]) == 1
+
+
+def test_group_page_restricts_query_to_requested_dimension() -> None:
+    class GroupServices(_ReadServices):
+        def page(
+            self,
+            run_id: str,
+            *,
+            collection: str,
+            limit: int,
+            cursor: str | None,
+            dimension: str | None = None,
+        ) -> BacktestPage:
+            assert run_id == RUN_ID
+            assert collection == "groups"
+            assert dimension == "entry_month"
+            assert (limit, cursor) == (1, None)
+            return BacktestPage(
+                items=(
+                    BacktestGroupSnapshot(
+                        "entry_month", "2024-01", {"win_rate": "0.5"}
+                    ),
+                ),
+                next_cursor=None,
+            )
+
+    with TestClient(create_app(backtest_services=GroupServices())) as client:  # type: ignore[arg-type]
+        response = client.get(
+            f"/api/backtests/{RUN_ID}/groups",
+            params={"dimension": "entry_month", "limit": 1},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["items"][0]["dimension"] == "entry_month"
 
 
 def test_export_route_streams_with_safe_fixed_headers() -> None:
@@ -579,3 +629,237 @@ def test_backtest_openapi_is_bounded_anonymous_and_broker_free() -> None:
         components["BacktestSymbolPageResponse"]["properties"]["items"]["maxItems"]
         == 100
     )
+
+
+def test_trade_replay_route_binds_run_symbol_trade_and_cursor_page() -> None:
+    class ReplayServices(_ReadServices):
+        def replay(
+            self,
+            run_id: str,
+            symbol: str,
+            trade_ordinal: int,
+            *,
+            limit: int,
+            cursor: str | None,
+        ) -> dict[str, object]:
+            assert run_id == RUN_ID
+            assert symbol == "600000.SH"
+            assert trade_ordinal == 7
+            assert limit == 2
+            assert cursor == "opaque-cursor"
+            return {
+                "run_id": RUN_ID,
+                "snapshot_id": SNAPSHOT_ID,
+                "result_hash": "sha256:" + "b" * 64,
+                "symbol": "600000.SH",
+                "trade_ordinal": 7,
+                "period": "1d",
+                "adjustment": "none",
+                "bars": [
+                    {
+                        "symbol": "600000.SH",
+                        "timestamp": "2024-02-01T16:00:00Z",
+                        "period": "1d",
+                        "adjustment": "none",
+                        "open": "10",
+                        "high": "11",
+                        "low": "9",
+                        "close": "10",
+                        "volume": 1000,
+                        "status": "normal",
+                    }
+                ],
+                "formula": {
+                    "signal_series_id": "sha256:" + "c" * 64,
+                    "formula_version_id": FORMULA_ID,
+                    "formula_checksum": "sha256:" + "d" * 64,
+                    "engine_version": "formula-engine-v1",
+                    "compatibility_version": "tdx-v1",
+                    "numeric_outputs": [],
+                    "signals": [
+                        {"name": "BUY", "values": [True]},
+                        {"name": "SELL", "values": [False]},
+                    ],
+                },
+                "trade": {"realized": False},
+                "fill_markers": [
+                    {
+                        "side": "buy",
+                        "signal_at": "2024-02-01T16:00:00Z",
+                        "filled_at": "2024-02-02T01:30:00Z",
+                        "anchor_ordinal": 0,
+                        "reference_open": "10",
+                        "fill_price": "10.01",
+                        "quantity": 1000,
+                    }
+                ],
+                "execution_evidence": [
+                    {
+                        "side": "buy",
+                        "filled_at": "2024-02-02T01:30:00Z",
+                        "bar": {
+                            "symbol": "600000.SH",
+                            "timestamp": "2024-02-01T16:00:00Z",
+                            "period": "1d",
+                            "adjustment": "none",
+                            "open": "10",
+                            "high": "11",
+                            "low": "9",
+                            "close": "10",
+                            "volume": 1000,
+                            "status": "normal",
+                        },
+                    }
+                ],
+                "provenance": {
+                    name: {
+                        "manifest_record_id": "sha256:" + digest * 64,
+                        "dataset_version": "sha256:" + digest * 64,
+                        "route_version": "sha256:" + digest * 64,
+                        "source": "tushare",
+                        "data_cutoff": "2024-02-02T00:00:00Z",
+                    }
+                    for name, digest in (
+                        ("signal", "1"),
+                        ("execution", "2"),
+                        ("status", "3"),
+                    )
+                },
+                "next_cursor": None,
+            }
+
+    with TestClient(create_app(backtest_services=ReplayServices())) as client:  # type: ignore[arg-type]
+        response = client.get(
+            f"/api/backtests/{RUN_ID}/trades/600000.SH/7/replay",
+            params={"limit": 2, "cursor": "opaque-cursor"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["run_id"] == RUN_ID
+    assert response.json()["symbol"] == "600000.SH"
+    assert response.json()["trade_ordinal"] == 7
+
+
+def test_trade_replay_openapi_is_strict_and_bounded() -> None:
+    with TestClient(create_app(backtest_services=_ReadServices())) as client:  # type: ignore[arg-type]
+        document = client.get("/openapi.json").json()
+
+    operation = document["paths"][
+        "/api/backtests/{run_id}/trades/{symbol}/{trade_ordinal}/replay"
+    ]["get"]
+    schema = operation["responses"]["200"]["content"]["application/json"]["schema"]
+    assert schema["$ref"].endswith("/BacktestReplayResponse")
+    components = document["components"]["schemas"]
+    assert components["BacktestReplayResponse"]["additionalProperties"] is False
+    assert components["BacktestReplayResponse"]["properties"]["bars"]["maxItems"] == 500
+    limit = next(item for item in operation["parameters"] if item["name"] == "limit")
+    assert limit["schema"]["maximum"] == 500
+
+
+@pytest.mark.parametrize(
+    "suffix",
+    [
+        "trades/not-a-symbol/0/replay",
+        "trades/600000.SH/-1/replay",
+        f"trades/600000.SH/{2**63}/replay",
+        "trades/600000.SH/0/replay?limit=501",
+        "trades/600000.SH/0/replay?cursor=" + "x" * 513,
+    ],
+)
+def test_trade_replay_rejects_invalid_path_and_page_values_before_service(
+    suffix: str,
+) -> None:
+    class NeverReplayServices(_ReadServices):
+        def replay(self, *_args: object, **_kwargs: object) -> dict[str, object]:
+            raise AssertionError("invalid replay request reached service")
+
+    with TestClient(create_app(backtest_services=NeverReplayServices())) as client:  # type: ignore[arg-type]
+        response = client.get(f"/api/backtests/{RUN_ID}/{suffix}")
+
+    assert response.status_code == 422
+    assert response.json() == {"code": "invalid_request"}
+
+
+def test_trade_replay_response_rejects_mismatched_fill_evidence() -> None:
+    pin = backtest_api.BacktestReplayPinResponse(
+        manifest_record_id="sha256:" + "1" * 64,
+        dataset_version="sha256:" + "2" * 64,
+        route_version="sha256:" + "3" * 64,
+        source="tushare",
+        data_cutoff="2024-02-02T00:00:00Z",
+    )
+    bar = backtest_api.BacktestReplayBarResponse(
+        symbol="600000.SH",
+        timestamp="2024-02-01T16:00:00Z",
+        period="1d",
+        adjustment="none",
+        open="10",
+        high="11",
+        low="9",
+        close="10",
+        volume=1000,
+        status="normal",
+    )
+
+    with pytest.raises(ValueError, match="fills"):
+        backtest_api.BacktestReplayResponse(
+            run_id=RUN_ID,
+            snapshot_id=SNAPSHOT_ID,
+            result_hash="sha256:" + "b" * 64,
+            symbol="600000.SH",
+            trade_ordinal=0,
+            period="1d",
+            adjustment="none",
+            bars=(bar,),
+            formula=backtest_api.BacktestReplayFormulaResponse(
+                signal_series_id="sha256:" + "c" * 64,
+                formula_version_id=FORMULA_ID,
+                formula_checksum="sha256:" + "d" * 64,
+                engine_version="formula-engine-v1",
+                compatibility_version="tdx-v1",
+                numeric_outputs=(),
+                signals=(
+                    backtest_api.BacktestReplaySignalResponse(
+                        name="BUY", values=(True,)
+                    ),
+                    backtest_api.BacktestReplaySignalResponse(
+                        name="SELL", values=(False,)
+                    ),
+                ),
+            ),
+            trade={"realized": False},
+            fill_markers=(
+                backtest_api.BacktestReplayFillMarkerResponse(
+                    side="buy",
+                    signal_at="2024-02-01T16:00:00Z",
+                    filled_at="2024-02-02T01:30:00Z",
+                    anchor_ordinal=0,
+                    reference_open="10",
+                    fill_price="10.01",
+                    quantity=1000,
+                ),
+            ),
+            execution_evidence=(
+                backtest_api.BacktestReplayExecutionEvidenceResponse(
+                    side="sell",
+                    filled_at="2024-02-03T01:30:00Z",
+                    bar=bar,
+                ),
+            ),
+            provenance=backtest_api.BacktestReplayProvenanceResponse(
+                signal=pin, execution=pin, status=pin
+            ),
+            next_cursor=None,
+        )
+
+
+def test_trade_replay_malformed_service_payload_is_safe_storage_failure() -> None:
+    class MalformedReplayServices(_ReadServices):
+        def replay(self, *_args: object, **_kwargs: object) -> dict[str, object]:
+            return {"run_id": RUN_ID}
+
+    with TestClient(create_app(backtest_services=MalformedReplayServices())) as client:  # type: ignore[arg-type]
+        response = client.get(f"/api/backtests/{RUN_ID}/trades/600000.SH/0/replay")
+
+    assert response.status_code == 503
+    assert response.json() == {"code": "storage_unavailable"}

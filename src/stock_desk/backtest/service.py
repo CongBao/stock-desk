@@ -13,13 +13,22 @@ from sqlalchemy import Engine, func, select
 from sqlalchemy.engine import Connection
 
 from stock_desk.backtest.config import BacktestRequest
-from stock_desk.backtest.repository import BacktestRepository
+from stock_desk.backtest.repository import (
+    BacktestConflict,
+    BacktestRepository,
+    BacktestRepositoryError,
+    _decode_cursor,
+    _encode_cursor,
+)
 from stock_desk.backtest.repository import (
     BacktestOverviewSnapshot,
     BacktestPage,
     BacktestReportSnapshot,
 )
-from stock_desk.backtest.snapshot import freeze_request
+from stock_desk.backtest.pool_runner import _trade_from_payload, _trade_payload
+from stock_desk.backtest.public_data import public_payload
+from stock_desk.backtest.snapshot import freeze_request, reopen_symbol_input
+from stock_desk.backtest.events import OrderFilled
 from stock_desk.backtest.types import (
     BacktestSnapshot,
     FrozenSymbolGap,
@@ -167,6 +176,74 @@ def _has_obvious_warmup_capacity(
     return pin.prefix_row_count >= lookback_bars
 
 
+def _timestamp_text(value: datetime) -> str:
+    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _decimal_text(value: Decimal) -> str:
+    text = format(value, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return "0" if text in {"", "-0"} else text
+
+
+def _pin_payload(reference: PinnedMarketRef, kind: str) -> dict[str, object]:
+    if kind == "signal":
+        return {
+            "manifest_record_id": reference.signal_manifest_record_id,
+            "dataset_version": reference.signal_dataset_version,
+            "route_version": reference.signal_route_version,
+            "source": reference.signal_source.value,
+            "data_cutoff": _timestamp_text(reference.signal_data_cutoff),
+        }
+    if kind == "execution":
+        return {
+            "manifest_record_id": reference.execution_manifest_record_id,
+            "dataset_version": reference.execution_dataset_version,
+            "route_version": reference.execution_route_version,
+            "source": reference.execution_source.value,
+            "data_cutoff": _timestamp_text(reference.execution_data_cutoff),
+        }
+    if kind != "execution_status":
+        raise ValueError("backtest replay pin kind is invalid")
+    return {
+        "manifest_record_id": reference.execution_status_manifest_record_id,
+        "dataset_version": reference.execution_status_dataset_version,
+        "route_version": reference.execution_status_route_version,
+        "source": reference.execution_status_source.value,
+        "data_cutoff": _timestamp_text(reference.execution_status_data_cutoff),
+    }
+
+
+def _replay_cursor_collection(
+    snapshot_id: str,
+    result_hash: str | None,
+    symbol: str,
+    trade_ordinal: int,
+    signal_series_id: str,
+    reference: PinnedMarketRef,
+) -> str:
+    encoded = json.dumps(
+        {
+            "snapshot_id": snapshot_id,
+            "result_hash": result_hash,
+            "symbol": symbol,
+            "trade_ordinal": trade_ordinal,
+            "signal_series_id": signal_series_id,
+            "signal_manifest_record_id": reference.signal_manifest_record_id,
+            "execution_manifest_record_id": reference.execution_manifest_record_id,
+            "status_manifest_record_id": (
+                reference.execution_status_manifest_record_id
+            ),
+        },
+        allow_nan=False,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("ascii")
+    return f"replay:{hashlib.sha256(encoded).hexdigest()}"
+
+
 class BacktestService:
     def __init__(
         self,
@@ -224,10 +301,221 @@ class BacktestService:
         collection: str,
         limit: int,
         cursor: str | None,
+        dimension: str | None = None,
     ) -> BacktestPage[object]:
         return self._repository.page(
-            run_id, collection=collection, limit=limit, cursor=cursor
+            run_id,
+            collection=collection,
+            limit=limit,
+            cursor=cursor,
+            dimension=dimension,
         )
+
+    def replay(
+        self,
+        run_id: str,
+        symbol: str,
+        trade_ordinal: int,
+        *,
+        limit: int,
+        cursor: str | None,
+    ) -> dict[str, object]:
+        if type(limit) is not int or not 1 <= limit <= 500:
+            raise BacktestConflict("backtest replay page limit is invalid")
+        if type(trade_ordinal) is not int or not 0 <= trade_ordinal <= 2**63 - 1:
+            raise BacktestConflict("backtest trade ordinal is invalid")
+        record = self._repository.get_replay_record(run_id, symbol, trade_ordinal)
+        reference = record.symbol.reference
+        if (
+            not isinstance(reference, PinnedMarketRef)
+            or record.symbol.status != "succeeded"
+            or record.symbol.signal_series_id is None
+        ):
+            raise BacktestConflict("backtest replay is unavailable")
+        try:
+            trade = _trade_from_payload(record.trade.payload)
+        except (KeyError, TypeError, ValueError) as error:
+            raise BacktestRepositoryError(
+                "backtest trade payload is invalid"
+            ) from error
+        if (
+            trade.symbol != symbol
+            or trade.realized is not record.realized
+            or trade.formula_version_id != record.snapshot.formula_version_id
+            or trade.signal_series_id != record.symbol.signal_series_id
+            or trade.market_manifest_ids
+            != (
+                reference.signal_manifest_record_id,
+                reference.execution_manifest_record_id,
+            )
+            or trade.status_manifest_ids
+            != (reference.execution_status_manifest_record_id,)
+        ):
+            raise BacktestRepositoryError("backtest replay identity is invalid")
+        try:
+            reopened = reopen_symbol_input(
+                reference,
+                market_lake=self._market_lake,
+                status_lake=self._status_lake,
+            )
+            assert reopened.signal is not None and reopened.execution is not None
+            series = self._formulas.preview_routed(
+                record.snapshot.formula_version_id,
+                reopened.signal,
+                {
+                    item.name: (
+                        int(item.value) if item.kind == "integer" else float(item.value)
+                    )
+                    for item in record.snapshot.formula_parameters
+                },
+            )
+        except BacktestRepositoryError:
+            raise
+        except Exception as error:
+            raise BacktestRepositoryError(
+                "backtest replay data is unavailable"
+            ) from error
+        if (
+            series.signal_series_id != record.symbol.signal_series_id
+            or series.formula_version_id != record.snapshot.formula_version_id
+            or series.formula_checksum != record.snapshot.formula_checksum
+            or series.manifest_record_id != reference.signal_manifest_record_id
+            or series.dataset_version != reference.signal_dataset_version
+            or series.route_version != reference.signal_route_version
+            or series.symbol != symbol
+            or series.period is not record.snapshot.period
+            or series.adjustment is not record.snapshot.adjustment
+        ):
+            raise BacktestRepositoryError("backtest replay formula identity is invalid")
+        signal_bars = reopened.signal.result.bars
+        if tuple(bar.timestamp for bar in signal_bars) != series.timestamps:
+            raise BacktestRepositoryError("backtest replay series is not aligned")
+        cursor_collection = _replay_cursor_collection(
+            record.snapshot.snapshot_id,
+            record.result_hash,
+            symbol,
+            trade_ordinal,
+            series.signal_series_id,
+            reference,
+        )
+        timestamp_ordinals = {
+            timestamp: ordinal for ordinal, timestamp in enumerate(series.timestamps)
+        }
+        entry_ordinal = timestamp_ordinals.get(trade.entry_signal_at)
+        if entry_ordinal is None:
+            raise BacktestRepositoryError("backtest replay entry signal is missing")
+        key = _decode_cursor(cursor, collection=cursor_collection, run_id=run_id)
+        if key is None:
+            context_bars = min(40, limit - 1)
+            start = max(0, entry_ordinal - context_bars)
+        else:
+            if len(key) != 1 or type(key[0]) is not int or key[0] < 0:
+                raise BacktestConflict("backtest cursor is invalid")
+            start = key[0] + 1
+        end = min(start + limit, len(signal_bars))
+        selected = signal_bars[start:end]
+        next_cursor = None
+        if end < len(signal_bars) and selected:
+            next_cursor = _encode_cursor(
+                cursor_collection,
+                run_id,
+                [end - 1],
+            )
+        execution_bars = {bar.timestamp: bar for bar in reopened.execution.result.bars}
+        fill_markers: list[dict[str, object]] = []
+        execution_evidence: list[dict[str, object]] = []
+        for event in trade.order_events:
+            if not isinstance(event, OrderFilled):
+                continue
+            anchor = timestamp_ordinals.get(event.signal_at)
+            evidence = execution_bars.get(event.filled_at)
+            if (
+                evidence is None
+                and reopened.execution.result.query.period is Period.DAY
+            ):
+                fill_day = event.filled_at.astimezone(MARKET_TIMEZONE).date()
+                evidence = next(
+                    (
+                        bar
+                        for bar in reopened.execution.result.bars
+                        if bar.timestamp.astimezone(MARKET_TIMEZONE).date() == fill_day
+                    ),
+                    None,
+                )
+            if anchor is None or evidence is None:
+                raise BacktestRepositoryError(
+                    "backtest replay fill evidence is missing"
+                )
+            reference_open: Decimal | None
+            fill_price: Decimal | None
+            if event.side == "buy":
+                reference_open = trade.entry_reference_open
+                fill_price = trade.buy_fill_price
+            else:
+                reference_open = trade.exit_reference_open
+                fill_price = trade.sell_fill_price
+            if reference_open is None or fill_price is None:
+                raise BacktestRepositoryError(
+                    "backtest replay fill identity is invalid"
+                )
+            fill_markers.append(
+                {
+                    "side": event.side,
+                    "signal_at": _timestamp_text(event.signal_at),
+                    "filled_at": _timestamp_text(event.filled_at),
+                    "anchor_ordinal": anchor,
+                    "reference_open": _decimal_text(reference_open),
+                    "fill_price": _decimal_text(fill_price),
+                    "quantity": event.quantity,
+                }
+            )
+            execution_evidence.append(
+                {
+                    "side": event.side,
+                    "filled_at": _timestamp_text(event.filled_at),
+                    "bar": evidence.model_dump(mode="json"),
+                }
+            )
+        expected_fills = 2 if trade.realized else 1
+        if len(fill_markers) != expected_fills:
+            raise BacktestRepositoryError("backtest replay fill identity is invalid")
+        public_trade = public_payload(_trade_payload(trade))
+        if not isinstance(public_trade, dict):
+            raise BacktestRepositoryError("backtest trade payload is invalid")
+        return {
+            "run_id": run_id,
+            "snapshot_id": record.snapshot.snapshot_id,
+            "result_hash": record.result_hash,
+            "symbol": symbol,
+            "trade_ordinal": trade_ordinal,
+            "period": record.snapshot.period.value,
+            "adjustment": record.snapshot.adjustment.value,
+            "bars": [bar.model_dump(mode="json") for bar in selected],
+            "formula": {
+                "signal_series_id": series.signal_series_id,
+                "formula_version_id": series.formula_version_id,
+                "formula_checksum": series.formula_checksum,
+                "engine_version": series.engine_version,
+                "compatibility_version": series.compatibility_version,
+                "numeric_outputs": [
+                    {"name": output.name, "values": list(output.values[start:end])}
+                    for output in series.numeric_outputs
+                ],
+                "signals": [
+                    {"name": signal.name, "values": list(signal.values[start:end])}
+                    for signal in series.signals
+                ],
+            },
+            "trade": public_trade,
+            "fill_markers": fill_markers,
+            "execution_evidence": execution_evidence,
+            "provenance": {
+                "signal": _pin_payload(reference, "signal"),
+                "execution": _pin_payload(reference, "execution"),
+                "status": _pin_payload(reference, "execution_status"),
+            },
+            "next_cursor": next_cursor,
+        }
 
     def cancel(self, run_id: str) -> SubmittedBacktest:
         run = self._repository.get_run(run_id)

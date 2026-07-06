@@ -13,7 +13,7 @@ from sqlalchemy import event, update
 
 from stock_desk.backtest.repository import BacktestRepository
 from stock_desk.backtest.export import stream_export
-from stock_desk.backtest.models import BacktestRunRow
+from stock_desk.backtest.models import BacktestRunRow, BacktestSymbolRow
 from stock_desk.backtest.pool_runner import PoolBacktestRunner
 from stock_desk.backtest.service import (
     BacktestIntent,
@@ -186,6 +186,12 @@ def test_partial_preset_freezes_runnable_and_gap_in_pool_order(tmp_path: Path) -
         assert completed.processed == 2
         assert completed.failed == 1
         assert repository.count_trades(completed.id, realized=False) == 1
+        outcomes = repository.report(completed.id).outcomes
+        assert outcomes.total == 2
+        assert outcomes.succeeded == 1
+        assert outcomes.failed == 0
+        assert outcomes.data_insufficient == 1
+        assert outcomes.unprocessed == 0
     finally:
         engine.dispose()
 
@@ -455,6 +461,11 @@ def test_all_a_submit_uses_bounded_catalog_queries_and_never_reads_objects(
         assert len(json.dumps(dict(task.payload), separators=(",", ":"))) < 512
         finished = datetime(2024, 1, 10, tzinfo=timezone.utc)
         with engine.begin() as connection:
+            connection.execute(
+                update(BacktestSymbolRow)
+                .where(BacktestSymbolRow.run_id == submitted.run_id)
+                .values(status="succeeded", updated_at=finished)
+            )
             connection.execute(
                 update(BacktestRunRow)
                 .where(BacktestRunRow.id == submitted.run_id)

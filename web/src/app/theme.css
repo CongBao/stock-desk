@@ -3218,6 +3218,377 @@ a {
   font-weight: 750;
 }
 
+/* Conclusion-first backtest report */
+
+.backtest-report,
+.report-overview,
+.report-tab-panel,
+.grouped-metrics,
+.report-metadata,
+.trade-replay {
+  min-width: 0;
+}
+
+.backtest-report {
+  display: grid;
+  gap: 14px;
+}
+
+.report-overview,
+.report-tab-panel,
+.grouped-metrics,
+.report-metadata,
+.trade-replay {
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: rgba(7, 17, 31, 0.42);
+}
+
+.report-overview > header,
+.grouped-metrics > header,
+.trade-replay > header,
+.table-toolbar,
+.cursor-controls,
+.report-exports {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.report-overview h3,
+.grouped-metrics h4,
+.report-metadata h4,
+.trade-replay h4,
+.report-distribution h4 {
+  margin: 0;
+}
+
+.report-metric-grid,
+.report-counts {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 9px;
+}
+
+.report-metric-grid article,
+.report-counts > div {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-0);
+}
+
+.report-metric-grid span,
+.report-counts dt,
+.report-metric-grid small {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.report-metric-grid strong,
+.report-counts dd {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 18px;
+  overflow-wrap: anywhere;
+}
+
+.report-empty-conclusion {
+  padding: 12px;
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  border-radius: 8px;
+  color: var(--warning);
+  background: rgba(245, 158, 11, 0.07);
+}
+
+.report-distribution {
+  margin-top: 14px;
+}
+
+.report-distribution ol,
+.order-event-timeline,
+.fill-evidence,
+.report-log-list {
+  display: grid;
+  gap: 7px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.report-distribution li {
+  display: grid;
+  grid-template-columns: minmax(90px, 0.45fr) minmax(120px, 1fr) 32px;
+  align-items: center;
+  gap: 8px;
+  font-size: 10px;
+}
+
+.distribution-track {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--surface-2);
+}
+
+.distribution-track > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+}
+
+.report-tabs {
+  display: flex;
+  max-width: 100%;
+  gap: 4px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.report-tabs [role='tab'],
+.grouped-metrics [role='radio'],
+.cursor-controls button {
+  min-height: 38px;
+  padding: 7px 11px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--text-secondary);
+  background: var(--surface-0);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.report-tabs [role='tab'][aria-selected='true'],
+.grouped-metrics [role='radio'][aria-checked='true'] {
+  border-color: rgba(56, 189, 248, 0.5);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.cursor-controls {
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
+.cursor-controls button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.table-toolbar {
+  margin-bottom: 10px;
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.table-toolbar select {
+  min-height: 34px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-primary);
+  background: var(--surface-0);
+}
+
+.report-table-scroll {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.report-table-scroll table {
+  width: 100%;
+  min-width: 720px;
+  border-collapse: collapse;
+}
+
+.report-table-scroll th,
+.report-table-scroll td {
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.report-table-scroll thead th {
+  position: sticky;
+  z-index: 1;
+  top: 0;
+  color: var(--text-muted);
+  background: var(--surface-1);
+}
+
+.trade-cost-bridge {
+  min-width: 190px;
+}
+
+.trade-cost-bridge summary {
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.trade-cost-bridge dl {
+  display: grid;
+  gap: 5px;
+  margin: 8px 0 0;
+}
+
+.trade-cost-bridge dl > div {
+  display: grid;
+  grid-template-columns: minmax(110px, 1fr) minmax(90px, auto);
+  gap: 12px;
+}
+
+.trade-cost-bridge dt {
+  color: var(--text-muted);
+}
+
+.trade-cost-bridge dd {
+  margin: 0;
+  text-align: right;
+}
+
+.report-metadata dl,
+.replay-identities {
+  display: grid;
+  gap: 7px;
+}
+
+.report-metadata dl {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.report-metadata dl > div,
+.replay-identities > div {
+  display: grid;
+  grid-template-columns: minmax(110px, 0.3fr) minmax(0, 1fr);
+  gap: 10px;
+}
+
+.report-metadata dt,
+.replay-identities dt {
+  color: var(--text-muted);
+}
+
+.report-metadata dd,
+.replay-identities dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.report-exports {
+  justify-content: flex-start;
+}
+
+.report-exports a {
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  text-decoration: none;
+}
+
+.trade-replay {
+  margin-top: 14px;
+}
+
+.trade-replay > header > span {
+  max-width: 100%;
+  color: var(--text-muted);
+  font-size: 9px;
+  overflow-wrap: anywhere;
+}
+
+.trade-replay .market-chart-stack {
+  margin-top: 12px;
+}
+
+.order-lifecycle {
+  margin-top: 14px;
+}
+
+.order-lifecycle h5 {
+  margin: 0;
+}
+
+.order-event-timeline li {
+  display: grid;
+  grid-template-columns:
+    minmax(90px, 0.65fr) minmax(170px, 1fr) minmax(70px, 0.5fr)
+    minmax(120px, 0.8fr);
+  gap: 6px 12px;
+  align-items: center;
+  padding: 10px;
+  border-left: 2px solid var(--accent);
+  background: var(--surface-0);
+  font-size: 10px;
+}
+
+.order-event-timeline time,
+.order-event-timeline span,
+.order-event-timeline small {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.order-event-timeline small {
+  grid-column: 2 / -1;
+  color: var(--text-muted);
+}
+
+.fill-evidence li {
+  display: flex;
+  align-items: center;
+  gap: 8px 14px;
+  flex-wrap: wrap;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface-0);
+  font-size: 10px;
+}
+
+.execution-evidence {
+  margin-top: 14px;
+}
+
+.execution-evidence h5 {
+  margin: 0;
+}
+
+.execution-evidence ol {
+  display: grid;
+  gap: 7px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.execution-evidence li {
+  display: flex;
+  gap: 8px 14px;
+  flex-wrap: wrap;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface-0);
+  font-size: 10px;
+}
+
+.report-log-list li {
+  padding: 8px;
+  border-bottom: 1px solid var(--border);
+  overflow-wrap: anywhere;
+}
+
 /* Responsive layout and reduced-motion contract */
 
 /* The 300px context panel becomes a drawer before it can clip Formula Studio's
@@ -3317,6 +3688,10 @@ a {
   .backtest-run-page {
     min-width: 0;
     overflow-x: clip;
+  }
+  .report-metric-grid,
+  .report-counts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
@@ -3499,6 +3874,18 @@ a {
   }
   .backtest-history time {
     grid-column: 1 / -1;
+  }
+
+  .order-event-timeline li {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .order-event-timeline small {
+    grid-column: 1;
+  }
+
+  .report-metadata dl {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
