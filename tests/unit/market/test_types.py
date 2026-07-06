@@ -31,6 +31,7 @@ from stock_desk.market.types import (
     ProviderId,
     TradingDay,
     TradingStatus,
+    is_canonical_bucket_start,
 )
 
 
@@ -326,6 +327,13 @@ def test_bar_rejects_noncanonical_bucket_starts(
 ) -> None:
     with pytest.raises(ValidationError, match="bucket"):
         bar(period=period, timestamp=timestamp)
+
+
+def test_public_bucket_validator_requires_aware_datetime_and_exact_period() -> None:
+    with pytest.raises(TypeError, match="aware"):
+        is_canonical_bucket_start(datetime(2026, 7, 6, 9, 30), Period.MIN60)
+    with pytest.raises(TypeError, match="Period"):
+        is_canonical_bucket_start(market_time(9, 30), "60m")  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize(
