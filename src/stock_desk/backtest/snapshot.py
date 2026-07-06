@@ -180,6 +180,12 @@ def _validate_execution_identity(
         raise ValueError("reopened execution query does not match snapshot")
     if routed.result.provenance.dataset_version != reference.execution_dataset_version:
         raise ValueError("reopened execution dataset version does not match snapshot")
+    if routed.manifest.route_version != reference.execution_route_version:
+        raise ValueError("reopened execution route version does not match snapshot")
+    if routed.result.provenance.source is not reference.execution_source:
+        raise ValueError("reopened execution source does not match snapshot")
+    if routed.result.provenance.data_cutoff != reference.execution_data_cutoff:
+        raise ValueError("reopened execution cutoff does not match snapshot")
 
 
 def _validate_status_identity(
@@ -195,8 +201,14 @@ def _validate_status_identity(
         raise ValueError(
             "reopened execution status dataset version does not match snapshot"
         )
-    if routed.result.query.symbol != reference.symbol:
-        raise ValueError("reopened execution status symbol does not match snapshot")
+    if routed.manifest.route_version != reference.execution_status_route_version:
+        raise ValueError("reopened execution status route does not match snapshot")
+    if routed.manifest.selected_source is not reference.execution_status_source:
+        raise ValueError("reopened execution status source does not match snapshot")
+    if routed.manifest.upstream_data_cutoff != reference.execution_status_data_cutoff:
+        raise ValueError("reopened execution status cutoff does not match snapshot")
+    if routed.result.query != reference.execution_status_query:
+        raise ValueError("reopened execution status query does not match snapshot")
     local_start = reference.execution_query.start.astimezone(MARKET_TIMEZONE)
     local_end = reference.execution_query.end.astimezone(MARKET_TIMEZONE)
     required_start = local_start.date()

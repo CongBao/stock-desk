@@ -12,7 +12,8 @@ from stock_desk.backtest.config import BacktestRequest
 from stock_desk.backtest.snapshot import freeze_request
 from stock_desk.backtest.types import FrozenSymbolGap, GapReason, PinnedMarketRef
 from stock_desk.formula.signal_series import NormalizedParameter
-from stock_desk.market.types import Adjustment, BarQuery, Period, ProviderId
+from stock_desk.market.execution_status import ExecutionStatusQuery
+from stock_desk.market.types import Adjustment, BarQuery, Exchange, Period, ProviderId
 
 
 UTC = timezone.utc
@@ -52,9 +53,22 @@ def _pinned(symbol: str = "600000.SH") -> PinnedMarketRef:
         signal_query=query,
         execution_manifest_record_id=DIGEST_D,
         execution_dataset_version=DIGEST_E,
+        execution_route_version=DIGEST_F,
+        execution_source=ProviderId.AKSHARE,
+        execution_data_cutoff=datetime(2024, 12, 31, 8, tzinfo=UTC),
         execution_query=query,
         execution_status_manifest_record_id=DIGEST_F,
         execution_status_dataset_version=DIGEST_A,
+        execution_status_route_version=DIGEST_B,
+        execution_status_source=ProviderId.TDX_LOCAL,
+        execution_status_data_cutoff=datetime(2024, 12, 31, 9, tzinfo=UTC),
+        execution_status_query=ExecutionStatusQuery(
+            symbol=symbol,
+            exchange=Exchange(symbol.rsplit(".", maxsplit=1)[1]),
+            start=query.start.date(),
+            end=query.end.date(),
+            period=query.period,
+        ),
     )
 
 

@@ -14,9 +14,19 @@ from sqlalchemy.engine import Connection
 
 from stock_desk.backtest.config import BacktestRequest
 from stock_desk.backtest.repository import BacktestRepository
+from stock_desk.backtest.repository import (
+    BacktestOverviewSnapshot,
+    BacktestPage,
+    BacktestReportSnapshot,
+)
 from stock_desk.backtest.snapshot import freeze_request
-from stock_desk.backtest.types import FrozenSymbolGap, GapReason, PinnedMarketRef
-from stock_desk.formula.service import FormulaService
+from stock_desk.backtest.types import (
+    BacktestSnapshot,
+    FrozenSymbolGap,
+    GapReason,
+    PinnedMarketRef,
+)
+from stock_desk.formula.service import FormulaBacktestPreflight, FormulaService
 from stock_desk.market.calendar import MARKET_TIMEZONE
 from stock_desk.market.execution_status import ExecutionStatusQuery
 from stock_desk.market.execution_status_lake import ExecutionStatusLake
@@ -24,7 +34,7 @@ from stock_desk.market.instruments import InstrumentRepository
 from stock_desk.market.lake import CatalogBarPin, MarketLake
 from stock_desk.market.pools import PoolRepository
 from stock_desk.market.types import Adjustment, BarQuery, Exchange, Period
-from stock_desk.storage.database import connection_database_identity
+from stock_desk.storage.database import DatabaseIdentity, connection_database_identity
 from stock_desk.storage.models import (
     ExecutionStatusRoutingManifest,
     InstrumentRoutingManifest,
@@ -65,6 +75,61 @@ class SubmittedBacktest:
     task_id: str
     snapshot_id: str
     warnings: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class BacktestPreflight:
+    preview_snapshot_id: str
+    reservation: Literal[False]
+    formula_id: str
+    formula_version_id: str
+    formula_checksum: str
+    engine_version: str
+    compatibility_version: str
+    normalized_parameters: tuple[Mapping[str, object], ...]
+    scope_kind: str
+    symbol: str | None
+    scope_id: str | None
+    scope_revision_or_snapshot_id: str | None
+    total: int
+    runnable: int
+    gap_count: int
+    gap_sample: tuple[tuple[str, str], ...]
+    warnings: tuple[str, ...]
+    period: Period | str
+    adjustment: Adjustment | str
+    scoring_start: datetime
+    scoring_end: datetime
+    warmup_policy_version: str
+    lookback_bars: int | None
+    unbounded_dependency: bool
+    pinned_signal_count: int
+    pinned_execution_count: int
+    pinned_status_count: int
+    estimated_formula_rows: int
+    execution_rules_version: str
+    cost_model_version: str
+    sizing_version: str
+    quantity_shares: int
+    commission_bps: Decimal
+    minimum_commission: Decimal
+    sell_tax_bps: Decimal
+    slippage_bps: Decimal
+    disclaimer: str
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedBacktest:
+    run_id: str
+    task_id: str
+    snapshot: BacktestSnapshot
+    formula: FormulaBacktestPreflight
+    runnable: int
+    gaps: tuple[tuple[str, str], ...]
+    pinned_signal_count: int
+    pinned_execution_count: int
+    pinned_status_count: int
+    estimated_formula_rows: int
 
 
 def _utc_now() -> datetime:
@@ -137,7 +202,117 @@ class BacktestService:
         self._pools = pools
         self._formulas = formulas
 
-    def submit(self, intent: BacktestIntent) -> SubmittedBacktest:
+    @property
+    def database_identity(self) -> DatabaseIdentity:
+        return self._repository.database_identity
+
+    def list_runs(
+        self, *, limit: int, cursor: str | None
+    ) -> BacktestPage[BacktestOverviewSnapshot]:
+        return self._repository.list_runs_page(limit=limit, cursor=cursor)
+
+    def get_overview(self, run_id: str) -> BacktestOverviewSnapshot:
+        return self._repository.get_overview(run_id)
+
+    def report(self, run_id: str) -> BacktestReportSnapshot:
+        return self._repository.report(run_id)
+
+    def page(
+        self,
+        run_id: str,
+        *,
+        collection: str,
+        limit: int,
+        cursor: str | None,
+    ) -> BacktestPage[object]:
+        return self._repository.page(
+            run_id, collection=collection, limit=limit, cursor=cursor
+        )
+
+    def cancel(self, run_id: str) -> SubmittedBacktest:
+        run = self._repository.get_run(run_id)
+        self._tasks.request_cancel(run.task_id)
+        return SubmittedBacktest(
+            run_id=run.id,
+            task_id=run.task_id,
+            snapshot_id=run.snapshot.snapshot_id,
+            warnings=self._snapshot_warnings(run.snapshot.symbol_inputs),
+        )
+
+    def copy(
+        self, run_id: str, *, mode: Literal["exact", "latest"]
+    ) -> SubmittedBacktest:
+        run = self._repository.get_run(run_id)
+        if mode == "latest":
+            snapshot = run.snapshot
+            parameters: dict[str, int | float] = {}
+            for item in snapshot.formula_parameters:
+                parameters[item.name] = (
+                    int(item.value) if item.kind == "integer" else float(item.value)
+                )
+            return self.submit(
+                BacktestIntent(
+                    scope_kind=snapshot.scope_kind,
+                    symbol=(
+                        snapshot.symbols[0] if snapshot.scope_kind == "single" else None
+                    ),
+                    scope_id=snapshot.scope_id,
+                    scope_revision_or_snapshot_id=(
+                        None
+                        if snapshot.scope_kind in {"preset", "custom"}
+                        else snapshot.scope_revision_or_snapshot_id
+                    ),
+                    formula_version_id=snapshot.formula_version_id,
+                    formula_parameters=parameters,
+                    period=snapshot.period,
+                    adjustment=snapshot.adjustment,
+                    scoring_start=snapshot.scoring_start,
+                    scoring_end=snapshot.scoring_end,
+                    quantity_shares=snapshot.quantity_shares,
+                    commission_bps=snapshot.commission_bps,
+                    minimum_commission=snapshot.minimum_commission,
+                    sell_tax_bps=snapshot.sell_tax_bps,
+                    slippage_bps=snapshot.slippage_bps,
+                )
+            )
+        if mode != "exact":
+            raise BacktestSubmissionError("backtest copy mode is invalid")
+        new_run_id = str(uuid4())
+        new_task_id = str(uuid4())
+        now = _utc_now()
+        with self._engine.begin() as connection:
+            self._tasks.enqueue_in_transaction(
+                connection,
+                "backtest.run",
+                {"run_id": new_run_id, "snapshot_id": run.snapshot.snapshot_id},
+                task_id=new_task_id,
+                now=now,
+            )
+            self._repository.create_in_transaction(
+                connection,
+                run_id=new_run_id,
+                task_id=new_task_id,
+                snapshot=run.snapshot,
+                now=now,
+            )
+        return SubmittedBacktest(
+            run_id=new_run_id,
+            task_id=new_task_id,
+            snapshot_id=run.snapshot.snapshot_id,
+            warnings=self._snapshot_warnings(run.snapshot.symbol_inputs),
+        )
+
+    @staticmethod
+    def _snapshot_warnings(
+        inputs: tuple[PinnedMarketRef | FrozenSymbolGap, ...],
+    ) -> tuple[str, ...]:
+        return (
+            ("partial_pool_gaps",)
+            if any(isinstance(item, FrozenSymbolGap) for item in inputs)
+            else ()
+        )
+
+    def _prepare(self, intent: BacktestIntent, *, persist: bool) -> _PreparedBacktest:
         if not isinstance(intent, BacktestIntent):
             raise BacktestSubmissionError("backtest intent is invalid")
         preflight = self._formulas.preflight_backtest(
@@ -168,15 +343,17 @@ class BacktestService:
                 scope_id = None
                 scope_revision = None
             elif intent.scope_kind == "preset":
-                if (
-                    intent.symbol is not None
-                    or intent.scope_id is None
-                    or intent.scope_revision_or_snapshot_id is None
-                ):
+                if intent.symbol is not None or intent.scope_id is None:
                     raise BacktestSubmissionError("preset scope is invalid")
-                pool = self._pools.get_preset_snapshot(
-                    intent.scope_revision_or_snapshot_id,
-                    connection=connection,
+                pool = (
+                    self._pools.get_current_preset(
+                        intent.scope_id, connection=connection
+                    )
+                    if intent.scope_revision_or_snapshot_id is None
+                    else self._pools.get_preset_snapshot(
+                        intent.scope_revision_or_snapshot_id,
+                        connection=connection,
+                    )
                 )
                 if pool.pool_id != intent.scope_id:
                     raise BacktestSubmissionError("preset snapshot owner is invalid")
@@ -185,23 +362,24 @@ class BacktestService:
                 scope_id = pool.pool_id
                 scope_revision = pool.snapshot_id
             else:
-                if (
-                    intent.symbol is not None
-                    or intent.scope_id is None
-                    or intent.scope_revision_or_snapshot_id is None
-                ):
+                if intent.symbol is not None or intent.scope_id is None:
                     raise BacktestSubmissionError("custom scope is invalid")
-                try:
-                    requested_revision = int(intent.scope_revision_or_snapshot_id)
-                except ValueError as error:
-                    raise BacktestSubmissionError(
-                        "custom pool revision is invalid"
-                    ) from error
-                custom = self._pools.get_custom_revision(
-                    intent.scope_id,
-                    requested_revision,
-                    connection=connection,
-                )
+                if intent.scope_revision_or_snapshot_id is None:
+                    custom = self._pools.get_current_custom(
+                        intent.scope_id, connection=connection
+                    )
+                else:
+                    try:
+                        requested_revision = int(intent.scope_revision_or_snapshot_id)
+                    except ValueError as error:
+                        raise BacktestSubmissionError(
+                            "custom pool revision is invalid"
+                        ) from error
+                    custom = self._pools.get_custom_revision(
+                        intent.scope_id,
+                        requested_revision,
+                        connection=connection,
+                    )
                 symbols = tuple(member.instrument.symbol for member in custom.members)
                 instrument_version = custom.instrument_dataset_version
                 scope_id = custom.pool_id
@@ -233,6 +411,9 @@ class BacktestService:
                 connection,
                 desired_signal,
                 prefer_earliest_prefix=preflight.lookback_bars != 0,
+            )
+            estimated_formula_rows = sum(
+                pin.row_count for pin in signal_pins.values() if pin is not None
             )
             execution_pins = self._market_lake.catalog_latest_covering_many(
                 connection, desired_execution
@@ -306,9 +487,16 @@ class BacktestService:
                         signal_query=signal.query,
                         execution_manifest_record_id=execution.manifest_record_id,
                         execution_dataset_version=execution.dataset_version,
+                        execution_route_version=execution.route_version,
+                        execution_source=execution.source,
+                        execution_data_cutoff=execution.data_cutoff,
                         execution_query=execution.query,
                         execution_status_manifest_record_id=status.manifest_record_id,
                         execution_status_dataset_version=status.dataset_version,
+                        execution_status_route_version=status.route_version,
+                        execution_status_source=status.source,
+                        execution_status_data_cutoff=status.data_cutoff,
+                        execution_status_query=status.query,
                     )
                 )
             runnable_count = sum(isinstance(item, PinnedMarketRef) for item in inputs)
@@ -341,25 +529,92 @@ class BacktestService:
                     backtest_engine_version=BACKTEST_ENGINE_VERSION,
                 )
             )
-            self._tasks.enqueue_in_transaction(
-                connection,
-                "backtest.run",
-                {"run_id": run_id, "snapshot_id": snapshot.snapshot_id},
-                task_id=task_id,
-                now=now,
-            )
-            self._repository.create_in_transaction(
-                connection,
-                run_id=run_id,
-                task_id=task_id,
-                snapshot=snapshot,
-                now=now,
-            )
-        return SubmittedBacktest(
+            if persist:
+                self._tasks.enqueue_in_transaction(
+                    connection,
+                    "backtest.run",
+                    {"run_id": run_id, "snapshot_id": snapshot.snapshot_id},
+                    task_id=task_id,
+                    now=now,
+                )
+                self._repository.create_in_transaction(
+                    connection,
+                    run_id=run_id,
+                    task_id=task_id,
+                    snapshot=snapshot,
+                    now=now,
+                )
+        return _PreparedBacktest(
             run_id=run_id,
             task_id=task_id,
-            snapshot_id=snapshot.snapshot_id,
-            warnings=("partial_pool_gaps",)
-            if any(isinstance(item, FrozenSymbolGap) for item in snapshot.symbol_inputs)
-            else (),
+            snapshot=snapshot,
+            formula=preflight,
+            runnable=runnable_count,
+            gaps=tuple(
+                (item.symbol, item.reason)
+                for item in snapshot.symbol_inputs
+                if isinstance(item, FrozenSymbolGap)
+            ),
+            pinned_signal_count=sum(pin is not None for pin in signal_pins.values()),
+            pinned_execution_count=sum(
+                pin is not None for pin in execution_pins.values()
+            ),
+            pinned_status_count=sum(pin is not None for pin in status_pins.values()),
+            estimated_formula_rows=estimated_formula_rows,
+        )
+
+    def preflight(self, intent: BacktestIntent) -> BacktestPreflight:
+        prepared = self._prepare(intent, persist=False)
+        snapshot = prepared.snapshot
+        warnings = self._snapshot_warnings(snapshot.symbol_inputs)
+        return BacktestPreflight(
+            preview_snapshot_id=snapshot.snapshot_id,
+            reservation=False,
+            formula_id=prepared.formula.formula_id,
+            formula_version_id=prepared.formula.formula_version_id,
+            formula_checksum=prepared.formula.formula_checksum,
+            engine_version=prepared.formula.engine_version,
+            compatibility_version=prepared.formula.compatibility_version,
+            normalized_parameters=tuple(
+                item.model_dump(mode="json")
+                for item in prepared.formula.normalized_parameters
+            ),
+            scope_kind=snapshot.scope_kind,
+            symbol=snapshot.symbols[0] if snapshot.scope_kind == "single" else None,
+            scope_id=snapshot.scope_id,
+            scope_revision_or_snapshot_id=snapshot.scope_revision_or_snapshot_id,
+            total=len(snapshot.symbols),
+            runnable=prepared.runnable,
+            gap_count=len(prepared.gaps),
+            gap_sample=prepared.gaps[:100],
+            warnings=warnings,
+            period=snapshot.period,
+            adjustment=snapshot.adjustment,
+            scoring_start=snapshot.scoring_start,
+            scoring_end=snapshot.scoring_end,
+            warmup_policy_version=snapshot.warmup_policy_version,
+            lookback_bars=prepared.formula.lookback_bars,
+            unbounded_dependency=prepared.formula.unbounded_dependency,
+            pinned_signal_count=prepared.pinned_signal_count,
+            pinned_execution_count=prepared.pinned_execution_count,
+            pinned_status_count=prepared.pinned_status_count,
+            estimated_formula_rows=prepared.estimated_formula_rows,
+            execution_rules_version=snapshot.execution_rules_version,
+            cost_model_version=snapshot.cost_model_version,
+            sizing_version="fixed-lot-v1",
+            quantity_shares=snapshot.quantity_shares,
+            commission_bps=snapshot.commission_bps,
+            minimum_commission=snapshot.minimum_commission,
+            sell_tax_bps=snapshot.sell_tax_bps,
+            slippage_bps=snapshot.slippage_bps,
+            disclaimer="independent trade samples, not portfolio return",
+        )
+
+    def submit(self, intent: BacktestIntent) -> SubmittedBacktest:
+        prepared = self._prepare(intent, persist=True)
+        return SubmittedBacktest(
+            run_id=prepared.run_id,
+            task_id=prepared.task_id,
+            snapshot_id=prepared.snapshot.snapshot_id,
+            warnings=self._snapshot_warnings(prepared.snapshot.symbol_inputs),
         )

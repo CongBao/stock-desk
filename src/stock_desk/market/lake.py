@@ -153,6 +153,7 @@ class CatalogBarPin(_FrozenLakeModel):
     data_cutoff: datetime
     fetched_at: datetime
     query: BarQuery
+    row_count: Annotated[int, Field(ge=1, le=MAX_BAR_SERIES_ROWS)]
     prefix_row_count: Annotated[int, Field(ge=0)]
 
 
@@ -1956,6 +1957,7 @@ class MarketLake:
                         data_cutoff=manifest.upstream_data_cutoff,
                         fetched_at=manifest.upstream_fetched_at,
                         query=stored_query,
+                        row_count=cast(int, row["row_count"]),
                         prefix_row_count=cast(int, row["prefix_count"]),
                     )
                 except (TypeError, ValidationError, ValueError):

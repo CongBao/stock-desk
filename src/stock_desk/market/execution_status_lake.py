@@ -15,7 +15,7 @@ from stock_desk.market.execution_status import (
     ExecutionStatusQuery,
     ExecutionStatusSnapshot,
 )
-from stock_desk.market.types import Exchange, Period
+from stock_desk.market.types import Exchange, Period, ProviderId
 from stock_desk.market.provenance import (
     RoutedExecutionStatusSuccess,
     RoutingManifest,
@@ -43,6 +43,8 @@ class CatalogExecutionStatusPin:
     manifest_record_id: str
     dataset_version: str
     route_version: str
+    source: ProviderId
+    data_cutoff: datetime
     query: ExecutionStatusQuery
 
 
@@ -174,6 +176,8 @@ class ExecutionStatusLake:
                     manifest_record_id=row["manifest_record_id"],
                     dataset_version=row["dataset_version"],
                     route_version=row["route_version"],
+                    source=manifest.selected_source,
+                    data_cutoff=manifest.upstream_data_cutoff,
                     query=query,
                 )
         return result

@@ -19,6 +19,7 @@ from pydantic import (
 from stock_desk.formula.context import MAX_PARAMETERS
 from stock_desk.formula.signal_series import NormalizedParameter
 from stock_desk.market.provenance import Sha256Digest
+from stock_desk.market.execution_status import ExecutionStatusQuery
 from stock_desk.market.types import (
     Adjustment,
     BarQuery,
@@ -113,15 +114,23 @@ class PinnedMarketRef(_FrozenBacktestContract):
     signal_query: BarQuery
     execution_manifest_record_id: Sha256Digest
     execution_dataset_version: Sha256Digest
+    execution_route_version: Sha256Digest
+    execution_source: ProviderId
+    execution_data_cutoff: UtcDatetime
     execution_query: BarQuery
     execution_status_manifest_record_id: Sha256Digest
     execution_status_dataset_version: Sha256Digest
+    execution_status_route_version: Sha256Digest
+    execution_status_source: ProviderId
+    execution_status_data_cutoff: UtcDatetime
+    execution_status_query: ExecutionStatusQuery
 
     @model_validator(mode="after")
     def validate_queries(self) -> Self:
         if (
             self.signal_query.symbol != self.symbol
             or self.execution_query.symbol != self.symbol
+            or self.execution_status_query.symbol != self.symbol
         ):
             raise ValueError("pinned market reference queries must match its symbol")
         return self

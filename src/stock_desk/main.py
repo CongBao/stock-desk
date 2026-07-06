@@ -4,8 +4,16 @@ import os
 from pathlib import Path
 from threading import Lock
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
+
+from stock_desk.api.backtests import (
+    BacktestServiceDatabaseMismatch,
+    BacktestServices,
+    backtest_service_database_mismatch_handler,
+    backtest_request_validation_handler,
+    router as backtests_router,
+)
 
 from stock_desk.api.formulas import (
     formula_service_database_mismatch_handler,
@@ -37,6 +45,7 @@ def create_app(
     market_services: MarketServices | None = None,
     source_settings_services: SourceSettingsServices | None = None,
     formula_service: FormulaService | None = None,
+    backtest_services: BacktestServices | None = None,
 ) -> FastAPI:
     resolved_settings = settings if settings is not None else get_settings()
     owned_repository: TaskRepository | None = None
@@ -47,6 +56,8 @@ def create_app(
     source_settings_services_lock = Lock()
     owned_formula_service: FormulaService | None = None
     formula_service_lock = Lock()
+    owned_backtest_services: BacktestServices | None = None
+    backtest_services_lock = Lock()
 
     def provide_task_repository() -> TaskRepository:
         nonlocal owned_repository
@@ -102,6 +113,43 @@ def create_app(
                 )
             return owned_formula_service
 
+    def provide_backtest_services() -> BacktestServices:
+        nonlocal owned_backtest_services
+        if backtest_services is not None:
+            if isinstance(backtest_services, BacktestServices):
+                identities = (
+                    provide_market_services().database_identity,
+                    provide_formula_service().database_identity,
+                    provide_task_repository().database_identity,
+                )
+                if any(
+                    identity != backtest_services.database_identity
+                    for identity in identities
+                ):
+                    raise BacktestServiceDatabaseMismatch(
+                        "backtest and application storage do not match"
+                    )
+            return backtest_services
+        with backtest_services_lock:
+            if owned_backtest_services is None:
+                shared_market = provide_market_services()
+                shared_formula = provide_formula_service()
+                shared_tasks = provide_task_repository()
+                if not (
+                    shared_market.database_identity
+                    == shared_formula.database_identity
+                    == shared_tasks.database_identity
+                ):
+                    raise BacktestServiceDatabaseMismatch(
+                        "backtest dependencies do not share storage"
+                    )
+                owned_backtest_services = BacktestServices.from_shared(
+                    market_services=shared_market,
+                    formula_service=shared_formula,
+                    tasks=shared_tasks,
+                )
+            return owned_backtest_services
+
     @asynccontextmanager
     async def lifespan(_application: FastAPI) -> AsyncIterator[None]:
         try:
@@ -125,13 +173,28 @@ def create_app(
         provide_source_settings_services
     )
     application.state.formula_service_provider = provide_formula_service
+    application.state.backtest_services_provider = provide_backtest_services
+
+    async def request_validation_handler(
+        request: Request, error: Exception
+    ) -> Response:
+        if request.url.path == "/api/backtests" or request.url.path.startswith(
+            "/api/backtests/"
+        ):
+            return await backtest_request_validation_handler(request, error)
+        return await market_request_validation_handler(request, error)
+
     application.add_exception_handler(
         RequestValidationError,
-        market_request_validation_handler,
+        request_validation_handler,
     )
     application.add_exception_handler(
         FormulaServiceDatabaseMismatch,
         formula_service_database_mismatch_handler,
+    )
+    application.add_exception_handler(
+        BacktestServiceDatabaseMismatch,
+        backtest_service_database_mismatch_handler,
     )
     application.add_exception_handler(
         SourceSettingsStorageError,
@@ -142,6 +205,7 @@ def create_app(
     application.include_router(market_router, prefix="/api")
     application.include_router(settings_router, prefix="/api")
     application.include_router(formulas_router, prefix="/api")
+    application.include_router(backtests_router, prefix="/api")
     if resolved_settings.web_dist_dir is not None:
         install_web_routes(application, resolved_settings.web_dist_dir)
     return application

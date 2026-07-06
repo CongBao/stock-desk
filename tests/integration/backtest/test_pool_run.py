@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
-from dataclasses import replace
+from dataclasses import asdict, replace
 from decimal import Decimal
 import json
 from pathlib import Path
@@ -9,9 +9,11 @@ import threading
 import time
 
 import pytest
-from sqlalchemy import event
+from sqlalchemy import event, update
 
 from stock_desk.backtest.repository import BacktestRepository
+from stock_desk.backtest.export import stream_export
+from stock_desk.backtest.models import BacktestRunRow
 from stock_desk.backtest.pool_runner import PoolBacktestRunner
 from stock_desk.backtest.service import (
     BacktestIntent,
@@ -31,7 +33,7 @@ from stock_desk.market.types import Adjustment, Period, ProviderId
 from stock_desk.storage.database import create_engine_for_url, migrate
 from stock_desk.tasks.repository import TaskRepository
 from stock_desk.tasks.models import TaskClaim
-from tests.integration.backtest.test_single_run import MACD
+from tests.integration.backtest.test_single_run import MACD, _status
 from tests.integration.backtest.test_worker_recovery import _complete_status
 from tests.integration.market.lake_test_helpers import local_time, routed_daily_bars
 from tests.integration.market.task6_test_helpers import instrument, routed_instruments
@@ -255,6 +257,109 @@ def test_custom_submission_rejects_stale_revision_without_partial_rows(
         engine.dispose()
 
 
+def test_copy_latest_custom_resolves_current_revision_while_exact_reuses_pin(
+    tmp_path: Path,
+) -> None:
+    engine, market, statuses, instruments, pools, _, formulas, repository, service = (
+        _services(tmp_path)
+    )
+    try:
+        instruments.ingest(
+            routed_instruments(
+                (
+                    instrument("600000.SH", "浦发银行"),
+                    instrument("600001.SH", "邯郸钢铁"),
+                ),
+                cutoff=datetime(2026, 7, 7, 8, tzinfo=timezone.utc),
+                fetched_at=datetime(2026, 7, 7, 9, tzinfo=timezone.utc),
+            )
+        )
+        for symbol in ("600000.SH", "600001.SH"):
+            market.write(
+                routed_daily_bars(
+                    tuple(date(2024, 1, day) for day in range(2, 7)),
+                    symbol=symbol,
+                    adjustment=Adjustment.NONE,
+                )
+            )
+            statuses.write(_status(symbol, date(2024, 1, 2), date(2024, 1, 7)))
+        pool = pools.create_custom(name="自选", symbols=("600000.SH",))
+        version = formulas.create(
+            "简单策略", "trading", "BUY:C>0;SELL:C<0;", {}, placement="subchart"
+        )
+        original = service.submit(
+            replace(_pool_intent(version.id, pool.pool_id, "1"), scope_kind="custom")
+        )
+        pools.update_custom(
+            pool.pool_id,
+            expected_revision=1,
+            name="自选二版",
+            symbols=("600001.SH",),
+        )
+
+        exact = service.copy(original.run_id, mode="exact")
+        latest = service.copy(original.run_id, mode="latest")
+
+        assert exact.snapshot_id == original.snapshot_id
+        assert repository.get_run(exact.run_id).snapshot.symbols == ("600000.SH",)
+        latest_snapshot = repository.get_run(latest.run_id).snapshot
+        assert latest.snapshot_id != original.snapshot_id
+        assert latest_snapshot.scope_revision_or_snapshot_id == "2"
+        assert latest_snapshot.symbols == ("600001.SH",)
+    finally:
+        engine.dispose()
+
+
+def test_copy_latest_preset_resolves_current_logical_composition(
+    tmp_path: Path,
+) -> None:
+    engine, market, statuses, instruments, pools, _, formulas, repository, service = (
+        _services(tmp_path)
+    )
+    try:
+        instruments.ingest(routed_instruments((instrument("600000.SH", "浦发银行"),)))
+        first = pools.publish_full_a()
+        instruments.ingest(
+            routed_instruments(
+                (
+                    instrument("600000.SH", "浦发银行"),
+                    instrument("600001.SH", "邯郸钢铁"),
+                ),
+                cutoff=datetime(2026, 7, 7, 8, tzinfo=timezone.utc),
+                fetched_at=datetime(2026, 7, 7, 9, tzinfo=timezone.utc),
+            )
+        )
+        second = pools.publish_full_a()
+        assert second.snapshot_id != first.snapshot_id
+        for symbol in ("600000.SH", "600001.SH"):
+            market.write(
+                routed_daily_bars(
+                    tuple(date(2024, 1, day) for day in range(2, 7)),
+                    symbol=symbol,
+                    adjustment=Adjustment.NONE,
+                )
+            )
+            statuses.write(_status(symbol, date(2024, 1, 2), date(2024, 1, 7)))
+        version = formulas.create(
+            "简单策略", "trading", "BUY:C>0;SELL:C<0;", {}, placement="subchart"
+        )
+        original = service.submit(
+            _pool_intent(version.id, first.pool_id, first.snapshot_id)
+        )
+
+        exact = service.copy(original.run_id, mode="exact")
+        latest = service.copy(original.run_id, mode="latest")
+
+        assert exact.snapshot_id == original.snapshot_id
+        assert repository.get_run(exact.run_id).snapshot.symbols == ("600000.SH",)
+        latest_snapshot = repository.get_run(latest.run_id).snapshot
+        assert latest.snapshot_id != original.snapshot_id
+        assert latest_snapshot.scope_revision_or_snapshot_id == second.snapshot_id
+        assert latest_snapshot.symbols == ("600000.SH", "600001.SH")
+    finally:
+        engine.dispose()
+
+
 def test_all_a_submit_uses_bounded_catalog_queries_and_never_reads_objects(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -292,6 +397,7 @@ def test_all_a_submit_uses_bounded_catalog_queries_and_never_reads_objects(
                     data_cutoff=observed_at,
                     fetched_at=observed_at,
                     query=query,
+                    row_count=1,
                     prefix_row_count=0,
                 )
                 for query in queries
@@ -303,6 +409,8 @@ def test_all_a_submit_uses_bounded_catalog_queries_and_never_reads_objects(
                     manifest_record_id=digest,
                     dataset_version=digest,
                     route_version=digest,
+                    source=ProviderId.TUSHARE,
+                    data_cutoff=observed_at,
                     query=query,
                 )
                 for query in queries
@@ -345,6 +453,29 @@ def test_all_a_submit_uses_bounded_catalog_queries_and_never_reads_objects(
         task = tasks.get(submitted.task_id)
         assert task.status == "queued"
         assert len(json.dumps(dict(task.payload), separators=(",", ":"))) < 512
+        finished = datetime(2024, 1, 10, tzinfo=timezone.utc)
+        with engine.begin() as connection:
+            connection.execute(
+                update(BacktestRunRow)
+                .where(BacktestRunRow.id == submitted.run_id)
+                .values(
+                    status="succeeded",
+                    stage="completed",
+                    processed=10_000,
+                    finished_at=finished,
+                    updated_at=finished,
+                )
+            )
+        report = repository.report(submitted.run_id)
+        encoded_report = json.dumps(asdict(report), default=str, sort_keys=True)
+        exported = b"".join(
+            stream_export(repository, submitted.run_id, section="trades", format="json")
+        )
+        assert len(encoded_report.encode()) < 8_192
+        assert len(exported) < 8_192
+        assert "signal_series_ids" not in encoded_report
+        assert b"signal_dataset_versions" not in exported
+        assert report.symbol_count == report.runnable_count == 10_000
     finally:
         engine.dispose()
 

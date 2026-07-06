@@ -2,13 +2,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from base64 import urlsafe_b64decode, urlsafe_b64encode
 import hashlib
 import json
-from collections.abc import Mapping, Sequence
-from typing import cast
+from collections.abc import Iterator, Mapping, Sequence
+from typing import Any, Generic, TypeVar, cast
 
-from sqlalchemy import Engine, func, insert, select, update
-from sqlalchemy.engine import Connection
+from sqlalchemy import Engine, and_, func, insert, literal, or_, select, tuple_, update
+from sqlalchemy.engine import Connection, RowMapping
+from sqlalchemy.sql import Select
+from pydantic import ValidationError
 
 from stock_desk.backtest.models import (
     BacktestAggregateMetricRow,
@@ -20,6 +23,7 @@ from stock_desk.backtest.models import (
     BacktestSymbolRow,
     BacktestTradeRow,
 )
+from stock_desk.backtest.public_data import public_payload, public_text
 from stock_desk.backtest.types import (
     BacktestSnapshot,
     FrozenSymbolGap,
@@ -45,6 +49,285 @@ class BacktestNotFound(BacktestRepositoryError):
 
 class BacktestConflict(BacktestRepositoryError):
     pass
+
+
+@dataclass(frozen=True, slots=True)
+class BacktestOverviewSnapshot:
+    run_id: str
+    task_id: str
+    snapshot_id: str
+    status: str
+    stage: str
+    total: int
+    processed: int
+    failed: int
+    result_hash: str | None
+    created_at: datetime
+    updated_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class BacktestGroupSnapshot:
+    dimension: str
+    key: str
+    payload: Mapping[str, object]
+
+
+@dataclass(frozen=True, slots=True)
+class BacktestTradeSnapshot:
+    symbol: str
+    ordinal: int
+    payload: Mapping[str, object]
+    symbol_ordinal: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class BacktestFailureSnapshot:
+    symbol: str
+    ordinal: int
+    reason: str
+    detail: Mapping[str, object]
+
+
+@dataclass(frozen=True, slots=True)
+class BacktestLogSnapshot:
+    ordinal: int
+    level: str
+    message: str
+    detail: Mapping[str, object]
+
+
+TPageItem = TypeVar("TPageItem")
+
+
+@dataclass(frozen=True, slots=True)
+class BacktestPage(Generic[TPageItem]):
+    items: tuple[TPageItem, ...]
+    next_cursor: str | None
+    after_cursor: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class BacktestReportSnapshot:
+    overview: BacktestOverviewSnapshot
+    formula_version_id: str
+    formula_checksum: str
+    formula_parameters: tuple[Mapping[str, object], ...]
+    formula_engine_version: str
+    compatibility_version: str
+    backtest_engine_version: str
+    instrument_dataset_version: str
+    symbol_count: int
+    runnable_count: int
+    gap_count: int
+    signal_source_ids: tuple[str, ...]
+    execution_source_ids: tuple[str, ...]
+    status_source_ids: tuple[str, ...]
+    provenance_digest: str
+    period: str
+    adjustment: str
+    quantity_shares: int
+    commission_bps: str
+    minimum_commission: str
+    sell_tax_bps: str
+    slippage_bps: str
+    execution_rules_version: str
+    cost_model_version: str
+    sizing_version: str
+    warmup_policy_version: str
+    metrics: Mapping[str, object]
+    disclaimer: str
+
+
+@dataclass(frozen=True, slots=True)
+class BacktestExportMetadata:
+    run_id: str
+    snapshot_id: str
+    generated_at: datetime
+    section: str
+    disclaimer: str
+    formula_version_id: str
+    formula_checksum: str
+    formula_engine_version: str
+    compatibility_version: str
+    backtest_engine_version: str
+    instrument_dataset_version: str
+    symbol_count: int
+    runnable_count: int
+    gap_count: int
+    signal_source_ids: tuple[str, ...]
+    execution_source_ids: tuple[str, ...]
+    status_source_ids: tuple[str, ...]
+    provenance_digest: str
+    period: str
+    adjustment: str
+    quantity_shares: int
+    commission_bps: str
+    minimum_commission: str
+    sell_tax_bps: str
+    slippage_bps: str
+    execution_rules_version: str
+    cost_model_version: str
+    sizing_version: str
+    warmup_policy_version: str
+
+
+@dataclass(frozen=True, slots=True)
+class BacktestExportRecord:
+    section: str
+    data: Mapping[str, object]
+
+
+_TERMINAL_STATUSES = frozenset({"succeeded", "partial_failed", "failed", "cancelled"})
+_CURSOR_VERSION = 1
+_MAX_CURSOR_LENGTH = 512
+
+
+def _decimal_text(value: object) -> str:
+    text = format(value, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return "0" if text in {"", "-0"} else text
+
+
+def _provenance_summary(
+    snapshot: BacktestSnapshot,
+) -> tuple[
+    int,
+    int,
+    tuple[str, ...],
+    tuple[str, ...],
+    tuple[str, ...],
+    str,
+]:
+    runnable = tuple(
+        item for item in snapshot.symbol_inputs if isinstance(item, PinnedMarketRef)
+    )
+    signal_sources = tuple(sorted({item.signal_source.value for item in runnable}))
+    execution_sources = tuple(
+        sorted({item.execution_source.value for item in runnable})
+    )
+    status_sources = tuple(
+        sorted({item.execution_status_source.value for item in runnable})
+    )
+    canonical = json.dumps(
+        [item.model_dump(mode="json") for item in snapshot.symbol_inputs],
+        allow_nan=False,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("ascii")
+    return (
+        len(runnable),
+        len(snapshot.symbol_inputs) - len(runnable),
+        signal_sources,
+        execution_sources,
+        status_sources,
+        f"sha256:{hashlib.sha256(canonical).hexdigest()}",
+    )
+
+
+def _public_detail(
+    detail: Mapping[str, object], *, collection: str
+) -> dict[str, object]:
+    allowed = (
+        frozenset({"attempt", "reason", "status", "symbol"})
+        if collection == "logs"
+        else frozenset(
+            {
+                "code",
+                "reason",
+                "status",
+                "symbol",
+                "ordinal",
+                "manifest_record_id",
+                "dataset_version",
+                "signal_series_id",
+            }
+        )
+    )
+    result: dict[str, object] = {}
+    for key in sorted(detail):
+        if key not in allowed:
+            continue
+        value = detail[key]
+        if key in {"attempt", "ordinal"} and type(value) is int and value >= 0:
+            result[key] = value
+        elif key == "symbol" and isinstance(value, str) and len(value) <= 9:
+            result[key] = value
+        elif key in {"manifest_record_id", "dataset_version", "signal_series_id"}:
+            if (
+                isinstance(value, str)
+                and len(value) == 71
+                and value.startswith("sha256:")
+            ):
+                result[key] = value
+        elif key in {"code", "reason", "status"} and isinstance(value, str):
+            if (
+                value
+                and len(value) <= 64
+                and all(
+                    char.islower() or char.isdigit() or char == "_" for char in value
+                )
+            ):
+                result[key] = public_text(value)
+    return result
+
+
+def _persisted_reference(
+    payload: object, *, input_kind: object
+) -> PinnedMarketRef | FrozenSymbolGap:
+    try:
+        encoded = json.dumps(payload, allow_nan=False)
+        if input_kind == "runnable":
+            return PinnedMarketRef.model_validate_json(encoded)
+        if input_kind == "gap":
+            return FrozenSymbolGap.model_validate_json(encoded)
+    except (TypeError, ValueError, ValidationError) as error:
+        raise BacktestRepositoryError(
+            "backtest symbol provenance is invalid"
+        ) from error
+    raise BacktestRepositoryError("backtest symbol provenance is invalid")
+
+
+def _encode_cursor(collection: str, run_id: str | None, key: list[object]) -> str:
+    body = json.dumps(
+        {"collection": collection, "key": key, "run_id": run_id, "version": 1},
+        allow_nan=False,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("ascii")
+    checksum = hashlib.sha256(body).hexdigest()[:16].encode("ascii")
+    return urlsafe_b64encode(body + b"." + checksum).decode("ascii").rstrip("=")
+
+
+def _decode_cursor(
+    cursor: str | None, *, collection: str, run_id: str | None
+) -> list[object] | None:
+    if cursor is None:
+        return None
+    if type(cursor) is not str or not cursor or len(cursor) > _MAX_CURSOR_LENGTH:
+        raise BacktestConflict("backtest cursor is invalid")
+    try:
+        padded = cursor + "=" * (-len(cursor) % 4)
+        encoded, checksum = urlsafe_b64decode(padded.encode("ascii")).rsplit(b".", 1)
+        if hashlib.sha256(encoded).hexdigest()[:16].encode("ascii") != checksum:
+            raise ValueError
+        value = json.loads(encoded)
+    except (UnicodeError, ValueError, json.JSONDecodeError):
+        raise BacktestConflict("backtest cursor is invalid") from None
+    if (
+        not isinstance(value, dict)
+        or value.get("version") != _CURSOR_VERSION
+        or value.get("collection") != collection
+        or value.get("run_id") != run_id
+        or not isinstance(value.get("key"), list)
+    ):
+        raise BacktestConflict("backtest cursor is invalid")
+    return cast(list[object], value["key"])
 
 
 def _json_depth(value: object, *, depth: int = 0) -> int:
@@ -291,6 +574,579 @@ class BacktestRepository:
                 for index, row in enumerate(symbols)
             ),
         )
+
+    @staticmethod
+    def _overview_from_row(run: RowMapping) -> BacktestOverviewSnapshot:
+        created_at = _utc(cast(datetime, run["created_at"]))
+        updated_at = _utc(cast(datetime, run["updated_at"]))
+        if created_at is None or updated_at is None:
+            raise BacktestRepositoryError("backtest timestamps are invalid")
+        return BacktestOverviewSnapshot(
+            run_id=cast(str, run["id"]),
+            task_id=cast(str, run["task_id"]),
+            snapshot_id=cast(str, run["snapshot_id"]),
+            status=cast(str, run["status"]),
+            stage=cast(str, run["stage"]),
+            total=cast(int, run["total"]),
+            processed=cast(int, run["processed"]),
+            failed=cast(int, run["failed_count"]),
+            result_hash=cast(str | None, run["result_hash"]),
+            created_at=created_at,
+            updated_at=updated_at,
+            started_at=_utc(cast(datetime | None, run["started_at"])),
+            finished_at=_utc(cast(datetime | None, run["finished_at"])),
+        )
+
+    def get_overview(self, run_id: str) -> BacktestOverviewSnapshot:
+        with self._engine.connect() as connection:
+            row = (
+                connection.execute(
+                    select(BacktestRunRow).where(BacktestRunRow.id == run_id)
+                )
+                .mappings()
+                .one_or_none()
+            )
+        if row is None:
+            raise BacktestNotFound("backtest run was not found")
+        return self._overview_from_row(row)
+
+    def list_runs_page(
+        self, *, limit: int, cursor: str | None
+    ) -> BacktestPage[BacktestOverviewSnapshot]:
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise BacktestConflict("backtest page limit is invalid")
+        key = _decode_cursor(cursor, collection="runs", run_id=None)
+        statement = select(BacktestRunRow)
+        if key is not None:
+            if len(key) != 2 or not all(isinstance(item, str) for item in key):
+                raise BacktestConflict("backtest cursor is invalid")
+            try:
+                created_at = datetime.fromisoformat(
+                    cast(str, key[0]).replace("Z", "+00:00")
+                )
+            except ValueError:
+                raise BacktestConflict("backtest cursor is invalid") from None
+            statement = statement.where(
+                or_(
+                    BacktestRunRow.created_at < created_at,
+                    and_(
+                        BacktestRunRow.created_at == created_at,
+                        BacktestRunRow.id < cast(str, key[1]),
+                    ),
+                )
+            )
+        statement = statement.order_by(
+            BacktestRunRow.created_at.desc(), BacktestRunRow.id.desc()
+        ).limit(limit + 1)
+        with self._engine.connect() as connection:
+            rows = connection.execute(statement).mappings().all()
+        selected = rows[:limit]
+        items = tuple(self._overview_from_row(row) for row in selected)
+        next_cursor = None
+        if len(rows) > limit and items:
+            last = items[-1]
+            next_cursor = _encode_cursor(
+                "runs",
+                None,
+                [
+                    last.created_at.isoformat().replace("+00:00", "Z"),
+                    last.run_id,
+                ],
+            )
+        return BacktestPage(items=items, next_cursor=next_cursor)
+
+    def report(self, run_id: str) -> BacktestReportSnapshot:
+        overview = self.get_overview(run_id)
+        if overview.status not in _TERMINAL_STATUSES:
+            raise BacktestConflict("backtest report is not ready")
+        with self._engine.connect() as connection:
+            raw_snapshot = connection.execute(
+                select(BacktestRunRow.snapshot_json).where(BacktestRunRow.id == run_id)
+            ).scalar_one()
+            metrics = connection.execute(
+                select(BacktestAggregateMetricRow.payload_json).where(
+                    BacktestAggregateMetricRow.run_id == run_id,
+                    BacktestAggregateMetricRow.metric_key == "overview",
+                )
+            ).scalar_one_or_none()
+        snapshot = BacktestSnapshot.model_validate_json(
+            json.dumps(raw_snapshot, allow_nan=False)
+        )
+        (
+            runnable,
+            gaps,
+            signal_sources,
+            execution_sources,
+            status_sources,
+            provenance_digest,
+        ) = _provenance_summary(snapshot)
+        return BacktestReportSnapshot(
+            overview=overview,
+            formula_version_id=snapshot.formula_version_id,
+            formula_checksum=snapshot.formula_checksum,
+            formula_parameters=tuple(
+                cast(Mapping[str, object], item.model_dump(mode="json"))
+                for item in snapshot.formula_parameters
+            ),
+            formula_engine_version=snapshot.formula_engine_version,
+            compatibility_version=snapshot.compatibility_version,
+            backtest_engine_version=snapshot.backtest_engine_version,
+            instrument_dataset_version=snapshot.instrument_dataset_version,
+            symbol_count=len(snapshot.symbols),
+            runnable_count=runnable,
+            gap_count=gaps,
+            signal_source_ids=signal_sources,
+            execution_source_ids=execution_sources,
+            status_source_ids=status_sources,
+            provenance_digest=provenance_digest,
+            period=snapshot.period.value,
+            adjustment=snapshot.adjustment.value,
+            quantity_shares=snapshot.quantity_shares,
+            commission_bps=_decimal_text(snapshot.commission_bps),
+            minimum_commission=_decimal_text(snapshot.minimum_commission),
+            sell_tax_bps=_decimal_text(snapshot.sell_tax_bps),
+            slippage_bps=_decimal_text(snapshot.slippage_bps),
+            execution_rules_version=snapshot.execution_rules_version,
+            cost_model_version=snapshot.cost_model_version,
+            sizing_version="fixed-lot-v1",
+            warmup_policy_version=snapshot.warmup_policy_version,
+            metrics=(
+                {}
+                if metrics is None
+                else cast(
+                    Mapping[str, object],
+                    public_payload(dict(cast(Mapping[str, object], metrics))),
+                )
+            ),
+            disclaimer="independent trade samples, not portfolio return",
+        )
+
+    def page(
+        self,
+        run_id: str,
+        *,
+        collection: str,
+        limit: int,
+        cursor: str | None,
+    ) -> BacktestPage[object]:
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise BacktestConflict("backtest page limit is invalid")
+        if collection not in {
+            "groups",
+            "trades",
+            "open",
+            "failures",
+            "logs",
+            "symbols",
+        }:
+            raise BacktestConflict("backtest collection is invalid")
+        self.get_overview(run_id)
+        key = _decode_cursor(cursor, collection=collection, run_id=run_id)
+        with self._engine.connect() as connection:
+            items, has_more = self._page_rows(
+                connection,
+                run_id=run_id,
+                collection=collection,
+                limit=limit,
+                key=key,
+            )
+        next_cursor = None
+        after_cursor = cursor
+        encoded_last = None
+        if items:
+            encoded_last = _encode_cursor(
+                collection, run_id, self._page_key(collection, items[-1])
+            )
+            after_cursor = encoded_last
+        if has_more and items:
+            next_cursor = encoded_last
+        return BacktestPage(
+            items=items, next_cursor=next_cursor, after_cursor=after_cursor
+        )
+
+    def iter_export_records(
+        self,
+        run_id: str,
+        *,
+        section: str,
+        batch_size: int = 100,
+    ) -> Iterator[BacktestExportMetadata | BacktestExportRecord]:
+        if section not in {"groups", "trades", "open", "failures", "logs"}:
+            raise BacktestConflict("backtest export section is invalid")
+        if type(batch_size) is not int or not 1 <= batch_size <= 1000:
+            raise BacktestConflict("backtest export batch is invalid")
+        with self._engine.connect() as connection, connection.begin():
+            run = (
+                connection.execute(
+                    select(BacktestRunRow).where(BacktestRunRow.id == run_id)
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if run is None:
+                raise BacktestNotFound("backtest run was not found")
+            status_value = cast(str, run["status"])
+            finished_at = _utc(cast(datetime | None, run["finished_at"]))
+            if status_value not in _TERMINAL_STATUSES or finished_at is None:
+                raise BacktestConflict("backtest export is not ready")
+            snapshot = BacktestSnapshot.model_validate_json(
+                json.dumps(run["snapshot_json"], allow_nan=False)
+            )
+            (
+                runnable,
+                gaps,
+                signal_sources,
+                execution_sources,
+                status_sources,
+                provenance_digest,
+            ) = _provenance_summary(snapshot)
+            yield BacktestExportMetadata(
+                run_id=cast(str, run["id"]),
+                snapshot_id=cast(str, run["snapshot_id"]),
+                generated_at=finished_at,
+                section=section,
+                disclaimer="independent trade samples, not portfolio return",
+                formula_version_id=snapshot.formula_version_id,
+                formula_checksum=snapshot.formula_checksum,
+                formula_engine_version=snapshot.formula_engine_version,
+                compatibility_version=snapshot.compatibility_version,
+                backtest_engine_version=snapshot.backtest_engine_version,
+                instrument_dataset_version=snapshot.instrument_dataset_version,
+                symbol_count=len(snapshot.symbols),
+                runnable_count=runnable,
+                gap_count=gaps,
+                signal_source_ids=signal_sources,
+                execution_source_ids=execution_sources,
+                status_source_ids=status_sources,
+                provenance_digest=provenance_digest,
+                period=snapshot.period.value,
+                adjustment=snapshot.adjustment.value,
+                quantity_shares=snapshot.quantity_shares,
+                commission_bps=_decimal_text(snapshot.commission_bps),
+                minimum_commission=_decimal_text(snapshot.minimum_commission),
+                sell_tax_bps=_decimal_text(snapshot.sell_tax_bps),
+                slippage_bps=_decimal_text(snapshot.slippage_bps),
+                execution_rules_version=snapshot.execution_rules_version,
+                cost_model_version=snapshot.cost_model_version,
+                sizing_version="fixed-lot-v1",
+                warmup_policy_version=snapshot.warmup_policy_version,
+            )
+            result = connection.execute(self._export_statement(run_id, section))
+            while True:
+                rows = result.mappings().fetchmany(batch_size)
+                if not rows:
+                    break
+                for row in rows:
+                    yield BacktestExportRecord(
+                        section=section,
+                        data=self._export_record(section, row),
+                    )
+
+    @staticmethod
+    def _export_statement(run_id: str, section: str) -> Select[Any]:
+        if section == "groups":
+            return (
+                select(BacktestGroupMetricRow)
+                .where(BacktestGroupMetricRow.run_id == run_id)
+                .order_by(
+                    BacktestGroupMetricRow.dimension,
+                    BacktestGroupMetricRow.group_key,
+                )
+            )
+        if section in {"trades", "open"}:
+            return (
+                select(
+                    BacktestTradeRow,
+                    BacktestSymbolRow.ordinal.label("symbol_ordinal"),
+                )
+                .join(
+                    BacktestSymbolRow,
+                    and_(
+                        BacktestSymbolRow.run_id == BacktestTradeRow.run_id,
+                        BacktestSymbolRow.symbol == BacktestTradeRow.symbol,
+                    ),
+                )
+                .where(
+                    BacktestTradeRow.run_id == run_id,
+                    BacktestTradeRow.realized.is_(section == "trades"),
+                )
+                .order_by(
+                    BacktestSymbolRow.ordinal,
+                    BacktestTradeRow.ordinal,
+                    BacktestTradeRow.symbol,
+                )
+            )
+        if section == "failures":
+            return (
+                select(BacktestFailureRow)
+                .where(BacktestFailureRow.run_id == run_id)
+                .order_by(BacktestFailureRow.ordinal, BacktestFailureRow.symbol)
+            )
+        return (
+            select(BacktestLogRow)
+            .where(BacktestLogRow.run_id == run_id)
+            .order_by(BacktestLogRow.ordinal)
+        )
+
+    @staticmethod
+    def _export_record(section: str, row: RowMapping) -> Mapping[str, object]:
+        if section == "groups":
+            return {
+                "dimension": row["dimension"],
+                "key": row["group_key"],
+                "payload": public_payload(
+                    dict(cast(Mapping[str, object], row["payload_json"]))
+                ),
+            }
+        if section in {"trades", "open"}:
+            return {
+                "ordinal": row["ordinal"],
+                "payload": public_payload(
+                    dict(cast(Mapping[str, object], row["payload_json"]))
+                ),
+                "symbol": row["symbol"],
+            }
+        if section == "failures":
+            return {
+                "detail": _public_detail(
+                    cast(Mapping[str, object], row["detail_json"]),
+                    collection="failures",
+                ),
+                "ordinal": row["ordinal"],
+                "reason": row["reason"],
+                "symbol": row["symbol"],
+            }
+        return {
+            "detail": _public_detail(
+                cast(Mapping[str, object], row["detail_json"]), collection="logs"
+            ),
+            "level": row["level"],
+            "message": row["message"],
+            "ordinal": row["ordinal"],
+        }
+
+    @staticmethod
+    def _page_key(collection: str, item: object) -> list[object]:
+        if collection == "groups":
+            group = cast(BacktestGroupSnapshot, item)
+            return [group.dimension, group.key]
+        if collection in {"trades", "open"}:
+            trade = cast(BacktestTradeSnapshot, item)
+            return [trade.symbol_ordinal, trade.ordinal, trade.symbol]
+        if collection == "failures":
+            failure = cast(BacktestFailureSnapshot, item)
+            return [failure.ordinal, failure.symbol]
+        if collection == "symbols":
+            symbol = cast(BacktestSymbolSnapshot, item)
+            return [symbol.ordinal]
+        log = cast(BacktestLogSnapshot, item)
+        return [log.ordinal]
+
+    @staticmethod
+    def _page_rows(
+        connection: Connection,
+        *,
+        run_id: str,
+        collection: str,
+        limit: int,
+        key: list[object] | None,
+    ) -> tuple[tuple[object, ...], bool]:
+        if collection == "symbols":
+            symbol_statement = select(BacktestSymbolRow).where(
+                BacktestSymbolRow.run_id == run_id
+            )
+            if key is not None:
+                if len(key) != 1 or type(key[0]) is not int:
+                    raise BacktestConflict("backtest cursor is invalid")
+                symbol_statement = symbol_statement.where(
+                    BacktestSymbolRow.ordinal > key[0]
+                )
+            symbol_rows = (
+                connection.execute(
+                    symbol_statement.order_by(BacktestSymbolRow.ordinal).limit(
+                        limit + 1
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            symbol_items: tuple[object, ...] = tuple(
+                BacktestSymbolSnapshot(
+                    ordinal=cast(int, row["ordinal"]),
+                    symbol=cast(str, row["symbol"]),
+                    reference=_persisted_reference(
+                        row["reference_json"], input_kind=row["input_kind"]
+                    ),
+                    status=cast(str, row["status"]),
+                    signal_series_id=cast(str | None, row["signal_series_id"]),
+                    warmup_start=_utc(cast(datetime | None, row["warmup_start"])),
+                    failure_reason=cast(str | None, row["failure_reason"]),
+                )
+                for row in symbol_rows[:limit]
+            )
+            return symbol_items, len(symbol_rows) > limit
+        if collection == "groups":
+            group_statement = select(BacktestGroupMetricRow).where(
+                BacktestGroupMetricRow.run_id == run_id
+            )
+            if key is not None:
+                if len(key) != 2 or not all(isinstance(item, str) for item in key):
+                    raise BacktestConflict("backtest cursor is invalid")
+                group_statement = group_statement.where(
+                    or_(
+                        BacktestGroupMetricRow.dimension > cast(str, key[0]),
+                        and_(
+                            BacktestGroupMetricRow.dimension == cast(str, key[0]),
+                            BacktestGroupMetricRow.group_key > cast(str, key[1]),
+                        ),
+                    )
+                )
+            group_rows = (
+                connection.execute(
+                    group_statement.order_by(
+                        BacktestGroupMetricRow.dimension,
+                        BacktestGroupMetricRow.group_key,
+                    ).limit(limit + 1)
+                )
+                .mappings()
+                .all()
+            )
+            group_items: tuple[object, ...] = tuple(
+                BacktestGroupSnapshot(
+                    cast(str, row["dimension"]),
+                    cast(str, row["group_key"]),
+                    cast(
+                        Mapping[str, object],
+                        public_payload(
+                            dict(cast(Mapping[str, object], row["payload_json"]))
+                        ),
+                    ),
+                )
+                for row in group_rows[:limit]
+            )
+            return group_items, len(group_rows) > limit
+        if collection in {"trades", "open"}:
+            realized = collection == "trades"
+            trade_statement = (
+                select(
+                    BacktestTradeRow,
+                    BacktestSymbolRow.ordinal.label("symbol_ordinal"),
+                )
+                .join(
+                    BacktestSymbolRow,
+                    and_(
+                        BacktestSymbolRow.run_id == BacktestTradeRow.run_id,
+                        BacktestSymbolRow.symbol == BacktestTradeRow.symbol,
+                    ),
+                )
+                .where(
+                    BacktestTradeRow.run_id == run_id,
+                    BacktestTradeRow.realized.is_(realized),
+                )
+            )
+            if key is not None:
+                if (
+                    len(key) != 3
+                    or type(key[0]) is not int
+                    or type(key[1]) is not int
+                    or not isinstance(key[2], str)
+                ):
+                    raise BacktestConflict("backtest cursor is invalid")
+                trade_statement = trade_statement.where(
+                    tuple_(
+                        BacktestSymbolRow.ordinal,
+                        BacktestTradeRow.ordinal,
+                        BacktestTradeRow.symbol,
+                    )
+                    > tuple_(literal(key[0]), literal(key[1]), literal(key[2]))
+                )
+            trade_rows = (
+                connection.execute(
+                    trade_statement.order_by(
+                        BacktestSymbolRow.ordinal,
+                        BacktestTradeRow.ordinal,
+                        BacktestTradeRow.symbol,
+                    ).limit(limit + 1)
+                )
+                .mappings()
+                .all()
+            )
+            trade_items: tuple[object, ...] = tuple(
+                BacktestTradeSnapshot(
+                    cast(str, row["symbol"]),
+                    cast(int, row["ordinal"]),
+                    cast(
+                        Mapping[str, object],
+                        public_payload(
+                            dict(cast(Mapping[str, object], row["payload_json"]))
+                        ),
+                    ),
+                    cast(int, row["symbol_ordinal"]),
+                )
+                for row in trade_rows[:limit]
+            )
+            return trade_items, len(trade_rows) > limit
+        if collection == "failures":
+            failure_statement = select(BacktestFailureRow).where(
+                BacktestFailureRow.run_id == run_id
+            )
+            if key is not None:
+                if (
+                    len(key) != 2
+                    or type(key[0]) is not int
+                    or not isinstance(key[1], str)
+                ):
+                    raise BacktestConflict("backtest cursor is invalid")
+                failure_statement = failure_statement.where(
+                    tuple_(BacktestFailureRow.ordinal, BacktestFailureRow.symbol)
+                    > tuple_(literal(key[0]), literal(key[1]))
+                )
+            failure_rows = (
+                connection.execute(
+                    failure_statement.order_by(
+                        BacktestFailureRow.ordinal, BacktestFailureRow.symbol
+                    ).limit(limit + 1)
+                )
+                .mappings()
+                .all()
+            )
+            failure_items: tuple[object, ...] = tuple(
+                BacktestFailureSnapshot(
+                    cast(str, row["symbol"]),
+                    cast(int, row["ordinal"]),
+                    cast(str, row["reason"]),
+                    _public_detail(
+                        cast(Mapping[str, object], row["detail_json"]),
+                        collection="failures",
+                    ),
+                )
+                for row in failure_rows[:limit]
+            )
+            return failure_items, len(failure_rows) > limit
+        log_statement = select(BacktestLogRow).where(BacktestLogRow.run_id == run_id)
+        if key is not None:
+            if len(key) != 1 or type(key[0]) is not int:
+                raise BacktestConflict("backtest cursor is invalid")
+            log_statement = log_statement.where(BacktestLogRow.ordinal > key[0])
+        log_rows = (
+            connection.execute(
+                log_statement.order_by(BacktestLogRow.ordinal).limit(limit + 1)
+            )
+            .mappings()
+            .all()
+        )
+        log_items: tuple[object, ...] = tuple(
+            BacktestLogSnapshot(
+                cast(int, row["ordinal"]),
+                cast(str, row["level"]),
+                cast(str, row["message"]),
+                _public_detail(
+                    cast(Mapping[str, object], row["detail_json"]), collection="logs"
+                ),
+            )
+            for row in log_rows[:limit]
+        )
+        return log_items, len(log_rows) > limit
 
     def list_run_ids(self) -> tuple[str, ...]:
         with self._engine.connect() as connection:

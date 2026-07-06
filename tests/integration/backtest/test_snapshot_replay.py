@@ -220,9 +220,16 @@ def test_intraday_snapshot_accepts_containing_date_exclusive_status_coverage(
             signal_query=routed.result.query,
             execution_manifest_record_id=stored.manifest_record_id,
             execution_dataset_version=stored.dataset_version,
+            execution_route_version=routed.manifest.route_version,
+            execution_source=routed.result.provenance.source,
+            execution_data_cutoff=routed.result.provenance.data_cutoff,
             execution_query=routed.result.query,
             execution_status_manifest_record_id=stored_status.manifest_record_id,
             execution_status_dataset_version=stored_status.dataset_version,
+            execution_status_route_version=status.manifest.route_version,
+            execution_status_source=status.manifest.selected_source,
+            execution_status_data_cutoff=status.manifest.upstream_data_cutoff,
+            execution_status_query=status.result.query,
         )
         snapshot = freeze_request(
             BacktestRequest(
@@ -300,9 +307,16 @@ def test_snapshot_reopens_exact_pinned_data_after_newer_versions_are_published(
             signal_query=first.result.query,
             execution_manifest_record_id=pinned.manifest_record_id,
             execution_dataset_version=pinned.dataset_version,
+            execution_route_version=first.manifest.route_version,
+            execution_source=first.result.provenance.source,
+            execution_data_cutoff=first.result.provenance.data_cutoff,
             execution_query=first.result.query,
             execution_status_manifest_record_id=pinned_status.manifest_record_id,
             execution_status_dataset_version=pinned_status.dataset_version,
+            execution_status_route_version=first_status.manifest.route_version,
+            execution_status_source=first_status.manifest.selected_source,
+            execution_status_data_cutoff=first_status.manifest.upstream_data_cutoff,
+            execution_status_query=first_status.result.query,
         )
         snapshot = freeze_request(
             BacktestRequest(
@@ -380,9 +394,22 @@ def test_reopen_validates_pinned_identity_instead_of_trusting_reader(
             signal_query=routed.result.query,
             execution_manifest_record_id=stored.manifest_record_id,
             execution_dataset_version=stored.dataset_version,
+            execution_route_version=routed.manifest.route_version,
+            execution_source=routed.result.provenance.source,
+            execution_data_cutoff=routed.result.provenance.data_cutoff,
             execution_query=routed.result.query,
             execution_status_manifest_record_id=DIGEST_STATUS_V1,
             execution_status_dataset_version=DIGEST_STATUS_V1,
+            execution_status_route_version=DIGEST_STATUS_V1,
+            execution_status_source=ProviderId.TUSHARE,
+            execution_status_data_cutoff=routed.result.provenance.data_cutoff,
+            execution_status_query=ExecutionStatusQuery(
+                symbol=routed.result.query.symbol,
+                exchange=Exchange.SH,
+                start=routed.result.query.start.date(),
+                end=routed.result.query.end.date(),
+                period=routed.result.query.period,
+            ),
         )
         request = BacktestRequest(
             scope_kind="single",
