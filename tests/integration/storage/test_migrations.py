@@ -17,7 +17,18 @@ from stock_desk.storage.models import Base
 from stock_desk.tasks.repository import TaskRepository
 
 
-HEAD_REVISION = "0003_market_catalog"
+HEAD_REVISION = "0004_instruments_and_pools"
+INSTRUMENT_TABLES = {
+    "instrument_dataset",
+    "instrument_dataset_item",
+    "instrument_routing_manifest",
+}
+POOL_TABLES = {
+    "preset_pool_snapshot",
+    "preset_pool_member",
+    "custom_pool",
+    "custom_pool_member",
+}
 CATALOG_TABLES = {
     "market_dataset",
     "market_dataset_partition",
@@ -25,6 +36,8 @@ CATALOG_TABLES = {
     "market_update_item",
     "market_update_occurrence",
     "market_update_schedule",
+    *INSTRUMENT_TABLES,
+    *POOL_TABLES,
 }
 CORE_TABLES = {"app_setting", "task_event", "task_run", *CATALOG_TABLES}
 LEGACY_CORE_TABLES = {"app_setting", "task_run"}
@@ -54,6 +67,77 @@ TASK_EVENT_COLUMNS = {
     "occurred_at",
 }
 MARKET_TABLE_COLUMNS = {
+    "instrument_dataset": {
+        "dataset_version",
+        "source",
+        "data_cutoff",
+        "row_count",
+        "created_at",
+    },
+    "instrument_dataset_item": {
+        "dataset_version",
+        "symbol",
+        "ordinal",
+        "exchange",
+        "name",
+        "instrument_kind",
+        "listing_status",
+        "listed_on",
+        "delisted_on",
+        "created_at",
+    },
+    "instrument_routing_manifest": {
+        "manifest_record_id",
+        "dataset_version",
+        "route_version",
+        "manifest_json",
+        "fetched_at",
+        "data_cutoff",
+        "created_at",
+    },
+    "preset_pool_snapshot": {
+        "snapshot_id",
+        "pool_id",
+        "preset_key",
+        "category",
+        "display_name",
+        "source",
+        "composition_dataset_version",
+        "composition_route_version",
+        "fetched_at",
+        "data_cutoff",
+        "complete",
+        "instrument_manifest_record_id",
+        "instrument_dataset_version",
+        "member_count",
+        "created_at",
+    },
+    "preset_pool_member": {
+        "snapshot_id",
+        "ordinal",
+        "instrument_dataset_version",
+        "symbol",
+        "created_at",
+    },
+    "custom_pool": {
+        "pool_id",
+        "name",
+        "revision",
+        "instrument_manifest_record_id",
+        "instrument_dataset_version",
+        "member_count",
+        "member_digest",
+        "state_digest",
+        "created_at",
+        "updated_at",
+    },
+    "custom_pool_member": {
+        "pool_id",
+        "ordinal",
+        "member_revision",
+        "instrument_dataset_version",
+        "symbol",
+    },
     "market_dataset": {
         "dataset_version",
         "source",
@@ -115,6 +199,11 @@ MARKET_TABLE_COLUMNS = {
 IMMUTABLE_TRIGGER_NAMES = {
     f"trg_{table}_{operation}"
     for table in (
+        "instrument_dataset",
+        "instrument_dataset_item",
+        "instrument_routing_manifest",
+        "preset_pool_snapshot",
+        "preset_pool_member",
         "market_dataset",
         "market_dataset_partition",
         "market_routing_manifest",
@@ -416,6 +505,175 @@ def test_market_catalog_has_exact_keys_constraints_and_indexes(tmp_path: Path) -
             "deferrable": True,
             "initially": "DEFERRED",
         }
+    finally:
+        _dispose(engine)
+
+
+def test_instrument_catalog_has_exact_keys_constraints_and_indexes(
+    tmp_path: Path,
+) -> None:
+    url = f"sqlite:///{tmp_path / 'instrument-shape.db'}"
+    migrate(url)
+    engine = create_engine_for_url(url)
+
+    try:
+        inspector = inspect(engine)
+        assert inspector.get_pk_constraint("instrument_dataset")[
+            "constrained_columns"
+        ] == ["dataset_version"]
+        assert inspector.get_pk_constraint("instrument_dataset_item")[
+            "constrained_columns"
+        ] == ["dataset_version", "symbol"]
+        assert inspector.get_pk_constraint("instrument_routing_manifest")[
+            "constrained_columns"
+        ] == ["manifest_record_id"]
+        assert _unique_signatures(engine, "instrument_dataset_item") == {
+            ("dataset_version", "ordinal"),
+        }
+        assert _unique_signatures(engine, "instrument_routing_manifest") == {
+            ("manifest_record_id", "dataset_version"),
+        }
+        assert _index_signatures(engine, "instrument_routing_manifest") == {
+            (
+                "ix_instrument_routing_manifest_current",
+                ("data_cutoff", "fetched_at", "manifest_record_id"),
+                False,
+            )
+        }
+        assert _check_names(engine, "instrument_dataset") == {
+            "ck_instrument_dataset_row_count_bounded",
+        }
+        assert _check_names(engine, "instrument_dataset_item") == {
+            "ck_instrument_dataset_item_name_length",
+            "ck_instrument_dataset_item_ordinal",
+        }
+        assert [
+            (
+                tuple(fk["constrained_columns"]),
+                fk["referred_table"],
+                tuple(fk["referred_columns"]),
+            )
+            for fk in inspector.get_foreign_keys("instrument_dataset_item")
+        ] == [(("dataset_version",), "instrument_dataset", ("dataset_version",))]
+        assert [
+            (
+                tuple(fk["constrained_columns"]),
+                fk["referred_table"],
+                tuple(fk["referred_columns"]),
+            )
+            for fk in inspector.get_foreign_keys("instrument_routing_manifest")
+        ] == [(("dataset_version",), "instrument_dataset", ("dataset_version",))]
+    finally:
+        _dispose(engine)
+
+
+def test_pool_tables_have_exact_keys_constraints_indexes_and_foreign_keys(
+    tmp_path: Path,
+) -> None:
+    url = f"sqlite:///{tmp_path / 'pool-shape.db'}"
+    migrate(url)
+    engine = create_engine_for_url(url)
+
+    try:
+        inspector = inspect(engine)
+        assert inspector.get_pk_constraint("preset_pool_snapshot")[
+            "constrained_columns"
+        ] == ["snapshot_id"]
+        assert inspector.get_pk_constraint("preset_pool_member")[
+            "constrained_columns"
+        ] == ["snapshot_id", "ordinal"]
+        assert inspector.get_pk_constraint("custom_pool")["constrained_columns"] == [
+            "pool_id"
+        ]
+        assert inspector.get_pk_constraint("custom_pool_member")[
+            "constrained_columns"
+        ] == ["pool_id", "ordinal"]
+        assert _unique_signatures(engine, "preset_pool_snapshot") == {
+            ("snapshot_id", "instrument_dataset_version"),
+        }
+        assert _unique_signatures(engine, "preset_pool_member") == {
+            ("snapshot_id", "symbol"),
+        }
+        assert _unique_signatures(engine, "custom_pool") == {
+            ("pool_id", "revision", "instrument_dataset_version"),
+        }
+        assert _unique_signatures(engine, "custom_pool_member") == {
+            ("pool_id", "symbol"),
+        }
+        assert _index_signatures(engine, "preset_pool_snapshot") == {
+            (
+                "ix_preset_pool_snapshot_latest",
+                ("preset_key", "data_cutoff", "fetched_at", "snapshot_id"),
+                False,
+            )
+        }
+        assert _check_names(engine, "preset_pool_snapshot") == {
+            "ck_preset_pool_snapshot_category",
+            "ck_preset_pool_snapshot_complete",
+            "ck_preset_pool_snapshot_logical_id",
+            "ck_preset_pool_snapshot_member_count",
+        }
+        assert _check_names(engine, "preset_pool_member") == {
+            "ck_preset_pool_member_ordinal",
+        }
+        assert _check_names(engine, "custom_pool") == {
+            "ck_custom_pool_member_count",
+            "ck_custom_pool_member_digest",
+            "ck_custom_pool_state_digest",
+            "ck_custom_pool_name",
+            "ck_custom_pool_revision",
+        }
+        assert _check_names(engine, "custom_pool_member") == {
+            "ck_custom_pool_member_ordinal",
+            "ck_custom_pool_member_revision",
+        }
+
+        def foreign_key_signatures(
+            table: str,
+        ) -> set[tuple[tuple[str, ...], str, tuple[str, ...]]]:
+            return {
+                (
+                    tuple(fk["constrained_columns"]),
+                    str(fk["referred_table"]),
+                    tuple(fk["referred_columns"]),
+                )
+                for fk in inspector.get_foreign_keys(table)
+            }
+
+        instrument_pin = (
+            ("instrument_manifest_record_id", "instrument_dataset_version"),
+            "instrument_routing_manifest",
+            ("manifest_record_id", "dataset_version"),
+        )
+        instrument_member = (
+            ("instrument_dataset_version", "symbol"),
+            "instrument_dataset_item",
+            ("dataset_version", "symbol"),
+        )
+        assert foreign_key_signatures("preset_pool_snapshot") == {instrument_pin}
+        assert foreign_key_signatures("preset_pool_member") == {
+            (
+                ("snapshot_id", "instrument_dataset_version"),
+                "preset_pool_snapshot",
+                ("snapshot_id", "instrument_dataset_version"),
+            ),
+            instrument_member,
+        }
+        assert foreign_key_signatures("custom_pool") == {instrument_pin}
+        assert foreign_key_signatures("custom_pool_member") == {
+            (
+                ("pool_id", "member_revision", "instrument_dataset_version"),
+                "custom_pool",
+                ("pool_id", "revision", "instrument_dataset_version"),
+            ),
+            instrument_member,
+        }
+        custom_owner_fk = next(
+            fk
+            for fk in inspector.get_foreign_keys("custom_pool_member")
+            if fk["referred_table"] == "custom_pool"
+        )
+        assert custom_owner_fk["options"] == {"ondelete": "CASCADE"}
     finally:
         _dispose(engine)
 
@@ -794,6 +1052,32 @@ def test_existing_0002_database_upgrades_to_market_catalog(tmp_path: Path) -> No
     try:
         assert _current_revision(engine) == HEAD_REVISION
         assert CATALOG_TABLES <= set(inspect(engine).get_table_names())
+        assert _trigger_names(engine) == MARKET_TRIGGER_NAMES
+    finally:
+        _dispose(engine)
+
+
+def test_instrument_revision_downgrades_to_0003_and_reupgrades(tmp_path: Path) -> None:
+    url = f"sqlite:///{tmp_path / 'instrument-roundtrip.db'}"
+    migrate(url)
+
+    downgrade(url, "0003_market_catalog")
+    engine = create_engine_for_url(url)
+    try:
+        assert _current_revision(engine) == "0003_market_catalog"
+        assert INSTRUMENT_TABLES.isdisjoint(inspect(engine).get_table_names())
+        assert {
+            name for name in MARKET_TRIGGER_NAMES if name.startswith("trg_instrument_")
+        }.isdisjoint(_trigger_names(engine))
+        assert "market_dataset" in inspect(engine).get_table_names()
+    finally:
+        _dispose(engine)
+
+    migrate(url)
+    engine = create_engine_for_url(url)
+    try:
+        assert _current_revision(engine) == HEAD_REVISION
+        assert INSTRUMENT_TABLES <= set(inspect(engine).get_table_names())
         assert _trigger_names(engine) == MARKET_TRIGGER_NAMES
     finally:
         _dispose(engine)

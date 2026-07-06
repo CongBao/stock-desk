@@ -47,9 +47,9 @@ def test_read_rejects_root_parent_replaced_before_operation(
         parsed_paths: list[Path] = []
         original_read = lake_module._read_partition_bars
 
-        def record_parse(path: Path) -> tuple[lake_module.Bar, ...]:
+        def record_parse(path: Path, *, max_rows: int) -> tuple[lake_module.Bar, ...]:
             parsed_paths.append(path)
-            return original_read(path)
+            return original_read(path, max_rows=max_rows)
 
         monkeypatch.setattr(lake_module, "_read_partition_bars", record_parse)
 

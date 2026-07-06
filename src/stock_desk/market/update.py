@@ -19,8 +19,10 @@ from stock_desk.market.types import (
     BarQuery,
     CanonicalSymbol,
     FailureReason,
+    MAX_MARKET_UPDATE_PERIOD_BUCKETS,
     Period,
     UtcDatetime,
+    estimated_period_buckets,
 )
 from stock_desk.storage.models import MarketUpdateItem, TaskRun
 from stock_desk.tasks.models import TaskSnapshot
@@ -70,7 +72,10 @@ class MarketUpdateRequest(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 
-    symbols: Annotated[tuple[CanonicalSymbol, ...], Field(min_length=1)]
+    symbols: Annotated[
+        tuple[CanonicalSymbol, ...],
+        Field(min_length=1, max_length=10_000),
+    ]
     period: Period
     adjustment: Adjustment
     start: UtcDatetime
@@ -99,6 +104,13 @@ class MarketUpdateRequest(BaseModel):
                 start=self.start,
                 end=self.end,
             )
+        estimated_work = len(self.symbols) * estimated_period_buckets(
+            self.period,
+            self.start,
+            self.end,
+        )
+        if estimated_work > MAX_MARKET_UPDATE_PERIOD_BUCKETS:
+            raise ValueError("market update estimated work exceeds the limit")
         return self
 
 

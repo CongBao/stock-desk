@@ -7,7 +7,15 @@ import pytest
 
 from stock_desk.market.lake import MarketLake, MarketLakeCorruptionError
 from stock_desk.market.provenance import RoutedBarSuccess, make_routing_manifest
-from stock_desk.market.types import Adjustment, BarQuery, Period, ProviderId
+from stock_desk.market.providers.normalization import dataset_version
+from stock_desk.market.types import (
+    Adjustment,
+    BarQuery,
+    BarResult,
+    Period,
+    Provenance,
+    ProviderId,
+)
 from tests.integration.market.lake_read_test_helpers import (
     corrupt_catalog,
     open_catalog_engine,
@@ -65,6 +73,59 @@ def test_latest_exact_selects_newest_fetch_for_same_route(tmp_path: Path) -> Non
         latest = lake.latest_exact(older.result.query)
 
     assert latest == newest_stored
+
+
+def test_latest_exact_prioritizes_data_cutoff_before_fetch_time(
+    tmp_path: Path,
+) -> None:
+    older_cutoff = routed_daily_bars(
+        (date(2024, 1, 2),),
+        fetched_at=local_time(date(2024, 1, 10), 16),
+    )
+    newer_cutoff_at = local_time(date(2024, 1, 3), 15)
+    newer_fetch_at = local_time(date(2024, 1, 3), 16)
+    newer_version = dataset_version(
+        source=older_cutoff.result.provenance.source,
+        operation="bars",
+        request={"query": older_cutoff.result.query},
+        data_cutoff=newer_cutoff_at,
+        items=older_cutoff.result.bars,
+    )
+    newer_result = BarResult(
+        query=older_cutoff.result.query,
+        bars=older_cutoff.result.bars,
+        coverage_start=older_cutoff.result.coverage_start,
+        coverage_end=older_cutoff.result.coverage_end,
+        provenance=Provenance(
+            source=older_cutoff.result.provenance.source,
+            fetched_at=newer_fetch_at,
+            data_cutoff=newer_cutoff_at,
+            adjustment=older_cutoff.result.provenance.adjustment,
+            dataset_version=newer_version,
+        ),
+    )
+    newer_cutoff = RoutedBarSuccess(
+        result=newer_result,
+        manifest=make_routing_manifest(
+            category=older_cutoff.manifest.category,
+            request=older_cutoff.manifest.request,
+            priority=older_cutoff.manifest.priority,
+            attempts=(),
+            selected_source=older_cutoff.manifest.selected_source,
+            upstream_dataset_version=newer_version,
+            upstream_fetched_at=newer_fetch_at,
+            upstream_data_cutoff=newer_cutoff_at,
+            upstream_adjustment=newer_result.query.adjustment,
+        ),
+    )
+    with open_catalog_engine(tmp_path) as engine:
+        lake = MarketLake(engine=engine, root=tmp_path / "market")
+        lake.write(older_cutoff)
+        expected = lake.write(newer_cutoff)
+
+        latest = lake.latest_exact(older_cutoff.result.query)
+
+    assert latest == expected
 
 
 def test_latest_exact_breaks_fetch_tie_by_manifest_record_id(tmp_path: Path) -> None:
@@ -136,3 +197,84 @@ def test_latest_exact_rejects_corrupt_latest_without_falling_back(
 
         with pytest.raises(MarketLakeCorruptionError):
             lake.latest_exact(older.result.query)
+
+
+def test_read_latest_exact_returns_routed_data_or_none(tmp_path: Path) -> None:
+    routed = routed_daily_bars((date(2024, 1, 2), date(2024, 1, 3)))
+    with open_catalog_engine(tmp_path) as engine:
+        lake = MarketLake(engine=engine, root=tmp_path / "market")
+        lake.write(routed)
+
+        assert lake.read_latest_exact(routed.result.query) == routed
+        assert (
+            lake.read_latest_exact(
+                routed.result.query.model_copy(update={"symbol": "000001.SZ"})
+            )
+            is None
+        )
+
+
+def test_read_latest_series_prioritizes_data_cutoff_before_fetch_time(
+    tmp_path: Path,
+) -> None:
+    older_cutoff = routed_daily_bars(
+        (date(2024, 1, 2),),
+        fetched_at=local_time(date(2024, 1, 10), 16),
+    )
+    newer_cutoff = routed_daily_bars(
+        (date(2024, 1, 2), date(2024, 1, 3)),
+        fetched_at=local_time(date(2024, 1, 3), 16),
+    )
+    with open_catalog_engine(tmp_path) as engine:
+        lake = MarketLake(engine=engine, root=tmp_path / "market")
+        lake.write(older_cutoff)
+        lake.write(newer_cutoff)
+
+        latest = lake.read_latest_series(
+            newer_cutoff.result.query.symbol,
+            newer_cutoff.result.query.period,
+            newer_cutoff.result.query.adjustment,
+        )
+
+    assert latest == newer_cutoff
+
+
+def test_read_latest_series_returns_none_for_cache_miss(tmp_path: Path) -> None:
+    with open_catalog_engine(tmp_path) as engine:
+        lake = MarketLake(engine=engine, root=tmp_path / "market")
+
+        assert (
+            lake.read_latest_series(
+                "600000.SH",
+                Period.DAY,
+                Adjustment.QFQ,
+            )
+            is None
+        )
+
+
+def test_read_latest_series_rejects_corrupt_newest_without_fallback(
+    tmp_path: Path,
+) -> None:
+    older = routed_daily_bars((date(2024, 1, 2),))
+    newer = routed_daily_bars((date(2024, 1, 2), date(2024, 1, 3)))
+    with open_catalog_engine(tmp_path) as engine:
+        lake = MarketLake(engine=engine, root=tmp_path / "market")
+        lake.write(older)
+        newest = lake.write(newer)
+        corrupt_catalog(
+            engine,
+            table="market_routing_manifest",
+            sql=(
+                "UPDATE market_routing_manifest SET route_version = ? "
+                "WHERE manifest_record_id = ?"
+            ),
+            parameters=(f"sha256:{'0' * 64}", newest.manifest_record_id),
+        )
+
+        with pytest.raises(MarketLakeCorruptionError):
+            lake.read_latest_series(
+                newer.result.query.symbol,
+                newer.result.query.period,
+                newer.result.query.adjustment,
+            )

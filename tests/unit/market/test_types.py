@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 import json
 from typing import get_args
@@ -24,6 +24,7 @@ from stock_desk.market.types import (
     Instrument,
     InstrumentKind,
     ListingStatus,
+    MAX_BAR_SERIES_ROWS,
     MarketCapability,
     Period,
     Provenance,
@@ -188,6 +189,26 @@ def test_instrument_accepts_canonical_equities_and_indices(
 
     assert instrument.exchange is exchange
     assert instrument.instrument_kind is kind
+
+
+def test_instrument_name_has_255_character_canonical_bound() -> None:
+    accepted = Instrument(
+        symbol="600000.SH",
+        exchange=Exchange.SH,
+        name="x" * 255,
+        instrument_kind=InstrumentKind.STOCK,
+        listing_status=ListingStatus.LISTED,
+    )
+    assert len(accepted.name) == 255
+
+    with pytest.raises(ValidationError):
+        Instrument(
+            symbol="600000.SH",
+            exchange=Exchange.SH,
+            name="x" * 256,
+            instrument_kind=InstrumentKind.STOCK,
+            listing_status=ListingStatus.LISTED,
+        )
 
 
 @pytest.mark.parametrize(
@@ -540,6 +561,23 @@ def test_bar_result_represents_only_complete_nonempty_success() -> None:
         result(coverage_end=market_time(10, 30))
     with pytest.raises(ValidationError, match="cutoff"):
         result(provenance=provenance(data_cutoff=market_time(10)))
+
+
+def test_bar_query_enforces_period_aware_calendar_span_bounds() -> None:
+    start = market_time(9, 30)
+    assert query(period=Period.DAY, start=start, end=start + timedelta(days=365 * 50))
+    assert query(period=Period.WEEK, start=start, end=start + timedelta(days=365 * 50))
+    assert query(period=Period.MIN60, start=start, end=start + timedelta(days=365 * 15))
+
+    with pytest.raises(ValidationError, match="span"):
+        query(period=Period.DAY, start=start, end=start + timedelta(days=366 * 51))
+    with pytest.raises(ValidationError, match="span"):
+        query(period=Period.MIN60, start=start, end=start + timedelta(days=366 * 16))
+
+
+def test_bar_result_rejects_more_than_shared_series_limit() -> None:
+    with pytest.raises(ValidationError, match="at most"):
+        result(bars=(bar(),) * (MAX_BAR_SERIES_ROWS + 1))
 
 
 def test_bar_result_enforces_half_open_ordered_query_consistency() -> None:

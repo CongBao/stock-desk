@@ -161,8 +161,10 @@ def test_read_detects_same_signature_tamper_after_duckdb_read(
         before = os.lstat(target)
         original_read = lake_module._read_partition_bars
 
-        def tamper_after_read(path: Path) -> tuple[lake_module.Bar, ...]:
-            bars = original_read(path)
+        def tamper_after_read(
+            path: Path, *, max_rows: int
+        ) -> tuple[lake_module.Bar, ...]:
+            bars = original_read(path, max_rows=max_rows)
             content = bytearray(target.read_bytes())
             content[len(content) // 2] ^= 0x01
             target.write_bytes(content)

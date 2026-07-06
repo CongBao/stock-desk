@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -16,9 +17,16 @@ from typing import Annotated, Final, cast
 from uuid import uuid4
 
 import duckdb
-from pydantic import BaseModel, ConfigDict, StringConstraints, ValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    TypeAdapter,
+    ValidationError,
+)
 from sqlalchemy import Engine, and_, insert, select
-from sqlalchemy.engine import RowMapping
+from sqlalchemy.engine import Connection, RowMapping
 
 from stock_desk.market.calendar import MARKET_TIMEZONE
 from stock_desk.market.partitions import (
@@ -40,6 +48,8 @@ from stock_desk.market.types import (
     Bar,
     BarQuery,
     BarResult,
+    CanonicalSymbol,
+    MAX_BAR_SERIES_ROWS,
     Period,
     Provenance,
     ProviderId,
@@ -49,6 +59,11 @@ from stock_desk.storage.models import (
     MarketDataset,
     MarketDatasetPartition,
     MarketRoutingManifest,
+)
+from stock_desk.storage.database import (
+    DatabaseIdentity,
+    DatabaseIdentityError,
+    connection_database_identity,
 )
 
 
@@ -97,6 +112,7 @@ _OWNERSHIP_MARKER_NAME: Final[str] = ".stock-desk-market-lake"
 _OWNERSHIP_MARKER_CONTENT: Final[bytes] = b"stock-desk-market-lake-v1\n"
 _OWNERSHIP_TEMP_PREFIX: Final[str] = f"{_OWNERSHIP_MARKER_NAME}.init-"
 _OWNERSHIP_TEMP_SUFFIX: Final[str] = ".tmp"
+_SYMBOL_ADAPTER = TypeAdapter(CanonicalSymbol)
 
 
 class _FrozenLakeModel(BaseModel):
@@ -108,7 +124,7 @@ class StoredPartition(_FrozenLakeModel):
     dataset_version: Sha256Digest
     year: int
     relative_path: str
-    row_count: int
+    row_count: Annotated[int, Field(ge=1, le=MAX_BAR_SERIES_ROWS)]
     byte_size: int
     physical_sha256: Sha256Digest
 
@@ -1359,7 +1375,13 @@ def _file_signature(metadata: os.stat_result) -> tuple[int, int, int, int]:
     )
 
 
-def _read_partition_bars(path: Path) -> tuple[Bar, ...]:
+def _read_partition_bars(path: Path, *, max_rows: int) -> tuple[Bar, ...]:
+    if (
+        isinstance(max_rows, bool)
+        or not isinstance(max_rows, int)
+        or not 1 <= max_rows <= MAX_BAR_SERIES_ROWS
+    ):
+        raise _IntegrityValidationError("market partition row bound is invalid")
     try:
         with duckdb.connect(":memory:") as connection:
             description = tuple(
@@ -1372,6 +1394,18 @@ def _read_partition_bars(path: Path) -> tuple[Bar, ...]:
             if description != _PARQUET_SCHEMA:
                 raise _IntegrityValidationError(
                     f"persisted partition schema is invalid: {description!r}"
+                )
+            row_count = connection.execute(
+                "SELECT COUNT(*) FROM read_parquet(?, hive_partitioning = false)",
+                [str(path)],
+            ).fetchone()
+            if (
+                row_count is None
+                or type(row_count[0]) is not int
+                or row_count[0] > max_rows
+            ):
+                raise _IntegrityValidationError(
+                    "market partition exceeds its validated row bound"
                 )
             rows = connection.execute(
                 "SELECT symbol, epoch_us(timestamp), period, adjustment, status, "
@@ -1397,7 +1431,9 @@ def _validate_parquet_descriptor(
 ) -> None:
     before = os.fstat(descriptor)
     descriptor_path = _descriptor_path(descriptor, before)
-    bars = _read_partition_bars(descriptor_path)
+    if not 1 <= len(expected_bars) <= MAX_BAR_SERIES_ROWS:
+        raise _IntegrityValidationError("market partition expected rows are invalid")
+    bars = _read_partition_bars(descriptor_path, max_rows=len(expected_bars))
     after = os.fstat(descriptor)
     if bars != expected_bars:
         raise ValueError("persisted partition content is invalid")
@@ -1443,6 +1479,46 @@ class MarketLake:
         finally:
             os.close(root_descriptor)
         self._engine = engine
+        try:
+            with engine.connect() as connection:
+                self._database_identity = connection_database_identity(connection)
+        except DatabaseIdentityError as error:
+            raise MarketLakeCorruptionError(
+                "market lake database identity could not be determined"
+            ) from error
+
+    @property
+    def database_identity(self) -> DatabaseIdentity:
+        return self._database_identity
+
+    def _validate_database_connection(self, connection: Connection) -> None:
+        if connection.closed or connection.engine is not self._engine:
+            raise MarketLakeCorruptionError(
+                "market lake database connection is not lake-bound"
+            )
+        try:
+            identity = connection_database_identity(connection)
+        except DatabaseIdentityError as error:
+            raise MarketLakeCorruptionError(
+                "market lake database identity could not be determined"
+            ) from error
+        if identity != self._database_identity:
+            raise MarketLakeCorruptionError("market lake database identity changed")
+
+    def _checked_connection(self) -> Connection:
+        connection = self._engine.connect()
+        try:
+            self._validate_database_connection(connection)
+        except BaseException:
+            connection.close()
+            raise
+        return connection
+
+    @contextmanager
+    def _checked_begin(self) -> Iterator[Connection]:
+        with self._checked_connection() as connection:
+            with connection.begin():
+                yield connection
 
     def _open_operation_context(self) -> _OperationContext:
         root_descriptor: int | None = None
@@ -1616,34 +1692,92 @@ class MarketLake:
 
     def latest_exact(self, query: BarQuery) -> StoredRoutingManifest | None:
         canonical = BarQuery.model_validate(query.model_dump(mode="python"))
-        with self._engine.connect() as connection:
-            record_id = connection.execute(
-                select(MarketRoutingManifest.manifest_record_id)
-                .join(
-                    MarketDataset,
-                    and_(
-                        MarketRoutingManifest.dataset_version
-                        == MarketDataset.dataset_version,
-                        MarketRoutingManifest.symbol == MarketDataset.symbol,
-                    ),
-                )
-                .where(
-                    MarketDataset.symbol == canonical.symbol,
-                    MarketDataset.period == canonical.period.value,
-                    MarketDataset.adjustment == canonical.adjustment.value,
-                    MarketDataset.query_start == canonical.start,
-                    MarketDataset.query_end == canonical.end,
-                )
-                .order_by(
-                    MarketRoutingManifest.fetched_at.desc(),
-                    MarketRoutingManifest.manifest_record_id.desc(),
-                )
-                .limit(1)
-            ).scalar_one_or_none()
+        record_id = self._latest_record_id(
+            symbol=canonical.symbol,
+            period=canonical.period,
+            adjustment=canonical.adjustment,
+            start=canonical.start,
+            end=canonical.end,
+        )
         if record_id is None:
             return None
         _routed, stored = self._read_validated_record(record_id)
         return stored
+
+    def read_latest_exact(self, query: BarQuery) -> RoutedBarSuccess | None:
+        canonical = BarQuery.model_validate(query.model_dump(mode="python"))
+        record_id = self._latest_record_id(
+            symbol=canonical.symbol,
+            period=canonical.period,
+            adjustment=canonical.adjustment,
+            start=canonical.start,
+            end=canonical.end,
+        )
+        if record_id is None:
+            return None
+        routed, _stored = self._read_validated_record(record_id)
+        return routed
+
+    def read_latest_series(
+        self,
+        symbol: str,
+        period: Period,
+        adjustment: Adjustment,
+    ) -> RoutedBarSuccess | None:
+        canonical_symbol = _SYMBOL_ADAPTER.validate_python(symbol, strict=True)
+        if not isinstance(period, Period):
+            raise ValueError("market period is invalid")
+        if not isinstance(adjustment, Adjustment):
+            raise ValueError("market adjustment is invalid")
+        record_id = self._latest_record_id(
+            symbol=canonical_symbol,
+            period=period,
+            adjustment=adjustment,
+        )
+        if record_id is None:
+            return None
+        routed, _stored = self._read_validated_record(record_id)
+        return routed
+
+    def _latest_record_id(
+        self,
+        *,
+        symbol: str,
+        period: Period,
+        adjustment: Adjustment,
+        start: datetime | None = None,
+        end: datetime | None = None,
+    ) -> str | None:
+        statement = (
+            select(MarketRoutingManifest.manifest_record_id)
+            .join(
+                MarketDataset,
+                and_(
+                    MarketRoutingManifest.dataset_version
+                    == MarketDataset.dataset_version,
+                    MarketRoutingManifest.symbol == MarketDataset.symbol,
+                ),
+            )
+            .where(
+                MarketDataset.symbol == symbol,
+                MarketDataset.period == period.value,
+                MarketDataset.adjustment == adjustment.value,
+            )
+        )
+        if start is not None or end is not None:
+            if start is None or end is None:
+                raise ValueError("exact cache lookup requires both range bounds")
+            statement = statement.where(
+                MarketDataset.query_start == start,
+                MarketDataset.query_end == end,
+            )
+        statement = statement.order_by(
+            MarketDataset.data_cutoff.desc(),
+            MarketRoutingManifest.fetched_at.desc(),
+            MarketRoutingManifest.manifest_record_id.desc(),
+        ).limit(1)
+        with self._checked_connection() as connection:
+            return connection.execute(statement).scalar_one_or_none()
 
     def _read_validated_record(
         self,
@@ -1705,7 +1839,7 @@ class MarketLake:
         return routed, stored
 
     def _resolve_dataset_version(self, record_id: str) -> object:
-        with self._engine.connect() as connection:
+        with self._checked_connection() as connection:
             dataset_version = connection.execute(
                 select(MarketRoutingManifest.dataset_version).where(
                     MarketRoutingManifest.manifest_record_id == record_id
@@ -1720,7 +1854,7 @@ class MarketLake:
         record_id: str,
         expected_dataset_version: object,
     ) -> _CatalogSnapshot:
-        with self._engine.connect() as connection:
+        with self._checked_connection() as connection:
             manifest_result = connection.execute(
                 select(MarketRoutingManifest).where(
                     MarketRoutingManifest.manifest_record_id == record_id
@@ -1797,19 +1931,60 @@ class MarketLake:
             ) from error
         dataset_version = dataset["dataset_version"]
         _dataset_lock_name(dataset_version)
+        dataset_row_count = dataset["row_count"]
+        if (
+            type(dataset_row_count) is not int
+            or not 1 <= dataset_row_count <= MAX_BAR_SERIES_ROWS
+        ):
+            raise _IntegrityValidationError(
+                "market dataset row count exceeds the supported limit"
+            )
 
         bars: list[Bar] = []
         stored_partitions: list[StoredPartition] = []
+        partition_row_counts: list[int] = []
+        cumulative_rows = 0
         for partition in snapshot.partitions:
+            partition_row_count = partition["row_count"]
+            if (
+                type(partition_row_count) is not int
+                or not 1 <= partition_row_count <= MAX_BAR_SERIES_ROWS
+            ):
+                raise _IntegrityValidationError(
+                    "market partition row count exceeds the supported limit"
+                )
+            cumulative_rows += partition_row_count
+            if cumulative_rows > dataset_row_count:
+                raise _IntegrityValidationError(
+                    "market partition row counts exceed the dataset bound"
+                )
+            partition_row_counts.append(partition_row_count)
+        if cumulative_rows != dataset_row_count:
+            raise _IntegrityValidationError(
+                "market dataset row count does not match its partitions"
+            )
+        remaining_rows = dataset_row_count
+        for partition, partition_row_count in zip(
+            snapshot.partitions,
+            partition_row_counts,
+            strict=True,
+        ):
             partition_bars, stored_partition = self._read_catalog_partition(
                 partition,
                 source=source,
                 query=query,
                 dataset_version=dataset_version,
                 root_descriptor=root_descriptor,
+                expected_row_count=partition_row_count,
+                max_rows=remaining_rows,
             )
             bars.extend(partition_bars)
             stored_partitions.append(stored_partition)
+            remaining_rows -= partition_row_count
+        if remaining_rows != 0:
+            raise _IntegrityValidationError(
+                "market dataset row count does not match its partitions"
+            )
         timestamps = tuple(bar.timestamp for bar in bars)
         if any(
             current <= previous
@@ -1818,7 +1993,7 @@ class MarketLake:
             raise _IntegrityValidationError(
                 "market dataset timestamps must be unique and ascending"
             )
-        if type(dataset["row_count"]) is not int or dataset["row_count"] != len(bars):
+        if dataset_row_count != len(bars):
             raise _IntegrityValidationError(
                 "market dataset row count does not match its partitions"
             )
@@ -1898,10 +2073,19 @@ class MarketLake:
         query: BarQuery,
         dataset_version: str,
         root_descriptor: int,
+        expected_row_count: int,
+        max_rows: int,
     ) -> tuple[tuple[Bar, ...], StoredPartition]:
         year = stored["partition_year"]
         if type(year) is not int:
             raise _IntegrityValidationError("market partition year is invalid")
+        if (
+            type(expected_row_count) is not int
+            or type(max_rows) is not int
+            or not 1 <= expected_row_count <= max_rows <= MAX_BAR_SERIES_ROWS
+            or stored["row_count"] != expected_row_count
+        ):
+            raise _IntegrityValidationError("market partition row bound is invalid")
         try:
             key = PartitionKey(
                 category="bars",
@@ -1962,7 +2146,10 @@ class MarketLake:
                     snapshot_descriptor,
                     snapshot_before,
                 )
-                bars = _read_partition_bars(snapshot_path)
+                bars = _read_partition_bars(
+                    snapshot_path,
+                    max_rows=min(expected_row_count, max_rows),
+                )
                 try:
                     snapshot_after_hash = _descriptor_sha256(snapshot_descriptor)
                     snapshot_after = os.fstat(snapshot_descriptor)
@@ -2006,7 +2193,7 @@ class MarketLake:
                 ) from error
         finally:
             os.close(held.descriptor)
-        if type(stored["row_count"]) is not int or stored["row_count"] != len(bars):
+        if expected_row_count != len(bars):
             raise _IntegrityValidationError("market partition row count is invalid")
         for bar in bars:
             if (
@@ -2349,7 +2536,7 @@ class MarketLake:
         *,
         root_descriptor: int,
     ) -> None:
-        with self._engine.connect() as connection:
+        with self._checked_connection() as connection:
             referenced = {
                 str(path)
                 for path in connection.execute(
@@ -2466,7 +2653,7 @@ class MarketLake:
     ) -> None:
         result = routed.result
         version = result.provenance.dataset_version
-        with self._engine.begin() as connection:
+        with self._checked_begin() as connection:
             dataset_row = (
                 connection.execute(
                     select(MarketDataset).where(

@@ -16,7 +16,14 @@ from stock_desk.market.partitions import (
     partition_path,
 )
 from stock_desk.market.provenance import RoutedBarSuccess
-from stock_desk.market.types import Adjustment, Bar, Period, TradingStatus
+from stock_desk.market.types import (
+    Adjustment,
+    Bar,
+    BarResult,
+    MAX_BAR_SERIES_ROWS,
+    Period,
+    TradingStatus,
+)
 from stock_desk.storage.database import create_engine_for_url, migrate
 from tests.integration.market.lake_test_helpers import (
     SHANGHAI,
@@ -50,6 +57,31 @@ def _expected_relative_path(routed: RoutedBarSuccess, year: int) -> str:
     return (
         partition_path(key) / f"dataset={dataset_hex}" / "part-00000.parquet"
     ).as_posix()
+
+
+def test_write_rejects_constructed_over_limit_result_before_publication(
+    tmp_path: Path,
+    catalog_engine: Engine,
+) -> None:
+    routed = routed_daily_bars((date(2024, 1, 2),))
+    forged_result = BarResult.model_construct(
+        query=routed.result.query,
+        bars=routed.result.bars * (MAX_BAR_SERIES_ROWS + 1),
+        coverage_start=routed.result.coverage_start,
+        coverage_end=routed.result.coverage_end,
+        provenance=routed.result.provenance,
+    )
+    forged = RoutedBarSuccess.model_construct(
+        result=forged_result,
+        manifest=routed.manifest,
+    )
+    root = tmp_path / "market"
+    lake = MarketLake(engine=catalog_engine, root=root)
+
+    with pytest.raises(ValueError):
+        lake.write(forged)
+
+    assert not (root / "layout=v1").exists()
 
 
 def _parquet_description(path: Path) -> tuple[tuple[str, str], ...]:

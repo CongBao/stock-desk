@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 import re
-from typing import Annotated, Self, TypeAlias, cast
+from typing import Annotated, Final, Self, TypeAlias, cast
 from zoneinfo import ZoneInfo
 
 from pydantic import (
@@ -37,6 +37,15 @@ NonEmptyText = Annotated[
         pattern=r"^\S(?:.*\S)?$",
     ),
 ]
+InstrumentName = Annotated[
+    str,
+    StringConstraints(
+        strict=True,
+        min_length=1,
+        max_length=255,
+        pattern=r"^\S(?:.*\S)?$",
+    ),
+]
 FailureDetail = Annotated[
     str,
     StringConstraints(
@@ -53,6 +62,13 @@ _MIN60_BUCKET_STARTS = frozenset({(9, 30), (10, 30), (13, 0), (14, 0)})
 _DECIMAL_STRING_PATTERN = re.compile(r"^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$")
 _MAX_PRICE_INTEGER_DIGITS = 16
 _MAX_PRICE_DECIMAL_PLACES = 8
+MAX_BAR_SERIES_ROWS: Final[int] = 100_000
+MAX_MARKET_UPDATE_PERIOD_BUCKETS: Final[int] = 2_000_000
+_MAX_QUERY_SPAN: Final[dict["Period", timedelta]] = {
+    # Calendar bounds deliberately leave room for leap years while keeping
+    # provider work finite before any I/O begins.
+    # Values are keyed after Period is defined below and assigned there.
+}
 
 
 def _to_utc(value: datetime) -> datetime:
@@ -66,6 +82,30 @@ class Period(StrEnum):
     DAY = "1d"
     WEEK = "1w"
     MIN60 = "60m"
+
+
+_MAX_QUERY_SPAN.update(
+    {
+        Period.DAY: timedelta(days=366 * 50),
+        Period.WEEK: timedelta(days=366 * 50),
+        Period.MIN60: timedelta(days=366 * 15),
+    }
+)
+
+
+def estimated_period_buckets(
+    period: Period,
+    start: datetime,
+    end: datetime,
+) -> int:
+    """Return a conservative count of calendar period buckets in [start, end)."""
+    seconds = (end - start).total_seconds()
+    bucket_seconds = {
+        Period.DAY: 24 * 60 * 60,
+        Period.WEEK: 7 * 24 * 60 * 60,
+        Period.MIN60: 60 * 60,
+    }[period]
+    return max(1, int((seconds + bucket_seconds - 1) // bucket_seconds))
 
 
 class Adjustment(StrEnum):
@@ -144,7 +184,7 @@ class _FrozenMarketModel(BaseModel):
 class Instrument(_FrozenMarketModel):
     symbol: CanonicalSymbol
     exchange: Exchange
-    name: NonEmptyText
+    name: InstrumentName
     instrument_kind: InstrumentKind
     listing_status: ListingStatus
     listed_on: date | None = None
@@ -312,6 +352,8 @@ class BarQuery(_FrozenMarketModel):
     def validate_range(self) -> Self:
         if self.start >= self.end:
             raise ValueError("bar query start must be before end")
+        if self.end - self.start > _MAX_QUERY_SPAN[self.period]:
+            raise ValueError("bar query exceeds the maximum calendar span")
         return self
 
 
@@ -425,7 +467,7 @@ class CapabilityReport(_FrozenMarketModel):
 
 class BarResult(_FrozenMarketModel):
     query: BarQuery
-    bars: tuple[Bar, ...]
+    bars: Annotated[tuple[Bar, ...], Field(max_length=MAX_BAR_SERIES_ROWS)]
     coverage_start: UtcDatetime
     coverage_end: UtcDatetime
     provenance: Provenance

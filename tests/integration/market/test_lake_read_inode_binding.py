@@ -60,12 +60,14 @@ def test_read_binds_duckdb_to_original_leaf_during_swap_restore(
         parsed_hashes: list[str] = []
         original_read = lake_module._read_partition_bars
 
-        def swap_read_restore(path: Path) -> tuple[lake_module.Bar, ...]:
+        def swap_read_restore(
+            path: Path, *, max_rows: int
+        ) -> tuple[lake_module.Bar, ...]:
             os.replace(target, displaced)
             os.replace(replacement, target)
             try:
                 parsed_hashes.append(_physical_sha256(path))
-                return original_read(path)
+                return original_read(path, max_rows=max_rows)
             finally:
                 os.replace(target, replacement)
                 os.replace(displaced, target)
@@ -101,11 +103,13 @@ def test_read_parses_immutable_bytes_during_same_inode_mutate_restore(
         parsed_hashes: list[str] = []
         original_read = lake_module._read_partition_bars
 
-        def mutate_read_restore(path: Path) -> tuple[lake_module.Bar, ...]:
+        def mutate_read_restore(
+            path: Path, *, max_rows: int
+        ) -> tuple[lake_module.Bar, ...]:
             target.write_bytes(replacement_bytes)
             try:
                 parsed_hashes.append(_physical_sha256(path))
-                return original_read(path)
+                return original_read(path, max_rows=max_rows)
             finally:
                 target.write_bytes(original_bytes)
                 target.chmod(0o600)
@@ -157,6 +161,8 @@ def test_read_snapshot_is_read_only_before_duckdb_parse(
 
         def mutate_snapshot_read_restore(
             path: Path,
+            *,
+            max_rows: int,
         ) -> tuple[lake_module.Bar, ...]:
             snapshot_metadata = os.stat(path)
             try:
@@ -164,7 +170,7 @@ def test_read_snapshot_is_read_only_before_duckdb_parse(
             except OSError as error:
                 mutation_errors.append(error)
                 parsed_hashes.append(_physical_sha256(path))
-                return original_read(path)
+                return original_read(path, max_rows=max_rows)
             writable_reopens.append(descriptor)
             snapshot_bytes = os.pread(
                 descriptor,
@@ -174,7 +180,7 @@ def test_read_snapshot_is_read_only_before_duckdb_parse(
             try:
                 replace_descriptor_bytes(descriptor, replacement_bytes)
                 parsed_hashes.append(_physical_sha256(path))
-                return original_read(path)
+                return original_read(path, max_rows=max_rows)
             finally:
                 replace_descriptor_bytes(descriptor, snapshot_bytes)
                 os.utime(
@@ -302,7 +308,9 @@ def test_read_binds_duckdb_to_original_ancestor_chain_during_swap_restore(
         parsed_hashes: list[str] = []
         original_read = lake_module._read_partition_bars
 
-        def swap_read_restore(path: Path) -> tuple[lake_module.Bar, ...]:
+        def swap_read_restore(
+            path: Path, *, max_rows: int
+        ) -> tuple[lake_module.Bar, ...]:
             os.replace(layout, displaced_layout)
             if replacement_kind == "directory":
                 os.replace(replacement_layout, layout)
@@ -310,7 +318,7 @@ def test_read_binds_duckdb_to_original_ancestor_chain_during_swap_restore(
                 layout.symlink_to(replacement_layout, target_is_directory=True)
             try:
                 parsed_hashes.append(_physical_sha256(path))
-                return original_read(path)
+                return original_read(path, max_rows=max_rows)
             finally:
                 if replacement_kind == "directory":
                     os.replace(layout, replacement_layout)

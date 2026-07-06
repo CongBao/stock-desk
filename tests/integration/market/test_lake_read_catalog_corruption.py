@@ -7,6 +7,7 @@ from pathlib import Path
 import duckdb
 import pytest
 
+import stock_desk.market.lake as lake_module
 from stock_desk.market.lake import MarketLake, MarketLakeCorruptionError
 from tests.integration.market.lake_read_test_helpers import (
     corrupt_catalog,
@@ -14,6 +15,83 @@ from tests.integration.market.lake_read_test_helpers import (
     refresh_partition_file_metadata,
 )
 from tests.integration.market.lake_test_helpers import routed_daily_bars
+
+
+def test_parquet_reader_counts_and_rejects_before_materializing_rows(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "oversized.parquet"
+    with duckdb.connect(":memory:") as connection:
+        connection.execute(
+            "COPY (SELECT '600000.SH'::VARCHAR AS symbol, "
+            "TIMESTAMPTZ '2024-01-02 00:00:00+00' + i * INTERVAL 1 SECOND "
+            "AS timestamp, '1d'::VARCHAR AS period, 'qfq'::VARCHAR AS adjustment, "
+            "'normal'::VARCHAR AS status, 1::DECIMAL(24,8) AS open, "
+            "1::DECIMAL(24,8) AS high, 1::DECIMAL(24,8) AS low, "
+            "1::DECIMAL(24,8) AS close, 1::BIGINT AS volume "
+            "FROM range(100001) AS rows(i)) TO ? (FORMAT PARQUET)",
+            [str(path)],
+        )
+
+    with pytest.raises(ValueError, match="exceeds"):
+        lake_module._read_partition_bars(path, max_rows=100_000)
+
+
+def test_read_rejects_over_limit_catalog_counts_before_opening_parquet(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with open_catalog_engine(tmp_path) as engine:
+        lake = MarketLake(engine=engine, root=tmp_path / "market")
+        stored = lake.write(routed_daily_bars((date(2024, 1, 2),)))
+        corrupt_catalog(
+            engine,
+            table="market_dataset",
+            sql="UPDATE market_dataset SET row_count = 100001",
+        )
+        corrupt_catalog(
+            engine,
+            table="market_dataset_partition",
+            sql="UPDATE market_dataset_partition SET row_count = 100001",
+        )
+
+        def reject_open(*_args: object, **_kwargs: object) -> object:
+            raise AssertionError("over-limit metadata reached parquet open")
+
+        monkeypatch.setattr(lake_module, "_open_held_catalog_object", reject_open)
+
+        with pytest.raises(MarketLakeCorruptionError):
+            lake.read(stored.manifest_record_id)
+
+
+def test_read_preflights_cumulative_partition_counts_before_any_open(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with open_catalog_engine(tmp_path) as engine:
+        lake = MarketLake(engine=engine, root=tmp_path / "market")
+        stored = lake.write(routed_daily_bars((date(2023, 12, 29), date(2024, 1, 2))))
+        corrupt_catalog(
+            engine,
+            table="market_dataset",
+            sql="UPDATE market_dataset SET row_count = 100000",
+        )
+        corrupt_catalog(
+            engine,
+            table="market_dataset_partition",
+            sql=(
+                "UPDATE market_dataset_partition SET row_count = 100000 "
+                "WHERE partition_year = 2024"
+            ),
+        )
+
+        def reject_open(*_args: object, **_kwargs: object) -> object:
+            raise AssertionError("cumulative metadata reached parquet open")
+
+        monkeypatch.setattr(lake_module, "_open_held_catalog_object", reject_open)
+
+        with pytest.raises(MarketLakeCorruptionError):
+            lake.read(stored.manifest_record_id)
 
 
 @pytest.mark.parametrize(

@@ -11,6 +11,11 @@ from stock_desk.storage.models import Base
 
 
 IMMUTABLE_TABLES = (
+    "instrument_dataset",
+    "instrument_dataset_item",
+    "instrument_routing_manifest",
+    "preset_pool_snapshot",
+    "preset_pool_member",
     "market_dataset",
     "market_dataset_partition",
     "market_routing_manifest",
@@ -24,6 +29,7 @@ PARTITION_B = "sha256:" + "d" * 64
 MANIFEST_A = "sha256:" + "e" * 64
 ROUTE_A = "sha256:" + "f" * 64
 PHYSICAL_A = "sha256:" + "1" * 64
+SNAPSHOT_A = "sha256:" + "2" * 64
 
 
 def _engine(tmp_path: Path, name: str) -> Engine:
@@ -46,6 +52,67 @@ def _insert_dataset(
             "'2025-01-01', '2026-01-01', '2025-12-31', 1)"
         ),
         {"dataset": dataset_version, "symbol": symbol},
+    )
+
+
+def _insert_instrument_dataset(
+    connection: Connection,
+    dataset_version: str,
+) -> None:
+    connection.execute(
+        text(
+            "INSERT INTO instrument_dataset "
+            "(dataset_version, source, data_cutoff, row_count) "
+            "VALUES (:dataset, 'tushare', '2026-07-06 08:00:00', 1)"
+        ),
+        {"dataset": dataset_version},
+    )
+
+
+def _insert_instrument_catalog(connection: Connection) -> None:
+    _insert_instrument_dataset(connection, DATASET_A)
+    connection.execute(
+        text(
+            "INSERT INTO instrument_dataset_item "
+            "(dataset_version, symbol, ordinal, exchange, name, "
+            "instrument_kind, listing_status) "
+            "VALUES (:dataset, '600000.SH', 0, 'SH', '浦发银行', "
+            "'stock', 'listed')"
+        ),
+        {"dataset": DATASET_A},
+    )
+    connection.execute(
+        text(
+            "INSERT INTO instrument_routing_manifest "
+            "(manifest_record_id, dataset_version, route_version, "
+            "manifest_json, fetched_at, data_cutoff) "
+            "VALUES (:manifest, :dataset, :route, '{}', "
+            "'2026-07-06 09:00:00', '2026-07-06 08:00:00')"
+        ),
+        {"manifest": MANIFEST_A, "dataset": DATASET_A, "route": ROUTE_A},
+    )
+
+
+def _insert_preset_snapshot(connection: Connection) -> None:
+    _insert_instrument_catalog(connection)
+    connection.execute(
+        text(
+            "INSERT INTO preset_pool_snapshot "
+            "(snapshot_id, pool_id, preset_key, category, display_name, source, "
+            "composition_dataset_version, composition_route_version, fetched_at, "
+            "data_cutoff, complete, instrument_manifest_record_id, "
+            "instrument_dataset_version, member_count) "
+            "VALUES (:snapshot, 'preset:test', 'test', 'index', 'Test', "
+            "'tushare', :composition_dataset, :route, '2026-07-06 09:00:00', "
+            "'2026-07-06 08:00:00', 1, :manifest, :instrument_dataset, 1)"
+        ),
+        {
+            "snapshot": SNAPSHOT_A,
+            "composition_dataset": DATASET_B,
+            "route": ROUTE_A,
+            "manifest": MANIFEST_A,
+            "instrument_dataset": DATASET_A,
+        },
     )
 
 
@@ -91,6 +158,132 @@ def _prepare_replacement_case(
     connection: Connection,
     case: str,
 ) -> tuple[str, str, dict[str, Any]]:
+    if case == "preset-snapshot-primary":
+        _insert_preset_snapshot(connection)
+        return (
+            "preset_pool_snapshot",
+            "INSERT OR REPLACE INTO preset_pool_snapshot "
+            "(snapshot_id, pool_id, preset_key, category, display_name, source, "
+            "composition_dataset_version, composition_route_version, fetched_at, "
+            "data_cutoff, complete, instrument_manifest_record_id, "
+            "instrument_dataset_version, member_count) "
+            "VALUES (:snapshot, 'preset:test', 'test', 'industry', 'Changed', "
+            "'akshare', :composition_dataset, :route, '2026-07-07 09:00:00', "
+            "'2026-07-07 08:00:00', 1, :manifest, :instrument_dataset, 1)",
+            {
+                "snapshot": SNAPSHOT_A,
+                "composition_dataset": DATASET_B,
+                "route": ROUTE_A,
+                "manifest": MANIFEST_A,
+                "instrument_dataset": DATASET_A,
+            },
+        )
+
+    if case.startswith("preset-member-"):
+        _insert_preset_snapshot(connection)
+        connection.execute(
+            text(
+                "INSERT INTO preset_pool_member "
+                "(snapshot_id, ordinal, instrument_dataset_version, symbol) "
+                "VALUES (:snapshot, 0, :dataset, '600000.SH')"
+            ),
+            {"snapshot": SNAPSHOT_A, "dataset": DATASET_A},
+        )
+        if case == "preset-member-primary":
+            connection.execute(
+                text(
+                    "INSERT INTO instrument_dataset_item "
+                    "(dataset_version, symbol, ordinal, exchange, name, "
+                    "instrument_kind, listing_status) "
+                    "VALUES (:dataset, '000001.SZ', 1, 'SZ', '平安银行', "
+                    "'stock', 'listed')"
+                ),
+                {"dataset": DATASET_A},
+            )
+        replacement_ordinal = 0 if case == "preset-member-primary" else 1
+        replacement_symbol = (
+            "000001.SZ" if case == "preset-member-primary" else "600000.SH"
+        )
+        return (
+            "preset_pool_member",
+            "INSERT OR REPLACE INTO preset_pool_member "
+            "(snapshot_id, ordinal, instrument_dataset_version, symbol) "
+            "VALUES (:snapshot, :ordinal, :dataset, :symbol)",
+            {
+                "snapshot": SNAPSHOT_A,
+                "ordinal": replacement_ordinal,
+                "dataset": DATASET_A,
+                "symbol": replacement_symbol,
+            },
+        )
+
+    if case == "instrument-dataset-primary":
+        _insert_instrument_dataset(connection, DATASET_A)
+        return (
+            "instrument_dataset",
+            "INSERT OR REPLACE INTO instrument_dataset "
+            "(dataset_version, source, data_cutoff, row_count) "
+            "VALUES (:dataset, 'akshare', '2026-07-07 08:00:00', 2)",
+            {"dataset": DATASET_A},
+        )
+
+    if case.startswith("instrument-item-"):
+        _insert_instrument_dataset(connection, DATASET_A)
+        connection.execute(
+            text(
+                "INSERT INTO instrument_dataset_item "
+                "(dataset_version, symbol, ordinal, exchange, name, "
+                "instrument_kind, listing_status) "
+                "VALUES (:dataset, '600000.SH', 0, 'SH', '浦发银行', "
+                "'stock', 'listed')"
+            ),
+            {"dataset": DATASET_A},
+        )
+        replacement_symbol = (
+            "600000.SH" if case == "instrument-item-primary" else "000001.SZ"
+        )
+        replacement_ordinal = 1 if case == "instrument-item-primary" else 0
+        return (
+            "instrument_dataset_item",
+            "INSERT OR REPLACE INTO instrument_dataset_item "
+            "(dataset_version, symbol, ordinal, exchange, name, "
+            "instrument_kind, listing_status) "
+            "VALUES (:dataset, :symbol, :ordinal, 'SZ', 'changed', "
+            "'index', 'unknown')",
+            {
+                "dataset": DATASET_A,
+                "symbol": replacement_symbol,
+                "ordinal": replacement_ordinal,
+            },
+        )
+
+    if case == "instrument-routing-primary":
+        _insert_instrument_dataset(connection, DATASET_A)
+        connection.execute(
+            text(
+                "INSERT INTO instrument_routing_manifest "
+                "(manifest_record_id, dataset_version, route_version, "
+                "manifest_json, fetched_at, data_cutoff) "
+                "VALUES (:manifest, :dataset, :route, '{}', "
+                "'2026-07-06 09:00:00', '2026-07-06 08:00:00')"
+            ),
+            {"manifest": MANIFEST_A, "dataset": DATASET_A, "route": ROUTE_A},
+        )
+        return (
+            "instrument_routing_manifest",
+            "INSERT OR REPLACE INTO instrument_routing_manifest "
+            "(manifest_record_id, dataset_version, route_version, "
+            "manifest_json, fetched_at, data_cutoff) "
+            "VALUES (:manifest, :dataset, :route, :manifest_json, "
+            "'2026-07-07 09:00:00', '2026-07-07 08:00:00')",
+            {
+                "manifest": MANIFEST_A,
+                "dataset": DATASET_A,
+                "route": ROUTE_A,
+                "manifest_json": '{"changed":true}',
+            },
+        )
+
     if case == "dataset-primary":
         _insert_dataset(connection, DATASET_A, "600000.SH")
         return (
@@ -242,6 +435,13 @@ def _snapshot_table(connection: Connection, table: str) -> tuple[object, ...]:
 @pytest.mark.parametrize(
     "case",
     [
+        "preset-snapshot-primary",
+        "preset-member-primary",
+        "preset-member-symbol",
+        "instrument-dataset-primary",
+        "instrument-item-primary",
+        "instrument-item-ordinal",
+        "instrument-routing-primary",
         "dataset-primary",
         "partition-primary",
         "partition-dataset-year",
@@ -342,6 +542,37 @@ def test_immutable_tables_are_without_rowid_in_migration_and_orm(
 @pytest.mark.parametrize(
     ("table", "fragments"),
     [
+        ("instrument_dataset", ("dataset_version = NEW.dataset_version",)),
+        (
+            "instrument_dataset_item",
+            (
+                "dataset_version = NEW.dataset_version",
+                "symbol = NEW.symbol",
+                "ordinal = NEW.ordinal",
+            ),
+        ),
+        (
+            "instrument_routing_manifest",
+            (
+                "manifest_record_id = NEW.manifest_record_id",
+                "dataset_version = NEW.dataset_version",
+            ),
+        ),
+        (
+            "preset_pool_snapshot",
+            (
+                "snapshot_id = NEW.snapshot_id",
+                "instrument_dataset_version = NEW.instrument_dataset_version",
+            ),
+        ),
+        (
+            "preset_pool_member",
+            (
+                "snapshot_id = NEW.snapshot_id",
+                "ordinal = NEW.ordinal",
+                "symbol = NEW.symbol",
+            ),
+        ),
         ("market_dataset", ("dataset_version = NEW.dataset_version",)),
         (
             "market_dataset_partition",

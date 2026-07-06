@@ -1,12 +1,16 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
 from pydantic import ValidationError
 
-from stock_desk.market.types import Adjustment, Period
+from stock_desk.market.types import (
+    Adjustment,
+    MAX_MARKET_UPDATE_PERIOD_BUCKETS,
+    Period,
+)
 from stock_desk.market.update import MarketUpdateRequest
 
 
@@ -66,6 +70,51 @@ def test_request_rejects_extra_coerced_and_invalid_range_values(
 ) -> None:
     with pytest.raises(ValidationError):
         MarketUpdateRequest.from_payload(_payload(**updates))
+
+
+def test_request_symbols_have_10000_item_boundary() -> None:
+    boundary = [f"{index:06d}.SZ" for index in range(10_000)]
+    request = MarketUpdateRequest.from_payload(_payload(symbols=boundary))
+    assert len(request.symbols) == 10_000
+
+    with pytest.raises(ValidationError):
+        MarketUpdateRequest.from_payload(_payload(symbols=[*boundary, "010000.SZ"]))
+
+
+def test_request_rejects_aggregate_period_work_above_100_million() -> None:
+    symbols = [f"{index:06d}.SZ" for index in range(1000)]
+    with pytest.raises(ValidationError, match="work"):
+        MarketUpdateRequest.from_payload(
+            _payload(
+                symbols=symbols,
+                period="60m",
+                start="2024-01-01T00:00:00Z",
+                end="2039-01-01T00:00:00Z",
+            )
+        )
+
+
+def test_request_aggregate_work_has_two_million_bucket_boundary() -> None:
+    assert MAX_MARKET_UPDATE_PERIOD_BUCKETS == 2_000_000
+    symbols = [f"{index:06d}.SZ" for index in range(10_000)]
+    start = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    accepted = MarketUpdateRequest(
+        symbols=tuple(symbols),
+        period=Period.DAY,
+        adjustment=Adjustment.QFQ,
+        start=start,
+        end=start + timedelta(days=200),
+    )
+    assert len(accepted.symbols) == 10_000
+
+    with pytest.raises(ValidationError, match="work"):
+        MarketUpdateRequest(
+            symbols=tuple(symbols),
+            period=Period.DAY,
+            adjustment=Adjustment.QFQ,
+            start=start,
+            end=start + timedelta(days=201),
+        )
 
 
 @pytest.mark.parametrize(
