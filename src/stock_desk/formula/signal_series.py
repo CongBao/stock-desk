@@ -124,7 +124,7 @@ def _leading_null_count(values: tuple[object | None, ...]) -> int:
 
 class NumericOutput(_FrozenContract):
     name: CanonicalName
-    values: tuple[float | None, ...]
+    values: Annotated[tuple[float | None, ...], Field(max_length=MAX_BAR_SERIES_ROWS)]
     warmup_null_count: Annotated[int, Field(ge=0)]
 
     @field_validator("name")
@@ -164,7 +164,7 @@ class NumericOutput(_FrozenContract):
 
 class BooleanSignal(_FrozenContract):
     name: Literal["BUY", "SELL"]
-    values: tuple[bool | None, ...]
+    values: Annotated[tuple[bool | None, ...], Field(max_length=MAX_BAR_SERIES_ROWS)]
     warmup_null_count: Annotated[int, Field(ge=0)]
 
     @field_validator("values", mode="before")
@@ -223,11 +223,19 @@ class SignalSeries(_FrozenContract):
     data_cutoff: UtcDatetime
     query_start: UtcDatetime
     query_end: UtcDatetime
-    parameters: tuple[NormalizedParameter, ...]
-    timestamps: tuple[UtcDatetime, ...]
-    numeric_outputs: tuple[NumericOutput, ...]
-    signals: tuple[BooleanSignal, ...]
-    runtime_diagnostics: tuple[RuntimeDiagnostic, ...]
+    parameters: Annotated[
+        tuple[NormalizedParameter, ...], Field(max_length=MAX_PARAMETERS)
+    ]
+    timestamps: Annotated[
+        tuple[UtcDatetime, ...], Field(max_length=MAX_BAR_SERIES_ROWS)
+    ]
+    numeric_outputs: Annotated[
+        tuple[NumericOutput, ...], Field(max_length=MAX_PUBLIC_OUTPUTS)
+    ]
+    signals: Annotated[tuple[BooleanSignal, ...], Field(max_length=2)]
+    runtime_diagnostics: Annotated[
+        tuple[RuntimeDiagnostic, ...], Field(max_length=MAX_RUNTIME_DIAGNOSTICS)
+    ]
 
     @model_validator(mode="before")
     @classmethod

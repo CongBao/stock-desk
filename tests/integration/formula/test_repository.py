@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlalchemy.exc import IntegrityError
 
 from stock_desk.formula.repository import (
@@ -15,6 +15,8 @@ from stock_desk.formula.repository import (
     FormulaRepositoryError,
     FormulaValidationError,
 )
+from stock_desk.formula.service import FormulaService
+from stock_desk.market.lake import MarketLake
 from stock_desk.storage.database import create_engine_for_url, migrate
 
 
@@ -181,6 +183,104 @@ def test_copy_creates_independent_formula_identity(
     assert copied.version == 1 and updated.version == 2
     assert repository.list_versions(source.formula_id) == (source,)
     assert repository.get_formula(copied.formula_id).name == "MACD Copy"
+
+
+def test_formula_listing_is_deterministically_cursor_paged(
+    repository: FormulaRepository, tmp_path: Path
+) -> None:
+    for index in range(105):
+        repository.save_draft(f"Paged {index:03d}", "X:C;")
+
+    first, first_cursor = repository.list_formula_page(limit=100, cursor=None)
+    second, second_cursor = repository.list_formula_page(limit=100, cursor=first_cursor)
+
+    assert len(first) == 100
+    assert first_cursor == first[-1].id
+    assert len(second) == 5
+    assert second_cursor is None
+    assert {item.id for item in first}.isdisjoint(item.id for item in second)
+    assert len(repository.list_formulas()) == 105
+    service = FormulaService(
+        repository=repository,
+        lake=MarketLake(engine=repository.engine, root=(tmp_path / "market").resolve()),
+    )
+    assert len(service.list_formulas()) == 105
+    with pytest.raises(FormulaValidationError, match="cursor"):
+        repository.list_formula_page(limit=100, cursor="missing")
+
+
+def test_formula_listing_batches_catalog_validation_queries(
+    repository: FormulaRepository,
+) -> None:
+    for index in range(100):
+        repository.save_draft(f"Batch {index:03d}", "X:C;")
+    statements: list[str] = []
+
+    def capture_statement(
+        _connection: object,
+        _cursor: object,
+        statement: str,
+        _parameters: object,
+        _context: object,
+        _executemany: bool,
+    ) -> None:
+        if statement.lstrip().upper().startswith("SELECT"):
+            statements.append(statement)
+
+    event.listen(repository.engine, "before_cursor_execute", capture_statement)
+    try:
+        page, next_cursor = repository.list_formula_page(limit=100, cursor=None)
+        page_statement_count = len(statements)
+        statements.clear()
+        all_formulas = repository.list_formulas()
+        all_statement_count = len(statements)
+    finally:
+        event.remove(repository.engine, "before_cursor_execute", capture_statement)
+
+    assert len(page) == len(all_formulas) == 100
+    assert next_cursor is None
+    assert page_statement_count <= 2
+    assert all_statement_count <= 2
+
+
+def test_formula_version_listing_is_deterministically_cursor_paged(
+    repository: FormulaRepository, tmp_path: Path
+) -> None:
+    first_version = repository.create("Paged Versions", "indicator", "X:C;", {})
+    for index in range(2, 106):
+        draft = repository.get_draft(first_version.formula_id)
+        repository.save(
+            first_version.formula_id,
+            f"X:C+{index};",
+            {},
+            expected_revision=draft.revision,
+        )
+
+    first, first_cursor = repository.list_version_page(
+        first_version.formula_id, limit=100, cursor=None
+    )
+    second, second_cursor = repository.list_version_page(
+        first_version.formula_id, limit=100, cursor=first_cursor
+    )
+
+    assert tuple(item.version for item in first) == tuple(range(1, 101))
+    assert first_cursor == first[-1].id
+    assert tuple(item.version for item in second) == tuple(range(101, 106))
+    assert second_cursor is None
+    assert tuple(
+        item.version for item in repository.list_versions(first_version.formula_id)
+    ) == tuple(range(1, 106))
+    service = FormulaService(
+        repository=repository,
+        lake=MarketLake(engine=repository.engine, root=(tmp_path / "market").resolve()),
+    )
+    assert tuple(
+        item.version for item in service.list_versions(first_version.formula_id)
+    ) == tuple(range(1, 106))
+    with pytest.raises(FormulaValidationError, match="cursor"):
+        repository.list_version_page(
+            first_version.formula_id, limit=100, cursor="missing"
+        )
 
 
 def test_copy_can_pin_an_exact_historical_version(
@@ -506,6 +606,8 @@ def test_corrupt_version_counter_is_rejected_on_every_read_path(
         lambda: repository.get_formula(version.formula_id),
         lambda: repository.get_version(version.id),
         lambda: repository.list_versions(version.formula_id),
+        repository.list_formulas,
+        lambda: repository.list_formula_page(limit=100, cursor=None),
     ):
         with pytest.raises(
             FormulaRepositoryError, match=r"^formula catalog data is invalid$"

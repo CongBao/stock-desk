@@ -9,7 +9,7 @@ from types import MappingProxyType
 from typing import Any, cast
 from uuid import uuid4
 
-from sqlalchemy import Engine, func, insert, select, update
+from sqlalchemy import Engine, and_, func, insert, or_, select, update
 from sqlalchemy.engine import Connection, RowMapping
 
 from stock_desk.formula.compiler import compile_formula, formula_source_checksum
@@ -42,6 +42,10 @@ class FormulaConflict(FormulaRepositoryError):
 
 
 class FormulaValidationError(FormulaRepositoryError, ValueError):
+    pass
+
+
+class FormulaCursorError(FormulaValidationError):
     pass
 
 
@@ -203,6 +207,14 @@ def _parameter_values(schema: Mapping[str, Any]) -> dict[str, ScalarValue]:
     return dict(sorted(values.items()))
 
 
+def normalize_parameter_schema(
+    value: object,
+) -> tuple[dict[str, Any], dict[str, ScalarValue]]:
+    """Return the canonical schema and its validated default parameter values."""
+    schema = _canonical_json(value, "parameter schema")
+    return schema, _parameter_values(schema)
+
+
 def _diagnostic_data(
     source: str, parameters: Mapping[str, ScalarValue]
 ) -> tuple[dict[str, Any], ...]:
@@ -268,8 +280,7 @@ def _catalog_corruption() -> FormulaRepositoryError:
 
 def _row_schema(value: object) -> dict[str, Any]:
     try:
-        schema = _canonical_json(value, "parameter schema")
-        _parameter_values(schema)
+        schema, _parameters = normalize_parameter_schema(value)
         return schema
     except FormulaValidationError:
         raise _catalog_corruption() from None
@@ -392,7 +403,13 @@ def _version(row: RowMapping, owner: Formula) -> FormulaVersion:
         if checksum != actual_checksum:
             raise ValueError
         schema = _row_schema(row["parameter_schema_json"])
-        if _formula_diagnostics(source, _parameter_values(schema), owner.formula_type):
+        if (
+            compatibility_version == COMPATIBILITY_VERSION
+            and engine_version == ENGINE_VERSION
+            and _formula_diagnostics(
+                source, _parameter_values(schema), owner.formula_type
+            )
+        ):
             raise ValueError
         expected_report = [
             {
@@ -477,6 +494,38 @@ class FormulaRepository:
             return row, formula
         except FormulaNotFound:
             raise
+        except FormulaRepositoryError:
+            raise _catalog_corruption() from None
+        except Exception:
+            raise _catalog_corruption() from None
+
+    def _formulas_from_rows(
+        self, connection: Connection, rows: list[RowMapping]
+    ) -> tuple[Formula, ...]:
+        try:
+            formulas = tuple(_formula(row) for row in rows)
+            if not formulas:
+                return ()
+            formula_ids = tuple(formula.id for formula in formulas)
+            summaries = {
+                str(formula_id): (int(count), maximum)
+                for formula_id, count, maximum in connection.execute(
+                    select(
+                        FormulaVersionRow.formula_id,
+                        func.count(FormulaVersionRow.id),
+                        func.max(FormulaVersionRow.version),
+                    )
+                    .where(FormulaVersionRow.formula_id.in_(formula_ids))
+                    .group_by(FormulaVersionRow.formula_id)
+                ).all()
+            }
+            for formula in formulas:
+                count, maximum = summaries.get(formula.id, (0, None))
+                if count != formula.latest_version or maximum != (
+                    formula.latest_version or None
+                ):
+                    raise _catalog_corruption()
+            return formulas
         except FormulaRepositoryError:
             raise _catalog_corruption() from None
         except Exception:
@@ -577,8 +626,7 @@ class FormulaRepository:
         typed_type, typed_placement = _validate_identity(
             name, formula_type, resolved_placement
         )
-        schema = _canonical_json(parameter_schema, "parameter schema")
-        parameters = _parameter_values(schema)
+        schema, parameters = normalize_parameter_schema(parameter_schema)
         source_checksum = _source_checksum(source)
         diagnostics = _formula_diagnostics(source, parameters, typed_type)
         if diagnostics:
@@ -648,8 +696,7 @@ class FormulaRepository:
         placement: str = "subchart",
     ) -> FormulaDraft:
         typed_type, typed_placement = _validate_identity(name, formula_type, placement)
-        schema = _canonical_json(parameter_schema or {}, "parameter schema")
-        parameters = _parameter_values(schema)
+        schema, parameters = normalize_parameter_schema(parameter_schema or {})
         source_checksum = _source_checksum(source)
         diagnostics = _formula_diagnostics(source, parameters, typed_type)
         formula_id = str(uuid4())
@@ -700,8 +747,7 @@ class FormulaRepository:
     ) -> FormulaDraft:
         if type(expected_revision) is not int or expected_revision < 1:
             raise FormulaValidationError("draft revision is invalid")
-        schema = _canonical_json(parameter_schema, "parameter schema")
-        parameters = _parameter_values(schema)
+        schema, parameters = normalize_parameter_schema(parameter_schema)
         source_checksum = _source_checksum(source)
         now = _utc_now()
         connection = self._connection()
@@ -751,8 +797,7 @@ class FormulaRepository:
     ) -> FormulaVersion:
         if type(expected_revision) is not int or expected_revision < 1:
             raise FormulaValidationError("draft revision is invalid")
-        schema = _canonical_json(parameter_schema, "parameter schema")
-        parameters = _parameter_values(schema)
+        schema, parameters = normalize_parameter_schema(parameter_schema)
         source_checksum = _source_checksum(source)
         publication_rejected = False
         version_id = str(uuid4())
@@ -975,6 +1020,72 @@ class FormulaRepository:
         except Exception:
             raise _catalog_corruption() from None
 
+    def list_formula_page(
+        self, *, limit: int, cursor: str | None
+    ) -> tuple[tuple[Formula, ...], str | None]:
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise FormulaValidationError("formula page limit is invalid")
+        if cursor is not None and (
+            type(cursor) is not str or not 0 < len(cursor) <= 128
+        ):
+            raise FormulaCursorError("formula cursor is invalid")
+        try:
+            with self._read_connection() as connection:
+                statement = select(FormulaRow.__table__).order_by(
+                    FormulaRow.created_at, FormulaRow.id
+                )
+                if cursor is not None:
+                    cursor_row = (
+                        connection.execute(
+                            select(FormulaRow.created_at, FormulaRow.id).where(
+                                FormulaRow.id == cursor
+                            )
+                        )
+                        .mappings()
+                        .one_or_none()
+                    )
+                    if cursor_row is None:
+                        raise FormulaCursorError("formula cursor is invalid")
+                    statement = statement.where(
+                        or_(
+                            FormulaRow.created_at > cursor_row["created_at"],
+                            and_(
+                                FormulaRow.created_at == cursor_row["created_at"],
+                                FormulaRow.id > cursor_row["id"],
+                            ),
+                        )
+                    )
+                rows = connection.execute(statement.limit(limit + 1)).mappings().all()
+                formulas = self._formulas_from_rows(connection, list(rows[:limit]))
+                next_cursor = (
+                    formulas[-1].id if len(rows) > limit and formulas else None
+                )
+                return formulas, next_cursor
+        except FormulaCursorError:
+            raise
+        except FormulaRepositoryError:
+            raise _catalog_corruption() from None
+        except Exception:
+            raise _catalog_corruption() from None
+
+    def list_formulas(self) -> tuple[Formula, ...]:
+        try:
+            with self._read_connection() as connection:
+                rows = (
+                    connection.execute(
+                        select(FormulaRow.__table__).order_by(
+                            FormulaRow.created_at, FormulaRow.id
+                        )
+                    )
+                    .mappings()
+                    .all()
+                )
+                return self._formulas_from_rows(connection, list(rows))
+        except FormulaRepositoryError:
+            raise _catalog_corruption() from None
+        except Exception:
+            raise _catalog_corruption() from None
+
     def get_draft(self, formula_id: str) -> FormulaDraft:
         try:
             with self._read_connection() as connection:
@@ -999,6 +1110,60 @@ class FormulaRepository:
         except Exception:
             raise _catalog_corruption() from None
 
+    def list_version_page(
+        self, formula_id: str, *, limit: int, cursor: str | None
+    ) -> tuple[tuple[FormulaVersion, ...], str | None]:
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise FormulaValidationError("formula page limit is invalid")
+        if cursor is not None and (
+            type(cursor) is not str or not 0 < len(cursor) <= 128
+        ):
+            raise FormulaCursorError("formula cursor is invalid")
+        try:
+            with self._read_connection() as connection:
+                _, owner = self._load_formula_row(connection, formula_id)
+                statement = (
+                    select(FormulaVersionRow.__table__)
+                    .where(FormulaVersionRow.formula_id == formula_id)
+                    .order_by(FormulaVersionRow.version, FormulaVersionRow.id)
+                )
+                if cursor is not None:
+                    cursor_row = (
+                        connection.execute(
+                            select(
+                                FormulaVersionRow.version, FormulaVersionRow.id
+                            ).where(
+                                FormulaVersionRow.id == cursor,
+                                FormulaVersionRow.formula_id == formula_id,
+                            )
+                        )
+                        .mappings()
+                        .one_or_none()
+                    )
+                    if cursor_row is None:
+                        raise FormulaCursorError("formula cursor is invalid")
+                    statement = statement.where(
+                        or_(
+                            FormulaVersionRow.version > cursor_row["version"],
+                            and_(
+                                FormulaVersionRow.version == cursor_row["version"],
+                                FormulaVersionRow.id > cursor_row["id"],
+                            ),
+                        )
+                    )
+                rows = connection.execute(statement.limit(limit + 1)).mappings().all()
+                versions = tuple(_version(row, owner) for row in rows[:limit])
+                next_cursor = (
+                    versions[-1].id if len(rows) > limit and versions else None
+                )
+                return versions, next_cursor
+        except (FormulaNotFound, FormulaCursorError):
+            raise
+        except FormulaRepositoryError:
+            raise _catalog_corruption() from None
+        except Exception:
+            raise _catalog_corruption() from None
+
     def list_versions(self, formula_id: str) -> tuple[FormulaVersion, ...]:
         try:
             with self._read_connection() as connection:
@@ -1007,7 +1172,7 @@ class FormulaRepository:
                     connection.execute(
                         select(FormulaVersionRow.__table__)
                         .where(FormulaVersionRow.formula_id == formula_id)
-                        .order_by(FormulaVersionRow.version)
+                        .order_by(FormulaVersionRow.version, FormulaVersionRow.id)
                     )
                     .mappings()
                     .all()

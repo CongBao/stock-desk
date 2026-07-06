@@ -7,6 +7,10 @@ from threading import Lock
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 
+from stock_desk.api.formulas import (
+    formula_service_database_mismatch_handler,
+    router as formulas_router,
+)
 from stock_desk.api.health import router as health_router
 from stock_desk.api.market import (
     MarketServices,
@@ -21,6 +25,8 @@ from stock_desk.api.settings import (
 )
 from stock_desk.api.tasks import router as tasks_router
 from stock_desk.config import Settings, get_settings
+from stock_desk.formula.repository import FormulaRepository
+from stock_desk.formula.service import FormulaService, FormulaServiceDatabaseMismatch
 from stock_desk.tasks.repository import TaskRepository
 from stock_desk.web import install_web_routes
 
@@ -30,6 +36,7 @@ def create_app(
     task_repository: TaskRepository | None = None,
     market_services: MarketServices | None = None,
     source_settings_services: SourceSettingsServices | None = None,
+    formula_service: FormulaService | None = None,
 ) -> FastAPI:
     resolved_settings = settings if settings is not None else get_settings()
     owned_repository: TaskRepository | None = None
@@ -38,6 +45,8 @@ def create_app(
     market_services_lock = Lock()
     owned_source_settings_services: SourceSettingsServices | None = None
     source_settings_services_lock = Lock()
+    owned_formula_service: FormulaService | None = None
+    formula_service_lock = Lock()
 
     def provide_task_repository() -> TaskRepository:
         nonlocal owned_repository
@@ -75,6 +84,24 @@ def create_app(
                 )
             return owned_source_settings_services
 
+    def provide_formula_service() -> FormulaService:
+        nonlocal owned_formula_service
+        if formula_service is not None:
+            services = provide_market_services()
+            if formula_service.database_identity != services.database_identity:
+                raise FormulaServiceDatabaseMismatch(
+                    "formula and market storage do not match"
+                )
+            return formula_service
+        with formula_service_lock:
+            if owned_formula_service is None:
+                services = provide_market_services()
+                owned_formula_service = FormulaService(
+                    repository=FormulaRepository(services.engine),
+                    lake=services.lake,
+                )
+            return owned_formula_service
+
     @asynccontextmanager
     async def lifespan(_application: FastAPI) -> AsyncIterator[None]:
         try:
@@ -97,9 +124,14 @@ def create_app(
     application.state.source_settings_services_provider = (
         provide_source_settings_services
     )
+    application.state.formula_service_provider = provide_formula_service
     application.add_exception_handler(
         RequestValidationError,
         market_request_validation_handler,
+    )
+    application.add_exception_handler(
+        FormulaServiceDatabaseMismatch,
+        formula_service_database_mismatch_handler,
     )
     application.add_exception_handler(
         SourceSettingsStorageError,
@@ -109,6 +141,7 @@ def create_app(
     application.include_router(tasks_router, prefix="/api")
     application.include_router(market_router, prefix="/api")
     application.include_router(settings_router, prefix="/api")
+    application.include_router(formulas_router, prefix="/api")
     if resolved_settings.web_dist_dir is not None:
         install_web_routes(application, resolved_settings.web_dist_dir)
     return application

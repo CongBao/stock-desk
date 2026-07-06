@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import date, datetime, time, timezone
+import json
+import math
 from pathlib import Path
 import re
 from threading import Lock
@@ -29,7 +31,14 @@ from pydantic import (
 )
 from sqlalchemy import Engine
 
+from stock_desk.api.formulas import (
+    FormulaErrorResponse,
+    formula_exception,
+    get_formula_service,
+)
+from stock_desk.formula.service import FormulaService
 from stock_desk.api.tasks import RepositoryDependency, TaskResponse
+from stock_desk.formula.signal_series import SignalSeries
 from stock_desk.market.instruments import (
     InstrumentCorruption,
     InstrumentManifestSnapshot,
@@ -321,6 +330,10 @@ class CachedBarsResponse(_MarketDTO):
     provenance: Provenance
 
 
+class CachedBarsFormulaResponse(CachedBarsResponse):
+    formula: SignalSeries
+
+
 class MarketUpdateRequestDTO(_MarketDTO):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=False)
 
@@ -381,6 +394,11 @@ _MARKET_ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
     status.HTTP_409_CONFLICT: {"model": MarketErrorResponse},
     status.HTTP_422_UNPROCESSABLE_CONTENT: {"model": MarketErrorResponse},
     status.HTTP_500_INTERNAL_SERVER_ERROR: {"model": MarketErrorResponse},
+}
+_BAR_ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
+    **_MARKET_ERROR_RESPONSES,
+    status.HTTP_503_SERVICE_UNAVAILABLE: {"model": FormulaErrorResponse},
+    status.HTTP_504_GATEWAY_TIMEOUT: {"model": FormulaErrorResponse},
 }
 _DAILY_SCHEDULE_ID = "00000000-0000-0000-0000-000000000001"
 
@@ -456,6 +474,13 @@ async def market_request_validation_handler(
         or request.url.path.startswith("/api/settings/")
     ):
         return _invalid()
+    if request.url.path == "/api/formulas" or request.url.path.startswith(
+        "/api/formulas/"
+    ):
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            content={"code": "invalid_request"},
+        )
     return await request_validation_exception_handler(request, error)
 
 
@@ -847,12 +872,15 @@ def delete_pool(
 
 def _bar_lookup(
     services: MarketServices,
+    formula_service: FormulaService | None,
     *,
     symbol: CanonicalSymbol,
     period: Period,
     adjustment: Adjustment,
     start: Rfc3339Timestamp | None,
     end: Rfc3339Timestamp | None,
+    formula_version_id: str | None,
+    formula_parameters: str | None,
 ) -> dict[str, object] | JSONResponse:
     try:
         if (start is None) != (end is None):
@@ -880,7 +908,7 @@ def _bar_lookup(
     if routed is None:
         return _error("not_found", status.HTTP_404_NOT_FOUND)
     result = routed.result
-    return {
+    response: dict[str, object] = {
         "query": result.query,
         "bars": result.bars,
         "coverage": {
@@ -893,28 +921,73 @@ def _bar_lookup(
         "routing_manifest": routed.manifest,
         "provenance": result.provenance,
     }
+    if formula_version_id is not None:
+        if formula_service is None:
+            return formula_exception(RuntimeError("formula service is unavailable"))
+        parameter_values: dict[str, int | float] = {}
+        try:
+            if formula_parameters is not None:
+                raw_parameters = json.loads(formula_parameters)
+                if (
+                    not isinstance(raw_parameters, dict)
+                    or len(raw_parameters) > 64
+                    or any(type(name) is not str for name in raw_parameters)
+                    or any(
+                        type(value) not in {int, float}
+                        or (type(value) is int and abs(value) > 2**53)
+                        or (type(value) is float and not math.isfinite(value))
+                        for value in raw_parameters.values()
+                    )
+                ):
+                    return _invalid()
+                parameter_values = cast(dict[str, int | float], raw_parameters)
+        except (UnicodeError, ValueError):
+            return _invalid()
+        try:
+            response["formula"] = formula_service.preview_routed(
+                formula_version_id, routed, parameter_values
+            )
+        except Exception as error:
+            return formula_exception(error)
+    return response
 
 
 @router.get(
     "/bars",
-    response_model=CachedBarsResponse,
-    responses=_MARKET_ERROR_RESPONSES,
+    response_model=CachedBarsFormulaResponse | CachedBarsResponse,
+    responses=_BAR_ERROR_RESPONSES,
 )
 def get_bars(
+    request: Request,
     services: MarketServicesDependency,
     symbol: Annotated[CanonicalSymbol, Query()],
     period: Annotated[Period, Query()],
     adjustment: Annotated[Adjustment, Query()],
     start: Annotated[Rfc3339Timestamp | None, Query()] = None,
     end: Annotated[Rfc3339Timestamp | None, Query()] = None,
+    formula_version_id: Annotated[
+        str | None, Query(min_length=1, max_length=128)
+    ] = None,
+    formula_parameters: Annotated[str | None, Query(max_length=8_192)] = None,
 ) -> dict[str, object] | JSONResponse:
+    if formula_parameters is not None and formula_version_id is None:
+        return _invalid()
+    formula_service = None
+    if formula_version_id is not None:
+        try:
+            formula_service = get_formula_service(request)
+        except Exception as error:
+            return formula_exception(error)
     return _bar_lookup(
         services,
+        formula_service,
         symbol=symbol,
         period=period,
         adjustment=adjustment,
         start=start,
         end=end,
+        formula_version_id=formula_version_id,
+        formula_parameters=formula_parameters,
     )
 
 
