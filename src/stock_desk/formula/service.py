@@ -314,6 +314,8 @@ def _bind_parameter_schema(
         kind = declaration.get("kind")
         value = overrides.get(name, declaration.get("default"))
         if kind == "integer" and type(value) is int:
+            if abs(value) > 2**53 - 1:
+                raise FormulaPreviewValidationError("formula parameters are invalid")
             try:
                 integer_scalar = IntegerScalar(value)
             except ValueError:

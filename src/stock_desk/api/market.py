@@ -934,14 +934,24 @@ def _bar_lookup(
                     or any(type(name) is not str for name in raw_parameters)
                     or any(
                         type(value) not in {int, float}
-                        or (type(value) is int and abs(value) > 2**53)
-                        or (type(value) is float and not math.isfinite(value))
+                        or (
+                            type(value) in {int, float}
+                            and (
+                                isinstance(value, float)
+                                and not math.isfinite(value)
+                                or isinstance(value, int)
+                                and (
+                                    len(str(abs(value))) > 309
+                                    or not math.isfinite(float(value))
+                                )
+                            )
+                        )
                         for value in raw_parameters.values()
                     )
                 ):
                     return _invalid()
                 parameter_values = cast(dict[str, int | float], raw_parameters)
-        except (UnicodeError, ValueError):
+        except (UnicodeError, ValueError, OverflowError):
             return _invalid()
         try:
             response["formula"] = formula_service.preview_routed(

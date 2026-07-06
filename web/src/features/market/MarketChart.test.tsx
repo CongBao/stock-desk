@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen } from '@testing-library/react';
 
 import type { MarketBar } from './marketApi';
 import {
+  buildFormulaMarketChartOption,
   buildMarketChartOption,
   formatMarketTooltip,
   MarketChart,
@@ -22,12 +23,18 @@ vi.mock('echarts/core', () => ({
   init: chartMocks.init,
   use: chartMocks.use,
 }));
-vi.mock('echarts/charts', () => ({ BarChart: {}, CandlestickChart: {} }));
+vi.mock('echarts/charts', () => ({
+  BarChart: {},
+  CandlestickChart: {},
+  LineChart: {},
+  ScatterChart: {},
+}));
 vi.mock('echarts/components', () => ({
   AriaComponent: {},
   AxisPointerComponent: {},
   DataZoomComponent: {},
   GridComponent: {},
+  LegendComponent: {},
   TooltipComponent: {},
 }));
 vi.mock('echarts/renderers', () => ({ CanvasRenderer: {} }));
@@ -129,6 +136,134 @@ it('builds synchronized candlestick and volume grids with explicit rise/fall enc
   expect(formatMarketTooltip(bars[0])).toContain('上涨');
   expect(formatMarketTooltip(bars[0])).toContain('开 10');
   expect(formatMarketTooltip(bars[0])).toContain('量 1,000');
+});
+
+it('aligns formula subchart outputs and BUY/SELL markers by timestamp', () => {
+  const option = buildFormulaMarketChartOption(bars, {
+    placement: 'subchart',
+    timestamps: [bars[0].timestamp, bars[1].timestamp],
+    numericOutputs: [
+      { name: 'DIF', values: [null, 0.2] },
+      { name: 'DEA', values: [null, 0.1] },
+    ],
+    signals: [
+      { name: 'BUY', values: [null, true] },
+      { name: 'SELL', values: [null, false] },
+    ],
+  });
+  const grids = option.grid as readonly object[];
+  const series = option.series as readonly {
+    readonly name?: string;
+    readonly xAxisIndex?: number;
+    readonly data?: readonly unknown[];
+  }[];
+
+  expect(grids).toHaveLength(3);
+  expect(series.find((item) => item.name === 'DIF')).toMatchObject({
+    xAxisIndex: 2,
+    data: [null, 0.2],
+  });
+  const buyData = series.find((item) => item.name === 'BUY 买点')?.data as
+    readonly [string, number][] | undefined;
+  expect(buyData?.[0]?.[0]).toBe(bars[1].timestamp);
+  expect(buyData?.[0]?.[1]).toBeLessThan(bars[1].low);
+  expect(series.find((item) => item.name === 'SELL 卖点')?.data).toEqual([]);
+});
+
+it('places BUY and SELL markers with a positive additive offset for zero and negative prices', () => {
+  const unusualBars = [
+    {
+      ...bars[0],
+      open: 0,
+      high: 0,
+      low: 0,
+      close: 0,
+      priceText: { open: '0', high: '0', low: '0', close: '0' },
+    },
+    {
+      ...bars[1],
+      open: -10,
+      high: -9,
+      low: -11,
+      close: -10,
+      priceText: { open: '-10', high: '-9', low: '-11', close: '-10' },
+    },
+  ] satisfies readonly MarketBar[];
+  const option = buildFormulaMarketChartOption(unusualBars, {
+    placement: 'subchart',
+    timestamps: unusualBars.map((bar) => bar.timestamp),
+    numericOutputs: [],
+    signals: [
+      { name: 'BUY', values: [true, true] },
+      { name: 'SELL', values: [true, true] },
+    ],
+  });
+  const series = option.series as readonly {
+    readonly name?: string;
+    readonly data?: readonly [string, number][];
+  }[];
+  const buys = series.find((item) => item.name === 'BUY 买点')?.data ?? [];
+  const sells = series.find((item) => item.name === 'SELL 卖点')?.data ?? [];
+
+  expect(buys[0]?.[1]).toBeLessThan(0);
+  expect(sells[0]?.[1]).toBeGreaterThan(0);
+  expect(buys[1]?.[1]).toBeLessThan(-11);
+  expect(sells[1]?.[1]).toBeGreaterThan(-9);
+});
+
+it('allows Formula Studio to replace the Stage 1 empty subchart copy', () => {
+  render(
+    <MarketChart
+      bars={undefined}
+      formulaEmptyMessage="保存并运行预览后显示公式副图与买卖点"
+    />,
+  );
+
+  expect(
+    screen.getByText('保存并运行预览后显示公式副图与买卖点'),
+  ).toBeVisible();
+  expect(screen.queryByText(/将在后续阶段接入/u)).not.toBeInTheDocument();
+});
+
+it('labels main-chart overlays and subcharts according to formula placement', () => {
+  const formula = {
+    timestamps: bars.map((bar) => bar.timestamp),
+    numericOutputs: [{ name: 'DIF', values: [null, 0.2] }],
+    signals: [
+      { name: 'BUY' as const, values: [null, true] },
+      { name: 'SELL' as const, values: [null, false] },
+    ],
+  };
+  const { rerender } = render(
+    <MarketChart bars={bars} formula={{ ...formula, placement: 'main' }} />,
+  );
+
+  expect(
+    screen.getByRole('heading', { name: 'K 线主图与公式叠加' }),
+  ).toBeVisible();
+  expect(screen.queryByText(/公式副图/u)).not.toBeInTheDocument();
+
+  rerender(
+    <MarketChart bars={bars} formula={{ ...formula, placement: 'subchart' }} />,
+  );
+  expect(
+    screen.getByRole('heading', { name: 'K 线主图与公式副图' }),
+  ).toBeVisible();
+});
+
+it('uses a main-overlay empty region when Formula Studio selects main placement', () => {
+  render(
+    <MarketChart
+      bars={undefined}
+      formulaEmptyPlacement="main"
+      formulaEmptyMessage="保存并运行预览后在 K 线主图叠加公式输出与买卖点"
+    />,
+  );
+
+  expect(
+    screen.getByRole('region', { name: '公式主图叠加' }),
+  ).toHaveTextContent('K 线主图叠加');
+  expect(screen.queryByText(/副图/u)).not.toBeInTheDocument();
 });
 
 it('uses unique raw timestamps as category keys across years', () => {

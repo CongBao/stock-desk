@@ -6,6 +6,10 @@ import {
 } from '../../shared/api/client';
 import type { MarketAdjustment, MarketPeriod } from './marketStore';
 import { sha256Hex } from './sha256';
+import {
+  decodeFormulaPreview,
+  type FormulaPreview,
+} from '../formulas/formulaApi';
 
 const MAX_INSTRUMENTS = 100;
 const MAX_POOLS = 50;
@@ -274,6 +278,7 @@ export type MarketBarsResponse = {
     readonly adjustment: MarketAdjustment;
     readonly datasetVersion: string;
   };
+  readonly formula?: FormulaPreview;
 };
 
 type SignalOptions = { readonly signal?: AbortSignal };
@@ -290,12 +295,23 @@ export type MarketApi = {
     readonly signal?: AbortSignal;
   }): Promise<MarketPoolPage>;
   getPool(poolId: string, options?: SignalOptions): Promise<MarketPoolDetail>;
-  getBars(options: {
-    readonly symbol: string;
-    readonly period: MarketPeriod;
-    readonly adjustment: MarketAdjustment;
-    readonly signal?: AbortSignal;
-  }): Promise<MarketBarsResponse>;
+  getBars(
+    options: {
+      readonly symbol: string;
+      readonly period: MarketPeriod;
+      readonly adjustment: MarketAdjustment;
+      readonly signal?: AbortSignal;
+    } & (
+      | {
+          readonly formulaVersionId?: never;
+          readonly formulaParameters?: never;
+        }
+      | {
+          readonly formulaVersionId: string;
+          readonly formulaParameters: Readonly<Record<string, number>>;
+        }
+    ),
+  ): Promise<MarketBarsResponse>;
 };
 
 function record(
@@ -1255,10 +1271,15 @@ function decodeQuery(value: JsonValue | undefined, path: string) {
   return result;
 }
 
+type ExpectedFormulaParameters = Readonly<Record<string, number>>;
+
 type ExpectedBarsRequest = Pick<
   MarketBarsQuery,
   'symbol' | 'period' | 'adjustment'
->;
+> & {
+  readonly formulaVersionId?: string;
+  readonly formulaParameters?: ExpectedFormulaParameters;
+};
 
 function sameQuery(left: MarketBarsQuery, right: MarketBarsQuery): boolean {
   return (
@@ -1268,6 +1289,48 @@ function sameQuery(left: MarketBarsQuery, right: MarketBarsQuery): boolean {
     left.start === right.start &&
     left.end === right.end
   );
+}
+
+function validFormulaParameters(
+  parameters: ExpectedFormulaParameters,
+): boolean {
+  const entries = Object.entries(parameters);
+  return (
+    entries.length <= 64 &&
+    entries.every(
+      ([name, value]) =>
+        /^[A-Z][A-Z0-9_]{0,63}$/u.test(name) &&
+        typeof value === 'number' &&
+        Number.isFinite(value),
+    )
+  );
+}
+
+function sameFormulaParameters(
+  expected: ExpectedFormulaParameters,
+  actual: FormulaPreview['parameters'],
+): boolean {
+  const expectedNames = Object.keys(expected).sort();
+  if (
+    expectedNames.length !== actual.length ||
+    actual.some((parameter, index) => parameter.name !== expectedNames[index])
+  ) {
+    return false;
+  }
+  return actual.every((parameter) => {
+    const expectedValue = expected[parameter.name];
+    if (expectedValue === undefined) return false;
+    const actualValue = Number(parameter.value);
+    if (parameter.kind === 'integer') {
+      return (
+        Number.isSafeInteger(expectedValue) && actualValue === expectedValue
+      );
+    }
+    return (
+      Number.isFinite(expectedValue) &&
+      actualValue === (expectedValue === 0 ? 0 : expectedValue)
+    );
+  });
 }
 
 function decodeBarsResponse(
@@ -1461,7 +1524,44 @@ function decodeBarsResponse(
     Date.parse(result.provenance.dataCutoff) >= Date.parse(lastBar.timestamp),
     'bars.provenance.data_cutoff',
   );
-  return result;
+  if (expectedRequest.formulaVersionId === undefined) return result;
+  const formula = decodeFormulaPreview(item['formula']);
+  protocolAssert(
+    formula.formulaVersionId === expectedRequest.formulaVersionId,
+    'bars.formula.formula_version_id',
+  );
+  protocolAssert(
+    formula.symbol === result.query.symbol &&
+      formula.period === result.query.period &&
+      formula.adjustment === result.query.adjustment &&
+      formula.queryStart === result.query.start &&
+      formula.queryEnd === result.query.end,
+    'bars.formula.query',
+  );
+  protocolAssert(
+    formula.source === result.provenance.source &&
+      formula.datasetVersion === result.datasetVersion &&
+      formula.routeVersion === result.routeVersion &&
+      formula.manifestRecordId === result.manifestRecordId &&
+      formula.dataCutoff === result.provenance.dataCutoff,
+    'bars.formula.provenance',
+  );
+  protocolAssert(
+    formula.timestamps.length === result.bars.length &&
+      formula.timestamps.every(
+        (formulaTimestamp, index) =>
+          formulaTimestamp === result.bars[index]?.timestamp,
+      ),
+    'bars.formula.timestamps',
+  );
+  protocolAssert(
+    sameFormulaParameters(
+      expectedRequest.formulaParameters ?? {},
+      formula.parameters,
+    ),
+    'bars.formula.parameters',
+  );
+  return { ...result, formula };
 }
 
 function queryPath(
@@ -1541,17 +1641,47 @@ export function createMarketApi(
       await verifyPresetPoolSnapshot(pool);
       return pool;
     },
-    async getBars({ symbol: selectedSymbol, period, adjustment, signal }) {
+    async getBars({
+      symbol: selectedSymbol,
+      period,
+      adjustment,
+      formulaVersionId,
+      formulaParameters,
+      signal,
+    }) {
+      if (
+        (formulaParameters === undefined) !==
+        (formulaVersionId === undefined)
+      ) {
+        throw new MarketProtocolError('request.formula_version_id');
+      }
+      if (
+        formulaParameters !== undefined &&
+        !validFormulaParameters(formulaParameters)
+      ) {
+        throw new MarketProtocolError('request.formula_parameters');
+      }
       const response = decodeBarsResponse(
         await client.get(
           queryPath('/market/bars', {
             symbol: selectedSymbol,
             period,
             adjustment,
+            formula_version_id: formulaVersionId,
+            formula_parameters:
+              formulaParameters === undefined
+                ? undefined
+                : JSON.stringify(formulaParameters),
           }),
           { signal },
         ),
-        { symbol: selectedSymbol, period, adjustment },
+        {
+          symbol: selectedSymbol,
+          period,
+          adjustment,
+          ...(formulaVersionId === undefined ? {} : { formulaVersionId }),
+          ...(formulaParameters === undefined ? {} : { formulaParameters }),
+        },
       );
       await verifyRoutingContentHashes(
         response.routingManifest,

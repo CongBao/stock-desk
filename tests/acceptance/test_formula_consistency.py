@@ -454,7 +454,7 @@ def test_preview_parameter_numeric_limits_are_stable_and_match_chart(
             FormulaPreviewValidationError,
             match=r"^formula parameters are invalid$",
         ):
-            service.preview_routed(version.id, routed, {"N": 2**53 + 1})
+            service.preview_routed(version.id, routed, {"N": 2**53})
 
         with TestClient(
             create_app(
@@ -463,8 +463,22 @@ def test_preview_parameter_numeric_limits_are_stable_and_match_chart(
                 formula_service=service,
             )
         ) as client:
+            large_number_parameters = {"F": 2**53, "N": 0}
+            direct_large_number = client.post(
+                f"/api/formulas/{version.id}/preview",
+                content=json.dumps({**request, "parameters": large_number_parameters}),
+                headers={"content-type": "application/json"},
+            )
+            chart_large_number = client.get(
+                "/api/market/bars",
+                params={
+                    **request,
+                    "formula_version_id": version.id,
+                    "formula_parameters": json.dumps(large_number_parameters),
+                },
+            )
             responses = []
-            for parameters in ({"N": 2**53 + 1}, {"F": float("nan")}):
+            for parameters in ({"N": 2**53}, {"F": float("nan")}):
                 responses.extend(
                     (
                         client.post(
@@ -490,9 +504,19 @@ def test_preview_parameter_numeric_limits_are_stable_and_match_chart(
     finally:
         services.close()
 
+    assert direct_large_number.status_code == 200
+    assert chart_large_number.status_code == 200
+    assert direct_large_number.json()["parameters"] == [
+        {"kind": "number", "name": "F", "value": "9007199254740992.0"},
+        {"kind": "integer", "name": "N", "value": "0"},
+    ]
+    assert (
+        chart_large_number.json()["formula"]["parameters"]
+        == (direct_large_number.json()["parameters"])
+    )
     assert [response.status_code for response in responses] == [422] * 4
     assert responses[0].json() == {"code": "invalid_request"}
-    assert responses[1].json() == {"code": "invalid_request", "issues": []}
+    assert responses[1].json() == {"code": "invalid_request"}
     assert responses[2].json() == {"code": "invalid_request"}
     assert responses[3].json() == {"code": "invalid_request", "issues": []}
 
@@ -535,6 +559,53 @@ def test_chart_formula_parameters_reject_python_huge_integer_valueerror(
                     "end": query.end.isoformat(),
                     "formula_version_id": version.id,
                     "formula_parameters": '{"N":' + "9" * 5_000 + "}",
+                },
+            )
+    finally:
+        services.close()
+
+    assert response.status_code == 422
+    assert response.json() == {"code": "invalid_request", "issues": []}
+
+
+def test_chart_formula_parameters_reject_integer_that_overflows_float(
+    tmp_path: Path,
+) -> None:
+    database_url = f"sqlite:///{tmp_path / 'formula-overflowing-integer.db'}"
+    migrate(database_url)
+    services = MarketServices(
+        engine=create_engine_for_url(database_url),
+        lake_root=(tmp_path / "market").resolve(),
+    )
+    repository = FormulaRepository(services.engine)
+    routed = routed_daily_bars((date(2024, 1, 2), date(2024, 1, 3)))
+    services.lake.write(routed)
+    version = repository.create(
+        "Overflowing Integer",
+        "indicator",
+        "X:C+N;",
+        {"N": {"kind": "number", "default": 1.0}},
+    )
+    service = FormulaService(repository=repository, lake=services.lake)
+    query = routed.result.query
+    try:
+        with TestClient(
+            create_app(
+                Settings(database_url=database_url, data_dir=tmp_path),
+                market_services=services,
+                formula_service=service,
+            )
+        ) as client:
+            response = client.get(
+                "/api/market/bars",
+                params={
+                    "symbol": query.symbol,
+                    "period": query.period.value,
+                    "adjustment": query.adjustment.value,
+                    "start": query.start.isoformat(),
+                    "end": query.end.isoformat(),
+                    "formula_version_id": version.id,
+                    "formula_parameters": '{"N":' + "9" * 309 + "}",
                 },
             )
     finally:

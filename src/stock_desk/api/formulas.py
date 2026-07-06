@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from datetime import datetime
+import math
 from typing import Annotated, Any, Literal, cast
 
 from fastapi import APIRouter, Depends, Path, Query, Request, status
@@ -13,6 +14,7 @@ from pydantic import (
     RootModel,
     StrictFloat,
     StrictInt,
+    ValidationInfo,
     field_validator,
 )
 
@@ -55,21 +57,19 @@ ParameterName = Annotated[
     str,
     Field(min_length=1, max_length=64, pattern=r"^[A-Z][A-Z0-9_]{0,63}$"),
 ]
+MAX_SAFE_INTEGER = 2**53 - 1
 ParameterDefault = (
-    Annotated[StrictInt, Field(ge=-(2**53), le=2**53)]
+    Annotated[StrictInt, Field(ge=-MAX_SAFE_INTEGER, le=MAX_SAFE_INTEGER)]
     | Annotated[StrictFloat, Field(allow_inf_nan=False)]
 )
-PreviewParameterValue = (
-    Annotated[StrictInt, Field(ge=-(2**53), le=2**53)]
-    | Annotated[StrictFloat, Field(allow_inf_nan=False)]
-)
+PreviewParameterValue = StrictInt | Annotated[StrictFloat, Field(allow_inf_nan=False)]
 
 
 class FormulaIntegerParameterDeclaration(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     kind: Literal["integer"]
-    default: Annotated[StrictInt, Field(ge=-(2**53), le=2**53)]
+    default: Annotated[StrictInt, Field(ge=-MAX_SAFE_INTEGER, le=MAX_SAFE_INTEGER)]
     label: Annotated[str | None, Field(max_length=256)] = None
     description: Annotated[str | None, Field(max_length=1_024)] = None
 
@@ -84,10 +84,13 @@ class FormulaNumberParameterDeclaration(BaseModel):
 
     @field_validator("default", mode="before")
     @classmethod
-    def require_exact_float(cls, value: object) -> object:
-        if type(value) is not float:
-            raise ValueError("number parameter default must be a float")
-        return value
+    def normalize_json_number(cls, value: object) -> object:
+        if type(value) not in {int, float}:
+            raise ValueError("number parameter default must be numeric")
+        try:
+            return float(cast(int | float, value))
+        except OverflowError as error:
+            raise ValueError("number parameter default must be finite") from error
 
 
 class FormulaParameterDeclaration(
@@ -108,6 +111,22 @@ class FormulaValidateParameterDeclaration(BaseModel):
     default: ParameterDefault
     label: Annotated[str | None, Field(max_length=256)] = None
     description: Annotated[str | None, Field(max_length=1_024)] = None
+
+    @field_validator("default", mode="before")
+    @classmethod
+    def normalize_json_number(cls, value: object, info: ValidationInfo) -> object:
+        if info.data.get("kind") == "integer":
+            if type(value) is int and abs(value) > MAX_SAFE_INTEGER:
+                raise ValueError("integer parameter default is out of range")
+            return value
+        if info.data.get("kind") != "number":
+            return value
+        if type(value) not in {int, float}:
+            raise ValueError("number parameter default must be numeric")
+        try:
+            return float(cast(int | float, value))
+        except OverflowError as error:
+            raise ValueError("number parameter default must be finite") from error
 
 
 ParameterSchema = Annotated[
@@ -132,11 +151,17 @@ class FormulaPreviewRequest(BaseModel):
 
     @field_validator("parameters", mode="before")
     @classmethod
-    def reject_oversized_integer_values(cls, value: object) -> object:
-        if isinstance(value, Mapping) and any(
-            type(item) is int and abs(item) > 2**53 for item in value.values()
-        ):
-            raise ValueError("integer parameter override is out of range")
+    def reject_nonfinite_numeric_values(cls, value: object) -> object:
+        if isinstance(value, Mapping):
+            for item in value.values():
+                if type(item) is int:
+                    try:
+                        if not math.isfinite(float(item)):
+                            raise ValueError
+                    except OverflowError as error:
+                        raise ValueError(
+                            "parameter override is out of range"
+                        ) from error
         return value
 
     def query(self) -> BarQuery:

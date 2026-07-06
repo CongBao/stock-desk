@@ -674,13 +674,15 @@ def test_validate_and_publish_share_parameter_schema_semantics(tmp_path: Path) -
         engine=create_engine_for_url(database_url),
         lake_root=(tmp_path / "market").resolve(),
     )
-    invalid_schemas = (
-        {"N": {"kind": "number", "default": 1}},
-        {"N": {"kind": "integer", "default": 2**53 + 1}},
-    )
+    invalid_schemas = ({"N": {"kind": "integer", "default": 2**53}},)
     valid_schemas = (
         {"N": {"kind": "integer", "default": 1}},
+        {"N": {"kind": "integer", "default": 2**53 - 1}},
+        {"N": {"kind": "integer", "default": -(2**53 - 1)}},
         {"N": {"kind": "number", "default": 1.0}},
+        # JSON has one numeric type. Browsers serialize 1.0 as 1, so a number
+        # declaration must preserve its kind instead of depending on JSON text.
+        {"N": {"kind": "number", "default": 1}},
     )
     try:
         with TestClient(
@@ -738,9 +740,8 @@ def test_validate_and_publish_share_parameter_schema_semantics(tmp_path: Path) -
         services.close()
 
     for response in invalid:
-        assert response.status_code == 200
-        assert response.json()["valid"] is False
-        assert response.json()["diagnostics"][0]["code"] == "invalid_parameter_schema"
+        assert response.status_code == 422
+        assert response.json() == {"code": "invalid_request"}
     for response in invalid_published:
         assert response.status_code == 422
         assert response.json() == {"code": "invalid_request"}
@@ -748,6 +749,156 @@ def test_validate_and_publish_share_parameter_schema_semantics(tmp_path: Path) -
         assert validated.status_code == 200
         assert validated.json() == {"valid": True, "diagnostics": []}
         assert published.status_code == 201
+        declaration = published.json()["draft"]["parameter_schema"]["N"]
+        if declaration["kind"] == "number":
+            assert isinstance(declaration["default"], float)
+
+
+def test_number_defaults_round_trip_across_draft_and_save_requests(
+    tmp_path: Path,
+) -> None:
+    database_url = f"sqlite:///{tmp_path / 'formula-number-round-trip.db'}"
+    migrate(database_url)
+    services = MarketServices(
+        engine=create_engine_for_url(database_url),
+        lake_root=(tmp_path / "market").resolve(),
+    )
+    schema = {"N": {"kind": "number", "default": 1}}
+    boolean_schema = {"N": {"kind": "number", "default": True}}
+    try:
+        with TestClient(
+            create_app(
+                Settings(database_url=database_url, data_dir=tmp_path),
+                market_services=services,
+            )
+        ) as client:
+            created = client.post(
+                "/api/formulas",
+                json={
+                    "name": "Browser Number",
+                    "formula_type": "indicator",
+                    "placement": "subchart",
+                    "source": "X:C+N;",
+                    "parameter_schema": schema,
+                },
+            )
+            formula_id = created.json()["id"]
+            draft = client.put(
+                f"/api/formulas/{formula_id}/draft",
+                json={
+                    "source": "X:C+N+1;",
+                    "parameter_schema": schema,
+                    "expected_revision": 1,
+                },
+            )
+            saved = client.post(
+                f"/api/formulas/{formula_id}/save",
+                json={
+                    "source": "X:C+N+2;",
+                    "parameter_schema": schema,
+                    "expected_revision": 2,
+                },
+            )
+            rejected = (
+                client.post(
+                    "/api/formulas/validate",
+                    json={
+                        "formula_type": "indicator",
+                        "source": "X:C+N;",
+                        "parameter_schema": boolean_schema,
+                    },
+                ),
+                client.put(
+                    f"/api/formulas/{formula_id}/draft",
+                    json={
+                        "source": "X:C+N;",
+                        "parameter_schema": boolean_schema,
+                        "expected_revision": 3,
+                    },
+                ),
+                client.post(
+                    f"/api/formulas/{formula_id}/save",
+                    json={
+                        "source": "X:C+N;",
+                        "parameter_schema": boolean_schema,
+                        "expected_revision": 3,
+                    },
+                ),
+            )
+    finally:
+        services.close()
+
+    assert created.status_code == 201
+    assert draft.status_code == 200
+    assert draft.json()["parameter_schema"]["N"]["default"] == 1.0
+    assert saved.status_code == 201
+    assert saved.json()["parameter_schema"]["N"]["default"] == 1.0
+    assert all(response.status_code == 422 for response in rejected)
+
+
+def test_public_integer_parameters_use_javascript_safe_bounds(tmp_path: Path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'formula-safe-integer.db'}"
+    migrate(database_url)
+    services = MarketServices(
+        engine=create_engine_for_url(database_url),
+        lake_root=(tmp_path / "market").resolve(),
+    )
+    maximum = 2**53 - 1
+    schema = {"N": {"kind": "integer", "default": maximum}}
+    unsafe_schema = {"N": {"kind": "integer", "default": 2**53}}
+    try:
+        with TestClient(
+            create_app(
+                Settings(database_url=database_url, data_dir=tmp_path),
+                market_services=services,
+            )
+        ) as client:
+            created = client.post(
+                "/api/formulas",
+                json={
+                    "name": "Safe Integer",
+                    "formula_type": "indicator",
+                    "placement": "subchart",
+                    "source": "X:C+N;",
+                    "parameter_schema": schema,
+                },
+            )
+            formula_id = created.json()["id"]
+            saved = client.post(
+                f"/api/formulas/{formula_id}/save",
+                json={
+                    "source": "X:C+N+1;",
+                    "parameter_schema": schema,
+                    "expected_revision": 1,
+                },
+            )
+            rejected_create = client.post(
+                "/api/formulas",
+                json={
+                    "name": "Unsafe Integer",
+                    "formula_type": "indicator",
+                    "placement": "subchart",
+                    "source": "X:C+N;",
+                    "parameter_schema": unsafe_schema,
+                },
+            )
+            rejected_save = client.post(
+                f"/api/formulas/{formula_id}/save",
+                json={
+                    "source": "X:C+N+2;",
+                    "parameter_schema": unsafe_schema,
+                    "expected_revision": 2,
+                },
+            )
+    finally:
+        services.close()
+
+    assert created.status_code == 201
+    assert created.json()["draft"]["parameter_schema"]["N"]["default"] == maximum
+    assert saved.status_code == 201
+    assert saved.json()["parameter_schema"]["N"]["default"] == maximum
+    assert rejected_create.status_code == 422
+    assert rejected_save.status_code == 422
 
 
 def test_formula_openapi_has_bounded_requests_and_error_schemas(tmp_path: Path) -> None:
@@ -805,8 +956,8 @@ def test_formula_openapi_has_bounded_requests_and_error_schemas(tmp_path: Path) 
     preview_integer = next(
         item for item in preview_parameter["anyOf"] if item["type"] == "integer"
     )
-    assert preview_integer["minimum"] == -(2**53)
-    assert preview_integer["maximum"] == 2**53
+    assert "minimum" not in preview_integer
+    assert "maximum" not in preview_integer
     components = document["components"]["schemas"]
     signal_series = components["SignalSeries"]["properties"]
     assert signal_series["parameters"]["maxItems"] == 64
@@ -831,6 +982,9 @@ def test_formula_openapi_has_bounded_requests_and_error_schemas(tmp_path: Path) 
     }
     integer_declaration = components["FormulaIntegerParameterDeclaration"]
     assert integer_declaration["additionalProperties"] is False
+    integer_default = integer_declaration["properties"]["default"]
+    assert integer_default["minimum"] == -(2**53 - 1)
+    assert integer_default["maximum"] == 2**53 - 1
     assert integer_declaration["properties"]["label"]["anyOf"][0]["maxLength"] == 256
     assert components["FormulaDiagnosticSpanResponse"]["additionalProperties"] is False
     assert (

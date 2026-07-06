@@ -98,7 +98,7 @@ class NormalizedParameter(_FrozenContract):
             if (
                 re.fullmatch(r"-?(?:0|[1-9][0-9]*)", self.value) is None
                 or self.value == "-0"
-                or abs(int(self.value)) > 2**53
+                or abs(int(self.value)) > 2**53 - 1
             ):
                 raise ValueError("integer parameter must use canonical integer text")
             return self

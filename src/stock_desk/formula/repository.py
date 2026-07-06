@@ -80,7 +80,7 @@ def _normalize_json(
         raise ValueError
     remaining_nodes[0] -= 1
     if value is None or type(value) in {bool, int}:
-        if type(value) is int and abs(value) > 2**53:
+        if type(value) is int and abs(value) > 2**53 - 1:
             raise ValueError
         return value
     if type(value) is float:
