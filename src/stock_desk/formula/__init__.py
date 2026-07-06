@@ -3,6 +3,16 @@
 from stock_desk.formula.ast import Program
 from stock_desk.formula.errors import FormulaLimitError, FormulaSyntaxError
 from stock_desk.formula.parser import parse_formula
+from stock_desk.formula.compiler import compile_formula, formula_source_checksum
+from stock_desk.formula.evaluator import FormulaEvaluator
 
 
-__all__ = ["FormulaLimitError", "FormulaSyntaxError", "Program", "parse_formula"]
+__all__ = [
+    "FormulaEvaluator",
+    "FormulaLimitError",
+    "FormulaSyntaxError",
+    "Program",
+    "compile_formula",
+    "formula_source_checksum",
+    "parse_formula",
+]

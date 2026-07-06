@@ -137,6 +137,15 @@ def test_window_semantics_use_bar_positions_without_compressing_nulls() -> None:
     assert "最近 N 个有效值" not in ma + std
 
 
+def test_signal_null_semantics_are_explicit_exceptions_to_strict_propagation() -> None:
+    barslast = V1_REGISTRY.function("BARSLAST").semantics_zh
+    filtered = V1_REGISTRY.function("FILTER").semantics_zh
+    assert "null 视为未命中" in barslast
+    assert "已有状态" in barslast
+    assert "null 视为未命中" in filtered
+    assert "抑制期仍按 bar 推进" in filtered
+
+
 def test_scalar_broadcast_kinds_cover_cross_and_pointwise_functions() -> None:
     accepted = ("scalar", "number_series")
     for name in ("CROSS", "LONGCROSS"):

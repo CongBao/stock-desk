@@ -49,7 +49,7 @@ SIGNAL_FUNCTIONS = (
         (ParameterSpec("X", _CONDITION),),
         "number_series",
         "signal.barslast",
-        "当前周期条件成立返回 0，之后逐周期递增；从未成立则为 null。未命中语义为 stock-desk tdx-v1 固化语义。",
+        "当前周期条件成立返回 0，之后逐周期递增；从未成立则为 null。条件 null 视为未命中，已有状态时距离仍按 bar 递增。未命中语义为 stock-desk tdx-v1 固化语义。",
     ),
     FunctionSpec(
         "FILTER",
@@ -68,6 +68,6 @@ SIGNAL_FUNCTIONS = (
         ),
         "boolean_series",
         "signal.filter",
-        "当前命中保留为 true，并将后续 N 个周期内再次出现的命中抑制为 false；N 为常量正整数。",
+        "当前命中保留为 true，并将后续 N 个周期内再次出现的命中抑制为 false；条件 null 视为未命中且抑制期仍按 bar 推进；N 为常量正整数。",
     ),
 )

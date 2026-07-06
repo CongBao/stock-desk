@@ -26,11 +26,11 @@
 | 函数 | 参数约束 | 结果/派发 | 时间行为 | 精确语义 |
 | --- | --- | --- | --- | --- |
 | `ABS(X)` | X: scalar/number_series | `number_series` / `math.abs` | `current_only` | 逐项返回 X 的绝对值；null 传播。 |
-| `BARSLAST(X)` | X: scalar/boolean_series/number_series | `number_series` / `signal.barslast` | `past_only` | 当前周期条件成立返回 0，之后逐周期递增；从未成立则为 null。未命中语义为 stock-desk tdx-v1 固化语义。 |
+| `BARSLAST(X)` | X: scalar/boolean_series/number_series | `number_series` / `signal.barslast` | `past_only` | 当前周期条件成立返回 0，之后逐周期递增；从未成立则为 null。条件 null 视为未命中，已有状态时距离仍按 bar 递增。未命中语义为 stock-desk tdx-v1 固化语义。 |
 | `COUNT(X, N)` | X: scalar/boolean_series/number_series; N: integer_scalar，非负整数；N=0 表示从首个有效值累计。 | `number_series` / `series.count` | `past_only` | 统计最近 N 个 bar 内忽略 null 后非零/true 的次数，至少一个有效值才输出；N=0 从首个有效值累计。 |
 | `CROSS(X, Y)` | X: scalar/number_series; Y: scalar/number_series | `boolean_series` / `signal.cross` | `past_only` | 仅当 X[t]>Y[t] 且 X[t-1]<=Y[t-1] 时为 true；首周期或任一比较值为 null 时为 false。边界/null 规则为 stock-desk tdx-v1 固化语义。 |
 | `EMA(X, N)` | X: scalar/number_series; N: integer_scalar，整数且 N>=1。 | `number_series` / `series.ema` | `past_only` | 递推 Y=2*X/(N+1)+(N-1)*Y_PREV/(N+1)；首个有效值以 X 初始化，输入 null 时输出 null 且不更新状态。初始化/null 规则为 stock-desk tdx-v1 固化语义。 |
-| `FILTER(X, N)` | X: scalar/boolean_series/number_series; N: integer_scalar，常量，常量整数且 N>=1。 | `boolean_series` / `signal.filter` | `past_only` | 当前命中保留为 true，并将后续 N 个周期内再次出现的命中抑制为 false；N 为常量正整数。 |
+| `FILTER(X, N)` | X: scalar/boolean_series/number_series; N: integer_scalar，常量，常量整数且 N>=1。 | `boolean_series` / `signal.filter` | `past_only` | 当前命中保留为 true，并将后续 N 个周期内再次出现的命中抑制为 false；条件 null 视为未命中且抑制期仍按 bar 推进；N 为常量正整数。 |
 | `HHV(X, N)` | X: scalar/number_series; N: integer_scalar，非负整数；N=0 表示从首个有效值累计。 | `number_series` / `series.hhv` | `past_only` | 返回最近 N 个 bar 内忽略 null 后的最大值，至少一个有效值才输出；N=0 从首个有效值累计。 |
 | `IF(CONDITION, A, B)` | CONDITION: scalar/boolean_series/number_series; A: scalar/number_series; B: scalar/number_series | `number_series` / `logic.if` | `current_only` | 条件非零/true 时逐项返回 A，否则返回 B；条件为 null 时结果为 null。 |
 | `LLV(X, N)` | X: scalar/number_series; N: integer_scalar，非负整数；N=0 表示从首个有效值累计。 | `number_series` / `series.llv` | `past_only` | 返回最近 N 个 bar 内忽略 null 后的最小值，至少一个有效值才输出；N=0 从首个有效值累计。 |
