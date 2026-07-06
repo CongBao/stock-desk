@@ -13,8 +13,15 @@ from stock_desk.storage.database import (
 )
 
 
-HEAD_REVISION = "0004_instruments_and_pools"
-CORE_TABLES = {"app_setting", "task_event", "task_run"}
+HEAD_REVISION = "0005_formula_catalog"
+CORE_TABLES = {
+    "app_setting",
+    "formula",
+    "formula_draft",
+    "formula_version",
+    "task_event",
+    "task_run",
+}
 
 
 def _assert_database_at_head(url: str) -> None:

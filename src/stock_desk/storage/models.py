@@ -19,7 +19,9 @@ from sqlalchemy import (
     Time,
     UniqueConstraint,
 )
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column
+
+from stock_desk.storage.base import Base
 
 
 def _utc_now() -> datetime:
@@ -28,10 +30,6 @@ def _utc_now() -> datetime:
 
 def _new_task_id() -> str:
     return str(uuid4())
-
-
-class Base(DeclarativeBase):
-    pass
 
 
 class AppSetting(Base):

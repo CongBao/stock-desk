@@ -4,7 +4,7 @@ from alembic import context
 from alembic.config import Config
 
 from stock_desk.storage.database import create_engine_for_url
-from stock_desk.storage.models import Base
+from stock_desk.storage.metadata import Base
 
 
 config: Config = context.config
