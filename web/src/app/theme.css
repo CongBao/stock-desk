@@ -2950,6 +2950,274 @@ a {
   }
 }
 
+/* Guided backtest workspace */
+
+.backtest-workspace-page,
+.backtest-run-page {
+  min-width: 0;
+  padding-bottom: 36px;
+}
+
+.backtest-workspace-page [data-page-heading],
+.backtest-run-page [data-page-heading] {
+  width: fit-content;
+  border-radius: 4px;
+}
+.backtest-wizard,
+.backtest-history,
+.run-progress,
+.run-log,
+.report-shell {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: rgba(12, 26, 43, 0.74);
+}
+.backtest-wizard {
+  overflow: hidden;
+}
+
+.backtest-wizard-lock {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.backtest-stepper ol {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 1px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  background: var(--border);
+}
+.backtest-stepper button {
+  width: 100%;
+  min-height: 48px;
+  border: 0;
+  color: var(--text-secondary);
+  background: var(--surface-1);
+  cursor: pointer;
+}
+.backtest-stepper button[aria-current='step'] {
+  color: var(--accent);
+  background: var(--accent-soft);
+  font-weight: 750;
+}
+.backtest-wizard-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(260px, 0.7fr);
+}
+.backtest-editor-panel,
+.backtest-review-panel {
+  min-width: 0;
+  padding: 22px;
+}
+.backtest-review-panel {
+  border-left: 1px solid var(--border);
+  background: rgba(7, 17, 31, 0.42);
+}
+.backtest-step h3,
+.backtest-review-panel h3,
+.backtest-history h3,
+.run-progress h3,
+.run-log h3,
+.report-shell h3 {
+  margin: 0 0 10px;
+}
+.backtest-step > p,
+.backtest-review-panel > p,
+.review-empty,
+.partial-result-note {
+  color: var(--text-secondary);
+  line-height: 1.65;
+}
+.backtest-step label,
+.backtest-fields label {
+  display: grid;
+  gap: 7px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.backtest-step > label {
+  margin-top: 16px;
+}
+.backtest-step input,
+.backtest-step select {
+  width: 100%;
+  min-width: 0;
+  min-height: 40px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  color: var(--text-primary);
+  background: var(--surface-0);
+}
+.backtest-step fieldset {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 22px;
+  margin: 18px 0 0;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.backtest-step fieldset label {
+  display: flex;
+  align-items: center;
+}
+.backtest-step fieldset input[type='radio'] {
+  width: auto;
+  min-height: 0;
+}
+.backtest-fields {
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.wizard-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+.primary-action,
+.secondary-action,
+.danger-action,
+.instrument-matches button {
+  min-height: 38px;
+  padding: 8px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  color: var(--text-primary);
+  background: var(--surface-2);
+  cursor: pointer;
+  text-decoration: none;
+}
+.primary-action {
+  border-color: var(--accent);
+  color: #03111b;
+  background: var(--accent);
+  font-weight: 800;
+}
+.danger-action {
+  border-color: rgba(239, 68, 68, 0.6);
+}
+.primary-action:disabled,
+.secondary-action:disabled,
+.danger-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+.backtest-error-summary {
+  margin: 16px;
+  padding: 14px 16px;
+  border: 1px solid rgba(239, 68, 68, 0.55);
+  border-radius: 8px;
+  background: rgba(239, 68, 68, 0.08);
+}
+.preflight-result {
+  display: grid;
+  gap: 12px;
+  margin-top: 18px;
+}
+.preflight-result > strong {
+  color: var(--accent);
+  font-size: 18px;
+}
+.preflight-result dl,
+.backtest-review-panel dl,
+.run-progress dl {
+  display: grid;
+  gap: 9px;
+  margin: 0;
+}
+.preflight-result dl > div,
+.backtest-review-panel dl > div,
+.run-progress dl > div {
+  display: grid;
+  grid-template-columns: minmax(100px, 0.45fr) minmax(0, 1fr);
+  gap: 12px;
+}
+.preflight-result dt,
+.backtest-review-panel dt,
+.run-progress dt {
+  color: var(--text-muted);
+}
+.preflight-result dd,
+.backtest-review-panel dd,
+.run-progress dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.backtest-disclaimer {
+  padding: 10px 12px;
+  border-left: 3px solid var(--warning);
+  background: rgba(245, 158, 11, 0.08);
+}
+.warning-text {
+  color: var(--warning);
+}
+.instrument-matches,
+.backtest-history ul,
+.run-log ol {
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.instrument-matches {
+  display: grid;
+  gap: 6px;
+}
+.instrument-matches button {
+  width: 100%;
+  text-align: left;
+}
+.backtest-history,
+.run-progress,
+.run-log,
+.report-shell {
+  margin-top: 18px;
+  padding: 18px;
+}
+.backtest-history .section-heading,
+.run-progress > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.backtest-history li + li,
+.run-log li + li {
+  border-top: 1px solid var(--border);
+}
+.backtest-history a {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 18px;
+  padding: 13px 4px;
+  text-decoration: none;
+}
+.run-progress progress {
+  width: 100%;
+  height: 13px;
+  accent-color: var(--accent);
+}
+.run-log li {
+  padding: 10px 4px;
+  overflow-wrap: anywhere;
+}
+.run-log li span {
+  color: var(--text-muted);
+}
+.status-badge {
+  color: var(--accent);
+  font-weight: 750;
+}
+
 /* Responsive layout and reduced-motion contract */
 
 /* The 300px context panel becomes a drawer before it can clip Formula Studio's
@@ -3033,6 +3301,22 @@ a {
     transform: translateX(0);
     transition-delay: 0s;
     visibility: visible;
+  }
+}
+
+@media (max-width: 1100px) {
+  .backtest-wizard-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .backtest-review-panel {
+    border-top: 1px solid var(--border);
+    border-left: 0;
+  }
+  .app-shell[data-workspace='backtests'] .workspace,
+  .backtest-workspace-page,
+  .backtest-run-page {
+    min-width: 0;
+    overflow-x: clip;
   }
 }
 
@@ -3198,6 +3482,23 @@ a {
 
   .settings-save-bar > button {
     width: 100%;
+  }
+
+  .backtest-stepper ol {
+    grid-template-columns: 1fr;
+  }
+  .backtest-fields {
+    grid-template-columns: 1fr;
+  }
+  .backtest-editor-panel,
+  .backtest-review-panel {
+    padding: 16px;
+  }
+  .backtest-history a {
+    grid-template-columns: 1fr auto;
+  }
+  .backtest-history time {
+    grid-column: 1 / -1;
   }
 }
 

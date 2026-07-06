@@ -36,7 +36,7 @@ export const appRoutes = [
     title: '策略回测',
     release: 'v0.4.0',
     summary: '从指标买卖点直接发起的可复现历史回测。',
-    description: '日线、周线和 60 分钟回测将在回测阶段交付。',
+    description: '五步配置日线、周线和 60 分钟回测，并持续查看运行进度。',
   },
   {
     label: '智能分析',

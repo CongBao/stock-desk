@@ -29,3 +29,14 @@ it('uses the global context drawer only at the 1200px tablet breakpoint', () => 
   expect(tablet).toContain('.context-panel {');
   expect(tablet).toContain(".context-panel[data-open='true'] {");
 });
+
+it('collapses the backtest editor to one overflow-safe column by 1100px', () => {
+  const start = theme.indexOf('@media (max-width: 1100px)');
+  const end = theme.indexOf('@media (max-width: 760px)', start);
+  const tablet = theme.slice(start, end);
+  expect(start).toBeGreaterThanOrEqual(0);
+  expect(tablet).toContain('.backtest-wizard-layout');
+  expect(tablet).toContain('grid-template-columns: minmax(0, 1fr)');
+  expect(tablet).toContain(".app-shell[data-workspace='backtests'] .workspace");
+  expect(tablet).toContain('overflow-x: clip');
+});

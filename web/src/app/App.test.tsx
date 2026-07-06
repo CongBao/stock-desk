@@ -220,6 +220,22 @@ it('routes settings to the real data-source workspace', async () => {
   await waitFor(() => expect(document.title).toBe('数据源设置 · stock-desk'));
 });
 
+it('supports direct refresh of a dynamic backtest run route', async () => {
+  renderApp(['/backtests/11111111-1111-1111-1111-111111111111']);
+
+  const heading = screen.getByRole('heading', { level: 2, name: '回测运行' });
+  await waitFor(() => expect(heading).toHaveFocus());
+  expect(document.title).toBe('策略回测 · stock-desk');
+  expect(document.querySelector('.app-shell')).toHaveAttribute(
+    'data-workspace',
+    'backtests',
+  );
+  expect(screen.getByRole('link', { name: '策略回测' })).toHaveAttribute(
+    'aria-current',
+    'page',
+  );
+});
+
 it.each(['/market/', '/MARKET'])(
   'keeps route effects aligned with market content for %s',
   async (pathname) => {

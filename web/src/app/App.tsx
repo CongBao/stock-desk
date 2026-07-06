@@ -8,6 +8,8 @@ import {
 } from 'react-router-dom';
 
 import { MarketPage } from '../features/market/MarketPage';
+import { BacktestRunPage } from '../features/backtests/BacktestRunPage';
+import { BacktestWorkspacePage } from '../features/backtests/BacktestWorkspacePage';
 import { DataSourcesPage } from '../features/settings/DataSourcesPage';
 import { useSystemStatus } from '../shared/api/useSystemStatus';
 import { ContextPanel } from './ContextPanel';
@@ -60,7 +62,7 @@ function NavigationRail() {
       </nav>
 
       <div className="rail-footer">
-        <span className="version-label">v0.3.0 · Formula Studio</span>
+        <span className="version-label">v0.4.0 · Strategy Backtest</span>
         <span>本地优先 · 个人使用</span>
       </div>
     </div>
@@ -88,7 +90,11 @@ function WorkspaceShell() {
       <div
         className="app-shell"
         data-workspace={
-          location.pathname === '/formulas' ? 'formulas' : 'default'
+          location.pathname === '/formulas'
+            ? 'formulas'
+            : location.pathname.startsWith('/backtests')
+              ? 'backtests'
+              : 'default'
         }
       >
         <NavigationRail />
@@ -144,12 +150,15 @@ function WorkspaceShell() {
                     </Suspense>
                   ) : route.path === '/settings' ? (
                     <DataSourcesPage />
+                  ) : route.path === '/backtests' ? (
+                    <BacktestWorkspacePage />
                   ) : (
                     <PlannedPage route={route} />
                   )
                 }
               />
             ))}
+            <Route path="/backtests/:runId" element={<BacktestRunPage />} />
             <Route path="*" element={<NotFoundPage />} />
           </Routes>
         </main>
