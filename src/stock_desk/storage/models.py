@@ -44,7 +44,16 @@ class AppSetting(Base):
 
 class TaskRun(Base):
     __tablename__ = "task_run"
-    __table_args__ = (Index("ix_task_run_status_created_at", "status", "created_at"),)
+    __table_args__ = (
+        Index("ix_task_run_status_created_at", "status", "created_at"),
+        Index(
+            "ix_task_run_backtest_lease",
+            "kind",
+            "status",
+            "lease_expires_at",
+            "created_at",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_task_id)
     kind: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -59,6 +68,14 @@ class TaskRun(Base):
         Boolean, default=False, nullable=False
     )
     worker_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    claim_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    heartbeat_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utc_now, nullable=False
     )
@@ -176,6 +193,45 @@ class MarketDatasetPartition(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utc_now, nullable=False
     )
+
+
+class MarketDatasetTimestamp(Base):
+    __tablename__ = "market_dataset_timestamp"
+    __table_args__ = (
+        CheckConstraint("ordinal >= 0", name="ck_market_dataset_timestamp_ordinal"),
+        UniqueConstraint(
+            "dataset_version",
+            "timestamp",
+            name="uq_market_dataset_timestamp_value",
+        ),
+        Index(
+            "ix_market_dataset_timestamp_lookup",
+            "dataset_version",
+            "timestamp",
+        ),
+        {"sqlite_with_rowid": False},
+    )
+
+    dataset_version: Mapped[str] = mapped_column(
+        String(71),
+        ForeignKey("market_dataset.dataset_version", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    ordinal: Mapped[int] = mapped_column(Integer, primary_key=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class MarketDatasetTimestampSeal(Base):
+    __tablename__ = "market_dataset_timestamp_seal"
+
+    dataset_version: Mapped[str] = mapped_column(
+        String(71),
+        ForeignKey("market_dataset.dataset_version", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    index_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    row_count: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    timestamp_digest: Mapped[str] = mapped_column(String(71), nullable=False)
 
 
 class MarketRoutingManifest(Base):

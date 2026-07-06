@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
@@ -9,9 +9,17 @@ from stock_desk.backtest.execution import (
     ExecutionRequest,
     FillCandidate,
     SignalBar,
+    ReferenceOpen,
+    candidates_from_status,
 )
-from stock_desk.market.execution_status import ExecutionEligibility, SuspensionState
-from stock_desk.market.types import Period
+from stock_desk.market.execution_status import (
+    ExecutionEligibility,
+    ExecutionStatusDay,
+    ExecutionStatusQuery,
+    SuspensionState,
+    materialize_execution_status,
+)
+from stock_desk.market.types import Exchange, Period, ProviderId
 
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -97,3 +105,57 @@ def test_60m_signal_never_fills_same_bar_timestamp() -> None:
     )
 
     assert result.trades[0].entry.timestamp == ts("2026-01-05 13:00")
+
+
+def test_daily_reference_midnight_pairs_with_same_day_0930_status_opportunity() -> None:
+    day = ts("2026-01-06 00:00").date()
+    query = ExecutionStatusQuery(
+        symbol="600000.SH",
+        exchange=Exchange.SH,
+        start=day,
+        end=day + timedelta(days=1),
+        period=Period.DAY,
+    )
+    status = materialize_execution_status(
+        query=query,
+        days=(
+            ExecutionStatusDay(
+                day=day,
+                exchange=Exchange.SH,
+                is_exchange_open=True,
+                suspension_state=SuspensionState.NORMAL,
+                raw_upper_limit=Decimal("20"),
+                raw_lower_limit=Decimal("1"),
+            ),
+        ),
+        raw_opens=(),
+        source=ProviderId.TUSHARE,
+        fetched_at=ts("2026-01-07 00:00"),
+        data_cutoff=ts("2026-01-07 00:00"),
+    )
+
+    candidates = candidates_from_status(
+        status,
+        reference_opens=(
+            ReferenceOpen(timestamp=ts("2026-01-06 00:00"), price=Decimal("10")),
+        ),
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0].timestamp == ts("2026-01-06 09:30")
+    assert candidates[0].open_price == Decimal("10")
+    assert candidates[0].eligibility is not None
+
+
+def test_execution_end_calls_terminal_path_for_open_trade() -> None:
+    result = ExecutionEngine().run(
+        ExecutionRequest(
+            period=Period.DAY,
+            signals=(SignalBar(timestamp=ts("2026-01-05 15:00"), buy=True),),
+            candidates=(candidate("2026-01-06 09:30", "10"),),
+            ended_at=ts("2026-01-06 15:00"),
+            mark_price=Decimal("10.5"),
+        )
+    )
+
+    assert result.order_events[-1].__class__.__name__ == "OpenTradeMarked"

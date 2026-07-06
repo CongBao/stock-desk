@@ -13,7 +13,7 @@ from stock_desk.storage.database import (
 )
 
 
-HEAD_REVISION = "0006_execution_status"
+HEAD_REVISION = "0007_backtest_runs"
 CORE_TABLES = {
     "app_setting",
     "formula",

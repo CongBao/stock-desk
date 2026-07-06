@@ -28,9 +28,18 @@ class _Cursor:
 class _DbapiConnection:
     def __init__(self, rows: list[tuple[Any, ...]]) -> None:
         self.test_cursor = _Cursor(rows)
+        self.aggregates: list[tuple[str, int, object]] = []
 
     def cursor(self) -> _Cursor:
         return self.test_cursor
+
+    def create_aggregate(
+        self,
+        name: str,
+        parameter_count: int,
+        aggregate: object,
+    ) -> None:
+        self.aggregates.append((name, parameter_count, aggregate))
 
 
 class _ConnectionRecord:

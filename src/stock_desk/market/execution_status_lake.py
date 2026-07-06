@@ -6,14 +6,16 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import json
+from typing import cast
 
-from sqlalchemy import insert, select
-from sqlalchemy.engine import Engine
+from sqlalchemy import func, insert, select
+from sqlalchemy.engine import Connection, Engine
 
 from stock_desk.market.execution_status import (
     ExecutionStatusQuery,
     ExecutionStatusSnapshot,
 )
+from stock_desk.market.types import Exchange, Period
 from stock_desk.market.provenance import (
     RoutedExecutionStatusSuccess,
     RoutingManifest,
@@ -22,6 +24,11 @@ from stock_desk.storage.models import (
     ExecutionStatusDataset,
     ExecutionStatusRoutingManifest,
 )
+from stock_desk.storage.database import (
+    DatabaseIdentity,
+    DatabaseIdentityError,
+    connection_database_identity,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,6 +36,14 @@ class StoredExecutionStatus:
     manifest_record_id: str
     dataset_version: str
     route_version: str
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogExecutionStatusPin:
+    manifest_record_id: str
+    dataset_version: str
+    route_version: str
+    query: ExecutionStatusQuery
 
 
 def execution_status_manifest_record_id(manifest: RoutingManifest) -> str:
@@ -45,6 +60,123 @@ def execution_status_manifest_record_id(manifest: RoutingManifest) -> str:
 class ExecutionStatusLake:
     def __init__(self, engine: Engine) -> None:
         self._engine = engine
+        try:
+            with engine.connect() as connection:
+                self._database_identity = connection_database_identity(connection)
+        except DatabaseIdentityError as error:
+            raise ValueError(
+                "execution-status database identity could not be determined"
+            ) from error
+
+    @property
+    def database_identity(self) -> DatabaseIdentity:
+        return self._database_identity
+
+    def _validate_connection(self, connection: Connection) -> None:
+        if connection.closed or connection.engine is not self._engine:
+            raise ValueError("execution-status connection is not lake-bound")
+        try:
+            identity = connection_database_identity(connection)
+        except DatabaseIdentityError as error:
+            raise ValueError("execution-status database identity changed") from error
+        if identity != self._database_identity:
+            raise ValueError("execution-status database identity changed")
+
+    def catalog_latest_covering_many(
+        self,
+        connection: Connection,
+        queries: tuple[ExecutionStatusQuery, ...],
+    ) -> dict[str, CatalogExecutionStatusPin]:
+        self._validate_connection(connection)
+        canonical = tuple(
+            ExecutionStatusQuery.model_validate(query.model_dump(mode="python"))
+            for query in queries
+        )
+        if len({query.symbol for query in canonical}) != len(canonical):
+            raise ValueError("execution-status pin queries require unique symbols")
+        result: dict[str, CatalogExecutionStatusPin] = {}
+        groups: dict[tuple[object, ...], set[str]] = {}
+        for query in canonical:
+            groups.setdefault((query.period, query.start, query.end), set()).add(
+                query.symbol
+            )
+        expected = {query.symbol: query for query in canonical}
+        for (period, start, end), symbols in groups.items():
+            canonical_period = cast(Period, period)
+            rank = (
+                func.row_number()
+                .over(
+                    partition_by=ExecutionStatusDataset.symbol,
+                    order_by=(
+                        ExecutionStatusDataset.data_cutoff.desc(),
+                        ExecutionStatusRoutingManifest.fetched_at.desc(),
+                        ExecutionStatusDataset.query_start.asc(),
+                        ExecutionStatusRoutingManifest.manifest_record_id.desc(),
+                    ),
+                )
+                .label("catalog_rank")
+            )
+            ranked = (
+                select(
+                    ExecutionStatusRoutingManifest.manifest_record_id,
+                    ExecutionStatusRoutingManifest.dataset_version,
+                    ExecutionStatusRoutingManifest.route_version,
+                    ExecutionStatusRoutingManifest.manifest_json,
+                    ExecutionStatusDataset.symbol,
+                    ExecutionStatusDataset.exchange,
+                    ExecutionStatusDataset.period,
+                    ExecutionStatusDataset.query_start,
+                    ExecutionStatusDataset.query_end,
+                    rank,
+                )
+                .join(
+                    ExecutionStatusDataset,
+                    ExecutionStatusDataset.dataset_version
+                    == ExecutionStatusRoutingManifest.dataset_version,
+                )
+                .where(
+                    ExecutionStatusDataset.symbol.in_(tuple(sorted(symbols))),
+                    ExecutionStatusDataset.period == canonical_period.value,
+                    ExecutionStatusDataset.query_start <= start,
+                    ExecutionStatusDataset.query_end >= end,
+                )
+                .subquery()
+            )
+            rows = connection.execute(
+                select(ranked)
+                .where(ranked.c.catalog_rank == 1)
+                .order_by(ranked.c.symbol)
+            ).mappings()
+            for row in rows:
+                symbol = row["symbol"]
+                if symbol not in symbols:
+                    continue
+                query = ExecutionStatusQuery(
+                    symbol=symbol,
+                    exchange=Exchange(row["exchange"]),
+                    period=Period(row["period"]),
+                    start=row["query_start"],
+                    end=row["query_end"],
+                )
+                manifest = RoutingManifest.model_validate_json(
+                    json.dumps(row["manifest_json"], allow_nan=False)
+                )
+                wanted = expected[symbol]
+                if (
+                    query.exchange is not wanted.exchange
+                    or execution_status_manifest_record_id(manifest)
+                    != row["manifest_record_id"]
+                    or manifest.upstream_dataset_version != row["dataset_version"]
+                    or manifest.route_version != row["route_version"]
+                ):
+                    raise ValueError("execution-status catalog identity is invalid")
+                result[symbol] = CatalogExecutionStatusPin(
+                    manifest_record_id=row["manifest_record_id"],
+                    dataset_version=row["dataset_version"],
+                    route_version=row["route_version"],
+                    query=query,
+                )
+        return result
 
     def write(self, routed: RoutedExecutionStatusSuccess) -> StoredExecutionStatus:
         validated = RoutedExecutionStatusSuccess.model_validate(

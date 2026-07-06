@@ -1,7 +1,11 @@
 from collections.abc import Callable, Sequence
+from datetime import datetime, timezone
+import hashlib
+import json
 from pathlib import Path
+import sqlite3
 from threading import Lock
-from typing import Any, TypeAlias
+from typing import Any, Final, TypeAlias, cast
 from urllib.parse import unquote
 
 from alembic import command
@@ -20,11 +24,74 @@ _SQLITE_BUSY_TIMEOUT_MS = 5_000
 _SQLITE_DATABASE_IDENTITY_INFO_KEY = "stock_desk.sqlite_database_identity"
 _MIGRATION_LOCK_TIMEOUT_SECONDS = 30
 _MIGRATION_THREAD_LOCK = Lock()
+_TIMESTAMP_DIGEST_AGGREGATE: Final = "stock_desk_timestamp_digest"
 DatabaseIdentity: TypeAlias = tuple[object, ...]
 
 
 class DatabaseIdentityError(RuntimeError):
     """A live database connection has no trustworthy frozen identity."""
+
+
+def _canonical_utc_timestamp(value: datetime | str) -> str:
+    if isinstance(value, str):
+        parsed_value = value.removesuffix("Z") + (
+            "+00:00" if value.endswith("Z") else ""
+        )
+        timestamp = datetime.fromisoformat(parsed_value)
+    elif isinstance(value, datetime):
+        timestamp = value
+    else:
+        raise TypeError("timestamp must be a datetime or ISO-8601 string")
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    return timestamp.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _digest_canonical_timestamps(timestamps: Sequence[str]) -> str:
+    encoded = json.dumps(
+        timestamps,
+        ensure_ascii=True,
+        separators=(",", ":"),
+    ).encode("ascii")
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
+def timestamp_digest(timestamps: Sequence[datetime]) -> str:
+    """Hash timestamps using the canonical representation sealed by MarketLake."""
+    return _digest_canonical_timestamps(
+        tuple(_canonical_utc_timestamp(timestamp) for timestamp in timestamps)
+    )
+
+
+class _TimestampDigestAggregate:
+    """SQLite aggregate that binds ordinal order to canonical UTC timestamps."""
+
+    def __init__(self) -> None:
+        self._timestamps: dict[int, str] = {}
+        self._valid = True
+
+    def step(self, ordinal: object, timestamp: object) -> None:
+        if not self._valid:
+            return
+        if type(ordinal) is not int or ordinal < 0 or ordinal in self._timestamps:
+            self._valid = False
+            return
+        try:
+            self._timestamps[ordinal] = _canonical_utc_timestamp(
+                cast(datetime | str, timestamp)
+            )
+        except (TypeError, ValueError):
+            self._valid = False
+
+    def finalize(self) -> str | None:
+        if not self._valid or not self._timestamps:
+            return None
+        ordinals = tuple(sorted(self._timestamps))
+        if ordinals != tuple(range(len(ordinals))):
+            return None
+        return _digest_canonical_timestamps(
+            tuple(self._timestamps[ordinal] for ordinal in ordinals)
+        )
 
 
 def _sqlite_database_identity(
@@ -58,6 +125,12 @@ def _configure_sqlite_connection(
     dbapi_connection: DBAPIConnection, connection_record: ConnectionPoolEntry
 ) -> None:
     connection_record.info.pop(_SQLITE_DATABASE_IDENTITY_INFO_KEY, None)
+    sqlite_connection = cast(sqlite3.Connection, dbapi_connection)
+    sqlite_connection.create_aggregate(
+        _TIMESTAMP_DIGEST_AGGREGATE,
+        2,
+        cast(Callable[[], Any], _TimestampDigestAggregate),
+    )
     cursor = dbapi_connection.cursor()
     try:
         cursor.execute("PRAGMA foreign_keys=ON")

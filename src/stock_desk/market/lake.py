@@ -25,7 +25,7 @@ from pydantic import (
     TypeAdapter,
     ValidationError,
 )
-from sqlalchemy import Engine, and_, insert, select
+from sqlalchemy import Engine, and_, case, func, insert, select
 from sqlalchemy.engine import Connection, RowMapping
 
 from stock_desk.market.calendar import MARKET_TIMEZONE
@@ -58,12 +58,15 @@ from stock_desk.market.types import (
 from stock_desk.storage.models import (
     MarketDataset,
     MarketDatasetPartition,
+    MarketDatasetTimestamp,
+    MarketDatasetTimestampSeal,
     MarketRoutingManifest,
 )
 from stock_desk.storage.database import (
     DatabaseIdentity,
     DatabaseIdentityError,
     connection_database_identity,
+    timestamp_digest,
 )
 
 
@@ -83,6 +86,7 @@ _PARQUET_SCHEMA: Final[tuple[tuple[str, str], ...]] = (
     ("close", "DECIMAL(24,8)"),
     ("volume", "BIGINT"),
 )
+_TIMESTAMP_INDEX_VERSION: Final = "market-timestamps-v1"
 _CREATE_BAR_TABLE: Final[str] = """
 CREATE TABLE market_bars (
     symbol VARCHAR NOT NULL,
@@ -111,6 +115,8 @@ _DANGEROUS_ROOTS: Final[frozenset[Path]] = frozenset(
 _OWNERSHIP_MARKER_NAME: Final[str] = ".stock-desk-market-lake"
 _OWNERSHIP_MARKER_CONTENT: Final[bytes] = b"stock-desk-market-lake-v1\n"
 _OWNERSHIP_TEMP_PREFIX: Final[str] = f"{_OWNERSHIP_MARKER_NAME}.init-"
+
+
 _OWNERSHIP_TEMP_SUFFIX: Final[str] = ".tmp"
 _SYMBOL_ADAPTER = TypeAdapter(CanonicalSymbol)
 
@@ -137,6 +143,19 @@ class StoredRoutingManifest(_FrozenLakeModel):
     partitions: tuple[StoredPartition, ...]
 
 
+class CatalogBarPin(_FrozenLakeModel):
+    """Catalog-only immutable bar reference; contains no object-file data."""
+
+    manifest_record_id: Sha256Digest
+    dataset_version: Sha256Digest
+    route_version: Sha256Digest
+    source: ProviderId
+    data_cutoff: datetime
+    fetched_at: datetime
+    query: BarQuery
+    prefix_row_count: Annotated[int, Field(ge=0)]
+
+
 class MarketLakeError(RuntimeError):
     """Base class for externally distinguishable market-lake read failures."""
 
@@ -158,6 +177,8 @@ class _CatalogSnapshot:
     manifest: RowMapping
     dataset: RowMapping
     partitions: tuple[RowMapping, ...]
+    timestamps: tuple[tuple[int, datetime], ...]
+    timestamp_seal: RowMapping | None
 
 
 @dataclass(frozen=True)
@@ -1690,6 +1711,259 @@ class MarketLake:
         routed, _stored = self._read_validated_record(manifest_record_id)
         return routed
 
+    def catalog_latest_covering_many(
+        self,
+        connection: Connection,
+        queries: Sequence[BarQuery],
+        *,
+        prefer_earliest_prefix: bool = False,
+    ) -> dict[str, CatalogBarPin]:
+        """Pin latest containing catalog records without touching Parquet objects."""
+
+        self._validate_database_connection(connection)
+        canonical = tuple(
+            BarQuery.model_validate(query.model_dump(mode="python"))
+            for query in queries
+        )
+        if len({query.symbol for query in canonical}) != len(canonical):
+            raise ValueError("catalog pin queries must contain unique symbols")
+        grouped: dict[tuple[Period, Adjustment, datetime, datetime], set[str]] = {}
+        for query in canonical:
+            grouped.setdefault(
+                (query.period, query.adjustment, query.start, query.end), set()
+            ).add(query.symbol)
+
+        pins: dict[str, CatalogBarPin] = {}
+        for (period, adjustment, start, end), symbols in grouped.items():
+            evidence_count = (
+                select(func.count())
+                .select_from(MarketDatasetTimestamp)
+                .where(
+                    MarketDatasetTimestamp.dataset_version
+                    == MarketDataset.dataset_version
+                )
+                .correlate(MarketDataset)
+                .scalar_subquery()
+            )
+            prefix_count = (
+                select(func.count())
+                .select_from(MarketDatasetTimestamp)
+                .where(
+                    MarketDatasetTimestamp.dataset_version
+                    == MarketDataset.dataset_version,
+                    MarketDatasetTimestamp.timestamp < start,
+                )
+                .correlate(MarketDataset)
+                .scalar_subquery()
+            )
+            first_timestamp = (
+                select(func.min(MarketDatasetTimestamp.timestamp))
+                .where(
+                    MarketDatasetTimestamp.dataset_version
+                    == MarketDataset.dataset_version
+                )
+                .correlate(MarketDataset)
+                .scalar_subquery()
+            )
+            last_timestamp = (
+                select(func.max(MarketDatasetTimestamp.timestamp))
+                .where(
+                    MarketDatasetTimestamp.dataset_version
+                    == MarketDataset.dataset_version
+                )
+                .correlate(MarketDataset)
+                .scalar_subquery()
+            )
+            first_ordinal = (
+                select(func.min(MarketDatasetTimestamp.ordinal))
+                .where(
+                    MarketDatasetTimestamp.dataset_version
+                    == MarketDataset.dataset_version
+                )
+                .correlate(MarketDataset)
+                .scalar_subquery()
+            )
+            last_ordinal = (
+                select(func.max(MarketDatasetTimestamp.ordinal))
+                .where(
+                    MarketDatasetTimestamp.dataset_version
+                    == MarketDataset.dataset_version
+                )
+                .correlate(MarketDataset)
+                .scalar_subquery()
+            )
+            computed_timestamp_digest = (
+                select(
+                    func.stock_desk_timestamp_digest(
+                        MarketDatasetTimestamp.ordinal,
+                        MarketDatasetTimestamp.timestamp,
+                    )
+                )
+                .where(
+                    MarketDatasetTimestamp.dataset_version
+                    == MarketDataset.dataset_version
+                )
+                .correlate(MarketDataset)
+                .scalar_subquery()
+            )
+            sealed_priority = case(
+                (
+                    and_(
+                        MarketDatasetTimestampSeal.index_version
+                        == _TIMESTAMP_INDEX_VERSION,
+                        MarketDatasetTimestampSeal.row_count == MarketDataset.row_count,
+                        MarketDatasetTimestampSeal.timestamp_digest.is_not(None),
+                        func.length(MarketDatasetTimestampSeal.timestamp_digest) == 71,
+                        MarketDatasetTimestampSeal.timestamp_digest.like("sha256:%"),
+                        computed_timestamp_digest
+                        == MarketDatasetTimestampSeal.timestamp_digest,
+                        evidence_count == MarketDataset.row_count,
+                        first_ordinal == 0,
+                        last_ordinal == MarketDataset.row_count - 1,
+                        first_timestamp >= MarketDataset.query_start,
+                        last_timestamp < MarketDataset.query_end,
+                        prefix_count >= 0,
+                        prefix_count <= MarketDataset.row_count,
+                    ),
+                    0,
+                ),
+                else_=1,
+            )
+            rank = (
+                func.row_number()
+                .over(
+                    partition_by=MarketDataset.symbol,
+                    order_by=(
+                        sealed_priority.asc(),
+                        *(
+                            (MarketDataset.query_start.asc(),)
+                            if prefer_earliest_prefix
+                            else ()
+                        ),
+                        MarketDataset.data_cutoff.desc(),
+                        MarketRoutingManifest.fetched_at.desc(),
+                        MarketDataset.query_start.asc(),
+                        MarketRoutingManifest.manifest_record_id.desc(),
+                    ),
+                )
+                .label("catalog_rank")
+            )
+            ranked = (
+                select(
+                    MarketRoutingManifest.manifest_record_id,
+                    MarketRoutingManifest.dataset_version,
+                    MarketRoutingManifest.route_version,
+                    MarketRoutingManifest.manifest_json,
+                    MarketRoutingManifest.fetched_at,
+                    MarketDataset.source,
+                    MarketDataset.symbol,
+                    MarketDataset.period,
+                    MarketDataset.adjustment,
+                    MarketDataset.query_start,
+                    MarketDataset.query_end,
+                    MarketDataset.data_cutoff,
+                    MarketDataset.row_count,
+                    MarketDatasetTimestampSeal.index_version.label(
+                        "timestamp_index_version"
+                    ),
+                    MarketDatasetTimestampSeal.row_count.label(
+                        "timestamp_seal_row_count"
+                    ),
+                    MarketDatasetTimestampSeal.timestamp_digest,
+                    computed_timestamp_digest.label("computed_timestamp_digest"),
+                    evidence_count.label("evidence_count"),
+                    prefix_count.label("prefix_count"),
+                    first_timestamp.label("first_timestamp"),
+                    last_timestamp.label("last_timestamp"),
+                    first_ordinal.label("first_ordinal"),
+                    last_ordinal.label("last_ordinal"),
+                    rank,
+                )
+                .join(
+                    MarketDataset,
+                    and_(
+                        MarketRoutingManifest.dataset_version
+                        == MarketDataset.dataset_version,
+                        MarketRoutingManifest.symbol == MarketDataset.symbol,
+                    ),
+                )
+                .outerjoin(
+                    MarketDatasetTimestampSeal,
+                    MarketDatasetTimestampSeal.dataset_version
+                    == MarketDataset.dataset_version,
+                )
+                .where(
+                    MarketDataset.symbol.in_(tuple(sorted(symbols))),
+                    MarketDataset.period == period.value,
+                    MarketDataset.adjustment == adjustment.value,
+                    MarketDataset.query_start <= start,
+                    MarketDataset.query_end >= end,
+                )
+                .subquery()
+            )
+            rows = connection.execute(
+                select(ranked)
+                .where(ranked.c.catalog_rank == 1)
+                .order_by(ranked.c.symbol)
+            ).mappings()
+            for row in rows:
+                symbol = cast(str, row["symbol"])
+                if symbol not in symbols:
+                    continue
+                try:
+                    manifest = RoutingManifest.model_validate_json(
+                        json.dumps(row["manifest_json"], allow_nan=False)
+                    )
+                    stored_query = BarQuery(
+                        symbol=symbol,
+                        period=Period(cast(str, row["period"])),
+                        adjustment=Adjustment(cast(str, row["adjustment"])),
+                        start=_catalog_datetime(row["query_start"]),
+                        end=_catalog_datetime(row["query_end"]),
+                    )
+                    if (
+                        not isinstance(manifest.request, BarRoutingRequest)
+                        or manifest.request.query != stored_query
+                        or manifest_record_id(manifest) != row["manifest_record_id"]
+                        or manifest.upstream_dataset_version != row["dataset_version"]
+                        or manifest.route_version != row["route_version"]
+                        or manifest.selected_source.value != row["source"]
+                        or manifest.upstream_data_cutoff
+                        != _catalog_datetime(row["data_cutoff"])
+                        or manifest.upstream_fetched_at
+                        != _catalog_datetime(row["fetched_at"])
+                        or row["evidence_count"] != row["row_count"]
+                        or row["timestamp_index_version"] != _TIMESTAMP_INDEX_VERSION
+                        or row["timestamp_seal_row_count"] != row["row_count"]
+                        or TypeAdapter(Sha256Digest).validate_python(
+                            row["timestamp_digest"]
+                        )
+                        != row["timestamp_digest"]
+                        or row["computed_timestamp_digest"] != row["timestamp_digest"]
+                        or row["first_ordinal"] != 0
+                        or row["last_ordinal"] != row["row_count"] - 1
+                        or not 0 <= row["prefix_count"] <= row["row_count"]
+                        or _catalog_datetime(row["first_timestamp"])
+                        < stored_query.start
+                        or _catalog_datetime(row["last_timestamp"]) >= stored_query.end
+                    ):
+                        raise ValueError
+                    pins[symbol] = CatalogBarPin(
+                        manifest_record_id=cast(str, row["manifest_record_id"]),
+                        dataset_version=cast(str, row["dataset_version"]),
+                        route_version=cast(str, row["route_version"]),
+                        source=manifest.selected_source,
+                        data_cutoff=manifest.upstream_data_cutoff,
+                        fetched_at=manifest.upstream_fetched_at,
+                        query=stored_query,
+                        prefix_row_count=cast(int, row["prefix_count"]),
+                    )
+                except (TypeError, ValidationError, ValueError):
+                    raise MarketLakeCorruptionError(
+                        "market catalog pin failed integrity validation"
+                    ) from None
+        return pins
+
     def latest_exact(self, query: BarQuery) -> StoredRoutingManifest | None:
         canonical = BarQuery.model_validate(query.model_dump(mode="python"))
         record_id = self._latest_record_id(
@@ -1901,12 +2175,48 @@ class MarketLake:
                 raise _IntegrityValidationError(
                     "market partition catalog rows could not be decoded"
                 ) from error
+            timestamp_result = connection.execute(
+                select(
+                    MarketDatasetTimestamp.ordinal,
+                    MarketDatasetTimestamp.timestamp,
+                )
+                .where(
+                    MarketDatasetTimestamp.dataset_version == expected_dataset_version
+                )
+                .order_by(MarketDatasetTimestamp.ordinal)
+            )
+            try:
+                timestamps = tuple(
+                    (cast(int, row[0]), cast(datetime, row[1]))
+                    for row in timestamp_result
+                )
+            except (TypeError, ValueError) as error:
+                raise _IntegrityValidationError(
+                    "market timestamp evidence could not be decoded"
+                ) from error
+            try:
+                timestamp_seal = (
+                    connection.execute(
+                        select(MarketDatasetTimestampSeal).where(
+                            MarketDatasetTimestampSeal.dataset_version
+                            == expected_dataset_version
+                        )
+                    )
+                    .mappings()
+                    .one_or_none()
+                )
+            except (TypeError, ValueError) as error:
+                raise _IntegrityValidationError(
+                    "market timestamp seal could not be decoded"
+                ) from error
         if not partitions:
             raise MarketLakeCorruptionError("market dataset has no partitions")
         return _CatalogSnapshot(
             manifest=manifest,
             dataset=dataset,
             partitions=partitions,
+            timestamps=timestamps,
+            timestamp_seal=timestamp_seal,
         )
 
     def _read_snapshot(
@@ -1996,6 +2306,24 @@ class MarketLake:
         if dataset_row_count != len(bars):
             raise _IntegrityValidationError(
                 "market dataset row count does not match its partitions"
+            )
+        timestamp_seal = snapshot.timestamp_seal
+        if timestamp_seal is not None and (
+            timestamp_seal["index_version"] != _TIMESTAMP_INDEX_VERSION
+            or timestamp_seal["row_count"] != len(bars)
+            or timestamp_seal["timestamp_digest"] != timestamp_digest(timestamps)
+            or len(snapshot.timestamps) != len(bars)
+            or any(
+                ordinal != expected_ordinal
+                or not isinstance(stored_timestamp, datetime)
+                or not _same_instant(stored_timestamp, bar.timestamp)
+                for expected_ordinal, ((ordinal, stored_timestamp), bar) in enumerate(
+                    zip(snapshot.timestamps, bars, strict=True)
+                )
+            )
+        ):
+            raise _IntegrityValidationError(
+                "market timestamp evidence does not match dataset rows"
             )
 
         try:
@@ -2680,6 +3008,70 @@ class MarketLake:
             else:
                 if not self._dataset_matches(dataset_row, routed):
                     raise ValueError("dataset_version collides with catalog metadata")
+
+            stored_timestamps = tuple(
+                connection.execute(
+                    select(
+                        MarketDatasetTimestamp.ordinal,
+                        MarketDatasetTimestamp.timestamp,
+                    )
+                    .where(MarketDatasetTimestamp.dataset_version == version)
+                    .order_by(MarketDatasetTimestamp.ordinal)
+                )
+            )
+            expected_timestamps = tuple(bar.timestamp for bar in result.bars)
+            if not stored_timestamps:
+                connection.execute(
+                    insert(MarketDatasetTimestamp),
+                    [
+                        {
+                            "dataset_version": version,
+                            "ordinal": ordinal,
+                            "timestamp": timestamp,
+                        }
+                        for ordinal, timestamp in enumerate(expected_timestamps)
+                    ],
+                )
+            elif len(stored_timestamps) != len(expected_timestamps) or any(
+                ordinal != expected_ordinal
+                or not _same_instant(stored_timestamp, expected_timestamp)
+                for expected_ordinal, (
+                    ordinal,
+                    stored_timestamp,
+                ), expected_timestamp in zip(
+                    range(len(expected_timestamps)),
+                    stored_timestamps,
+                    expected_timestamps,
+                    strict=True,
+                )
+            ):
+                raise ValueError("dataset_version collides with timestamp evidence")
+
+            expected_timestamp_digest = timestamp_digest(expected_timestamps)
+            timestamp_seal = (
+                connection.execute(
+                    select(MarketDatasetTimestampSeal).where(
+                        MarketDatasetTimestampSeal.dataset_version == version
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if timestamp_seal is None:
+                connection.execute(
+                    insert(MarketDatasetTimestampSeal).values(
+                        dataset_version=version,
+                        index_version=_TIMESTAMP_INDEX_VERSION,
+                        row_count=len(expected_timestamps),
+                        timestamp_digest=expected_timestamp_digest,
+                    )
+                )
+            elif (
+                timestamp_seal["index_version"] != _TIMESTAMP_INDEX_VERSION
+                or timestamp_seal["row_count"] != len(expected_timestamps)
+                or timestamp_seal["timestamp_digest"] != expected_timestamp_digest
+            ):
+                raise ValueError("dataset_version collides with timestamp seal")
 
             for partition in partitions:
                 partition_row = (

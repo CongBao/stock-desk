@@ -12,8 +12,12 @@ from typing import Any
 
 from sqlalchemy import Engine
 
+from stock_desk.backtest.pool_runner import PoolBacktestRunner
+from stock_desk.backtest.repository import BacktestRepository
 from stock_desk.api.settings import SourceSettingsServices
 from stock_desk.config import Settings
+from stock_desk.formula.repository import FormulaRepository
+from stock_desk.formula.service import FormulaService
 from stock_desk.market.compositions import (
     AkShareCompositionProvider,
     CompositionProvider,
@@ -288,6 +292,22 @@ class ProductionMarketWorker:
                     pools=pools,
                     provider_factory=resolved_factory,
                     composition_factory=composition_factory,
+                ),
+            )
+            formula_service = FormulaService(
+                repository=FormulaRepository(engine),
+                lake=lake,
+            )
+            backtests = BacktestRepository(engine)
+            task_worker.register_claimed(
+                "backtest.run",
+                PoolBacktestRunner(
+                    engine=engine,
+                    tasks=tasks,
+                    repository=backtests,
+                    market_lake=lake,
+                    status_lake=execution_status_lake,
+                    formulas=formula_service,
                 ),
             )
             scheduler = MarketUpdateScheduler(schedules, tasks, clock=_utc_now)

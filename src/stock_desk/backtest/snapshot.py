@@ -129,6 +129,29 @@ def reopen_snapshot(
     return ReopenedSnapshot(snapshot=canonical, symbols=tuple(symbols))
 
 
+def reopen_symbol_input(
+    reference: PinnedMarketRef,
+    *,
+    market_lake: MarketLakeReader,
+    status_lake: StatusLakeReader,
+) -> ReopenedSymbolInput:
+    """Reopen and fully validate one pinned symbol without loading a whole pool."""
+
+    canonical = PinnedMarketRef.model_validate(reference.model_dump(mode="python"))
+    signal = market_lake.read(canonical.signal_manifest_record_id)
+    _validate_signal_identity(canonical, signal)
+    execution = market_lake.read(canonical.execution_manifest_record_id)
+    _validate_execution_identity(canonical, execution)
+    status = status_lake.read(canonical.execution_status_manifest_record_id)
+    _validate_status_identity(canonical, status)
+    return ReopenedSymbolInput(
+        reference=canonical,
+        signal=signal,
+        execution=execution,
+        execution_status=status,
+    )
+
+
 def _validate_signal_identity(
     reference: PinnedMarketRef,
     routed: RoutedBarSuccess,

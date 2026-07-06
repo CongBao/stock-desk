@@ -67,6 +67,8 @@ try:
         "execution_status_routing_manifest",
         "market_dataset",
         "market_dataset_partition",
+        "market_dataset_timestamp",
+        "market_dataset_timestamp_seal",
         "market_routing_manifest",
         "market_update_item",
         "market_update_occurrence",
@@ -95,6 +97,8 @@ try:
         "execution_status_routing_manifest",
         "market_dataset",
         "market_dataset_partition",
+        "market_dataset_timestamp",
+        "market_dataset_timestamp_seal",
         "market_routing_manifest",
         "market_update_item",
         "market_update_occurrence",
@@ -129,3 +133,4 @@ finally:
     )
     assert "stock_desk/migrations/versions/0005_formula_catalog.py" in packaged_files
     assert "stock_desk/migrations/versions/0006_execution_status.py" in packaged_files
+    assert "stock_desk/migrations/versions/0007_backtest_runs.py" in packaged_files

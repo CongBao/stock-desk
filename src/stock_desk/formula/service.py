@@ -13,6 +13,7 @@ from typing import Any, Protocol, cast
 
 from pydantic import ValidationError
 
+from stock_desk.formula.analysis import analyze_compiled_formula
 from stock_desk.formula.compiler import compile_formula
 from stock_desk.formula.context import EvaluationContext, MAX_PARAMETERS
 from stock_desk.formula.evaluator import FormulaEvaluator
@@ -32,6 +33,7 @@ from stock_desk.formula.signal_series import (
     ENGINE_VERSION,
     MAX_SIGNAL_SERIES_BYTES,
     FormulaReference,
+    NormalizedParameter,
     SignalSeries,
 )
 from stock_desk.formula.validator import FormulaValidator
@@ -81,6 +83,19 @@ class FormulaPreviewUnsupportedVersion(FormulaServiceError):
 
 class FormulaServiceDatabaseMismatch(FormulaServiceError):
     pass
+
+
+@dataclass(frozen=True, slots=True)
+class FormulaBacktestPreflight:
+    formula_id: str
+    formula_version_id: str
+    formula_version: int
+    formula_checksum: str
+    engine_version: str
+    compatibility_version: str
+    normalized_parameters: tuple[NormalizedParameter, ...]
+    lookback_bars: int | None
+    unbounded_dependency: bool
 
 
 def _canonical_bytes(value: object) -> bytes:
@@ -521,6 +536,65 @@ class FormulaService:
         self, formula_id: str, *, limit: int, cursor: str | None
     ) -> tuple[tuple[FormulaVersion, ...], str | None]:
         return self.repository.list_version_page(formula_id, limit=limit, cursor=cursor)
+
+    def preflight_backtest(
+        self,
+        version_id: str,
+        parameters: Mapping[str, int | float],
+    ) -> FormulaBacktestPreflight:
+        """Freeze one executable trading formula without resolving market data."""
+
+        version = self.repository.get_version(version_id)
+        if version.formula_type != "trading":
+            raise FormulaPreviewValidationError(
+                "backtest formula must be a published trading formula"
+            )
+        if (
+            version.engine_version != ENGINE_VERSION
+            or version.compatibility_version != COMPATIBILITY_VERSION
+        ):
+            raise FormulaPreviewUnsupportedVersion("formula version is unsupported")
+        bound, canonical_parameters = _bind_parameters(version, parameters)
+        compiled = compile_formula(version.source, parameters=bound)
+        analysis = analyze_compiled_formula(compiled)
+        if analysis.diagnostics or compiled.signal_outputs != ("BUY", "SELL"):
+            raise FormulaPreviewValidationError("formula blocks backtesting")
+        signal_dependencies = tuple(
+            item.dependency
+            for item in analysis.statements
+            if item.name in {"BUY", "SELL"}
+        )
+        if len(signal_dependencies) != 2:
+            raise FormulaPreviewValidationError("formula signals are invalid")
+        unbounded = any(item.min_offset is None for item in signal_dependencies)
+        minimum = (
+            None
+            if unbounded
+            else min(
+                item.min_offset
+                for item in signal_dependencies
+                if item.min_offset is not None
+            )
+        )
+        normalized_parameters = tuple(
+            NormalizedParameter(
+                name=name,
+                kind="integer" if kind == "integer" else "number",
+                value=value,
+            )
+            for name, kind, value in canonical_parameters
+        )
+        return FormulaBacktestPreflight(
+            formula_id=version.formula_id,
+            formula_version_id=version.id,
+            formula_version=version.version,
+            formula_checksum=version.checksum,
+            engine_version=version.engine_version,
+            compatibility_version=version.compatibility_version,
+            normalized_parameters=normalized_parameters,
+            lookback_bars=None if minimum is None else max(0, -minimum),
+            unbounded_dependency=unbounded,
+        )
 
     def preview(
         self,

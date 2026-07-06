@@ -12,7 +12,7 @@ from stock_desk.backtest.constraints import (
     SHANGHAI,
     assess_execution,
 )
-from stock_desk.backtest.events import OrderBlocked
+from stock_desk.backtest.events import OrderBlocked, OrderEvent
 from stock_desk.backtest.state_machine import SymbolStateMachine
 from stock_desk.market.execution_status import ExecutionEligibility
 from stock_desk.market.execution_status import ExecutionStatusSnapshot
@@ -65,6 +65,32 @@ def candidates_from_status(
     reference_opens: tuple[ReferenceOpen, ...],
 ) -> tuple[FillCandidate, ...]:
     """Union frozen fill opens with status opportunities by exact timestamp."""
+    if status.query.period in {Period.DAY, Period.WEEK}:
+        opens_by_day: dict[object, Decimal] = {}
+        for item in reference_opens:
+            day = item.timestamp.astimezone(SHANGHAI).date()
+            if day in opens_by_day:
+                raise ValueError("reference-open trading days must be unique")
+            opens_by_day[day] = item.price
+        eligibility_days = {item.trading_day for item in status.eligibility}
+        candidates = [
+            FillCandidate(
+                timestamp=item.timestamp,
+                open_price=opens_by_day.get(item.trading_day),
+                eligibility=item,
+            )
+            for item in status.eligibility
+        ]
+        candidates.extend(
+            FillCandidate(
+                timestamp=item.timestamp,
+                open_price=item.price,
+                eligibility=None,
+            )
+            for item in reference_opens
+            if item.timestamp.astimezone(SHANGHAI).date() not in eligibility_days
+        )
+        return tuple(sorted(candidates, key=lambda item: item.timestamp))
     opens: dict[datetime, Decimal] = {}
     for item in reference_opens:
         if item.timestamp in opens:
@@ -88,6 +114,8 @@ class ExecutionRequest:
     signals: tuple[SignalBar, ...]
     candidates: tuple[FillCandidate, ...]
     quantity: int = 1_000
+    ended_at: datetime | None = None
+    mark_price: Decimal | None = None
 
     def __post_init__(self) -> None:
         if self.quantity <= 0 or self.quantity % 100 != 0:
@@ -99,6 +127,14 @@ class ExecutionRequest:
             != self.candidates
         ):
             raise ValueError("fill candidates must be ordered")
+        if self.ended_at is not None:
+            _require_aware(self.ended_at, "ended_at")
+        if self.mark_price is not None and (
+            not self.mark_price.is_finite() or self.mark_price <= 0
+        ):
+            raise ValueError("mark_price must be a positive finite Decimal")
+        if self.mark_price is not None and self.ended_at is None:
+            raise ValueError("mark_price requires ended_at")
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,7 +158,7 @@ class ExecutionFailure:
 @dataclass(frozen=True, slots=True)
 class ExecutionResult:
     trades: tuple[ExecutionTrade, ...]
-    order_events: tuple[object, ...]
+    order_events: tuple[OrderEvent, ...]
     blocked_events: tuple[OrderBlocked, ...]
     failure: ExecutionFailure | None
 
@@ -222,6 +258,12 @@ class ExecutionEngine:
                 trades.append(ExecutionTrade(entry=fill))
             elif trades:
                 trades[-1] = replace(trades[-1], exit=fill)
+
+        if failure is None and request.ended_at is not None:
+            machine.finish_range(
+                at=request.ended_at,
+                mark_price=request.mark_price if machine.position is not None else None,
+            )
 
         events = machine.events
         return ExecutionResult(

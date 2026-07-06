@@ -34,6 +34,7 @@ WARMUP_POLICY_VERSION: Literal["formula-warmup-v1"] = "formula-warmup-v1"
 COST_MODEL_VERSION: Literal["a-share-cost-v1"] = "a-share-cost-v1"
 EXECUTION_RULES_VERSION: Literal["a-share-v1"] = "a-share-v1"
 MAX_BACKTEST_SYMBOLS = 10_000
+MAX_QUANTITY_SHARES = 100_000_000
 
 BoundedIdentity = Annotated[
     str,
@@ -239,6 +240,8 @@ class _BacktestInputs(BaseModel):
             raise ValueError("quantity_shares must be positive")
         if self.quantity_shares % 100 != 0:
             raise ValueError("quantity_shares must use a 100-share lot")
+        if self.quantity_shares > MAX_QUANTITY_SHARES:
+            raise ValueError("quantity_shares exceeds the supported maximum")
 
         costs = (
             self.commission_bps,
