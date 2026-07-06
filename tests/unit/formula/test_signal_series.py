@@ -11,6 +11,7 @@ import pytest
 
 from stock_desk.formula.context import EvaluationContext
 from stock_desk.formula.functions import V1_REGISTRY
+from stock_desk.formula.functions.base import MAX_IDENTIFIER_CHARS
 import stock_desk.formula.signal_series as signal_series_module
 from stock_desk.formula.signal_series import (
     MAX_OUTPUT_CELLS,
@@ -240,6 +241,10 @@ def test_formula_reference_and_parameters_require_saved_canonical_versions() -> 
             NormalizedParameter(name="N", kind="integer", value=value)
     with pytest.raises(ValidationError, match="pattern"):
         NormalizedParameter(name="not-canonical", kind="integer", value="1")
+    with pytest.raises(ValidationError, match="at most"):
+        NormalizedParameter(
+            name="A" * (MAX_IDENTIFIER_CHARS + 1), kind="integer", value="1"
+        )
 
 
 def test_lengths_timestamp_order_output_names_and_signal_order_are_enforced() -> None:

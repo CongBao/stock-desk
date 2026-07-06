@@ -36,7 +36,14 @@ type CompiledKind = ValueKind
 
 
 class FormulaCompileError(FormulaError):
-    def __init__(self, code: str, message: str, span: SourceSpan) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        span: SourceSpan,
+        *,
+        function: str | None = None,
+    ) -> None:
         super().__init__(
             message,
             code=code,
@@ -45,6 +52,7 @@ class FormulaCompileError(FormulaError):
             end_line=span.end_line,
             end_column=span.end_column,
         )
+        self.function = function
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,10 +147,14 @@ def formula_source_checksum(source: str) -> str:
 
 
 def _fail(
-    code: str, message: str, expression: Expression | SourceSpan
+    code: str,
+    message: str,
+    expression: Expression | SourceSpan,
+    *,
+    function: str | None = None,
 ) -> FormulaCompileError:
     span = expression if isinstance(expression, SourceSpan) else expression.span
-    return FormulaCompileError(code, message, span)
+    return FormulaCompileError(code, message, span, function=function)
 
 
 def _literal(number: Decimal, span: SourceSpan) -> LiteralExpression:
@@ -279,6 +291,7 @@ def _compile_expression(
                 "unsupported_function",
                 "function is not in the compatibility registry",
                 expression,
+                function=expression.function,
             ) from error
         arguments = tuple(
             _compile_expression(item, scope, parameters, registry)
@@ -310,6 +323,7 @@ def _validate_arguments(
                 "invalid_type",
                 f"argument {parameter.name} has an invalid type",
                 argument.span,
+                function=spec.name,
             )
         value = _constraint_value(argument, parameters)
         if parameter.constant and value is None:
@@ -317,6 +331,7 @@ def _validate_arguments(
                 "constant_required",
                 f"argument {parameter.name} must be constant",
                 argument.span,
+                function=spec.name,
             )
         if value is not None:
             numeric = float(value.value)
@@ -331,6 +346,7 @@ def _validate_arguments(
                     code,
                     f"argument {parameter.name} is below its minimum",
                     argument.span,
+                    function=spec.name,
                 )
             maximum = (
                 min(parameter.maximum, MAX_LOOKBACK)
@@ -344,6 +360,7 @@ def _validate_arguments(
                     "argument_out_of_range",
                     f"argument {parameter.name} exceeds its maximum",
                     argument.span,
+                    function=spec.name,
                 )
     operations = {
         "<=": lambda a, b: a <= b,
@@ -364,6 +381,7 @@ def _validate_arguments(
                 "invalid_argument_relation",
                 "function argument relation is invalid",
                 call,
+                function=spec.name,
             )
 
 
@@ -377,6 +395,20 @@ def compile_formula(
         parameters if parameters is not None else {}, registry
     )
     program = parse_formula(source)
+    invalid_statement = next(
+        (
+            statement
+            for statement in program.statements
+            if IDENTIFIER_PATTERN.fullmatch(statement.name) is None
+        ),
+        None,
+    )
+    if invalid_statement is not None:
+        raise FormulaCompileError(
+            "invalid_identifier",
+            "formula declaration identifier is not canonical",
+            invalid_statement.span,
+        )
     diagnostics = registry.validate(program, parameter_names=canonical_parameters)
     if diagnostics:
         item = diagnostics[0]
@@ -384,6 +416,7 @@ def compile_formula(
             item.code,
             item.message,
             SourceSpan(item.line, item.column, item.end_line, item.end_column),
+            function=item.function,
         )
     scope: dict[str, CompiledKind] = {}
     statements: list[CompiledStatement] = []

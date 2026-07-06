@@ -18,6 +18,7 @@ from pydantic import (
 
 from stock_desk.formula.context import EvaluationContext
 from stock_desk.formula.context import MAX_PARAMETERS
+from stock_desk.formula.functions.base import IDENTIFIER_PATTERN, MAX_IDENTIFIER_CHARS
 from stock_desk.formula.values import IntegerScalar, NumberScalar
 from stock_desk.market.provenance import Sha256Digest
 from stock_desk.market.types import (
@@ -47,7 +48,12 @@ BoundedId = Annotated[
 ]
 CanonicalName = Annotated[
     str,
-    StringConstraints(strict=True, pattern=r"^[A-Z][A-Z0-9_]*$"),
+    StringConstraints(
+        strict=True,
+        min_length=1,
+        max_length=MAX_IDENTIFIER_CHARS,
+        pattern=IDENTIFIER_PATTERN.pattern,
+    ),
 ]
 DiagnosticCode = Annotated[
     str,

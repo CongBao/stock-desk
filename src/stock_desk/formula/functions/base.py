@@ -6,7 +6,8 @@ from types import MappingProxyType
 from typing import Literal
 
 
-IDENTIFIER_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]*$")
+MAX_IDENTIFIER_CHARS = 64
+IDENTIFIER_PATTERN = re.compile(rf"^[A-Z][A-Z0-9_]{{0,{MAX_IDENTIFIER_CHARS - 1}}}$")
 
 type FutureBehavior = Literal["current_only", "past_only", "future", "repainting"]
 type FunctionCategory = Literal["math", "logic", "series", "statistics", "signal"]

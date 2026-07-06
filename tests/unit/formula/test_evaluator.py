@@ -9,7 +9,13 @@ import sys
 
 import pytest
 
-from stock_desk.formula.compiler import compile_formula, formula_source_checksum
+from stock_desk.formula.ast import SourceSpan
+from stock_desk.formula.compiler import (
+    CallExpression,
+    LiteralExpression,
+    compile_formula,
+    formula_source_checksum,
+)
 from stock_desk.formula.context import EvaluationContext
 from stock_desk.formula.evaluator import FormulaEvaluator
 from stock_desk.formula.functions import V1_REGISTRY
@@ -221,6 +227,60 @@ def test_reverse_source_signal_order_still_serializes_buy_then_sell() -> None:
     assert tuple(item.name for item in result.signals) == ("BUY", "SELL")
     assert result.signals[0].values == (False, False, True)
     assert result.signals[1].values == (True, False, False)
+
+
+def test_evaluator_cannot_bypass_temporal_lookback_validation() -> None:
+    source = "X:MA(MA(C,100000),3);"
+    with pytest.raises(ValueError, match="temporal validation"):
+        FormulaEvaluator().evaluate(source, context((1.0, 2.0, 3.0)), reference(source))
+
+
+def test_evaluator_cannot_bypass_a_forged_future_ref() -> None:
+    source = "X:REF(C,1);"
+    compiled = compile_formula(source)
+    statement = compiled.statements[0]
+    assert isinstance(statement.expression, CallExpression)
+    forged = replace(
+        compiled,
+        statements=(
+            replace(
+                statement,
+                expression=replace(
+                    statement.expression,
+                    arguments=(
+                        statement.expression.arguments[0],
+                        LiteralExpression(
+                            IntegerScalar(-1),
+                            "integer_scalar",
+                            SourceSpan(1, 9, 1, 11),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+    with pytest.raises(ValueError, match="invalid_compiled_ir"):
+        FormulaEvaluator().evaluate_compiled(
+            forged, context((1.0, 2.0, 3.0)), reference(source)
+        )
+
+
+def test_evaluator_rejects_forged_call_identity_before_dispatch() -> None:
+    source = "R:=REF(C,100000);X:MA(R,3);"
+    compiled = compile_formula(source)
+    outer = compiled.statements[1]
+    assert isinstance(outer.expression, CallExpression)
+    forged = replace(
+        compiled,
+        statements=(
+            compiled.statements[0],
+            replace(outer, expression=replace(outer.expression, function="ABS")),
+        ),
+    )
+    with pytest.raises(ValueError, match="invalid_compiled_ir"):
+        FormulaEvaluator().evaluate_compiled(
+            forged, context((1.0, 2.0, 3.0)), reference(source)
+        )
 
 
 def test_operators_numeric_truthiness_and_field_aliases_share_one_runtime() -> None:

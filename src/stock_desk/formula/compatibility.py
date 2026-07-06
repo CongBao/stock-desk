@@ -9,7 +9,7 @@ from stock_desk.formula.functions.registry import (
     COMPATIBILITY_VERSION,
     V1_REGISTRY,
 )
-from stock_desk.formula.functions.base import VALUE_KIND_HIERARCHY
+from stock_desk.formula.functions.base import MAX_IDENTIFIER_CHARS, VALUE_KIND_HIERARCHY
 from stock_desk.formula.parser import (
     MAX_ABSOLUTE_EXPONENT,
     MAX_AST_NODES,
@@ -40,6 +40,7 @@ def compatibility_data() -> dict[str, object]:
         "parser_limits": {
             "absolute_exponent": MAX_ABSOLUTE_EXPONENT,
             "ast_nodes": MAX_AST_NODES,
+            "identifier_chars": MAX_IDENTIFIER_CHARS,
             "nesting_depth": MAX_NESTING_DEPTH,
             "numeric_literal_chars": MAX_NUMERIC_LITERAL_CHARS,
             "source_bytes": MAX_SOURCE_BYTES,
@@ -141,6 +142,7 @@ def render_compatibility_markdown() -> str:
             f"- 源码：{limits['source_bytes']} UTF-8 字节",
             f"- 语句：{limits['statements']} 条",
             f"- AST 节点：{limits['ast_nodes']} 个",
+            f"- 标识符：{limits['identifier_chars']} 个字符",
             f"- 括号嵌套：{limits['nesting_depth']} 层",
             f"- 数字字面量：{limits['numeric_literal_chars']} 个字符",
             f"- 指数绝对值：{limits['absolute_exponent']}",

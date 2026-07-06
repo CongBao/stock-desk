@@ -19,6 +19,7 @@ from stock_desk.formula.functions.base import (
     ParameterSpec,
     RelationSpec,
     accepts_value_kind,
+    MAX_IDENTIFIER_CHARS,
 )
 from stock_desk.formula.functions.registry import V1_REGISTRY, CompatibilityRegistry
 from stock_desk.formula.parser import parse_formula
@@ -267,6 +268,7 @@ def test_compatibility_export_is_deterministic_json_for_shared_consumers() -> No
     assert first.endswith("\n")
     assert payload == compatibility_data()
     assert payload["compatibility_version"] == COMPATIBILITY_VERSION == "tdx-v1"
+    assert payload["parser_limits"]["identifier_chars"] == MAX_IDENTIFIER_CHARS == 64
     assert [item["name"] for item in payload["functions"]] == sorted(
         V1_REGISTRY.names()
     )

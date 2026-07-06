@@ -10,6 +10,7 @@ from stock_desk.formula.compiler import (
 from stock_desk.formula.context import MAX_PARAMETERS
 from stock_desk.formula.errors import FormulaLimitError
 from stock_desk.formula.functions import V1_REGISTRY
+from stock_desk.formula.functions.base import MAX_IDENTIFIER_CHARS
 from stock_desk.formula.runtime.dispatch import KERNELS
 from stock_desk.formula.values import IntegerScalar, NumberScalar
 
@@ -141,6 +142,25 @@ def test_compiler_enforces_the_shared_parameter_limit_before_binding() -> None:
     assert error.value.code == "formula_limit_exceeded"
     assert error.value.limit == "parameters"
     assert error.value.maximum == MAX_PARAMETERS == 64
+
+
+def test_identifier_length_is_bounded_for_parameters_and_outputs() -> None:
+    maximum = "A" * MAX_IDENTIFIER_CHARS
+    too_long = maximum + "A"
+
+    assert compile_formula(f"{maximum}:1;").numeric_outputs == (maximum,)
+    assert (
+        compile_formula("X:C;", parameters={maximum: IntegerScalar(1)})
+        .parameter_bindings[0]
+        .name
+        == maximum
+    )
+
+    with pytest.raises(FormulaCompileError) as output_error:
+        compile_formula(f"{too_long}:1;")
+    assert output_error.value.code == "invalid_identifier"
+    with pytest.raises(ValueError, match="canonical"):
+        compile_formula("X:C;", parameters={too_long: IntegerScalar(1)})
 
 
 def test_compiler_limits_visible_numeric_outputs_before_runtime_allocation() -> None:

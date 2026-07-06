@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from stock_desk.formula.analysis import analyze_compiled_formula
 from stock_desk.formula.compiler import (
     BinaryExpression,
     CallExpression,
@@ -45,6 +46,7 @@ from stock_desk.formula.values import (
     ScalarValue,
     SeriesValue,
 )
+from stock_desk.formula.validator import FormulaValidator
 
 
 type RuntimeValue = ScalarValue | SeriesValue
@@ -223,6 +225,18 @@ class FormulaEvaluator:
         rows = len(context.timestamps)
         if rows * (len(compiled.numeric_outputs) + 2) > MAX_OUTPUT_CELLS:
             raise ValueError("formula public output cell limit exceeded")
+        budget_diagnostics = FormulaValidator().validate_execution_budget(
+            compiled, row_count=rows
+        )
+        if budget_diagnostics:
+            raise ValueError(
+                f"formula resource validation failed: {budget_diagnostics[0].code}"
+            )
+        temporal = analyze_compiled_formula(compiled)
+        if temporal.diagnostics:
+            raise ValueError(
+                f"formula temporal validation failed: {temporal.diagnostics[0].code}"
+            )
         for statement in compiled.statements:
             value, located = _evaluate_expression(
                 statement.expression, context=context, declarations=declarations
