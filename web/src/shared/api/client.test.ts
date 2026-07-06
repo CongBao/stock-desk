@@ -1,4 +1,9 @@
-import { ApiError, createApiClient, type ApiGetOptions } from './client';
+import {
+  ApiError,
+  createApiClient,
+  type ApiGetOptions,
+  type ApiWriteOptions,
+} from './client';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -7,6 +12,79 @@ afterEach(() => {
 it('exposes GET-only request options without method or body', () => {
   expectTypeOf<ApiGetOptions>().not.toHaveProperty('method');
   expectTypeOf<ApiGetOptions>().not.toHaveProperty('body');
+});
+
+it('keeps write bodies explicit and methods fixed by the client surface', () => {
+  expectTypeOf<ApiWriteOptions>().toHaveProperty('body');
+  expectTypeOf<ApiWriteOptions>().not.toHaveProperty('method');
+});
+
+it.each(['put', 'post'] as const)(
+  'sends bounded JSON through %s with caller headers and signal',
+  async (method) => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ status: 'ok' }), {
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const controller = new AbortController();
+    const client = createApiClient();
+
+    await client[method]('/settings/sources', {
+      body: { priorities: ['tushare'] },
+      headers: { 'X-Request-Test': 'safe' },
+      signal: controller.signal,
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/settings/sources', {
+      cache: undefined,
+      credentials: undefined,
+      method: method.toUpperCase(),
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        'X-Request-Test': 'safe',
+      },
+      body: JSON.stringify({ priorities: ['tushare'] }),
+      signal: controller.signal,
+    });
+  },
+);
+
+it('allows a bodyless diagnostic POST without adding a content type', async () => {
+  const fetchMock = vi
+    .fn<typeof fetch>()
+    .mockResolvedValue(new Response(null, { status: 204 }));
+  vi.stubGlobal('fetch', fetchMock);
+
+  await createApiClient().post('/settings/sources/baostock/test');
+
+  expect(fetchMock).toHaveBeenCalledWith(
+    '/api/settings/sources/baostock/test',
+    expect.objectContaining({
+      method: 'POST',
+      headers: { Accept: 'application/json' },
+      body: undefined,
+    }),
+  );
+});
+
+it('prevents callers from overriding JSON content type with different casing', async () => {
+  const fetchMock = vi
+    .fn<typeof fetch>()
+    .mockResolvedValue(new Response(null, { status: 204 }));
+  vi.stubGlobal('fetch', fetchMock);
+
+  await createApiClient().put('/settings/sources', {
+    body: { priorities: ['tushare'] },
+    headers: { 'content-type': 'text/plain' },
+  });
+
+  const request = fetchMock.mock.calls[0]?.[1];
+  expect(new Headers(request?.headers).get('content-type')).toBe(
+    'application/json',
+  );
 });
 
 it('returns valid JSON from the relative API base', async () => {

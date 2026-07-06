@@ -41,8 +41,14 @@ jobs:
           cache-dependency-path: pnpm-lock.yaml
       - name: Install locked dependencies
         run: |
-          uv sync --frozen --all-groups
+          uv sync --frozen --all-groups --extra providers
           pnpm install --frozen-lockfile
+      - name: Verify tagged commit is on main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main
       - name: Verify tag matches package version
         shell: bash
         run: |
@@ -54,11 +60,14 @@ jobs:
       - name: Run release gates
         run: |
           make test
+          make acceptance
+          make benchmark
           make lint
           make typecheck
           make public-tree
           make security
-          pnpm e2e
+          make e2e-foundation
+          make e2e-market
       - name: Build final release assets
         run: make build
       - name: Verify built release artifacts
@@ -98,7 +107,7 @@ jobs:
         with:
           enable-cache: true
       - name: Install smoke-test dependencies
-        run: uv sync --frozen --all-groups
+        run: uv sync --frozen --all-groups --extra providers
       - name: Build, start, and smoke-test Compose
         shell: bash
         run: |

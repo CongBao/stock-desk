@@ -13,6 +13,10 @@ x-stock-desk-service: &stock-desk-service
   user: "0:0"
   volumes:
     - ./data:/app/data
+    - type: bind
+      source: "${STOCK_DESK_TDX_HOST_PATH:-./data/tdx}"
+      target: /app/tdx
+      read_only: true
 
 services:
   api:
@@ -22,7 +26,7 @@ services:
       target: runtime
     pull_policy: build
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     healthcheck:
       test:
         - CMD

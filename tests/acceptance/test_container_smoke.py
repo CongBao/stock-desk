@@ -80,6 +80,9 @@ def test_deployment_contract_is_complete_and_public_only() -> None:
     assert "sqlite:////app/data/stock-desk.db" in compose
     assert "./data:/app/data" in compose
     assert compose.count("./data:/app/data") == 1
+    assert "STOCK_DESK_TDX_HOST_PATH" in compose
+    assert "target: /app/tdx" in compose
+    assert "read_only: true" in compose
     assert '"stock_desk.tasks.worker"' in compose
     assert "healthcheck:" in compose
     assert "restart: unless-stopped" in compose
@@ -95,12 +98,19 @@ def test_deployment_contract_is_complete_and_public_only() -> None:
     assert "build:" not in worker_service
 
     makefile = _read("Makefile")
-    targets = set(re.findall(r"^([a-z][a-z-]*):", makefile, flags=re.MULTILINE))
+    targets = set(re.findall(r"^([a-z][a-z0-9-]*):", makefile, flags=re.MULTILINE))
     assert targets == {
         "bootstrap",
+        "acceptance",
+        "benchmark",
         "build",
         "dev",
+        "e2e",
+        "e2e-foundation",
+        "e2e-market",
         "lint",
+        "check-public-tree",
+        "container-smoke",
         "public-tree",
         "release-check",
         "security",
@@ -110,7 +120,9 @@ def test_deployment_contract_is_complete_and_public_only() -> None:
     }
     release_check = re.search(r"^release-check:(.*)$", makefile, re.MULTILINE)
     assert release_check is not None
-    assert "smoke" in release_check.group(1).split()
+    release_targets = release_check.group(1).split()
+    assert "container-smoke" in release_targets
+    assert {"acceptance", "benchmark", "e2e-market"} <= set(release_targets)
 
     dev_script = _read("scripts/dev.py")
     assert "stock_desk.tasks.worker" in dev_script

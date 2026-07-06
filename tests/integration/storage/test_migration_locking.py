@@ -13,7 +13,7 @@ from stock_desk.storage.database import (
 )
 
 
-HEAD_REVISION = "0002_task_observability"
+HEAD_REVISION = "0004_instruments_and_pools"
 CORE_TABLES = {"app_setting", "task_event", "task_run"}
 
 

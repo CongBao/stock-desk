@@ -1,8 +1,24 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timezone
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Index, String, Text
+from sqlalchemy import (
+    JSON,
+    BigInteger,
+    Boolean,
+    CheckConstraint,
+    Date,
+    DateTime,
+    Float,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Index,
+    Integer,
+    String,
+    Text,
+    Time,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -78,3 +94,543 @@ class TaskEvent(Base):
     occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utc_now, nullable=False
     )
+
+
+class MarketDataset(Base):
+    __tablename__ = "market_dataset"
+    __table_args__ = (
+        CheckConstraint(
+            "row_count > 0",
+            name="ck_market_dataset_row_count_positive",
+        ),
+        Index(
+            "ix_market_dataset_exact_query",
+            "symbol",
+            "period",
+            "adjustment",
+            "query_start",
+            "query_end",
+        ),
+        UniqueConstraint(
+            "dataset_version",
+            "symbol",
+            name="uq_market_dataset_version_symbol",
+        ),
+        {"sqlite_with_rowid": False},
+    )
+
+    dataset_version: Mapped[str] = mapped_column(String(71), primary_key=True)
+    source: Mapped[str] = mapped_column(String(32), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(9), nullable=False)
+    period: Mapped[str] = mapped_column(String(8), nullable=False)
+    adjustment: Mapped[str] = mapped_column(String(8), nullable=False)
+    query_start: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    query_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    data_cutoff: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    row_count: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utc_now, nullable=False
+    )
+
+
+class MarketDatasetPartition(Base):
+    __tablename__ = "market_dataset_partition"
+    __table_args__ = (
+        CheckConstraint(
+            "partition_year BETWEEN 1900 AND 9999",
+            name="ck_market_dataset_partition_year",
+        ),
+        CheckConstraint(
+            "row_count > 0",
+            name="ck_market_dataset_partition_row_count_positive",
+        ),
+        CheckConstraint(
+            "byte_size > 0",
+            name="ck_market_dataset_partition_byte_size_positive",
+        ),
+        UniqueConstraint(
+            "dataset_version",
+            "partition_year",
+            name="uq_market_dataset_partition_dataset_year",
+        ),
+        UniqueConstraint(
+            "relative_path",
+            name="uq_market_dataset_partition_relative_path",
+        ),
+        {"sqlite_with_rowid": False},
+    )
+
+    dataset_version: Mapped[str] = mapped_column(
+        String(71),
+        ForeignKey("market_dataset.dataset_version", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+    partition_manifest_id: Mapped[str] = mapped_column(String(71), primary_key=True)
+    partition_year: Mapped[int] = mapped_column(Integer, nullable=False)
+    relative_path: Mapped[str] = mapped_column(Text, nullable=False)
+    row_count: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    byte_size: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    physical_sha256: Mapped[str] = mapped_column(String(71), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utc_now, nullable=False
+    )
+
+
+class MarketRoutingManifest(Base):
+    __tablename__ = "market_routing_manifest"
+    __table_args__ = (
+        Index(
+            "ix_market_routing_manifest_dataset_fetched_at",
+            "dataset_version",
+            "fetched_at",
+        ),
+        Index("ix_market_routing_manifest_route_version", "route_version"),
+        UniqueConstraint(
+            "manifest_record_id",
+            "dataset_version",
+            "symbol",
+            name="uq_market_routing_manifest_provenance",
+        ),
+        ForeignKeyConstraint(
+            ["dataset_version", "symbol"],
+            ["market_dataset.dataset_version", "market_dataset.symbol"],
+            ondelete="RESTRICT",
+        ),
+        {"sqlite_with_rowid": False},
+    )
+
+    manifest_record_id: Mapped[str] = mapped_column(String(71), primary_key=True)
+    dataset_version: Mapped[str] = mapped_column(
+        String(71),
+        nullable=False,
+    )
+    symbol: Mapped[str] = mapped_column(String(9), nullable=False)
+    route_version: Mapped[str] = mapped_column(String(71), nullable=False)
+    manifest_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    fetched_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utc_now, nullable=False
+    )
+
+
+class MarketUpdateItem(Base):
+    __tablename__ = "market_update_item"
+    __table_args__ = (
+        CheckConstraint("ordinal >= 0", name="ck_market_update_item_ordinal"),
+        CheckConstraint(
+            "status IN ('succeeded', 'failed', 'cancelled')",
+            name="ck_market_update_item_status",
+        ),
+        CheckConstraint(
+            "(status = 'succeeded' "
+            "AND manifest_record_id IS NOT NULL "
+            "AND dataset_version IS NOT NULL "
+            "AND reason IS NULL) "
+            "OR (status IN ('failed', 'cancelled') "
+            "AND manifest_record_id IS NULL "
+            "AND dataset_version IS NULL "
+            "AND reason IS NOT NULL)",
+            name="ck_market_update_item_outcome",
+        ),
+        UniqueConstraint(
+            "task_id",
+            "symbol",
+            name="uq_market_update_item_task_symbol",
+        ),
+        ForeignKeyConstraint(
+            ["manifest_record_id", "dataset_version", "symbol"],
+            [
+                "market_routing_manifest.manifest_record_id",
+                "market_routing_manifest.dataset_version",
+                "market_routing_manifest.symbol",
+            ],
+            ondelete="RESTRICT",
+        ),
+        {"sqlite_with_rowid": False},
+    )
+
+    task_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("task_run.id", ondelete="RESTRICT"), primary_key=True
+    )
+    ordinal: Mapped[int] = mapped_column(Integer, primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(9), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    manifest_record_id: Mapped[str | None] = mapped_column(
+        String(71),
+        nullable=True,
+    )
+    dataset_version: Mapped[str | None] = mapped_column(
+        String(71),
+        ForeignKey("market_dataset.dataset_version", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    reason: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utc_now, nullable=False
+    )
+
+
+class MarketUpdateSchedule(Base):
+    __tablename__ = "market_update_schedule"
+    __table_args__ = (
+        CheckConstraint(
+            "timezone = 'Asia/Shanghai'",
+            name="ck_market_update_schedule_timezone",
+        ),
+        Index(
+            "ix_market_update_schedule_due",
+            "enabled",
+            "local_time",
+            "last_enqueued_local_date",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_task_id)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    timezone: Mapped[str] = mapped_column(
+        String(64), default="Asia/Shanghai", nullable=False
+    )
+    local_time: Mapped[time] = mapped_column(Time, nullable=False)
+    payload_json: Mapped[dict[str, Any]] = mapped_column(
+        JSON, default=dict, nullable=False
+    )
+    last_enqueued_local_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utc_now, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utc_now, onupdate=_utc_now, nullable=False
+    )
+
+
+class MarketUpdateOccurrence(Base):
+    __tablename__ = "market_update_occurrence"
+    __table_args__ = (
+        UniqueConstraint(
+            "task_id",
+            name="uq_market_update_occurrence_task_id",
+        ),
+        {"sqlite_with_rowid": False},
+    )
+
+    schedule_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("market_update_schedule.id", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+    local_date: Mapped[date] = mapped_column(Date, primary_key=True)
+    task_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(
+            "task_run.id",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utc_now, nullable=False
+    )
+
+
+class InstrumentDataset(Base):
+    __tablename__ = "instrument_dataset"
+    __table_args__ = (
+        CheckConstraint(
+            "row_count BETWEEN 1 AND 50000",
+            name="ck_instrument_dataset_row_count_bounded",
+        ),
+        {"sqlite_with_rowid": False},
+    )
+
+    dataset_version: Mapped[str] = mapped_column(String(71), primary_key=True)
+    source: Mapped[str] = mapped_column(String(32), nullable=False)
+    data_cutoff: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    row_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utc_now, nullable=False
+    )
+
+
+class InstrumentDatasetItem(Base):
+    __tablename__ = "instrument_dataset_item"
+    __table_args__ = (
+        CheckConstraint(
+            "ordinal BETWEEN 0 AND 49999",
+            name="ck_instrument_dataset_item_ordinal",
+        ),
+        CheckConstraint(
+            "length(name) BETWEEN 1 AND 255",
+            name="ck_instrument_dataset_item_name_length",
+        ),
+        UniqueConstraint(
+            "dataset_version",
+            "ordinal",
+            name="uq_instrument_dataset_item_ordinal",
+        ),
+        {"sqlite_with_rowid": False},
+    )
+
+    dataset_version: Mapped[str] = mapped_column(
+        String(71),
+        ForeignKey("instrument_dataset.dataset_version", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+    symbol: Mapped[str] = mapped_column(String(9), primary_key=True)
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    exchange: Mapped[str] = mapped_column(String(2), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    instrument_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    listing_status: Mapped[str] = mapped_column(String(16), nullable=False)
+    listed_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    delisted_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utc_now, nullable=False
+    )
+
+
+class InstrumentRoutingManifest(Base):
+    __tablename__ = "instrument_routing_manifest"
+    __table_args__ = (
+        UniqueConstraint(
+            "manifest_record_id",
+            "dataset_version",
+            name="uq_instrument_routing_manifest_dataset",
+        ),
+        Index(
+            "ix_instrument_routing_manifest_current",
+            "data_cutoff",
+            "fetched_at",
+            "manifest_record_id",
+        ),
+        {"sqlite_with_rowid": False},
+    )
+
+    manifest_record_id: Mapped[str] = mapped_column(String(71), primary_key=True)
+    dataset_version: Mapped[str] = mapped_column(
+        String(71),
+        ForeignKey("instrument_dataset.dataset_version", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    route_version: Mapped[str] = mapped_column(String(71), nullable=False)
+    manifest_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    fetched_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    data_cutoff: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utc_now, nullable=False
+    )
+
+
+class PresetPoolSnapshot(Base):
+    __tablename__ = "preset_pool_snapshot"
+    __table_args__ = (
+        CheckConstraint(
+            "pool_id = 'preset:' || preset_key",
+            name="ck_preset_pool_snapshot_logical_id",
+        ),
+        CheckConstraint(
+            "category IN ('all_a', 'index', 'industry')",
+            name="ck_preset_pool_snapshot_category",
+        ),
+        CheckConstraint(
+            "complete = 1",
+            name="ck_preset_pool_snapshot_complete",
+        ),
+        CheckConstraint(
+            "member_count BETWEEN 1 AND 10000",
+            name="ck_preset_pool_snapshot_member_count",
+        ),
+        UniqueConstraint(
+            "snapshot_id",
+            "instrument_dataset_version",
+            name="uq_preset_pool_snapshot_dataset",
+        ),
+        ForeignKeyConstraint(
+            ["instrument_manifest_record_id", "instrument_dataset_version"],
+            [
+                "instrument_routing_manifest.manifest_record_id",
+                "instrument_routing_manifest.dataset_version",
+            ],
+            ondelete="RESTRICT",
+        ),
+        Index(
+            "ix_preset_pool_snapshot_latest",
+            "preset_key",
+            "data_cutoff",
+            "fetched_at",
+            "snapshot_id",
+        ),
+        {"sqlite_with_rowid": False},
+    )
+
+    snapshot_id: Mapped[str] = mapped_column(String(71), primary_key=True)
+    pool_id: Mapped[str] = mapped_column(String(71), nullable=False)
+    preset_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    category: Mapped[str] = mapped_column(String(16), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    source: Mapped[str] = mapped_column(String(32), nullable=False)
+    composition_dataset_version: Mapped[str] = mapped_column(String(71), nullable=False)
+    composition_route_version: Mapped[str] = mapped_column(String(71), nullable=False)
+    fetched_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    data_cutoff: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    complete: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    instrument_manifest_record_id: Mapped[str] = mapped_column(
+        String(71), nullable=False
+    )
+    instrument_dataset_version: Mapped[str] = mapped_column(String(71), nullable=False)
+    member_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utc_now, nullable=False
+    )
+
+
+class PresetPoolMember(Base):
+    __tablename__ = "preset_pool_member"
+    __table_args__ = (
+        CheckConstraint(
+            "ordinal BETWEEN 0 AND 9999",
+            name="ck_preset_pool_member_ordinal",
+        ),
+        UniqueConstraint(
+            "snapshot_id",
+            "symbol",
+            name="uq_preset_pool_member_symbol",
+        ),
+        ForeignKeyConstraint(
+            ["snapshot_id", "instrument_dataset_version"],
+            [
+                "preset_pool_snapshot.snapshot_id",
+                "preset_pool_snapshot.instrument_dataset_version",
+            ],
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["instrument_dataset_version", "symbol"],
+            [
+                "instrument_dataset_item.dataset_version",
+                "instrument_dataset_item.symbol",
+            ],
+            ondelete="RESTRICT",
+        ),
+        {"sqlite_with_rowid": False},
+    )
+
+    snapshot_id: Mapped[str] = mapped_column(String(71), primary_key=True)
+    ordinal: Mapped[int] = mapped_column(Integer, primary_key=True)
+    instrument_dataset_version: Mapped[str] = mapped_column(String(71), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(9), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utc_now, nullable=False
+    )
+
+
+class CustomPool(Base):
+    __tablename__ = "custom_pool"
+    __table_args__ = (
+        CheckConstraint(
+            "length(name) BETWEEN 1 AND 64 AND trim(name) = name",
+            name="ck_custom_pool_name",
+        ),
+        CheckConstraint("revision > 0", name="ck_custom_pool_revision"),
+        CheckConstraint(
+            "member_count BETWEEN 1 AND 5000",
+            name="ck_custom_pool_member_count",
+        ),
+        CheckConstraint(
+            "length(member_digest) = 71 AND substr(member_digest, 1, 7) = 'sha256:'",
+            name="ck_custom_pool_member_digest",
+        ),
+        CheckConstraint(
+            "length(state_digest) = 71 AND substr(state_digest, 1, 7) = 'sha256:'",
+            name="ck_custom_pool_state_digest",
+        ),
+        UniqueConstraint(
+            "pool_id",
+            "revision",
+            "instrument_dataset_version",
+            name="uq_custom_pool_revision_dataset",
+        ),
+        ForeignKeyConstraint(
+            ["instrument_manifest_record_id", "instrument_dataset_version"],
+            [
+                "instrument_routing_manifest.manifest_record_id",
+                "instrument_routing_manifest.dataset_version",
+            ],
+            ondelete="RESTRICT",
+        ),
+    )
+
+    pool_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    name: Mapped[str] = mapped_column(String(64), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    instrument_manifest_record_id: Mapped[str] = mapped_column(
+        String(71), nullable=False
+    )
+    instrument_dataset_version: Mapped[str] = mapped_column(String(71), nullable=False)
+    member_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    member_digest: Mapped[str] = mapped_column(String(71), nullable=False)
+    state_digest: Mapped[str] = mapped_column(String(71), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utc_now, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utc_now, onupdate=_utc_now, nullable=False
+    )
+
+
+class CustomPoolMember(Base):
+    __tablename__ = "custom_pool_member"
+    __table_args__ = (
+        CheckConstraint(
+            "ordinal BETWEEN 0 AND 4999",
+            name="ck_custom_pool_member_ordinal",
+        ),
+        CheckConstraint(
+            "member_revision > 0",
+            name="ck_custom_pool_member_revision",
+        ),
+        UniqueConstraint(
+            "pool_id",
+            "symbol",
+            name="uq_custom_pool_member_symbol",
+        ),
+        ForeignKeyConstraint(
+            ["pool_id", "member_revision", "instrument_dataset_version"],
+            [
+                "custom_pool.pool_id",
+                "custom_pool.revision",
+                "custom_pool.instrument_dataset_version",
+            ],
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["instrument_dataset_version", "symbol"],
+            [
+                "instrument_dataset_item.dataset_version",
+                "instrument_dataset_item.symbol",
+            ],
+            ondelete="RESTRICT",
+        ),
+    )
+
+    pool_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    ordinal: Mapped[int] = mapped_column(Integer, primary_key=True)
+    member_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    instrument_dataset_version: Mapped[str] = mapped_column(String(71), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(9), nullable=False)

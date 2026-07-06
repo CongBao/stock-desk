@@ -92,10 +92,10 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
     settings = get_settings()
-    repository = TaskRepository.open(settings.database_url)
     worker_id = f"{socket.gethostname()}-{os.getpid()}"
-    worker = TaskWorker(repository, worker_id=worker_id)
-    worker.register("demo.double", demo_double)
+    from stock_desk.market.worker_runtime import ProductionMarketWorker
+
+    runtime = ProductionMarketWorker.open(settings, worker_id=worker_id)
     stop_event = threading.Event()
 
     def request_stop(_signum: int, _frame: object) -> None:
@@ -105,9 +105,9 @@ def main() -> None:
     signal.signal(signal.SIGTERM, request_stop)
     logger.info("Stock Desk task worker ready (worker_id=%s)", worker_id)
     try:
-        worker.run_forever(stop_event)
+        runtime.run_forever(stop_event)
     finally:
-        repository.close()
+        runtime.close()
 
 
 if __name__ == "__main__":

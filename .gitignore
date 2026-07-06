@@ -19,6 +19,7 @@ logs/
 reports/
 test-results/
 playwright-report/
+.playwright-cli/
 
 # Python
 __pycache__/

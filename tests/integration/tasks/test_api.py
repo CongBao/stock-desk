@@ -2,7 +2,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 import pytest
-from sqlalchemy import Engine, event
+from sqlalchemy import Engine, event, text
 
 from stock_desk.config import Settings
 from stock_desk.main import create_app
@@ -15,6 +15,18 @@ def _injected_repository(tmp_path: Path) -> tuple[TaskRepository, Engine]:
     migrate(url)
     engine = create_engine_for_url(url)
     return TaskRepository(engine), engine
+
+
+def _task_event_counts(engine: Engine) -> tuple[int, int]:
+    with engine.connect() as connection:
+        row = connection.execute(
+            text(
+                "SELECT "
+                "(SELECT count(*) FROM task_run), "
+                "(SELECT count(*) FROM task_event)"
+            )
+        ).one()
+    return int(row[0]), int(row[1])
 
 
 def test_task_api_exact_lifecycle_and_health_regression(tmp_path: Path) -> None:
@@ -186,6 +198,38 @@ def test_task_api_maps_not_found_conflict_and_validation(tmp_path: Path) -> None
         assert invalid_limit.status_code == 422
         assert invalid_kind.status_code == 422
         assert padded_kind.status_code == 422
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        b'{"kind":"json.surrogate","payload":{"value":"\\ud800"}}',
+        b'{"kind":"json.surrogate","payload":{"\\udfff":"value"}}',
+    ],
+    ids=("surrogate-value", "surrogate-key"),
+)
+def test_task_api_rejects_isolated_surrogates_without_committing(
+    tmp_path: Path,
+    body: bytes,
+) -> None:
+    repository, engine = _injected_repository(tmp_path)
+    try:
+        before = _task_event_counts(engine)
+        with TestClient(
+            create_app(task_repository=repository),
+            raise_server_exceptions=False,
+        ) as client:
+            response = client.post(
+                "/api/tasks",
+                content=body,
+                headers={"content-type": "application/json"},
+            )
+
+        assert response.status_code == 422
+        assert response.json() == {"detail": "Invalid task"}
+        assert _task_event_counts(engine) == before
     finally:
         engine.dispose()
 

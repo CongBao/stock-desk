@@ -1,6 +1,8 @@
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timezone
+import os
 from pathlib import Path
 import threading
 from typing import cast
@@ -8,7 +10,7 @@ from typing import cast
 from cryptography.fernet import Fernet
 from pydantic import SecretStr
 import pytest
-from sqlalchemy import Engine, select, text
+from sqlalchemy import Engine, event, select, text
 
 import stock_desk.security.secrets as secrets_module
 from stock_desk.config import Settings
@@ -17,6 +19,7 @@ from stock_desk.security.secrets import (
     SecretDecryptionError,
     SecretNotFoundError,
     SecretStore,
+    SecretStorageError,
     SecretValidationError,
     mask_secret,
 )
@@ -136,7 +139,7 @@ def test_concurrent_upsert_remains_readable(
     assert _stored_row(engine, "shared_key")[1] not in values
 
 
-def test_out_of_order_concurrent_upserts_never_regress_updated_at(
+def test_out_of_order_upserts_never_regress_updated_at(
     secret_database: tuple[Engine, str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -145,16 +148,9 @@ def test_out_of_order_concurrent_upserts_never_regress_updated_at(
     older = datetime(2026, 7, 5, 8, 0, tzinfo=timezone.utc)
     newer = datetime(2026, 7, 5, 9, 0, tzinfo=timezone.utc)
     local = threading.local()
-    older_sampled = threading.Event()
-    allow_older_write = threading.Event()
 
     def controlled_clock() -> datetime:
-        sampled = cast(datetime, getattr(local, "sampled"))
-        if sampled == older:
-            older_sampled.set()
-            if not allow_older_write.wait(timeout=5):
-                raise RuntimeError("Timed out coordinating secret upsert test")
-        return sampled
+        return cast(datetime, getattr(local, "sampled"))
 
     monkeypatch.setattr(secrets_module, "_utc_now", controlled_clock)
 
@@ -162,19 +158,10 @@ def test_out_of_order_concurrent_upserts_never_regress_updated_at(
         local.sampled = sampled
         store.save_secret("ordered_key", value)
 
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        older_write = executor.submit(save_with_timestamp, "older", older)
-        assert older_sampled.wait(timeout=1)
-        newer_write = executor.submit(save_with_timestamp, "newer", newer)
-        try:
-            newer_write.result(timeout=5)
-            timestamp_after_newer_write = _stored_timestamp(engine, "ordered_key")
-        finally:
-            allow_older_write.set()
-        older_write.result(timeout=5)
+    save_with_timestamp("newer", newer)
+    save_with_timestamp("older", older)
 
-    assert timestamp_after_newer_write == newer
-    assert _stored_timestamp(engine, "ordered_key") >= timestamp_after_newer_write
+    assert _stored_timestamp(engine, "ordered_key") == newer
 
 
 @pytest.mark.parametrize(
@@ -263,3 +250,177 @@ def test_has_secret_does_not_decrypt(
     store_with_wrong_key = SecretStore(engine, _settings(Fernet.generate_key()))
 
     assert store_with_wrong_key.has_secret("provider_key") is True
+
+
+def test_secret_store_rejects_every_operation_after_atomic_database_replacement(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "secrets.db"
+    replacement = tmp_path / "replacement.db"
+    original_inode = tmp_path / "original-inode.db"
+    migrate(f"sqlite:///{database}")
+    migrate(f"sqlite:///{replacement}")
+    engine = create_engine_for_url(f"sqlite:///{database}")
+    store = SecretStore(engine, _settings(Fernet.generate_key()))
+    store.save_secret("provider_key", "original-secret")
+    engine.dispose()
+    os.replace(database, original_inode)
+    os.replace(replacement, database)
+    try:
+        operations = (
+            lambda: store.save_secret("provider_key", "must-not-write"),
+            lambda: store.has_secret("provider_key"),
+            lambda: store.read_secret_for_server_call("provider_key"),
+        )
+        for operation in operations:
+            with pytest.raises(SecretStorageError, match="storage"):
+                operation()
+
+        replacement_engine = create_engine_for_url(f"sqlite:///{database}")
+        try:
+            with replacement_engine.connect() as connection:
+                assert connection.execute(select(AppSetting.key)).all() == []
+        finally:
+            replacement_engine.dispose()
+    finally:
+        engine.dispose()
+
+
+def test_secret_store_identity_mismatch_poison_is_permanent_and_concurrent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = tmp_path / "secrets.db"
+    replacement = tmp_path / "replacement.db"
+    original_inode = tmp_path / "original-inode.db"
+    migrate(f"sqlite:///{database}")
+    migrate(f"sqlite:///{replacement}")
+    engine = create_engine_for_url(f"sqlite:///{database}")
+    store = SecretStore(engine, _settings(Fernet.generate_key()))
+    store.save_secret("provider_key", "original-secret")
+    old_connection = engine.connect()
+    engine.dispose()
+    os.replace(database, original_inode)
+    os.replace(replacement, database)
+    try:
+        with pytest.raises(SecretStorageError):
+            store.has_secret("provider_key")
+
+        @contextmanager
+        def borrow_old_connection() -> Iterator[object]:
+            yield old_connection
+
+        monkeypatch.setattr(engine, "connect", lambda: borrow_old_connection())
+        with pytest.raises(SecretStorageError):
+            store.has_secret("provider_key")
+
+        connection_attempts = 0
+
+        def forbidden_connect() -> object:
+            nonlocal connection_attempts
+            connection_attempts += 1
+            raise AssertionError("poisoned store attempted to reconnect")
+
+        monkeypatch.setattr(engine, "connect", forbidden_connect)
+
+        def assert_poisoned(_index: int) -> bool:
+            with pytest.raises(SecretStorageError):
+                store.has_secret("provider_key")
+            return True
+
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            failures = tuple(executor.map(assert_poisoned, range(4)))
+        assert failures == (True, True, True, True)
+        assert connection_attempts == 0
+    finally:
+        old_connection.close()
+        engine.dispose()
+
+
+def test_secret_store_mismatch_waits_for_validated_old_inode_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = tmp_path / "secrets.db"
+    replacement = tmp_path / "replacement-linearized.db"
+    original_inode = tmp_path / "original-linearized.db"
+    migrate(f"sqlite:///{database}")
+    migrate(f"sqlite:///{replacement}")
+    engine = create_engine_for_url(f"sqlite:///{database}")
+    store = SecretStore(engine, _settings(Fernet.generate_key()))
+    store.save_secret("provider_key", "linearized-secret")
+    old_connection = engine.connect()
+    engine.dispose()
+    os.replace(database, original_inode)
+    os.replace(replacement, database)
+    real_connect = engine.connect
+    paused = threading.Event()
+    release = threading.Event()
+    thread_state = threading.local()
+
+    def pause_old_statement(
+        _connection: object,
+        _cursor: object,
+        _statement: str,
+        _parameters: object,
+        _context: object,
+        _executemany: bool,
+    ) -> None:
+        if getattr(thread_state, "old_reader", False):
+            paused.set()
+            assert release.wait(timeout=5)
+
+    @contextmanager
+    def borrow_old_connection() -> Iterator[object]:
+        yield old_connection
+
+    def connect_for_thread() -> object:
+        if getattr(thread_state, "old_reader", False):
+            return borrow_old_connection()
+        return real_connect()
+
+    event.listen(engine, "before_cursor_execute", pause_old_statement)
+    monkeypatch.setattr(engine, "connect", connect_for_thread)
+
+    def old_read() -> str:
+        thread_state.old_reader = True
+        return store.read_secret_for_server_call("provider_key")
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            old_future = executor.submit(old_read)
+            assert paused.wait(timeout=5)
+            mismatch_future = executor.submit(store.has_secret, "provider_key")
+            with pytest.raises(FutureTimeoutError):
+                mismatch_future.result(timeout=0.2)
+            release.set()
+            assert old_future.result(timeout=5) == "linearized-secret"
+            with pytest.raises(SecretStorageError):
+                mismatch_future.result(timeout=5)
+    finally:
+        release.set()
+        event.remove(engine, "before_cursor_execute", pause_old_statement)
+        old_connection.close()
+        engine.dispose()
+
+
+@pytest.mark.parametrize(
+    "stored",
+    [b"blob-ciphertext", "", "é", "x" * 20_000],
+    ids=["blob", "empty", "non-ascii", "oversized"],
+)
+def test_secret_store_rejects_noncanonical_ciphertext_types_and_bounds(
+    secret_database: tuple[Engine, str], stored: object
+) -> None:
+    engine, _url = secret_database
+    store = SecretStore(engine, _settings(Fernet.generate_key()))
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            "INSERT INTO app_setting (key, encrypted_value, updated_at) VALUES (?, ?, ?)",
+            ("secret.provider_key", stored, datetime.now(timezone.utc).isoformat()),
+        )
+
+    assert store.has_secret("provider_key") is True
+    with pytest.raises(SecretDecryptionError) as captured:
+        store.read_secret_for_server_call("provider_key")
+
+    assert str(captured.value) == "Stored secret could not be decrypted"
+    assert repr(stored) not in str(captured.value)

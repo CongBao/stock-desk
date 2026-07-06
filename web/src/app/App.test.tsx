@@ -8,6 +8,7 @@ import {
 } from 'react-router-dom';
 
 import { App } from './App';
+import { settingsResponse } from '../features/settings/testFixtures';
 
 const healthyResponse = {
   name: 'stock-desk',
@@ -26,6 +27,25 @@ const completedTask = {
   result: { value: 42 },
 };
 
+const disabledDailySchedule = {
+  id: '00000000-0000-0000-0000-000000000001',
+  enabled: false,
+  timezone: 'Asia/Shanghai',
+  local_time: '18:00',
+  payload: {
+    symbols: ['600000.SH'],
+    period: '1d',
+    adjustment: 'qfq',
+    start: '2024-01-01T00:00:00Z',
+    end: '2024-01-03T00:00:00Z',
+  },
+  symbols_frozen: true,
+  last_enqueued_local_date: null,
+  next_due_at: null,
+  created_at: '2026-07-06T08:00:00Z',
+  updated_at: '2026-07-06T08:00:00Z',
+};
+
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -41,31 +61,39 @@ function requestUrl(input: RequestInfo | URL): string {
 }
 
 function installHealthyFetch(tasks: readonly unknown[] = []) {
-  const fetchMock = vi.fn((input: RequestInfo | URL) =>
-    Promise.resolve(
-      requestUrl(input).endsWith('/health')
-        ? jsonResponse(healthyResponse)
-        : jsonResponse(tasks),
-    ),
-  );
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const url = requestUrl(input);
+    return Promise.resolve(
+      url.includes('/market/pools')
+        ? jsonResponse({ items: [], next_cursor: null })
+        : url.endsWith('/market/schedules/daily')
+          ? jsonResponse(disabledDailySchedule)
+          : url.endsWith('/health')
+            ? jsonResponse(healthyResponse)
+            : jsonResponse(tasks),
+    );
+  });
   vi.stubGlobal('fetch', fetchMock);
   return fetchMock;
 }
 
 function installPendingFetch() {
   const signals: AbortSignal[] = [];
-  const fetchMock = vi.fn(
-    (_input: RequestInfo | URL, init?: RequestInit) =>
-      new Promise<Response>((_resolve, reject) => {
-        if (init?.signal) {
-          signals.push(init.signal);
-          init.signal.addEventListener(
-            'abort',
-            () => reject(new DOMException('Aborted', 'AbortError')),
-            { once: true },
-          );
-        }
-      }),
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) =>
+    requestUrl(input).includes('/market/pools')
+      ? Promise.resolve(jsonResponse({ items: [], next_cursor: null }))
+      : requestUrl(input).endsWith('/market/schedules/daily')
+        ? Promise.resolve(jsonResponse(disabledDailySchedule))
+        : new Promise<Response>((_resolve, reject) => {
+            if (init?.signal) {
+              signals.push(init.signal);
+              init.signal.addEventListener(
+                'abort',
+                () => reject(new DOMException('Aborted', 'AbortError')),
+                { once: true },
+              );
+            }
+          }),
   );
   vi.stubGlobal('fetch', fetchMock);
   return { fetchMock, signals };
@@ -134,17 +162,45 @@ it('shows the product identity and all primary navigation items', () => {
   }
 });
 
-it('opens on a clearly labelled non-live market layout preview', async () => {
+it('opens on the cache-only three-column market workspace', async () => {
   renderApp(['/']);
 
   expect(
-    await screen.findByRole('region', { name: 'K 线主图布局预览' }),
+    await screen.findByRole('complementary', { name: '证券选择与股票池' }),
   ).toBeInTheDocument();
   expect(
-    screen.getByRole('region', { name: '公式副图布局预览' }),
+    screen.getByRole('region', { name: '行情图表工作区' }),
   ).toBeInTheDocument();
-  expect(screen.getByText('布局预览 / 非实时数据')).toBeInTheDocument();
+  expect(
+    screen.getByRole('complementary', { name: '数据证据与快捷操作' }),
+  ).toBeInTheDocument();
+  expect(screen.getByText('本地缓存')).toBeInTheDocument();
+  expect(screen.queryByText(/布局预览/u)).not.toBeInTheDocument();
   expect(screen.getByRole('main')).toHaveAttribute('id', 'main-content');
+});
+
+it('routes settings to the real data-source workspace', async () => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn((input: RequestInfo | URL) => {
+      const url = requestUrl(input);
+      return Promise.resolve(
+        url.endsWith('/settings/sources')
+          ? jsonResponse(settingsResponse)
+          : url.endsWith('/health')
+            ? jsonResponse(healthyResponse)
+            : jsonResponse([]),
+      );
+    }),
+  );
+
+  renderApp(['/settings']);
+
+  expect(
+    await screen.findByRole('heading', { level: 2, name: '数据源设置' }),
+  ).toBeInTheDocument();
+  expect(screen.queryByText(/能力按阶段交付/u)).not.toBeInTheDocument();
+  await waitFor(() => expect(document.title).toBe('数据源设置 · stock-desk'));
 });
 
 it.each(['/market/', '/MARKET'])(
@@ -159,10 +215,14 @@ it.each(['/market/', '/MARKET'])(
     await waitFor(() => expect(heading).toHaveFocus());
 
     expect(
-      screen.getByRole('region', { name: 'K 线主图布局预览' }),
+      screen.getByRole('region', { name: '行情图表工作区' }),
     ).toBeInTheDocument();
     expect(document.title).toBe('行情工作区 · stock-desk');
-    expect(screen.getByRole('status')).toHaveTextContent('已进入：行情工作区');
+    expect(
+      screen
+        .getAllByRole('status')
+        .find((status) => status.textContent === '已进入：行情工作区'),
+    ).toBeDefined();
   },
 );
 
@@ -295,14 +355,20 @@ it('creates isolated drawer state for every App mount', async () => {
   ).toHaveAttribute('data-open', 'false');
 });
 
-it('uses one navigation landmark and one complementary context landmark', () => {
+it('uses one navigation/main landmark and named complementary work areas', () => {
   renderApp();
 
   expect(screen.getAllByRole('navigation')).toHaveLength(1);
   expect(screen.getAllByRole('main')).toHaveLength(1);
-  expect(screen.getAllByRole('complementary')).toHaveLength(1);
+  expect(screen.getAllByRole('complementary')).toHaveLength(3);
   expect(
     screen.getByRole('complementary', { name: '上下文状态' }),
+  ).toBeInTheDocument();
+  expect(
+    screen.getByRole('complementary', { name: '证券选择与股票池' }),
+  ).toBeInTheDocument();
+  expect(
+    screen.getByRole('complementary', { name: '数据证据与快捷操作' }),
   ).toBeInTheDocument();
   expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1);
   expect(screen.getByRole('link', { name: '跳到主要内容' })).toHaveAttribute(
@@ -344,6 +410,37 @@ it('shows strictly decoded recent task state and result context', async () => {
   expect(task).toHaveTextContent('进度 100%');
   expect(task).toHaveTextContent('结果：42');
   expect(task).toHaveAccessibleName(/demo\.double.*已成功/);
+});
+
+it('renders an explicit empty result without confusing it with a missing result', async () => {
+  installHealthyFetch([{ ...completedTask, result: { value: null } }]);
+
+  renderApp();
+
+  const task = await screen.findByRole('listitem', {
+    name: /demo\.double.*已成功/,
+  });
+  expect(task).toHaveTextContent('结果：空');
+});
+
+it('labels a running task as unfinished without inventing a result', async () => {
+  installHealthyFetch([
+    {
+      ...completedTask,
+      status: 'running',
+      progress: 0.5,
+      finished_at: null,
+      result: null,
+    },
+  ]);
+
+  renderApp();
+
+  const task = await screen.findByRole('listitem', {
+    name: /demo\.double.*运行中/,
+  });
+  expect(task).toHaveTextContent('完成 未结束');
+  expect(task).not.toHaveTextContent('结果：');
 });
 
 it.each([{ nested: true }, ['nested']])(
@@ -412,7 +509,10 @@ it('times out hung requests, retries once, and enables manual retry', async () =
     await vi.advanceTimersByTimeAsync(10_100);
   });
 
-  expect(fetchMock).toHaveBeenCalledTimes(4);
+  const systemCalls = fetchMock.mock.calls.filter(([input]) =>
+    /^\/api\/(?:health|tasks\?)/u.test(requestUrl(input)),
+  );
+  expect(systemCalls).toHaveLength(4);
   expect(screen.getByText('服务不可用', { exact: true })).toBeInTheDocument();
   expect(screen.getByRole('button', { name: '重新检测' })).toBeEnabled();
 });
@@ -491,7 +591,10 @@ it('recovers both endpoint states after a bounded retry and manual recheck', asy
   expect(
     await screen.findByText('服务不可用', { exact: true }),
   ).toBeInTheDocument();
-  expect(fetchMock).toHaveBeenCalledTimes(4);
+  const systemCalls = fetchMock.mock.calls.filter(([input]) =>
+    /^\/api\/(?:health|tasks\?)/u.test(requestUrl(input)),
+  );
+  expect(systemCalls).toHaveLength(4);
 
   available = true;
   const retry = screen.getByRole('button', { name: '重新检测' });
@@ -508,17 +611,18 @@ it('shares endpoint queries between topbar and context panel consumers', async (
   renderApp();
 
   await screen.findByText('系统正常', { exact: true });
-  expect(fetchMock).toHaveBeenCalledTimes(2);
-  expect(
-    fetchMock.mock.calls.map(([input]) => requestUrl(input)).sort(),
-  ).toEqual(['/api/health', '/api/tasks?limit=5']);
+  const systemCalls = fetchMock.mock.calls
+    .map(([input]) => requestUrl(input))
+    .filter((url) => /^\/api\/(?:health|tasks\?)/u.test(url));
+  expect(systemCalls).toHaveLength(2);
+  expect(systemCalls.sort()).toEqual(['/api/health', '/api/tasks?limit=5']);
 });
 
 it('aborts both in-flight endpoint requests after the final consumer unmounts', async () => {
   const { fetchMock, signals } = installPendingFetch();
 
   const mounted = renderApp();
-  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4));
   expect(signals).toHaveLength(2);
 
   mounted.unmount();
@@ -527,5 +631,5 @@ it('aborts both in-flight endpoint requests after the final consumer unmounts', 
     expect(signals.every((signal) => signal.aborted)).toBe(true),
   );
   await new Promise((resolve) => window.setTimeout(resolve, 20));
-  expect(fetchMock).toHaveBeenCalledTimes(2);
+  expect(fetchMock).toHaveBeenCalledTimes(4);
 });

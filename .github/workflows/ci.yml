@@ -30,7 +30,7 @@ jobs:
         with:
           enable-cache: true
       - name: Install locked Python dependencies
-        run: uv sync --frozen --all-groups
+        run: uv sync --frozen --all-groups --extra providers
       - name: Audit public tree
         run: make public-tree
       - name: Verify repository contracts
@@ -81,7 +81,7 @@ jobs:
         with:
           enable-cache: true
       - name: Install locked dependencies
-        run: uv sync --frozen --all-groups
+        run: uv sync --frozen --all-groups --extra providers
       - name: Check Python formatting
         run: uv run --frozen ruff format --check .
       - name: Lint Python
@@ -93,9 +93,15 @@ jobs:
       - name: Test Python
         run: >-
           uv run --frozen pytest -W error --junitxml=python-test-results.xml
+          --ignore=tests/acceptance/test_market_flow.py
+          --ignore=tests/performance/test_chart_query.py
           --cov=src/stock_desk --cov=scripts --cov=migrations --cov-branch
           --cov-report=term-missing --cov-report=xml:coverage.xml
           --cov-fail-under=85
+      - name: Test Stage 1 market acceptance
+        run: make acceptance
+      - name: Benchmark cached ten-year chart query
+        run: make benchmark
       - name: Build Python package
         run: uv build --no-build-isolation
       - name: Upload Python results
@@ -157,7 +163,7 @@ jobs:
           retention-days: 7
 
   e2e:
-    name: Chromium foundation end-to-end
+    name: Chromium foundation and market end-to-end
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -186,12 +192,14 @@ jobs:
           cache-dependency-path: pnpm-lock.yaml
       - name: Install locked dependencies
         run: |
-          uv sync --frozen --all-groups
+          uv sync --frozen --all-groups --extra providers
           pnpm install --frozen-lockfile
       - name: Install Playwright Chromium
         run: pnpm exec playwright install --with-deps chromium
       - name: Test live foundation slice
-        run: pnpm e2e
+        run: make e2e-foundation
+      - name: Test live Stage 1 market slice
+        run: make e2e-market
       - name: Upload Playwright failure artifacts
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -217,7 +225,7 @@ jobs:
         with:
           enable-cache: true
       - name: Install smoke-test dependencies
-        run: uv sync --frozen --all-groups
+        run: uv sync --frozen --all-groups --extra providers
       - name: Build, start, and smoke-test Compose
         shell: bash
         run: |

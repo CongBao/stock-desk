@@ -1,0 +1,120 @@
+{
+  "weekly": {
+    "query": {
+      "symbol": "600000.SH",
+      "period": "1w",
+      "adjustment": "qfq",
+      "start": "2024-01-07T00:00:00Z",
+      "end": "2024-01-15T00:00:00Z"
+    },
+    "bars": [
+      {
+        "symbol": "600000.SH",
+        "timestamp": "2024-01-07T16:00:00Z",
+        "period": "1w",
+        "adjustment": "qfq",
+        "open": "10.1",
+        "high": "10.8",
+        "low": "9.9",
+        "close": "10.6",
+        "volume": 12345,
+        "status": "unknown"
+      }
+    ],
+    "coverage": {
+      "start": "2024-01-07T00:00:00Z",
+      "end": "2024-01-15T00:00:00Z"
+    },
+    "manifest_record_id": "sha256:0d3dd737faade84393373783d8d96f2f3f8930c2731fe42a0862d239473a415d",
+    "dataset_version": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+    "route_version": "sha256:c9615686e201644377d91a29e3e897dcab15dd331a18e2a18c902ed43a8f00b2",
+    "routing_manifest": {
+      "schema_version": "stock-desk-routing-manifest-v1",
+      "category": "bars",
+      "request": {
+        "query": {
+          "symbol": "600000.SH",
+          "period": "1w",
+          "adjustment": "qfq",
+          "start": "2024-01-07T00:00:00Z",
+          "end": "2024-01-15T00:00:00Z"
+        }
+      },
+      "priority": ["tushare"],
+      "attempts": [],
+      "selected_source": "tushare",
+      "upstream_dataset_version": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+      "upstream_fetched_at": "2024-01-20T00:00:00Z",
+      "upstream_data_cutoff": "2024-01-07T16:00:00Z",
+      "upstream_adjustment": "qfq",
+      "route_version": "sha256:c9615686e201644377d91a29e3e897dcab15dd331a18e2a18c902ed43a8f00b2",
+      "transition": null
+    },
+    "provenance": {
+      "source": "tushare",
+      "fetched_at": "2024-01-20T00:00:00Z",
+      "data_cutoff": "2024-01-07T16:00:00Z",
+      "adjustment": "qfq",
+      "dataset_version": "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+    }
+  },
+  "min60": {
+    "query": {
+      "symbol": "600000.SH",
+      "period": "60m",
+      "adjustment": "qfq",
+      "start": "2024-01-03T00:00:00Z",
+      "end": "2024-01-04T00:00:00Z"
+    },
+    "bars": [
+      {
+        "symbol": "600000.SH",
+        "timestamp": "2024-01-03T01:30:00Z",
+        "period": "60m",
+        "adjustment": "qfq",
+        "open": "10.1",
+        "high": "10.8",
+        "low": "9.9",
+        "close": "10.6",
+        "volume": 12345,
+        "status": "unknown"
+      }
+    ],
+    "coverage": {
+      "start": "2024-01-03T00:00:00Z",
+      "end": "2024-01-04T00:00:00Z"
+    },
+    "manifest_record_id": "sha256:be56db63dec33548c0b06084e7c9a175c1a067d73a45ca76bd42e65dcb1b9c5d",
+    "dataset_version": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+    "route_version": "sha256:6a7b5e2e2d0148a31e2a5ff73f5649f96e9fcfa7452ba46204708d0ef940edb1",
+    "routing_manifest": {
+      "schema_version": "stock-desk-routing-manifest-v1",
+      "category": "bars",
+      "request": {
+        "query": {
+          "symbol": "600000.SH",
+          "period": "60m",
+          "adjustment": "qfq",
+          "start": "2024-01-03T00:00:00Z",
+          "end": "2024-01-04T00:00:00Z"
+        }
+      },
+      "priority": ["tushare"],
+      "attempts": [],
+      "selected_source": "tushare",
+      "upstream_dataset_version": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+      "upstream_fetched_at": "2024-01-20T00:00:00Z",
+      "upstream_data_cutoff": "2024-01-03T01:30:00Z",
+      "upstream_adjustment": "qfq",
+      "route_version": "sha256:6a7b5e2e2d0148a31e2a5ff73f5649f96e9fcfa7452ba46204708d0ef940edb1",
+      "transition": null
+    },
+    "provenance": {
+      "source": "tushare",
+      "fetched_at": "2024-01-20T00:00:00Z",
+      "data_cutoff": "2024-01-03T01:30:00Z",
+      "adjustment": "qfq",
+      "dataset_version": "sha256:6666666666666666666666666666666666666666666666666666666666666666"
+    }
+  }
+}

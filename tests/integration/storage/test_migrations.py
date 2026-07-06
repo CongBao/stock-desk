@@ -10,14 +10,36 @@ from alembic.migration import MigrationContext
 import pytest
 from sqlalchemy import inspect, text
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import DBAPIError
 
 from stock_desk.storage.database import create_engine_for_url, downgrade, migrate
 from stock_desk.storage.models import Base
 from stock_desk.tasks.repository import TaskRepository
 
 
-HEAD_REVISION = "0002_task_observability"
-CORE_TABLES = {"app_setting", "task_event", "task_run"}
+HEAD_REVISION = "0004_instruments_and_pools"
+INSTRUMENT_TABLES = {
+    "instrument_dataset",
+    "instrument_dataset_item",
+    "instrument_routing_manifest",
+}
+POOL_TABLES = {
+    "preset_pool_snapshot",
+    "preset_pool_member",
+    "custom_pool",
+    "custom_pool_member",
+}
+CATALOG_TABLES = {
+    "market_dataset",
+    "market_dataset_partition",
+    "market_routing_manifest",
+    "market_update_item",
+    "market_update_occurrence",
+    "market_update_schedule",
+    *INSTRUMENT_TABLES,
+    *POOL_TABLES,
+}
+CORE_TABLES = {"app_setting", "task_event", "task_run", *CATALOG_TABLES}
 LEGACY_CORE_TABLES = {"app_setting", "task_run"}
 APP_SETTING_COLUMNS = {"key", "encrypted_value", "updated_at"}
 TASK_RUN_COLUMNS = {
@@ -44,6 +66,155 @@ TASK_EVENT_COLUMNS = {
     "detail_json",
     "occurred_at",
 }
+MARKET_TABLE_COLUMNS = {
+    "instrument_dataset": {
+        "dataset_version",
+        "source",
+        "data_cutoff",
+        "row_count",
+        "created_at",
+    },
+    "instrument_dataset_item": {
+        "dataset_version",
+        "symbol",
+        "ordinal",
+        "exchange",
+        "name",
+        "instrument_kind",
+        "listing_status",
+        "listed_on",
+        "delisted_on",
+        "created_at",
+    },
+    "instrument_routing_manifest": {
+        "manifest_record_id",
+        "dataset_version",
+        "route_version",
+        "manifest_json",
+        "fetched_at",
+        "data_cutoff",
+        "created_at",
+    },
+    "preset_pool_snapshot": {
+        "snapshot_id",
+        "pool_id",
+        "preset_key",
+        "category",
+        "display_name",
+        "source",
+        "composition_dataset_version",
+        "composition_route_version",
+        "fetched_at",
+        "data_cutoff",
+        "complete",
+        "instrument_manifest_record_id",
+        "instrument_dataset_version",
+        "member_count",
+        "created_at",
+    },
+    "preset_pool_member": {
+        "snapshot_id",
+        "ordinal",
+        "instrument_dataset_version",
+        "symbol",
+        "created_at",
+    },
+    "custom_pool": {
+        "pool_id",
+        "name",
+        "revision",
+        "instrument_manifest_record_id",
+        "instrument_dataset_version",
+        "member_count",
+        "member_digest",
+        "state_digest",
+        "created_at",
+        "updated_at",
+    },
+    "custom_pool_member": {
+        "pool_id",
+        "ordinal",
+        "member_revision",
+        "instrument_dataset_version",
+        "symbol",
+    },
+    "market_dataset": {
+        "dataset_version",
+        "source",
+        "symbol",
+        "period",
+        "adjustment",
+        "query_start",
+        "query_end",
+        "data_cutoff",
+        "row_count",
+        "created_at",
+    },
+    "market_dataset_partition": {
+        "partition_manifest_id",
+        "dataset_version",
+        "partition_year",
+        "relative_path",
+        "row_count",
+        "byte_size",
+        "physical_sha256",
+        "created_at",
+    },
+    "market_routing_manifest": {
+        "manifest_record_id",
+        "dataset_version",
+        "symbol",
+        "route_version",
+        "manifest_json",
+        "fetched_at",
+        "created_at",
+    },
+    "market_update_item": {
+        "task_id",
+        "ordinal",
+        "symbol",
+        "status",
+        "manifest_record_id",
+        "dataset_version",
+        "reason",
+        "created_at",
+    },
+    "market_update_schedule": {
+        "id",
+        "enabled",
+        "timezone",
+        "local_time",
+        "payload_json",
+        "last_enqueued_local_date",
+        "created_at",
+        "updated_at",
+    },
+    "market_update_occurrence": {
+        "schedule_id",
+        "local_date",
+        "task_id",
+        "created_at",
+    },
+}
+IMMUTABLE_TRIGGER_NAMES = {
+    f"trg_{table}_{operation}"
+    for table in (
+        "instrument_dataset",
+        "instrument_dataset_item",
+        "instrument_routing_manifest",
+        "preset_pool_snapshot",
+        "preset_pool_member",
+        "market_dataset",
+        "market_dataset_partition",
+        "market_routing_manifest",
+        "market_update_item",
+        "market_update_occurrence",
+    )
+    for operation in ("immutable_insert", "immutable_update", "immutable_delete")
+}
+UPDATE_ITEM_OWNER_TRIGGER = "trg_market_update_item_owner_running"
+UPDATE_ITEM_DUPLICATE_TRIGGER = "trg_market_update_item_immutable_insert"
+MARKET_TRIGGER_NAMES = {*IMMUTABLE_TRIGGER_NAMES, UPDATE_ITEM_OWNER_TRIGGER}
 
 
 def _dispose(engine: Engine) -> None:
@@ -55,6 +226,52 @@ def _current_revision(engine: Engine) -> str:
         return str(
             connection.execute(
                 text("SELECT version_num FROM alembic_version")
+            ).scalar_one()
+        )
+
+
+def _index_signatures(
+    engine: Engine, table: str
+) -> set[tuple[str, tuple[str, ...], bool]]:
+    return {
+        (str(index["name"]), tuple(index["column_names"]), bool(index["unique"]))
+        for index in inspect(engine).get_indexes(table)
+    }
+
+
+def _unique_signatures(engine: Engine, table: str) -> set[tuple[str, ...]]:
+    return {
+        tuple(constraint["column_names"])
+        for constraint in inspect(engine).get_unique_constraints(table)
+    }
+
+
+def _check_names(engine: Engine, table: str) -> set[str]:
+    return {
+        str(constraint["name"])
+        for constraint in inspect(engine).get_check_constraints(table)
+    }
+
+
+def _trigger_names(engine: Engine) -> set[str]:
+    with engine.connect() as connection:
+        return {
+            str(name)
+            for name in connection.execute(
+                text("SELECT name FROM sqlite_master WHERE type = 'trigger'")
+            ).scalars()
+        }
+
+
+def _trigger_sql(engine: Engine, name: str) -> str:
+    with engine.connect() as connection:
+        return str(
+            connection.execute(
+                text(
+                    "SELECT sql FROM sqlite_master "
+                    "WHERE type = 'trigger' AND name = :name"
+                ),
+                {"name": name},
             ).scalar_one()
         )
 
@@ -117,6 +334,10 @@ def test_upgrade_creates_core_tables(tmp_path: Path) -> None:
         assert TASK_EVENT_COLUMNS == {
             column["name"] for column in inspector.get_columns("task_event")
         }
+        for table, expected_columns in MARKET_TABLE_COLUMNS.items():
+            assert expected_columns == {
+                column["name"] for column in inspector.get_columns(table)
+            }
         assert inspector.get_pk_constraint("app_setting")["constrained_columns"] == [
             "key"
         ]
@@ -142,6 +363,644 @@ def test_upgrade_creates_core_tables(tmp_path: Path) -> None:
             (index["name"], tuple(index["column_names"]))
             for index in inspector.get_indexes("task_event")
         } == {("ix_task_event_task_id_occurred_at", ("task_id", "occurred_at"))}
+        assert _trigger_names(engine) == MARKET_TRIGGER_NAMES
+    finally:
+        _dispose(engine)
+
+
+def test_market_catalog_has_exact_keys_constraints_and_indexes(tmp_path: Path) -> None:
+    url = f"sqlite:///{tmp_path / 'catalog-shape.db'}"
+    migrate(url)
+    engine = create_engine_for_url(url)
+
+    try:
+        inspector = inspect(engine)
+        assert inspector.get_pk_constraint("market_dataset")["constrained_columns"] == [
+            "dataset_version"
+        ]
+        assert inspector.get_pk_constraint("market_dataset_partition")[
+            "constrained_columns"
+        ] == ["dataset_version", "partition_manifest_id"]
+        assert inspector.get_pk_constraint("market_routing_manifest")[
+            "constrained_columns"
+        ] == ["manifest_record_id"]
+        assert inspector.get_pk_constraint("market_update_item")[
+            "constrained_columns"
+        ] == ["task_id", "ordinal"]
+        assert inspector.get_pk_constraint("market_update_schedule")[
+            "constrained_columns"
+        ] == ["id"]
+        assert inspector.get_pk_constraint("market_update_occurrence")[
+            "constrained_columns"
+        ] == ["schedule_id", "local_date"]
+
+        assert _unique_signatures(engine, "market_dataset_partition") == {
+            ("dataset_version", "partition_year"),
+            ("relative_path",),
+        }
+        assert _unique_signatures(engine, "market_dataset") == {
+            ("dataset_version", "symbol"),
+        }
+        assert _unique_signatures(engine, "market_update_item") == {
+            ("task_id", "symbol"),
+        }
+        assert _unique_signatures(engine, "market_routing_manifest") == {
+            ("manifest_record_id", "dataset_version", "symbol"),
+        }
+        assert _unique_signatures(engine, "market_update_occurrence") == {
+            ("task_id",),
+        }
+
+        assert _index_signatures(engine, "market_dataset") == {
+            (
+                "ix_market_dataset_exact_query",
+                ("symbol", "period", "adjustment", "query_start", "query_end"),
+                False,
+            )
+        }
+        assert _index_signatures(engine, "market_routing_manifest") == {
+            (
+                "ix_market_routing_manifest_dataset_fetched_at",
+                ("dataset_version", "fetched_at"),
+                False,
+            ),
+            ("ix_market_routing_manifest_route_version", ("route_version",), False),
+        }
+        assert _index_signatures(engine, "market_update_schedule") == {
+            (
+                "ix_market_update_schedule_due",
+                ("enabled", "local_time", "last_enqueued_local_date"),
+                False,
+            )
+        }
+
+        assert _check_names(engine, "market_dataset") == {
+            "ck_market_dataset_row_count_positive"
+        }
+        assert _check_names(engine, "market_dataset_partition") == {
+            "ck_market_dataset_partition_byte_size_positive",
+            "ck_market_dataset_partition_row_count_positive",
+            "ck_market_dataset_partition_year",
+        }
+        assert _check_names(engine, "market_update_item") == {
+            "ck_market_update_item_ordinal",
+            "ck_market_update_item_outcome",
+            "ck_market_update_item_status",
+        }
+        assert _check_names(engine, "market_update_schedule") == {
+            "ck_market_update_schedule_timezone"
+        }
+
+        partition_fks = inspector.get_foreign_keys("market_dataset_partition")
+        assert [
+            (
+                tuple(fk["constrained_columns"]),
+                fk["referred_table"],
+                tuple(fk["referred_columns"]),
+            )
+            for fk in partition_fks
+        ] == [(("dataset_version",), "market_dataset", ("dataset_version",))]
+
+        routing_fks = inspector.get_foreign_keys("market_routing_manifest")
+        assert [
+            (
+                tuple(fk["constrained_columns"]),
+                fk["referred_table"],
+                tuple(fk["referred_columns"]),
+            )
+            for fk in routing_fks
+        ] == [
+            (
+                ("dataset_version", "symbol"),
+                "market_dataset",
+                ("dataset_version", "symbol"),
+            )
+        ]
+
+        item_fks = {
+            tuple(fk["constrained_columns"]): (
+                fk["referred_table"],
+                tuple(fk["referred_columns"]),
+            )
+            for fk in inspector.get_foreign_keys("market_update_item")
+        }
+        assert item_fks == {
+            ("task_id",): ("task_run", ("id",)),
+            ("dataset_version",): ("market_dataset", ("dataset_version",)),
+            ("manifest_record_id", "dataset_version", "symbol"): (
+                "market_routing_manifest",
+                ("manifest_record_id", "dataset_version", "symbol"),
+            ),
+        }
+
+        occurrence_fks = {
+            tuple(fk["constrained_columns"]): fk
+            for fk in inspector.get_foreign_keys("market_update_occurrence")
+        }
+        assert occurrence_fks[("schedule_id",)]["referred_table"] == (
+            "market_update_schedule"
+        )
+        assert occurrence_fks[("task_id",)]["referred_table"] == "task_run"
+        assert occurrence_fks[("task_id",)]["options"] == {
+            "deferrable": True,
+            "initially": "DEFERRED",
+        }
+    finally:
+        _dispose(engine)
+
+
+def test_instrument_catalog_has_exact_keys_constraints_and_indexes(
+    tmp_path: Path,
+) -> None:
+    url = f"sqlite:///{tmp_path / 'instrument-shape.db'}"
+    migrate(url)
+    engine = create_engine_for_url(url)
+
+    try:
+        inspector = inspect(engine)
+        assert inspector.get_pk_constraint("instrument_dataset")[
+            "constrained_columns"
+        ] == ["dataset_version"]
+        assert inspector.get_pk_constraint("instrument_dataset_item")[
+            "constrained_columns"
+        ] == ["dataset_version", "symbol"]
+        assert inspector.get_pk_constraint("instrument_routing_manifest")[
+            "constrained_columns"
+        ] == ["manifest_record_id"]
+        assert _unique_signatures(engine, "instrument_dataset_item") == {
+            ("dataset_version", "ordinal"),
+        }
+        assert _unique_signatures(engine, "instrument_routing_manifest") == {
+            ("manifest_record_id", "dataset_version"),
+        }
+        assert _index_signatures(engine, "instrument_routing_manifest") == {
+            (
+                "ix_instrument_routing_manifest_current",
+                ("data_cutoff", "fetched_at", "manifest_record_id"),
+                False,
+            )
+        }
+        assert _check_names(engine, "instrument_dataset") == {
+            "ck_instrument_dataset_row_count_bounded",
+        }
+        assert _check_names(engine, "instrument_dataset_item") == {
+            "ck_instrument_dataset_item_name_length",
+            "ck_instrument_dataset_item_ordinal",
+        }
+        assert [
+            (
+                tuple(fk["constrained_columns"]),
+                fk["referred_table"],
+                tuple(fk["referred_columns"]),
+            )
+            for fk in inspector.get_foreign_keys("instrument_dataset_item")
+        ] == [(("dataset_version",), "instrument_dataset", ("dataset_version",))]
+        assert [
+            (
+                tuple(fk["constrained_columns"]),
+                fk["referred_table"],
+                tuple(fk["referred_columns"]),
+            )
+            for fk in inspector.get_foreign_keys("instrument_routing_manifest")
+        ] == [(("dataset_version",), "instrument_dataset", ("dataset_version",))]
+    finally:
+        _dispose(engine)
+
+
+def test_pool_tables_have_exact_keys_constraints_indexes_and_foreign_keys(
+    tmp_path: Path,
+) -> None:
+    url = f"sqlite:///{tmp_path / 'pool-shape.db'}"
+    migrate(url)
+    engine = create_engine_for_url(url)
+
+    try:
+        inspector = inspect(engine)
+        assert inspector.get_pk_constraint("preset_pool_snapshot")[
+            "constrained_columns"
+        ] == ["snapshot_id"]
+        assert inspector.get_pk_constraint("preset_pool_member")[
+            "constrained_columns"
+        ] == ["snapshot_id", "ordinal"]
+        assert inspector.get_pk_constraint("custom_pool")["constrained_columns"] == [
+            "pool_id"
+        ]
+        assert inspector.get_pk_constraint("custom_pool_member")[
+            "constrained_columns"
+        ] == ["pool_id", "ordinal"]
+        assert _unique_signatures(engine, "preset_pool_snapshot") == {
+            ("snapshot_id", "instrument_dataset_version"),
+        }
+        assert _unique_signatures(engine, "preset_pool_member") == {
+            ("snapshot_id", "symbol"),
+        }
+        assert _unique_signatures(engine, "custom_pool") == {
+            ("pool_id", "revision", "instrument_dataset_version"),
+        }
+        assert _unique_signatures(engine, "custom_pool_member") == {
+            ("pool_id", "symbol"),
+        }
+        assert _index_signatures(engine, "preset_pool_snapshot") == {
+            (
+                "ix_preset_pool_snapshot_latest",
+                ("preset_key", "data_cutoff", "fetched_at", "snapshot_id"),
+                False,
+            )
+        }
+        assert _check_names(engine, "preset_pool_snapshot") == {
+            "ck_preset_pool_snapshot_category",
+            "ck_preset_pool_snapshot_complete",
+            "ck_preset_pool_snapshot_logical_id",
+            "ck_preset_pool_snapshot_member_count",
+        }
+        assert _check_names(engine, "preset_pool_member") == {
+            "ck_preset_pool_member_ordinal",
+        }
+        assert _check_names(engine, "custom_pool") == {
+            "ck_custom_pool_member_count",
+            "ck_custom_pool_member_digest",
+            "ck_custom_pool_state_digest",
+            "ck_custom_pool_name",
+            "ck_custom_pool_revision",
+        }
+        assert _check_names(engine, "custom_pool_member") == {
+            "ck_custom_pool_member_ordinal",
+            "ck_custom_pool_member_revision",
+        }
+
+        def foreign_key_signatures(
+            table: str,
+        ) -> set[tuple[tuple[str, ...], str, tuple[str, ...]]]:
+            return {
+                (
+                    tuple(fk["constrained_columns"]),
+                    str(fk["referred_table"]),
+                    tuple(fk["referred_columns"]),
+                )
+                for fk in inspector.get_foreign_keys(table)
+            }
+
+        instrument_pin = (
+            ("instrument_manifest_record_id", "instrument_dataset_version"),
+            "instrument_routing_manifest",
+            ("manifest_record_id", "dataset_version"),
+        )
+        instrument_member = (
+            ("instrument_dataset_version", "symbol"),
+            "instrument_dataset_item",
+            ("dataset_version", "symbol"),
+        )
+        assert foreign_key_signatures("preset_pool_snapshot") == {instrument_pin}
+        assert foreign_key_signatures("preset_pool_member") == {
+            (
+                ("snapshot_id", "instrument_dataset_version"),
+                "preset_pool_snapshot",
+                ("snapshot_id", "instrument_dataset_version"),
+            ),
+            instrument_member,
+        }
+        assert foreign_key_signatures("custom_pool") == {instrument_pin}
+        assert foreign_key_signatures("custom_pool_member") == {
+            (
+                ("pool_id", "member_revision", "instrument_dataset_version"),
+                "custom_pool",
+                ("pool_id", "revision", "instrument_dataset_version"),
+            ),
+            instrument_member,
+        }
+        custom_owner_fk = next(
+            fk
+            for fk in inspector.get_foreign_keys("custom_pool_member")
+            if fk["referred_table"] == "custom_pool"
+        )
+        assert custom_owner_fk["options"] == {"ondelete": "CASCADE"}
+    finally:
+        _dispose(engine)
+
+
+def test_market_catalog_deferred_task_fk_allows_atomic_occurrence_enqueue(
+    tmp_path: Path,
+) -> None:
+    url = f"sqlite:///{tmp_path / 'deferred-occurrence.db'}"
+    migrate(url)
+    engine = create_engine_for_url(url)
+
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO market_update_schedule "
+                    "(id, enabled, timezone, local_time, payload_json) "
+                    "VALUES ('schedule-1', 1, 'Asia/Shanghai', '18:00:00', '{}')"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO market_update_occurrence "
+                    "(schedule_id, local_date, task_id) "
+                    "VALUES ('schedule-1', '2026-07-06', 'task-1')"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO task_run (id, kind, status) "
+                    "VALUES ('task-1', 'market.update', 'running')"
+                )
+            )
+
+        with engine.connect() as connection:
+            assert (
+                connection.execute(
+                    text(
+                        "SELECT task_id FROM market_update_occurrence "
+                        "WHERE schedule_id = 'schedule-1' AND local_date = '2026-07-06'"
+                    )
+                ).scalar_one()
+                == "task-1"
+            )
+    finally:
+        _dispose(engine)
+
+
+def test_market_update_item_rejects_cross_linked_manifest_dataset_and_symbol(
+    tmp_path: Path,
+) -> None:
+    url = f"sqlite:///{tmp_path / 'update-item-provenance.db'}"
+    migrate(url)
+    engine = create_engine_for_url(url)
+    dataset_a = "sha256:" + "a" * 64
+    dataset_b = "sha256:" + "b" * 64
+    manifest_a = "sha256:" + "c" * 64
+    route_a = "sha256:" + "d" * 64
+
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO task_run (id, kind, status) "
+                    "VALUES ('task-1', 'market.update', 'running')"
+                )
+            )
+            for version, symbol in (
+                (dataset_a, "600000.SH"),
+                (dataset_b, "000001.SZ"),
+            ):
+                connection.execute(
+                    text(
+                        "INSERT INTO market_dataset "
+                        "(dataset_version, source, symbol, period, adjustment, "
+                        "query_start, query_end, data_cutoff, row_count) "
+                        "VALUES (:version, 'tushare', :symbol, '1d', 'none', "
+                        "'2026-01-01', '2026-02-01', '2026-01-31', 1)"
+                    ),
+                    {"version": version, "symbol": symbol},
+                )
+            connection.execute(
+                text(
+                    "INSERT INTO market_routing_manifest "
+                    "(manifest_record_id, dataset_version, symbol, route_version, "
+                    "manifest_json, fetched_at) "
+                    "VALUES (:manifest, :dataset, '600000.SH', :route, "
+                    "'{}', '2026-02-01')"
+                ),
+                {"manifest": manifest_a, "dataset": dataset_a, "route": route_a},
+            )
+
+        with pytest.raises(DBAPIError, match="FOREIGN KEY constraint failed"):
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "INSERT INTO market_update_item "
+                        "(task_id, ordinal, symbol, status, manifest_record_id, "
+                        "dataset_version) "
+                        "VALUES ('task-1', 0, '000001.SZ', 'succeeded', "
+                        ":manifest, :dataset)"
+                    ),
+                    {"manifest": manifest_a, "dataset": dataset_b},
+                )
+    finally:
+        _dispose(engine)
+
+
+@pytest.mark.parametrize(
+    ("task_id", "kind", "status", "cancel_requested"),
+    [
+        ("missing-task", None, None, False),
+        ("wrong-kind", "demo.double", "running", False),
+        ("queued-update", "market.update", "queued", False),
+        ("succeeded-update", "market.update", "succeeded", False),
+        ("failed-update", "market.update", "failed", False),
+        ("cancelled-update", "market.update", "cancelled", True),
+    ],
+)
+def test_market_update_item_insert_requires_running_market_update_owner(
+    tmp_path: Path,
+    task_id: str,
+    kind: str | None,
+    status: str | None,
+    cancel_requested: bool,
+) -> None:
+    url = f"sqlite:///{tmp_path / f'item-owner-{task_id}.db'}"
+    migrate(url)
+    engine = create_engine_for_url(url)
+    try:
+        if kind is not None and status is not None:
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "INSERT INTO task_run "
+                        "(id, kind, status, cancel_requested) "
+                        "VALUES (:id, :kind, :status, :cancel_requested)"
+                    ),
+                    {
+                        "id": task_id,
+                        "kind": kind,
+                        "status": status,
+                        "cancel_requested": cancel_requested,
+                    },
+                )
+
+        with pytest.raises(DBAPIError, match="running market update task"):
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "INSERT INTO market_update_item "
+                        "(task_id, ordinal, symbol, status, reason) "
+                        "VALUES (:task_id, 0, '600000.SH', 'failed', "
+                        "'routing:no_provider')"
+                    ),
+                    {"task_id": task_id},
+                )
+    finally:
+        _dispose(engine)
+
+
+def test_market_update_item_insert_allows_cancel_requested_running_owner(
+    tmp_path: Path,
+) -> None:
+    url = f"sqlite:///{tmp_path / 'item-owner-cancel-requested.db'}"
+    migrate(url)
+    engine = create_engine_for_url(url)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO task_run "
+                    "(id, kind, status, cancel_requested) "
+                    "VALUES ('running-cancel-requested', 'market.update', "
+                    "'running', 1)"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO market_update_item "
+                    "(task_id, ordinal, symbol, status, reason) "
+                    "VALUES ('running-cancel-requested', 0, '600000.SH', "
+                    "'cancelled', 'cancel_requested')"
+                )
+            )
+
+        with engine.connect() as connection:
+            assert (
+                connection.execute(
+                    text(
+                        "SELECT status FROM market_update_item "
+                        "WHERE task_id = 'running-cancel-requested'"
+                    )
+                ).scalar_one()
+                == "cancelled"
+            )
+    finally:
+        _dispose(engine)
+
+
+@pytest.mark.parametrize(
+    "replacement_ordinal",
+    [0, 1],
+    ids=("same-task-ordinal", "same-task-symbol"),
+)
+def test_market_update_item_insert_or_replace_cannot_overwrite_immutable_row(
+    tmp_path: Path,
+    replacement_ordinal: int,
+) -> None:
+    url = f"sqlite:///{tmp_path / 'item-replace.db'}"
+    migrate(url)
+    engine = create_engine_for_url(url)
+    original: tuple[object, ...]
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO task_run (id, kind, status) "
+                    "VALUES ('replace-task', 'market.update', 'running')"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO market_update_item "
+                    "(task_id, ordinal, symbol, status, reason) "
+                    "VALUES ('replace-task', 0, '600000.SH', 'failed', "
+                    "'routing:no_provider')"
+                )
+            )
+            original = tuple(
+                connection.execute(
+                    text(
+                        "SELECT task_id, ordinal, symbol, status, "
+                        "manifest_record_id, dataset_version, reason, created_at, "
+                        "hex(CAST(task_id AS BLOB)), "
+                        "hex(CAST(symbol AS BLOB)), "
+                        "hex(CAST(status AS BLOB)), "
+                        "hex(CAST(reason AS BLOB)) "
+                        "FROM market_update_item WHERE task_id = 'replace-task'"
+                    )
+                ).one()
+            )
+
+        with pytest.raises(DBAPIError, match="market_update_item rows are immutable"):
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "INSERT OR REPLACE INTO market_update_item "
+                        "(task_id, ordinal, symbol, status, reason) "
+                        "VALUES ('replace-task', :ordinal, '600000.SH', "
+                        "'cancelled', 'cancel_requested')"
+                    ),
+                    {"ordinal": replacement_ordinal},
+                )
+
+        with engine.connect() as connection:
+            persisted = tuple(
+                connection.execute(
+                    text(
+                        "SELECT task_id, ordinal, symbol, status, "
+                        "manifest_record_id, dataset_version, reason, created_at, "
+                        "hex(CAST(task_id AS BLOB)), "
+                        "hex(CAST(symbol AS BLOB)), "
+                        "hex(CAST(status AS BLOB)), "
+                        "hex(CAST(reason AS BLOB)) "
+                        "FROM market_update_item WHERE task_id = 'replace-task'"
+                    )
+                ).one()
+            )
+            assert persisted == original
+    finally:
+        _dispose(engine)
+
+
+def test_market_update_item_insert_guard_has_both_immutable_keys(
+    tmp_path: Path,
+) -> None:
+    url = f"sqlite:///{tmp_path / 'item-duplicate-trigger.db'}"
+    migrate(url)
+    engine = create_engine_for_url(url)
+    try:
+        trigger_sql = _trigger_sql(engine, UPDATE_ITEM_DUPLICATE_TRIGGER)
+        assert "BEFORE INSERT ON market_update_item" in trigger_sql
+        assert "EXISTS" in trigger_sql
+        assert "task_id = NEW.task_id" in trigger_sql
+        assert "ordinal = NEW.ordinal" in trigger_sql
+        assert "symbol = NEW.symbol" in trigger_sql
+        assert len(_trigger_names(engine)) == len(MARKET_TRIGGER_NAMES)
+    finally:
+        _dispose(engine)
+
+
+def test_market_routing_manifest_rejects_dataset_symbol_mismatch(
+    tmp_path: Path,
+) -> None:
+    url = f"sqlite:///{tmp_path / 'routing-manifest-provenance.db'}"
+    migrate(url)
+    engine = create_engine_for_url(url)
+    dataset = "sha256:" + "a" * 64
+    manifest = "sha256:" + "b" * 64
+    route = "sha256:" + "c" * 64
+
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO market_dataset "
+                    "(dataset_version, source, symbol, period, adjustment, "
+                    "query_start, query_end, data_cutoff, row_count) "
+                    "VALUES (:dataset, 'tushare', '600000.SH', '1d', 'none', "
+                    "'2026-01-01', '2026-02-01', '2026-01-31', 1)"
+                ),
+                {"dataset": dataset},
+            )
+
+        with pytest.raises(DBAPIError, match="FOREIGN KEY constraint failed"):
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "INSERT INTO market_routing_manifest "
+                        "(manifest_record_id, dataset_version, symbol, route_version, "
+                        "manifest_json, fetched_at) "
+                        "VALUES (:manifest, :dataset, '000001.SZ', :route, "
+                        "'{}', '2026-02-01')"
+                    ),
+                    {"manifest": manifest, "dataset": dataset, "route": route},
+                )
     finally:
         _dispose(engine)
 
@@ -178,6 +1037,75 @@ def test_existing_0001_database_upgrades_to_task_observability(
         repository.close()
 
 
+def test_existing_0002_database_upgrades_to_market_catalog(tmp_path: Path) -> None:
+    url = f"sqlite:///{tmp_path / 'existing-0002.db'}"
+    migrate(url, "0002_task_observability")
+    engine = create_engine_for_url(url)
+    try:
+        assert _current_revision(engine) == "0002_task_observability"
+        assert CATALOG_TABLES.isdisjoint(inspect(engine).get_table_names())
+    finally:
+        _dispose(engine)
+
+    migrate(url)
+    engine = create_engine_for_url(url)
+    try:
+        assert _current_revision(engine) == HEAD_REVISION
+        assert CATALOG_TABLES <= set(inspect(engine).get_table_names())
+        assert _trigger_names(engine) == MARKET_TRIGGER_NAMES
+    finally:
+        _dispose(engine)
+
+
+def test_instrument_revision_downgrades_to_0003_and_reupgrades(tmp_path: Path) -> None:
+    url = f"sqlite:///{tmp_path / 'instrument-roundtrip.db'}"
+    migrate(url)
+
+    downgrade(url, "0003_market_catalog")
+    engine = create_engine_for_url(url)
+    try:
+        assert _current_revision(engine) == "0003_market_catalog"
+        assert INSTRUMENT_TABLES.isdisjoint(inspect(engine).get_table_names())
+        assert {
+            name for name in MARKET_TRIGGER_NAMES if name.startswith("trg_instrument_")
+        }.isdisjoint(_trigger_names(engine))
+        assert "market_dataset" in inspect(engine).get_table_names()
+    finally:
+        _dispose(engine)
+
+    migrate(url)
+    engine = create_engine_for_url(url)
+    try:
+        assert _current_revision(engine) == HEAD_REVISION
+        assert INSTRUMENT_TABLES <= set(inspect(engine).get_table_names())
+        assert _trigger_names(engine) == MARKET_TRIGGER_NAMES
+    finally:
+        _dispose(engine)
+
+
+def test_market_catalog_revision_downgrades_and_reupgrades(tmp_path: Path) -> None:
+    url = f"sqlite:///{tmp_path / 'catalog-roundtrip.db'}"
+    migrate(url)
+
+    downgrade(url, "0002_task_observability")
+    engine = create_engine_for_url(url)
+    try:
+        assert _current_revision(engine) == "0002_task_observability"
+        assert CATALOG_TABLES.isdisjoint(inspect(engine).get_table_names())
+        assert MARKET_TRIGGER_NAMES.isdisjoint(_trigger_names(engine))
+    finally:
+        _dispose(engine)
+
+    migrate(url)
+    engine = create_engine_for_url(url)
+    try:
+        assert _current_revision(engine) == HEAD_REVISION
+        assert CATALOG_TABLES <= set(inspect(engine).get_table_names())
+        assert _trigger_names(engine) == MARKET_TRIGGER_NAMES
+    finally:
+        _dispose(engine)
+
+
 def test_observability_revision_downgrades_and_reupgrades(tmp_path: Path) -> None:
     url = f"sqlite:///{tmp_path / 'observability-roundtrip.db'}"
     migrate(url)
@@ -196,6 +1124,146 @@ def test_observability_revision_downgrades_and_reupgrades(tmp_path: Path) -> Non
     try:
         assert _current_revision(engine) == HEAD_REVISION
         assert CORE_TABLES <= set(inspect(engine).get_table_names())
+    finally:
+        _dispose(engine)
+
+
+def test_market_catalog_rows_are_append_only_and_schedule_remains_mutable(
+    tmp_path: Path,
+) -> None:
+    url = f"sqlite:///{tmp_path / 'catalog-immutability.db'}"
+    migrate(url)
+    engine = create_engine_for_url(url)
+    digest_a = "sha256:" + "a" * 64
+    digest_b = "sha256:" + "b" * 64
+    digest_c = "sha256:" + "c" * 64
+    digest_d = "sha256:" + "d" * 64
+
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO task_run (id, kind, status) "
+                    "VALUES ('task-1', 'market.update', 'running')"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO market_dataset "
+                    "(dataset_version, source, symbol, period, adjustment, "
+                    "query_start, query_end, data_cutoff, row_count) "
+                    "VALUES (:dataset_version, 'tushare', '600000.SH', '1d', "
+                    "'none', '2026-01-01', '2026-02-01', '2026-01-31', 1)"
+                ),
+                {"dataset_version": digest_a},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO market_dataset_partition "
+                    "(partition_manifest_id, dataset_version, partition_year, "
+                    "relative_path, row_count, byte_size, physical_sha256) "
+                    "VALUES (:partition, :dataset, 2026, "
+                    "'year=2026/dataset=abc/part-00000.parquet', 1, 100, :physical)"
+                ),
+                {"partition": digest_b, "dataset": digest_a, "physical": digest_c},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO market_routing_manifest "
+                    "(manifest_record_id, dataset_version, symbol, route_version, "
+                    "manifest_json, fetched_at) "
+                    "VALUES (:manifest, :dataset, '600000.SH', :route, "
+                    "'{}', '2026-02-01')"
+                ),
+                {"manifest": digest_d, "dataset": digest_a, "route": digest_c},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO market_update_item "
+                    "(task_id, ordinal, symbol, status, manifest_record_id, "
+                    "dataset_version) "
+                    "VALUES ('task-1', 0, '600000.SH', 'succeeded', "
+                    ":manifest, :dataset)"
+                ),
+                {"manifest": digest_d, "dataset": digest_a},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO market_update_schedule "
+                    "(id, enabled, timezone, local_time, payload_json) "
+                    "VALUES ('schedule-1', 1, 'Asia/Shanghai', '18:00:00', '{}')"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO market_update_occurrence "
+                    "(schedule_id, local_date, task_id) "
+                    "VALUES ('schedule-1', '2026-07-06', 'task-1')"
+                )
+            )
+
+        mutations = (
+            (
+                "market_dataset",
+                "source = 'akshare'",
+                "dataset_version = :identity",
+                digest_a,
+            ),
+            (
+                "market_dataset_partition",
+                "byte_size = 101",
+                "partition_manifest_id = :identity",
+                digest_b,
+            ),
+            (
+                "market_routing_manifest",
+                "fetched_at = '2026-02-02'",
+                "manifest_record_id = :identity",
+                digest_d,
+            ),
+            (
+                "market_update_item",
+                "status = 'failed'",
+                "task_id = 'task-1' AND ordinal = 0",
+                "unused",
+            ),
+            (
+                "market_update_occurrence",
+                "local_date = '2026-07-07'",
+                "schedule_id = 'schedule-1' AND local_date = '2026-07-06'",
+                "unused",
+            ),
+        )
+        for table, assignment, predicate, identity in mutations:
+            with pytest.raises(DBAPIError, match="immutable"):
+                with engine.begin() as connection:
+                    connection.execute(
+                        text(f"UPDATE {table} SET {assignment} WHERE {predicate}"),
+                        {"identity": identity},
+                    )
+            with pytest.raises(DBAPIError, match="immutable"):
+                with engine.begin() as connection:
+                    connection.execute(
+                        text(f"DELETE FROM {table} WHERE {predicate}"),
+                        {"identity": identity},
+                    )
+
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "UPDATE market_update_schedule SET enabled = 0 "
+                    "WHERE id = 'schedule-1'"
+                )
+            )
+        with engine.connect() as connection:
+            assert (
+                connection.execute(
+                    text(
+                        "SELECT enabled FROM market_update_schedule WHERE id = 'schedule-1'"
+                    )
+                ).scalar_one()
+                == 0
+            )
     finally:
         _dispose(engine)
 

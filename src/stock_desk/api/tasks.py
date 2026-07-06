@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from datetime import datetime
 from typing import Annotated, Any, Callable, cast
 
@@ -17,6 +18,18 @@ from stock_desk.tasks.repository import (
     TaskRepository,
     TaskValidationError,
 )
+
+
+def _json_response_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {str(key): _json_response_value(nested) for key, nested in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_response_value(nested) for nested in value]
+    return value
+
+
+def _json_response_object(value: Mapping[str, Any]) -> dict[str, Any]:
+    return cast(dict[str, Any], _json_response_value(value))
 
 
 class CreateTaskRequest(BaseModel):
@@ -56,9 +69,13 @@ class TaskResponse(BaseModel):
             kind=task.kind,
             status=task.status,
             progress=task.progress,
-            payload=dict(task.payload),
-            result=dict(task.result) if task.result is not None else None,
-            error=dict(task.error) if task.error is not None else None,
+            payload=_json_response_object(task.payload),
+            result=(
+                _json_response_object(task.result) if task.result is not None else None
+            ),
+            error=(
+                _json_response_object(task.error) if task.error is not None else None
+            ),
             cancel_requested=task.cancel_requested,
             worker_id=task.worker_id,
             created_at=task.created_at,
@@ -88,7 +105,7 @@ class TaskEventResponse(BaseModel):
             event_name=task_event.event_name,
             level=task_event.level,
             progress=task_event.progress,
-            detail=dict(task_event.detail),
+            detail=_json_response_object(task_event.detail),
             occurred_at=task_event.occurred_at,
         )
 

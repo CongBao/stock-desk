@@ -1,0 +1,79 @@
+{
+  "query": {
+    "symbol": "600000.SH",
+    "period": "1d",
+    "adjustment": "qfq",
+    "start": "2024-01-02T00:00:00Z",
+    "end": "2024-01-04T00:00:00Z"
+  },
+  "bars": [
+    {
+      "symbol": "600000.SH",
+      "timestamp": "2024-01-02T16:00:00Z",
+      "period": "1d",
+      "adjustment": "qfq",
+      "open": "10.1",
+      "high": "10.8",
+      "low": "9.9",
+      "close": "10.6",
+      "volume": 12345,
+      "status": "unknown"
+    }
+  ],
+  "coverage": {
+    "start": "2024-01-02T00:00:00Z",
+    "end": "2024-01-04T00:00:00Z"
+  },
+  "manifest_record_id": "sha256:6f8459b7555df178c0dce0dfaa6eb94bcccc3baf601546f89199a1bfd28760d9",
+  "dataset_version": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+  "route_version": "sha256:9707fafad99ee4cd452543fed2fe8b910adb015731da85f3aef92f0ac0af94c4",
+  "routing_manifest": {
+    "schema_version": "stock-desk-routing-manifest-v1",
+    "category": "bars",
+    "request": {
+      "query": {
+        "symbol": "600000.SH",
+        "period": "1d",
+        "adjustment": "qfq",
+        "start": "2024-01-02T00:00:00Z",
+        "end": "2024-01-04T00:00:00Z"
+      }
+    },
+    "priority": ["tushare", "baostock"],
+    "attempts": [
+      {
+        "ordinal": 1,
+        "source": "tushare",
+        "category": "bars",
+        "decision": "capability_failure",
+        "reason": "timeout",
+        "detail": "provider request timed out"
+      }
+    ],
+    "selected_source": "baostock",
+    "upstream_dataset_version": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "upstream_fetched_at": "2024-01-03T08:00:00Z",
+    "upstream_data_cutoff": "2024-01-03T00:00:00Z",
+    "upstream_adjustment": "qfq",
+    "route_version": "sha256:9707fafad99ee4cd452543fed2fe8b910adb015731da85f3aef92f0ac0af94c4",
+    "transition": {
+      "category": "bars",
+      "from_source": "tushare",
+      "to_source": "baostock",
+      "from_dataset_version": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "to_dataset_version": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "from_route_version": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "effective_at": "2024-01-02T00:00:00Z",
+      "calendar_start": null,
+      "calendar_end": null,
+      "reason": "fallback_after_failure"
+    }
+  },
+  "provenance": {
+    "source": "baostock",
+    "fetched_at": "2024-01-03T08:00:00Z",
+    "data_cutoff": "2024-01-03T00:00:00Z",
+    "adjustment": "qfq",
+    "dataset_version": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+  }
+}

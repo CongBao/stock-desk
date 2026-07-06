@@ -2,85 +2,78 @@
 
 # Stock Desk
 
-Stock Desk 是一个本地优先、面向个人 A 股研究工作台的开源基础项目。当前 `0.1.0` 属于 **Stage 0：基础阶段**，已包含 FastAPI 服务、SQLite 迁移、可持久化任务 API 与 worker、本地加密密钥存储、React 工作区外壳，以及原生和容器两套开发路径。
+Stock Desk `v0.2.0` 是一个本地优先的 A 股行情研究工作台。Stage 1 已提供可配置的 Tushare、AKShare、BaoStock 与本地 TDX 适配器、持久化目录/行情更新、本地 Parquet/DuckDB 图表读取、来源追踪、预设/自定义股票池、每日计划，以及日线、周线、60 分钟 K 线与成交量交互图。
 
-实时 A 股数据、公式执行、策略回测和智能分析代理 **尚未实现**。相关路由目前只是后续阶段的如实预览，详见[路线图](ROADMAP.md)。
+公式执行、策略回测和 LLM 智能分析属于后续阶段。导航入口只是规划预览，不代表能力已经完成，详见[路线图](ROADMAP.md)。
 
-## 环境要求
+## 快速启动
 
-- Python `>=3.12,<3.13`（即 Python 3.12）
-- [uv](https://docs.astral.sh/uv/)
-- Node.js 22 或 24 LTS，以及 pnpm 11
-- Docker 与 Compose v2（仅容器方式需要）
-
-## 原生启动
+原生环境需要 Python `>=3.12,<3.13`、[uv](https://docs.astral.sh/uv/)、Node.js 22 或 24 LTS 与 pnpm 11：
 
 ```bash
 make bootstrap
 make dev
 ```
 
-浏览器访问 UI [http://localhost:5173](http://localhost:5173)、健康检查 [http://localhost:8000/api/health](http://localhost:8000/api/health) 和 API 文档 [http://localhost:8000/docs](http://localhost:8000/docs)。`make dev` 会同时监管 API、持久化任务 worker 与 Vite 服务；按 `Ctrl-C` 一并停止。
+打开 [http://localhost:5173/market](http://localhost:5173/market)。`make dev` 会监管 API、行情 worker 和 Vite；按 `Ctrl-C` 停止。
 
-## Compose 启动
-
-```bash
-docker compose up --build --wait
-```
-
-构建后的 UI 与 API 会统一运行在 [http://localhost:8000](http://localhost:8000)。停止并清理容器：
-
-```bash
-docker compose down --volumes --remove-orphans
-```
-
-`make release-check` 包含容器 smoke 测试，因此必须先让本仓库的 Compose 服务保持运行中：
+Docker Compose 会安装相同的锁定数据源依赖，并默认只绑定本机回环地址：
 
 ```bash
 docker compose up --build --wait
-make release-check
+# 打开 http://localhost:8000/market
 docker compose down --volumes --remove-orphans
 ```
 
-运行 `make security` 可只审计锁定的生产依赖图。查询前会在不运行包脚本的情况下验证项目清单与锁文件一致。该命令会访问 OSV 查询 Python 依赖漏洞，并访问 npm registry 查询 Node 依赖漏洞，因此需要网络访问。
+API 健康检查位于 [http://localhost:8000/api/health](http://localhost:8000/api/health)，交互文档位于 [http://localhost:8000/docs](http://localhost:8000/docs)。原生与容器的持久数据都在 `data/`；API 和 worker 必须使用同一个数据库与行情湖路径。
 
-## 当前可用范围
+Stage 0 基础能力继续保留：`/market`、`/formulas`、`/backtests`、`/analysis`、`/tasks` 与 `/settings` 共用同一工作台外壳，`demo.double` 持久化任务仍可用于 worker 诊断。Stage 1 已完成行情数据页面；其他研究页面仍是预览。
 
-- `/market` 是静态工作区/布局预览，其中图表明确不是实时数据。
-- `/formulas`、`/backtests`、`/analysis` 仅说明规划能力。
-- `/tasks`、`/settings` 仍是 UI 占位页，暂不能管理任务或密钥。
-- `POST /api/tasks`、`GET /api/tasks`、`GET /api/tasks/{id}`、`POST /api/tasks/{id}/cancel` 是 Stage 0 的持久化任务 API；worker 目前只处理 `demo.double` 演示任务。
+## 配置数据源
 
-原生或 Compose 服务运行后可执行：
-
-```bash
-curl -sS -X POST http://localhost:8000/api/tasks \
-  -H 'Content-Type: application/json' \
-  -d '{"kind":"demo.double","payload":{"value":21}}'
-curl -sS http://localhost:8000/api/tasks
-```
-
-第一个响应对应的任务会持久化到本地 SQLite；worker 领取任务后把 `{"value":42}` 写入结果。这只是基础设施演示，不是行情数据任务。
-
-## 数据与安全边界
-
-Stage 0 不内置也不会连接任何行情数据提供商。后续用户需要自行评估数据许可、可用性、质量和再分发条款。
-
-在未来保存数据商凭据前，请生成 Fernet 密钥，并把它作为 `STOCK_DESK_MASTER_KEY` 写入不受版本控制的 `.env`：
+保存 Tushare token 前，先复制环境文件并生成 Fernet 主密钥：
 
 ```bash
 cp .env.example .env
 uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
 
-本地密钥存储会加密数值；安全模块也提供日志脱敏 filter/formatter，但只有显式配置到 handler 后才会生效，Stage 0 并未全局安装。当前版本也没有认证、授权或 TLS。不要提交 `.env`、不要在 issue 中粘贴密钥，也不要把服务暴露到不可信网络。参阅[安全报告方式](SECURITY.md)和[架构信任边界](docs/architecture.md)。
+把输出写入 `.env` 的 `STOCK_DESK_MASTER_KEY`，然后打开 `/settings`：
 
-## 项目信息
+- Tushare token 只写、本地加密；浏览器只能看到脱敏状态。
+- TDX 路径必须是包含 `vipdoc` 的通达信安装绝对路径。本地 TDX 只提供支持的日线文件，不提供证券目录或交易日历。使用 Compose 时，把宿主机目录写入 `STOCK_DESK_TDX_HOST_PATH`，再在设置页填写 `/app/tdx`；API 与 worker 会共享同一个只读挂载。
+- 日线、周线、60 分钟、证券目录和交易日历分别配置优先级；缺少凭据或 SDK 会如实记录为类型化路由失败。
+- Eastmoney 仅是保留配置项，Stage 1 没有运行时适配器，不会伪装成可用。
 
-- [架构](docs/architecture.md)
-- [参与贡献](CONTRIBUTING.md)与[行为准则](CODE_OF_CONDUCT.md)
-- [安全](SECURITY.md)与[支持](SUPPORT.md)
-- [路线图](ROADMAP.md)与[变更记录](CHANGELOG.md)
-- [Apache-2.0 许可证](LICENSE)
+Tushare、AKShare 和 BaoStock 受上游服务、权限、网络和许可条款约束。请自行核对各数据源条款；未经许可不要再分发数据。
 
-Stock Desk 是研究软件，不构成投资建议。请独立核验数据和结论；任何金融行为均由使用者自行负责。
+## 使用行情工作区
+
+1. 新安装先在 `/market` 点击“更新证券目录”。目录成功后会发布全 A；当前主要指数与数据源发现的行业成分通过 AKShare 独立刷新，部分失败时保留上次有效快照。
+2. 搜索证券或打开预设/自定义股票池。自定义池支持低代码搜索、添加、排序、重命名、移除和删除。
+3. 选择周期、复权、日期范围，以及单只证券或冻结的股票池范围，再明确启动更新。进度、取消和逐证券成功/失败/取消结果都会持久化。
+4. 可配置唯一的 Asia/Shanghai 每日计划。计划保存证券列表快照，后续修改股票池不会静默改变范围。
+5. 在图表旁检查数据源路由、截止时间、回退尝试和来源证明。
+
+浏览图表只读取本地缓存。缓存缺失会显示引导，不会静默访问外部数据源。同一个请求序列只选择一个数据源，不会拼接多个来源。
+
+## 当前范围与安全边界
+
+Stage 1 包含证券目录、全 A/主要指数/行业/自定义股票池、手动与每日行情更新、来源追踪，以及 none/qfq/hfq 三种复权的日线/周线/60 分钟缓存图表。不包含实时行情、动态选股器、画线工具、公式、回测、组合管理、交易或 LLM 分析。
+
+当前是可信单用户本地服务，没有认证、授权或 TLS。请只在回环地址使用；不要提交 `.env`、token、主密钥、本地 TDX 路径、数据库或下载的数据，也不要把它们粘贴到 issue。参阅[数据源说明](docs/data-sources.md)、[安全说明](SECURITY.md)和[架构](docs/architecture.md)。
+
+## 质量门禁
+
+```bash
+make test
+make acceptance
+make benchmark
+make lint
+make typecheck
+make build
+make public-tree
+make security
+```
+
+先用 `pnpm exec playwright install chromium` 安装 Chromium，再运行 `make e2e-market`，即可验证真实 API/worker 的 Stage 1 浏览器流程。`make security` 需要网络访问：它通过 OSV 检查 Python 依赖，并通过 npm registry 检查 JavaScript 生产依赖；执行审计前还会确认清单与锁文件一致。Docker 运行时，`make release-check` 会执行两组浏览器、安全和隔离的容器 smoke 门禁，并自行启动、清理 Compose。项目采用 Apache-2.0 许可证。Stock Desk 是研究软件，不构成投资建议；请独立核验数据和决策。

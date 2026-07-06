@@ -15,8 +15,9 @@ export const appRoutes = [
     icon: '市',
     title: '行情工作区',
     release: 'v0.2.0',
-    summary: 'K 线主图与公式副图的工作区层级预览。',
-    description: '市场数据和真实绘图能力将在行情阶段接入。',
+    summary: '搜索证券或选择股票池，查看本地缓存 K 线、成交量与来源证据。',
+    description:
+      '支持日线、周线和 60 分钟周期，以及不复权、前复权和后复权切换。',
   },
   {
     label: '自定义公式',
@@ -58,9 +59,9 @@ export const appRoutes = [
     label: '设置',
     path: '/settings',
     icon: '设',
-    title: '设置',
-    release: 'v0.1.0',
-    summary: '管理本地应用基础配置与后续数据源连接。',
-    description: '本阶段仅建立设置入口，不采集或展示任何密钥。',
+    title: '数据源设置',
+    release: 'v0.2.0',
+    summary: '配置市场数据源优先级、Tushare 凭证与本地通达信目录。',
+    description: '诊断来源能力与权限缺口，并为不同数据类别设置独立回退顺序。',
   },
 ] as const satisfies readonly AppRoute[];
