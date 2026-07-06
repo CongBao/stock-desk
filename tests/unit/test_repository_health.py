@@ -120,6 +120,32 @@ def _workflow_paths() -> list[Path]:
     return sorted((REPO_ROOT / ".github" / "workflows").glob("*.yml"))
 
 
+def test_market_lake_runtime_dependency_is_exact_and_locked() -> None:
+    project = tomllib.loads(_read("pyproject.toml"))
+    runtime_dependencies = project["project"]["dependencies"]
+
+    assert "duckdb>=1.4.5,<1.5" in runtime_dependencies
+    assert not any(
+        dependency.partition("[")[0].partition("=")[0].casefold()
+        in {"pandas", "pyarrow"}
+        for dependency in runtime_dependencies
+    )
+
+    locked = tomllib.loads(_read("uv.lock"))
+    stock_desk = next(
+        package for package in locked["package"] if package["name"] == "stock-desk"
+    )
+    direct_names = {dependency["name"] for dependency in stock_desk["dependencies"]}
+    assert "duckdb" in direct_names
+    assert {"pandas", "pyarrow"}.isdisjoint(direct_names)
+    duckdb_metadata = next(
+        dependency
+        for dependency in stock_desk["metadata"]["requires-dist"]
+        if dependency["name"] == "duckdb"
+    )
+    assert duckdb_metadata["specifier"] == ">=1.4.5,<1.5"
+
+
 def test_required_open_source_files_exist() -> None:
     missing = sorted(
         path for path in REQUIRED_FILES if not (REPO_ROOT / path).is_file()

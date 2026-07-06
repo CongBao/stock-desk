@@ -4,13 +4,18 @@ import json
 import math
 from types import MappingProxyType
 from typing import Any, cast
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from sqlalchemy import JSON, Engine, bindparam, case, func, insert, null, select, update
 from sqlalchemy.engine import Connection, RowMapping
 from sqlalchemy.sql.elements import ColumnElement
 
-from stock_desk.storage.database import create_engine_for_url, migrate
+from stock_desk.storage.database import (
+    DatabaseIdentityError,
+    connection_database_identity,
+    create_engine_for_url,
+    migrate,
+)
 from stock_desk.storage.models import TaskEvent, TaskRun
 from stock_desk.tasks.models import (
     TaskEventLevel,
@@ -37,6 +42,9 @@ class TaskValidationError(TaskRepositoryError, ValueError):
     """Raised when task input is invalid."""
 
 
+_MAX_JSON_DEPTH = 128
+
+
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -49,39 +57,194 @@ def _aware_utc(value: datetime | None) -> datetime | None:
     return value.astimezone(timezone.utc)
 
 
+def _validated_aware_utc(value: object, *, field_name: str) -> datetime:
+    if not isinstance(value, datetime) or value.tzinfo is None:
+        raise TaskValidationError(f"Task {field_name} must be an aware datetime")
+    try:
+        offset = value.utcoffset()
+        normalized = value.astimezone(timezone.utc)
+    except Exception as error:
+        raise TaskValidationError(
+            f"Task {field_name} must be an aware datetime"
+        ) from error
+    if offset is None:
+        raise TaskValidationError(f"Task {field_name} must be an aware datetime")
+    return normalized
+
+
+def _validated_uuid(value: object, *, field_name: str) -> str:
+    if not isinstance(value, str) or len(value) != 36:
+        raise TaskValidationError(f"Task {field_name} must be a canonical UUID")
+    try:
+        parsed = UUID(value)
+    except (ValueError, AttributeError) as error:
+        raise TaskValidationError(
+            f"Task {field_name} must be a canonical UUID"
+        ) from error
+    if str(parsed) != value:
+        raise TaskValidationError(f"Task {field_name} must be a canonical UUID")
+    return value
+
+
 def _validated_json_object(
     value: Mapping[str, Any], *, field_name: str
 ) -> dict[str, Any]:
-    copied = dict(value)
+    normalized = _normalize_json_object(value, field_name=field_name)
     try:
-        json.dumps(copied, allow_nan=False)
-    except (RecursionError, TypeError, ValueError) as error:
-        raise TaskValidationError(
-            f"Task {field_name} must be a JSON-compatible object"
-        ) from error
+        encoded = json.dumps(normalized, allow_nan=False)
+        decoded = json.loads(encoded)
+    except UnicodeError as error:
+        raise _json_validation_error(field_name) from error
+    except (ValueError, OverflowError, RecursionError, TypeError) as error:
+        raise _json_validation_error(field_name) from error
+    if not isinstance(decoded, dict):
+        raise _json_validation_error(field_name)
+    return cast(dict[str, Any], decoded)
 
-    stack: list[Any] = [copied]
-    visited_containers: set[int] = set()
+
+def _assign_json_value(
+    parent: dict[str, Any] | list[Any],
+    slot: str | int,
+    value: Any,
+) -> None:
+    if isinstance(parent, list):
+        parent[cast(int, slot)] = value
+    else:
+        parent[cast(str, slot)] = value
+
+
+def _json_validation_error(field_name: str) -> TaskValidationError:
+    return TaskValidationError(f"Task {field_name} must be a JSON-compatible object")
+
+
+def _validate_json_string(value: str, *, field_name: str) -> None:
+    try:
+        value.encode("utf-8", errors="strict")
+    except UnicodeError as error:
+        raise _json_validation_error(field_name) from error
+
+
+def _normalize_json_object(
+    value: Mapping[str, Any], *, field_name: str
+) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise _json_validation_error(field_name)
+    root: list[Any] = [None]
+    active_containers: set[int] = set()
+    stack: list[
+        tuple[
+            bool,
+            Any,
+            dict[str, Any] | list[Any],
+            str | int,
+            int,
+        ]
+    ] = [(False, value, root, 0, 0)]
     while stack:
-        item = stack.pop()
-        if isinstance(item, Mapping):
-            identity = id(item)
-            if identity in visited_containers:
-                continue
-            visited_containers.add(identity)
-            for key, nested in item.items():
-                if not isinstance(key, str):
-                    raise TaskValidationError(
-                        f"Task {field_name} JSON object keys must be strings"
-                    )
-                stack.append(nested)
-        elif isinstance(item, (list, tuple)):
-            identity = id(item)
-            if identity in visited_containers:
-                continue
-            visited_containers.add(identity)
-            stack.extend(item)
-    return copied
+        exiting, source, parent, slot, depth = stack.pop()
+        if exiting:
+            active_containers.remove(id(source))
+            continue
+        if depth > _MAX_JSON_DEPTH:
+            raise _json_validation_error(field_name)
+        if source is None or type(source) in (bool, int):
+            _assign_json_value(parent, slot, source)
+            continue
+        if type(source) is str:
+            _validate_json_string(source, field_name=field_name)
+            _assign_json_value(parent, slot, source)
+            continue
+        if type(source) is float:
+            if not math.isfinite(source):
+                raise _json_validation_error(field_name)
+            _assign_json_value(parent, slot, source)
+            continue
+        if isinstance(source, Mapping):
+            identity = id(source)
+            if identity in active_containers:
+                raise _json_validation_error(field_name)
+            try:
+                raw_items = tuple(source.items())
+                items = tuple((item[0], item[1]) for item in raw_items)
+            except Exception as error:
+                raise _json_validation_error(field_name) from error
+            if any(type(key) is not str for key, _nested in items):
+                raise TaskValidationError(
+                    f"Task {field_name} JSON object keys must be strings"
+                )
+            for key, _nested in items:
+                _validate_json_string(cast(str, key), field_name=field_name)
+            normalized_mapping: dict[str, Any] = {}
+            _assign_json_value(parent, slot, normalized_mapping)
+            active_containers.add(identity)
+            stack.append((True, source, parent, slot, depth))
+            for key, nested in reversed(items):
+                stack.append(
+                    (False, nested, normalized_mapping, cast(str, key), depth + 1)
+                )
+            continue
+        if isinstance(source, (list, tuple)):
+            identity = id(source)
+            if identity in active_containers:
+                raise _json_validation_error(field_name)
+            try:
+                source_length = len(source)
+                source_items = tuple(source[index] for index in range(source_length))
+            except Exception as error:
+                raise _json_validation_error(field_name) from error
+            normalized_items: list[Any] = [None] * len(source_items)
+            _assign_json_value(parent, slot, normalized_items)
+            active_containers.add(identity)
+            stack.append((True, source, parent, slot, depth))
+            for index in range(len(source_items) - 1, -1, -1):
+                stack.append(
+                    (False, source_items[index], normalized_items, index, depth + 1)
+                )
+            continue
+        raise _json_validation_error(field_name)
+    normalized = root[0]
+    if not isinstance(normalized, dict):
+        raise _json_validation_error(field_name)
+    return cast(dict[str, Any], normalized)
+
+
+def _freeze_normalized_json(value: dict[str, Any]) -> Mapping[str, Any]:
+    root: list[Any] = [None]
+    stack: list[
+        tuple[
+            str,
+            Any,
+            dict[str, Any] | list[Any],
+            str | int,
+        ]
+    ] = [("enter", value, root, 0)]
+    while stack:
+        action, source, parent, slot = stack.pop()
+        if action == "finish_mapping":
+            _assign_json_value(parent, slot, MappingProxyType(source))
+            continue
+        if action == "finish_list":
+            _assign_json_value(parent, slot, tuple(source))
+            continue
+        if isinstance(source, dict):
+            frozen_mapping: dict[str, Any] = {}
+            stack.append(("finish_mapping", frozen_mapping, parent, slot))
+            for key, nested in reversed(tuple(source.items())):
+                stack.append(("enter", nested, frozen_mapping, key))
+            continue
+        if isinstance(source, list):
+            frozen_items: list[Any] = [None] * len(source)
+            stack.append(("finish_list", frozen_items, parent, slot))
+            for index in range(len(source) - 1, -1, -1):
+                stack.append(("enter", source[index], frozen_items, index))
+            continue
+        _assign_json_value(parent, slot, source)
+    return cast(Mapping[str, Any], root[0])
+
+
+def _freeze_json_object(value: Mapping[str, Any]) -> Mapping[str, Any]:
+    normalized = _validated_json_object(value, field_name="stored JSON")
+    return _freeze_normalized_json(normalized)
 
 
 def _transition_time(sampled_at: datetime) -> ColumnElement[datetime]:
@@ -102,14 +265,14 @@ def _snapshot(row: RowMapping) -> TaskSnapshot:
         kind=cast(str, row["kind"]),
         status=cast(TaskStatus, row["status"]),
         progress=cast(float, row["progress"]),
-        payload=MappingProxyType(dict(cast(Mapping[str, Any], row["payload_json"]))),
+        payload=_freeze_json_object(cast(Mapping[str, Any], row["payload_json"])),
         result=(
-            MappingProxyType(dict(cast(Mapping[str, Any], row["result_json"])))
+            _freeze_json_object(cast(Mapping[str, Any], row["result_json"]))
             if row["result_json"] is not None
             else None
         ),
         error=(
-            MappingProxyType(dict(cast(Mapping[str, Any], row["error_json"])))
+            _freeze_json_object(cast(Mapping[str, Any], row["error_json"]))
             if row["error_json"] is not None
             else None
         ),
@@ -132,7 +295,7 @@ def _event_snapshot(row: RowMapping) -> TaskEventSnapshot:
         event_name=cast(str, row["event_name"]),
         level=cast(TaskEventLevel, row["level"]),
         progress=cast(float | None, row["progress"]),
-        detail=MappingProxyType(dict(cast(Mapping[str, Any], row["detail_json"]))),
+        detail=_freeze_json_object(cast(Mapping[str, Any], row["detail_json"])),
         occurred_at=occurred_at,
     )
 
@@ -175,6 +338,13 @@ class TaskRepository:
     def __init__(self, engine: Engine, *, owns_engine: bool = False) -> None:
         self._engine = engine
         self._owns_engine = owns_engine
+        try:
+            with engine.connect() as connection:
+                self._database_identity = connection_database_identity(connection)
+        except DatabaseIdentityError as error:
+            raise TaskValidationError(
+                "Task database identity could not be determined"
+            ) from error
 
     @classmethod
     def open(cls, url: str) -> "TaskRepository":
@@ -183,12 +353,47 @@ class TaskRepository:
         return cls(create_engine_for_url(url), owns_engine=True)
 
     def create(self, kind: str, payload: Mapping[str, Any]) -> TaskSnapshot:
+        task_id = str(uuid4())
+        now = _utc_now()
+        with self._engine.begin() as connection:
+            return self.enqueue_in_transaction(
+                connection,
+                kind,
+                payload,
+                task_id=task_id,
+                now=now,
+            )
+
+    def enqueue_in_transaction(
+        self,
+        connection: Connection,
+        kind: str,
+        payload: Mapping[str, Any],
+        *,
+        task_id: str,
+        now: datetime,
+    ) -> TaskSnapshot:
+        if connection.closed or not connection.in_transaction():
+            raise TaskValidationError(
+                "Task enqueue requires an active transaction connection"
+            )
+        try:
+            transaction_identity = connection_database_identity(connection)
+        except DatabaseIdentityError as error:
+            raise TaskValidationError(
+                "Task database identity could not be determined"
+            ) from error
+        if transaction_identity != self._database_identity:
+            raise TaskValidationError(
+                "Task transaction connection targets a different database"
+            )
         if not kind or kind != kind.strip() or len(kind) > 64:
             raise TaskValidationError("Task kind must contain 1 to 64 characters")
+        validated_task_id = _validated_uuid(task_id, field_name="id")
+        validated_now = _validated_aware_utc(now, field_name="enqueue time")
         validated_payload = _validated_json_object(payload, field_name="payload")
-        now = _utc_now()
         values = {
-            "id": str(uuid4()),
+            "id": validated_task_id,
             "kind": kind,
             "status": "queued",
             "progress": 0.0,
@@ -197,24 +402,23 @@ class TaskRepository:
             "error_json": None,
             "cancel_requested": False,
             "worker_id": None,
-            "created_at": now,
-            "updated_at": now,
+            "created_at": validated_now,
+            "updated_at": validated_now,
             "started_at": None,
             "finished_at": None,
         }
         statement = insert(TaskRun).values(**values).returning(TaskRun)
-        with self._engine.begin() as connection:
-            row = connection.execute(statement).mappings().one()
-            task = _snapshot(row)
-            _append_event(
-                connection,
-                task_id=task.id,
-                event_name="task.created",
-                level="info",
-                progress=task.progress,
-                detail={"kind": task.kind},
-                occurred_at=task.created_at,
-            )
+        row = connection.execute(statement).mappings().one()
+        task = _snapshot(row)
+        _append_event(
+            connection,
+            task_id=task.id,
+            event_name="task.created",
+            level="info",
+            progress=task.progress,
+            detail={"kind": task.kind},
+            occurred_at=task.created_at,
+        )
         return task
 
     def get(self, task_id: str) -> TaskSnapshot:
@@ -338,7 +542,12 @@ class TaskRepository:
             )
         return task
 
-    def set_progress(self, task_id: str, progress: float) -> TaskSnapshot:
+    def set_progress(
+        self,
+        task_id: str,
+        progress: float,
+        detail: Mapping[str, Any] | None = None,
+    ) -> TaskSnapshot:
         if (
             isinstance(progress, bool)
             or not isinstance(progress, (int, float))
@@ -348,11 +557,19 @@ class TaskRepository:
             raise TaskValidationError(
                 "Task progress must be a finite number from 0 to 1"
             )
+        validated_detail = _validated_json_object(
+            detail if detail is not None else {},
+            field_name="progress detail",
+        )
         now = _utc_now()
         transition_time = _transition_time(now)
         statement = (
             update(TaskRun)
-            .where(TaskRun.id == task_id, TaskRun.status == "running")
+            .where(
+                TaskRun.id == task_id,
+                TaskRun.status == "running",
+                TaskRun.progress <= float(progress),
+            )
             .values(progress=float(progress), updated_at=transition_time)
             .returning(TaskRun)
         )
@@ -366,7 +583,7 @@ class TaskRepository:
                     event_name="task.progressed",
                     level="info",
                     progress=task.progress,
-                    detail={},
+                    detail=validated_detail,
                     occurred_at=task.updated_at,
                 )
                 return task

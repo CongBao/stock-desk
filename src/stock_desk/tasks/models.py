@@ -9,7 +9,7 @@ TaskEventLevel: TypeAlias = Literal["info", "warning", "error"]
 
 @dataclass(frozen=True, slots=True)
 class TaskSnapshot:
-    """Immutable task view with read-only outer JSON mappings."""
+    """Immutable task view with recursively immutable JSON values."""
 
     id: str
     kind: str

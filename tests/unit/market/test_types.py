@@ -488,6 +488,17 @@ def test_bar_volume_is_a_strict_non_negative_integer(value: object) -> None:
         Bar.model_validate(payload)
 
 
+def test_bar_volume_fits_the_signed_bigint_storage_domain() -> None:
+    payload = bar().model_dump()
+    payload["volume"] = 2**63 - 1
+
+    assert Bar.model_validate(payload).volume == 2**63 - 1
+
+    payload["volume"] = 2**63
+    with pytest.raises(ValidationError, match="less than or equal"):
+        Bar.model_validate(payload)
+
+
 def test_provenance_uses_provider_id_and_valid_utc_instants() -> None:
     value = provenance()
 

@@ -21,6 +21,7 @@ classifiers = [
 dependencies = [
     "alembic>=1.16,<2",
     "cryptography>=48.0.1,<49",
+    "duckdb>=1.4.5,<1.5",
     "fastapi>=0.116,<1",
     "filelock>=3.19,<4",
     "pydantic>=2.11,<3",

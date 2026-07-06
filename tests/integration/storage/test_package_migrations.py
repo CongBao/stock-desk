@@ -51,13 +51,33 @@ url = "sqlite:///wheel.db"
 migrate(url)
 engine = create_engine_for_url(url)
 try:
-    assert {"app_setting", "task_event", "task_run"} <= set(inspect(engine).get_table_names())
+    assert {
+        "app_setting",
+        "market_dataset",
+        "market_dataset_partition",
+        "market_routing_manifest",
+        "market_update_item",
+        "market_update_occurrence",
+        "market_update_schedule",
+        "task_event",
+        "task_run",
+    } <= set(inspect(engine).get_table_names())
 finally:
     engine.dispose()
 downgrade(url, "base")
 engine = create_engine_for_url(url)
 try:
-    assert {"app_setting", "task_event", "task_run"}.isdisjoint(inspect(engine).get_table_names())
+    assert {
+        "app_setting",
+        "market_dataset",
+        "market_dataset_partition",
+        "market_routing_manifest",
+        "market_update_item",
+        "market_update_occurrence",
+        "market_update_schedule",
+        "task_event",
+        "task_run",
+    }.isdisjoint(inspect(engine).get_table_names())
 finally:
     engine.dispose()
 """,
@@ -79,3 +99,4 @@ finally:
     assert "stock_desk/migrations/env.py" in packaged_files
     assert "stock_desk/migrations/versions/0001_core_tables.py" in packaged_files
     assert "stock_desk/migrations/versions/0002_task_observability.py" in packaged_files
+    assert "stock_desk/migrations/versions/0003_market_catalog.py" in packaged_files

@@ -47,7 +47,7 @@ FailureDetail = Annotated[
     ),
 ]
 Price = Annotated[Decimal, Field(allow_inf_nan=False)]
-Volume = Annotated[int, Field(ge=0)]
+Volume = Annotated[int, Field(ge=0, le=2**63 - 1)]
 _MARKET_TIMEZONE = ZoneInfo("Asia/Shanghai")
 _MIN60_BUCKET_STARTS = frozenset({(9, 30), (10, 30), (13, 0), (14, 0)})
 _DECIMAL_STRING_PATTERN = re.compile(r"^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$")
