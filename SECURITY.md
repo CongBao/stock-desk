@@ -14,4 +14,4 @@ For ordinary bugs and usage questions, follow [SUPPORT.md](SUPPORT.md).
 
 ## Deployment boundary
 
-Stage 0 is a local, single-user foundation and does not implement authentication, authorization, multi-tenancy, or TLS termination. Treat the API and SQLite files as trusted-local resources and do not expose the service to an untrusted network. Keep `.env`, `STOCK_DESK_MASTER_KEY`, database files, and provider credentials out of source control and issue reports.
+Stock Desk is a local, single-user application and does not implement authentication, authorization, multi-tenancy, or TLS termination. Treat the API, SQLite files, local market lake, and mounted TDX data as trusted-local resources and do not expose the service to an untrusted network. Keep `.env`, `STOCK_DESK_MASTER_KEY`, database and market-data files, local paths, and provider credentials out of source control and issue reports.

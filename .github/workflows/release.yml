@@ -43,6 +43,12 @@ jobs:
         run: |
           uv sync --frozen --all-groups --extra providers
           pnpm install --frozen-lockfile
+      - name: Verify tagged commit is on main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main
       - name: Verify tag matches package version
         shell: bash
         run: |

@@ -569,6 +569,10 @@ def test_ci_and_release_gate_the_chromium_end_to_end_slice() -> None:
 
     release = _read(".github/workflows/release.yml")
     assert "uv sync --frozen --all-groups --extra providers" in release
+    assert "git fetch --no-tags origin main:refs/remotes/origin/main" in release
+    assert (
+        'git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main' in release
+    )
     assert "pnpm exec playwright install --with-deps chromium" in release
     assert "make e2e-foundation" in release
     assert "make e2e-market" in release
