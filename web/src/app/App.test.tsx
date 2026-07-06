@@ -575,14 +575,17 @@ it('reports unavailable without exposing raw network errors', async () => {
 
 it('recovers both endpoint states after a bounded retry and manual recheck', async () => {
   let available = false;
-  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+  const releaseResponses: Array<() => void> = [];
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
     if (!available) {
-      throw new TypeError('offline');
+      return Promise.reject(new TypeError('offline'));
     }
-    await new Promise((resolve) => window.setTimeout(resolve, 25));
-    return requestUrl(input).endsWith('/health')
-      ? jsonResponse(healthyResponse)
-      : jsonResponse([]);
+    return new Promise<Response>((resolve) => {
+      const response = requestUrl(input).endsWith('/health')
+        ? jsonResponse(healthyResponse)
+        : jsonResponse([]);
+      releaseResponses.push(() => resolve(response));
+    });
   });
   vi.stubGlobal('fetch', fetchMock);
   const user = userEvent.setup();
@@ -600,6 +603,12 @@ it('recovers both endpoint states after a bounded retry and manual recheck', asy
   const retry = screen.getByRole('button', { name: '重新检测' });
   await user.click(retry);
   expect(retry).toBeDisabled();
+  expect(releaseResponses).toHaveLength(2);
+  act(() => {
+    for (const release of releaseResponses) {
+      release();
+    }
+  });
   expect(
     await screen.findByText('系统正常', { exact: true }),
   ).toBeInTheDocument();
