@@ -1,6 +1,6 @@
 [project]
 name = "stock-desk"
-version = "0.2.0"
+version = "0.3.0"
 description = "Local-first foundation for a personal A-share research workspace"
 readme = "README.md"
 license = "Apache-2.0"

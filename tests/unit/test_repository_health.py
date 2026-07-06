@@ -422,6 +422,7 @@ def test_make_test_enforces_coverage_and_writes_reports() -> None:
         "--cov-report=term-missing",
         "--cov-report=xml:coverage.xml",
         "--cov-fail-under=85",
+        "--ignore=tests/acceptance/test_formula_consistency.py",
         "pnpm test",
     ):
         assert required in test_recipe
@@ -435,6 +436,9 @@ def test_ci_uploads_coverage_reports_and_release_uses_canonical_test() -> None:
     )
     for required in (
         "--ignore=tests/acceptance/test_market_flow.py",
+        "--ignore=tests/acceptance/test_formula_consistency.py",
+        "--ignore=tests/acceptance/test_macd_formula_flow.py",
+        "--ignore=tests/performance/test_formula_preview.py",
         "--ignore=tests/performance/test_chart_query.py",
         "--cov=src/stock_desk",
         "--cov=scripts",
@@ -460,6 +464,22 @@ def test_ci_uploads_coverage_reports_and_release_uses_canonical_test() -> None:
         )["run"]
         == "make benchmark"
     )
+    assert (
+        next(
+            step
+            for step in python_steps
+            if step.get("name") == "Test Stage 2 formula acceptance"
+        )["run"]
+        == "make acceptance-formula"
+    )
+    assert (
+        next(
+            step
+            for step in python_steps
+            if step.get("name") == "Benchmark cached ten-year formula preview"
+        )["run"]
+        == "make benchmark-formula"
+    )
 
     web_steps = ci["jobs"]["web"]["steps"]
     web_test = next(step for step in web_steps if step.get("name") == "Test web")
@@ -482,8 +502,11 @@ def test_ci_uploads_coverage_reports_and_release_uses_canonical_test() -> None:
     commands = [line.strip() for line in release_gates["run"].splitlines()]
     assert commands[0] == "make test"
     assert "make acceptance" in commands
+    assert "make acceptance-formula" in commands
     assert "make benchmark" in commands
+    assert "make benchmark-formula" in commands
     assert "make e2e-market" in commands
+    assert "make e2e-formula" in commands
 
 
 def test_security_target_audits_only_locked_production_dependencies() -> None:
@@ -564,6 +587,7 @@ def test_ci_and_release_gate_the_chromium_end_to_end_slice() -> None:
         "pnpm exec playwright install --with-deps chromium",
         "make e2e-foundation",
         "make e2e-market",
+        "make e2e-formula",
     ):
         assert required in ci_e2e
 
@@ -576,6 +600,7 @@ def test_ci_and_release_gate_the_chromium_end_to_end_slice() -> None:
     assert "pnpm exec playwright install --with-deps chromium" in release
     assert "make e2e-foundation" in release
     assert "make e2e-market" in release
+    assert "make e2e-formula" in release
     assert "contents: write" in release
     assert 'tags:\n      - "v*"' in release
 
@@ -593,6 +618,7 @@ def test_release_builds_final_artifacts_only_after_all_source_gates() -> None:
     gate_commands = str(steps[gate_index]["run"])
     assert "make e2e-foundation" in gate_commands
     assert "make e2e-market" in gate_commands
+    assert "make e2e-formula" in gate_commands
     assert "make build" not in gate_commands
     assert steps[build_index]["run"] == "make build"
 
@@ -624,13 +650,16 @@ def test_e2e_is_a_root_script_without_changing_the_make_contract() -> None:
     }
     assert targets == {
         "acceptance",
+        "acceptance-formula",
         "benchmark",
+        "benchmark-formula",
         "bootstrap",
         "check-public-tree",
         "dev",
         "e2e",
         "e2e-foundation",
         "e2e-market",
+        "e2e-formula",
         "test",
         "lint",
         "typecheck",
@@ -645,6 +674,56 @@ def test_e2e_is_a_root_script_without_changing_the_make_contract() -> None:
     assert makefile.index("scripts/clean_build_artifacts.py") < makefile.index(
         "uv build --no-build-isolation"
     )
+
+
+def test_stage_two_formula_gates_extend_every_release_surface() -> None:
+    makefile = _read("Makefile")
+    assert re.search(
+        r"^acceptance-formula:\n\tuv run --frozen pytest -W error "
+        r"tests/acceptance/test_formula_consistency\.py "
+        r"tests/acceptance/test_macd_formula_flow\.py$",
+        makefile,
+        re.MULTILINE,
+    )
+    assert re.search(
+        r"^benchmark-formula:\n\tuv run --frozen pytest -W error "
+        r"tests/performance/test_formula_preview\.py --benchmark-only$",
+        makefile,
+        re.MULTILINE,
+    )
+    assert re.search(
+        r"^e2e-formula:\n\tpnpm exec playwright test "
+        r"web/e2e/formula-studio\.spec\.ts --project=chromium$",
+        makefile,
+        re.MULTILINE,
+    )
+    release_check = re.search(r"^release-check:\s*(.+)$", makefile, re.MULTILINE)
+    assert release_check is not None
+    dependencies = release_check.group(1).split()
+    for target in ("acceptance-formula", "benchmark-formula", "e2e-formula"):
+        assert target in dependencies
+
+    ci = _load_github_actions_yaml(_read(".github/workflows/ci.yml"))
+    ci_commands = "\n".join(
+        str(step.get("run", ""))
+        for job in ci["jobs"].values()
+        for step in job["steps"]
+        if isinstance(step, dict)
+    )
+    for command in (
+        "make acceptance-formula",
+        "make benchmark-formula",
+        "make e2e-formula",
+    ):
+        assert command in ci_commands
+
+    release = _read(".github/workflows/release.yml")
+    for command in (
+        "make acceptance-formula",
+        "make benchmark-formula",
+        "make e2e-formula",
+    ):
+        assert command in release
 
 
 def test_dependabot_covers_all_package_ecosystems_weekly() -> None:
@@ -720,7 +799,10 @@ def test_readmes_match_commands_and_describe_stage_one_limits() -> None:
         "STOCK_DESK_MASTER_KEY",
         "make acceptance",
         "make benchmark",
+        "make acceptance-formula",
+        "make benchmark-formula",
         "make e2e-market",
+        "make e2e-formula",
     )
     for fact in shared_facts:
         assert fact in english
@@ -729,6 +811,7 @@ def test_readmes_match_commands_and_describe_stage_one_limits() -> None:
     for content in (english, chinese):
         assert "Stage 0" in content
         assert "Stage 1" in content
+        assert "Stage 2" in content
         assert "Apache-2.0" in content
         assert "Docker" in content
         assert "uv" in content
@@ -754,31 +837,33 @@ def test_security_and_support_use_the_right_reporting_channels() -> None:
 def test_changelog_roadmap_and_architecture_match_current_release_scope() -> None:
     changelog = _read("CHANGELOG.md")
     unreleased = re.search(
-        r"## \[Unreleased\](?P<body>.*?)## \[0\.2\.0\]",
+        r"## \[Unreleased\](?P<body>.*?)## \[0\.3\.0\]",
         changelog,
         re.DOTALL,
     )
     assert unreleased is not None
     assert unreleased.group("body").strip() == ""
     release_section = re.search(
-        r"## \[0\.2\.0\] - 2026-07-06(?P<body>.*?)## \[0\.1\.0\]",
+        r"## \[0\.3\.0\] - 2026-07-07(?P<body>.*?)## \[0\.2\.0\]",
         changelog,
         re.DOTALL,
     )
     assert release_section is not None
     assert "### Added" in release_section.group("body")
-    assert "Stage 1" in release_section.group("body")
+    assert "Stage 2" in release_section.group("body")
 
     roadmap = _read("ROADMAP.md")
     for stage in range(6):
         assert f"| {stage} —" in roadmap
-    assert roadmap.count("| Complete |") == 2
+    assert roadmap.count("| Complete |") == 3
     assert roadmap.count("| Current |") == 0
-    assert roadmap.count("| Planned |") == 4
+    assert roadmap.count("| Planned |") == 3
 
     architecture = _read("docs/architecture.md")
     for boundary in ("FastAPI", "worker", "SQLite", "security", "trust boundary"):
         assert boundary.casefold() in architecture.casefold()
+    assert "formula engine" in architecture.casefold()
+    assert "formula studio" in architecture.casefold()
 
 
 def test_release_workflow_is_tag_only_and_scopes_write_permission() -> None:

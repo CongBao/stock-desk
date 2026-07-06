@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-07
+
+Stage 2 formula-system and Formula Studio release.
+
+### Added
+
+- A documented, versioned TDX-compatible formula subset with a constrained parser, typed compiler, deterministic vector evaluator, future/repainting detection, and bounded isolated preview workers.
+- Immutable formula versions, revision-checked drafts and copies, built-in MACD golden-cross/dead-cross signals, and one computation contract shared by direct preview and market charts.
+- A desktop-first, tablet-responsive three-column Formula Studio with searchable functions/templates, Monaco assistance, line diagnostics, low-code parameters, explicit preview, K-line/subchart output, and BUY/SELL markers.
+- Stage 2 API, acceptance, ten-year preview performance, and real-browser release gates while preserving every Stage 1 gate.
+
+### Security
+
+- Formula text is parsed rather than executed as arbitrary code; unsupported, future-data, repainting, oversized, timed-out, and incompatible-version requests fail closed with bounded public diagnostics.
+
 ## [0.2.0] - 2026-07-06
 
 Stage 1 market-data and charting release.

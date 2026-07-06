@@ -120,7 +120,7 @@ test('fresh user sees the live foundation shell and completed demo task', async 
   await page.getByRole('link', { name: '自定义公式' }).click();
   await expect(page).toHaveTitle('自定义公式 · stock-desk');
   await expect(
-    page.getByRole('heading', { level: 2, name: '自定义公式' }),
+    page.getByRole('heading', { level: 2, name: '公式工作台' }),
   ).toBeFocused();
 
   await page.goBack();
