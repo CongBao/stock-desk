@@ -5,6 +5,7 @@ export const settingsResponse = {
     minute_bars: ['tushare', 'baostock', 'eastmoney'],
     instruments: ['tushare', 'akshare', 'baostock', 'eastmoney'],
     trading_calendar: ['tushare', 'baostock', 'eastmoney'],
+    execution_status: ['tushare'],
   },
   tdx_path: '/safe/vipdoc',
   tushare: {
@@ -18,13 +19,14 @@ export const settingsResponse = {
 export const diagnosticResponse = {
   source: 'tushare',
   status: 'permission_denied',
-  capabilities: ['bars', 'instruments', 'trading_calendar'],
+  capabilities: ['bars', 'execution_status', 'instruments', 'trading_calendar'],
   permissions: [
     { category: 'minute_bars', state: 'permission_denied' },
     { category: 'daily_bars', state: 'available' },
     { category: 'weekly_bars', state: 'available' },
     { category: 'instruments', state: 'available' },
     { category: 'trading_calendar', state: 'available' },
+    { category: 'execution_status', state: 'available' },
   ],
   available_periods: ['1d', '1w'],
   gaps: [

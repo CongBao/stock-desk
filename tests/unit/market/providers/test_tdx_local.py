@@ -74,6 +74,7 @@ def test_tdx_provider_static_capabilities_and_unsupported_operations_do_not_scan
     assert {(gap.capability, gap.reason) for gap in report.gaps} == {
         (MarketCapability.INSTRUMENTS, FailureReason.UNSUPPORTED),
         (MarketCapability.TRADING_CALENDAR, FailureReason.UNSUPPORTED),
+        (MarketCapability.EXECUTION_STATUS, FailureReason.UNSUPPORTED),
     }
 
     instruments = provider.fetch_instruments()

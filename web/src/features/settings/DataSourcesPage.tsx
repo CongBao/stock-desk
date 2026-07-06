@@ -59,6 +59,7 @@ const categoryLabels: Readonly<Record<SourceCategory, string>> = {
   minute_bars: '60 分钟行情',
   instruments: '证券目录',
   trading_calendar: '交易日历',
+  execution_status: '回测执行状态',
 };
 const categoryOrder = [
   'daily_bars',
@@ -66,6 +67,7 @@ const categoryOrder = [
   'minute_bars',
   'instruments',
   'trading_calendar',
+  'execution_status',
 ] as const satisfies readonly SourceCategory[];
 const stateLabels: Readonly<Record<DiagnosticState, string>> = {
   available: '可用',
@@ -76,6 +78,7 @@ const stateLabels: Readonly<Record<DiagnosticState, string>> = {
 };
 const capabilityLabels = {
   bars: '行情',
+  execution_status: '回测执行状态',
   instruments: '证券目录',
   trading_calendar: '交易日历',
 } as const;
@@ -97,6 +100,7 @@ function clonePriorities(priorities: SourcePriorities): SourcePriorities {
     minute_bars: [...priorities.minute_bars],
     instruments: [...priorities.instruments],
     trading_calendar: [...priorities.trading_calendar],
+    execution_status: [...priorities.execution_status],
   };
 }
 

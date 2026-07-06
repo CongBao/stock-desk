@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Hashable
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta, timezone
+from decimal import Decimal
 from typing import Protocol, Self, cast
 
 from stock_desk.market.providers.base import (
@@ -9,11 +10,26 @@ from stock_desk.market.providers.base import (
     Clock,
     InstrumentFetchOutcome,
     ProviderNoData,
+    ProviderBatch,
+    ProviderBatchFailure,
+    ProviderBarTable,
+    ProviderClientError,
     ProviderInvalidResponse,
     ProviderOperation,
     ProviderPermissionDenied,
     ProviderTimeout,
     ProviderUnavailable,
+)
+from stock_desk.market.execution_status import (
+    ExecutionStatusDay,
+    ExecutionStatusQuery,
+    RawExecutionOpen,
+    SuspensionState,
+    materialize_execution_status,
+)
+from stock_desk.market.providers.execution_status import (
+    ExecutionStatusFailure,
+    ExecutionStatusFetchOutcome,
 )
 from stock_desk.market.providers.normalization import (
     MARKET_TIMEZONE,
@@ -54,6 +70,7 @@ from stock_desk.market.types import (
     CapabilityReport,
     CapabilityState,
     Exchange,
+    FailureReason,
     Instrument,
     InstrumentKind,
     ListingStatus,
@@ -71,6 +88,10 @@ class TushareClient(Protocol):
     def stock_basic(self, **kwargs: object) -> object: ...
 
     def trade_cal(self, **kwargs: object) -> object: ...
+
+    def suspend_d(self, **kwargs: object) -> object: ...
+
+    def stk_limit(self, **kwargs: object) -> object: ...
 
 
 class _TrackedSdkFailure(Exception):
@@ -195,6 +216,12 @@ class TushareSdkFacade:
         call_kwargs["end_date"] = inclusive_end.strftime("%Y%m%d")
         return call_sdk(required_sdk_callable(self._pro, "trade_cal"), **call_kwargs)
 
+    def suspend_d(self, **kwargs: object) -> object:
+        return call_sdk(required_sdk_callable(self._pro, "suspend_d"), **kwargs)
+
+    def stk_limit(self, **kwargs: object) -> object:
+        return call_sdk(required_sdk_callable(self._pro, "stk_limit"), **kwargs)
+
 
 _FREQUENCIES = {
     Period.DAY: "D",
@@ -243,6 +270,8 @@ _INSTRUMENT_COLUMNS = frozenset(
     }
 )
 _CALENDAR_COLUMNS = frozenset({"exchange", "cal_date", "is_open"})
+_SUSPENSION_COLUMNS = frozenset({"ts_code", "trade_date"})
+_LIMIT_COLUMNS = frozenset({"ts_code", "trade_date", "up_limit", "down_limit"})
 
 
 class TushareProvider:
@@ -332,6 +361,179 @@ class TushareProvider:
             )
         except Exception as error:
             return bar_failure(source=self.name, query=query, error=error)
+
+    def fetch_execution_status(
+        self,
+        query: ExecutionStatusQuery,
+    ) -> ExecutionStatusFetchOutcome:
+        """Fetch complete calendar/suspension/limit evidence and raw opens."""
+        try:
+            calendar = self.fetch_calendar(
+                query.exchange,
+                query.start,
+                query.end,
+            )
+            if isinstance(calendar, ProviderBatchFailure):
+                return ExecutionStatusFailure(
+                    query=query,
+                    source=self.name,
+                    reason=calendar.reason,
+                    detail=calendar.detail,
+                )
+            if not isinstance(calendar, ProviderBatch):
+                raise ProviderInvalidResponse()
+
+            start_text = query.start.strftime("%Y%m%d")
+            end_text = (query.end - timedelta(days=1)).strftime("%Y%m%d")
+            suspension_rows = records_from_table(
+                self._client.suspend_d(
+                    ts_code=query.symbol,
+                    start_date=start_text,
+                    end_date=end_text,
+                    suspend_type="S",
+                    fields="ts_code,trade_date",
+                ),
+                required=_SUSPENSION_COLUMNS,
+            )
+            suspended_days: set[date] = set()
+            for row in suspension_rows:
+                if row["ts_code"] != query.symbol:
+                    raise ProviderInvalidResponse()
+                suspended_days.add(parse_date(row["trade_date"], compact=True))
+
+            limit_rows = records_from_table(
+                self._client.stk_limit(
+                    ts_code=query.symbol,
+                    start_date=start_text,
+                    end_date=end_text,
+                    fields="ts_code,trade_date,up_limit,down_limit",
+                ),
+                required=_LIMIT_COLUMNS,
+            )
+            limits: dict[date, tuple[Decimal, Decimal]] = {}
+            for row in limit_rows:
+                if row["ts_code"] != query.symbol:
+                    raise ProviderInvalidResponse()
+                day = parse_date(row["trade_date"], compact=True)
+                if day in limits:
+                    raise ProviderInvalidResponse()
+                limits[day] = (
+                    decimal_price(row["up_limit"], Adjustment.NONE),
+                    decimal_price(row["down_limit"], Adjustment.NONE),
+                )
+
+            local_start = datetime.combine(
+                query.start, time.min, tzinfo=MARKET_TIMEZONE
+            )
+            local_end = datetime.combine(query.end, time.min, tzinfo=MARKET_TIMEZONE)
+            raw_period = Period.MIN60 if query.period is Period.MIN60 else Period.DAY
+            raw_table = self._client.pro_bar(
+                ts_code=query.symbol,
+                start_date=start_text,
+                end_date=end_text,
+                freq=_FREQUENCIES[raw_period],
+                adj=None,
+                _coverage_start=local_start.astimezone(timezone.utc),
+                _coverage_end=local_end.astimezone(timezone.utc),
+            )
+            if isinstance(raw_table, ProviderBarTable):
+                raw_table = raw_table.table
+            raw_time_column = (
+                "trade_time" if raw_period is Period.MIN60 else "trade_date"
+            )
+            raw_rows = records_from_table(
+                raw_table,
+                required=_BAR_COLUMNS | {raw_time_column},
+            )
+            raw_opens: list[RawExecutionOpen] = []
+            seen_opens: set[datetime] = set()
+            for row in raw_rows:
+                if row["ts_code"] != query.symbol:
+                    raise ProviderInvalidResponse()
+                if raw_period is Period.MIN60:
+                    timestamp, _endpoint = period_bounds(
+                        row[raw_time_column], raw_period
+                    )
+                    day = timestamp.astimezone(MARKET_TIMEZONE).date()
+                else:
+                    day = parse_date(row[raw_time_column], compact=True)
+                    timestamp = datetime.combine(
+                        day,
+                        time(9, 30),
+                        tzinfo=MARKET_TIMEZONE,
+                    )
+                if timestamp in seen_opens:
+                    raise ProviderInvalidResponse()
+                seen_opens.add(timestamp)
+                raw_opens.append(
+                    RawExecutionOpen(
+                        timestamp=timestamp,
+                        trading_day=day,
+                        raw_open=decimal_price(row["open"], Adjustment.NONE),
+                    )
+                )
+
+            status_days: list[ExecutionStatusDay] = []
+            for trading_day in calendar.items:
+                if not isinstance(trading_day, TradingDay):
+                    raise ProviderInvalidResponse()
+                if not trading_day.is_open:
+                    status_days.append(
+                        ExecutionStatusDay(
+                            day=trading_day.day,
+                            exchange=query.exchange,
+                            is_exchange_open=False,
+                            suspension_state=SuspensionState.NOT_APPLICABLE,
+                            raw_upper_limit=None,
+                            raw_lower_limit=None,
+                        )
+                    )
+                    continue
+                raw_limits = limits.get(trading_day.day)
+                if raw_limits is None:
+                    raise ProviderInvalidResponse()
+                status_days.append(
+                    ExecutionStatusDay(
+                        day=trading_day.day,
+                        exchange=query.exchange,
+                        is_exchange_open=True,
+                        suspension_state=(
+                            SuspensionState.SUSPENDED
+                            if trading_day.day in suspended_days
+                            else SuspensionState.NORMAL
+                        ),
+                        raw_upper_limit=raw_limits[0],
+                        raw_lower_limit=raw_limits[1],
+                    )
+                )
+
+            observed_at = aware_now(self._clock)
+            cutoff = min(calendar.provenance.data_cutoff, observed_at)
+            return materialize_execution_status(
+                query=query,
+                days=tuple(status_days),
+                raw_opens=tuple(raw_opens),
+                source=self.name,
+                fetched_at=observed_at,
+                data_cutoff=cutoff,
+            )
+        except Exception as error:
+            reason = (
+                error.reason
+                if isinstance(error, ProviderClientError)
+                else FailureReason.INVALID_RESPONSE
+            )
+            detail = (
+                error.safe_detail
+                if isinstance(error, ProviderClientError)
+                else "provider response is invalid"
+            )
+            return ExecutionStatusFailure(
+                query=query,
+                source=self.name,
+                reason=reason,
+                detail=detail,
+            )
 
     def fetch_instruments(self) -> InstrumentFetchOutcome:
         try:

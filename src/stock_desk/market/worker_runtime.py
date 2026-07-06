@@ -20,6 +20,7 @@ from stock_desk.market.compositions import (
 )
 from stock_desk.market.instruments import InstrumentNotFound, InstrumentRepository
 from stock_desk.market.lake import MarketLake
+from stock_desk.market.execution_status_lake import ExecutionStatusLake
 from stock_desk.market.pools import PoolCategory, PoolRepository, PoolRepositoryError
 from stock_desk.market.provenance import (
     RoutedInstrumentFailure,
@@ -61,6 +62,7 @@ class SettingsBackedMarketUpdateHandler:
         tasks: TaskRepository,
         engine: Engine,
         provider_factory: RuntimeProviderFactory,
+        execution_status_lake: ExecutionStatusLake | None = None,
     ) -> None:
         identities = (
             source_settings.database_identity,
@@ -74,6 +76,7 @@ class SettingsBackedMarketUpdateHandler:
         self._tasks = tasks
         self._engine = engine
         self._provider_factory = provider_factory
+        self._execution_status_lake = execution_status_lake
 
     def __call__(self, task: TaskSnapshot) -> Mapping[str, Any]:
         snapshot = self._source_settings.runtime_snapshot()
@@ -89,6 +92,7 @@ class SettingsBackedMarketUpdateHandler:
                         lake=self._lake,
                         tasks=self._tasks,
                         engine=self._engine,
+                        execution_status_lake=self._execution_status_lake,
                     ).handle(task)
                 )
                 result["configuration_fingerprint"] = snapshot.configuration_fingerprint
@@ -255,6 +259,7 @@ class ProductionMarketWorker:
             source_settings = SourceSettingsServices(engine=engine, settings=settings)
             data_dir = Path(os.path.abspath(os.fspath(settings.data_dir.expanduser())))
             lake = MarketLake(engine=engine, root=data_dir / "market")
+            execution_status_lake = ExecutionStatusLake(engine)
             instruments = InstrumentRepository(engine)
             pools = PoolRepository(engine)
             schedules = MarketUpdateScheduleRepository(engine)
@@ -272,6 +277,7 @@ class ProductionMarketWorker:
                     tasks=tasks,
                     engine=engine,
                     provider_factory=resolved_factory,
+                    execution_status_lake=execution_status_lake,
                 ),
             )
             task_worker.register(

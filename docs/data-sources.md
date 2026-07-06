@@ -29,8 +29,11 @@ Each data category has an independent ordered list:
 | 60-minute bars | Tushare → BaoStock → Eastmoney |
 | Instruments | Tushare → AKShare → BaoStock → Eastmoney |
 | Trading calendar | Tushare → BaoStock → Eastmoney |
+| Backtest execution status | Tushare |
 
 Stock Desk tries the next provider only when the current provider is unavailable, denied, unsupported, missing coverage, or returns no usable data. It does not splice providers together within one requested series. A saved list must be non-empty, contain no duplicates or unknown names, and retain at least one currently implemented source for its category. Settings are written atomically as one canonical JSON document, so readers see either the old complete order or the new complete order.
+
+Execution status is routed and cached independently from price bars. Tushare is the only authoritative v1 source because it combines a complete exchange calendar with explicit historical suspension and daily price-limit datasets. AKShare, BaoStock, local TDX, and Eastmoney report this capability as unsupported; they never infer tradability from a missing bar or approximate historical board/ST/IPO limits. A local TDX or fallback price series may therefore be paired with a Tushare execution-status snapshot, and both routing manifests remain pinned for replay.
 
 Eastmoney is intentionally shown as a reserved fallback but its Stage 1 adapter is not implemented. Its connection test therefore reports `unsupported` rather than implying live coverage.
 
@@ -42,11 +45,13 @@ The market page explicitly creates `market.catalog.update` and `market.update` t
 
 The TDX setting must be an absolute path of at least four characters to a plausible local `vipdoc` directory. On POSIX systems the reader opens the filesystem anchor and traverses every path component with descriptor-relative `O_NOFOLLOW` directory opens, so a symbolic link anywhere in the ancestor chain is rejected. Dot components, relative or implausibly short paths, surrounding whitespace, control characters, overlong paths, missing layouts, corrupt records, non-directories, and reparse points are rejected or reported as capability gaps. Windows retains its handle-based reparse/final-path validation. The diagnostic performs the same local preflight used by the provider; it never returns the configured path in an error.
 
-Local TDX is a fallback for supported local bar files. It is not a source for the instrument catalogue or trading calendar, and unsupported periods remain visible as gaps.
+Local TDX is a fallback for supported local bar files. It is not a source for the instrument catalogue, trading calendar, suspension history, or price-limit evidence, and unsupported periods remain visible as gaps.
 
 For Compose, set `STOCK_DESK_TDX_HOST_PATH` to the host directory containing `vipdoc`, then configure `/app/tdx` in the UI. API and worker share that read-only mount.
 
 ## Connection diagnostics
+
+Execution-status diagnostics exercise the Tushare calendar, suspension, limit, and raw-open permissions independently. Missing permission or incomplete evidence is actionable and fail-closed; it is never shown as tradable.
 
 “Test connection” constructs the real provider adapter. Tushare runs independent bounded historical probes for daily, weekly, and 60-minute bars, instruments, and one trading-calendar day, so a calendar success cannot mask a denied bar entitlement. Its successful calendar batch must contain exactly one unique SH row for every natural date in the requested half-open window. BaoStock performs login/logout and TDX performs filesystem preflight through their adapters; providers that expose a close operation are always closed. AKShare is capability-only because its SDK does not offer a comparable session probe; Eastmoney honestly reports unsupported. Every generic capability report must match both the requested source and provider identity. Non-available reports become one coherent fixed failure only when a matching validated gap supports their state; otherwise they fall back to provider unavailable. The result is a point-in-time preflight, not a guarantee that a later download will succeed.
 

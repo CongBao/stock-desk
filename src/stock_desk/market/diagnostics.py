@@ -31,6 +31,11 @@ from stock_desk.market.providers.base import (
     ProviderBatchFailure,
     ProviderOperation,
 )
+from stock_desk.market.execution_status import (
+    ExecutionStatusQuery,
+    ExecutionStatusSnapshot,
+)
+from stock_desk.market.providers.execution_status import ExecutionStatusFailure
 from stock_desk.market.types import (
     Adjustment,
     BarFailure,
@@ -58,6 +63,7 @@ class SourceCategory(StrEnum):
     WEEKLY_BARS = "weekly_bars"
     INSTRUMENTS = "instruments"
     TRADING_CALENDAR = "trading_calendar"
+    EXECUTION_STATUS = "execution_status"
 
 
 SOURCE_CATEGORY_ORDER = tuple(SourceCategory)
@@ -119,6 +125,10 @@ class TushareDiagnosticProvider(DiagnosticProvider, Protocol):
         end: date,
     ) -> CalendarFetchOutcome: ...
 
+    def fetch_execution_status(
+        self, query: ExecutionStatusQuery
+    ) -> ExecutionStatusSnapshot | ExecutionStatusFailure: ...
+
 
 class DiagnosticProviderFactory(Protocol):
     def __call__(
@@ -167,6 +177,9 @@ _CATEGORY_DETAILS = {
     SourceCategory.WEEKLY_BARS: "provider does not support weekly bars",
     SourceCategory.INSTRUMENTS: "provider does not support instruments",
     SourceCategory.TRADING_CALENDAR: "provider does not support trading calendar",
+    SourceCategory.EXECUTION_STATUS: (
+        "provider does not support authoritative execution status"
+    ),
 }
 _CHINA_STANDARD_TIME = timezone(timedelta(hours=8))
 _TUSHARE_BAR_PROBES = (
@@ -203,6 +216,12 @@ _TUSHARE_BAR_PROBES = (
 )
 _TUSHARE_CALENDAR_START = date(2024, 1, 2)
 _TUSHARE_CALENDAR_END = date(2024, 1, 3)
+_TUSHARE_EXECUTION_STATUS_QUERY = ExecutionStatusQuery(
+    symbol="600000.SH",
+    exchange=Exchange.SH,
+    start=_TUSHARE_CALENDAR_START,
+    end=_TUSHARE_CALENDAR_END,
+)
 
 
 def _utc_now() -> datetime:
@@ -255,7 +274,9 @@ def _supports(report: CapabilityReport, category: SourceCategory) -> bool:
         )
     if category is SourceCategory.INSTRUMENTS:
         return MarketCapability.INSTRUMENTS in report.capabilities
-    return MarketCapability.TRADING_CALENDAR in report.capabilities
+    if category is SourceCategory.TRADING_CALENDAR:
+        return MarketCapability.TRADING_CALENDAR in report.capabilities
+    return MarketCapability.EXECUTION_STATUS in report.capabilities
 
 
 def _failure_diagnostic(
@@ -455,6 +476,12 @@ def _tushare_diagnostic(
                     _TUSHARE_CALENDAR_END,
                 ),
             ),
+            (
+                SourceCategory.EXECUTION_STATUS,
+                lambda: provider.fetch_execution_status(
+                    _TUSHARE_EXECUTION_STATUS_QUERY
+                ),
+            ),
         )
     )
 
@@ -506,6 +533,24 @@ def _tushare_diagnostic(
                 else:
                     cutoff = outcome.provenance.data_cutoff
                     successful_periods.add(expected_query.period)
+            else:
+                reason = FailureReason.INVALID_RESPONSE
+        elif category is SourceCategory.EXECUTION_STATUS:
+            if isinstance(outcome, ExecutionStatusFailure):
+                reason = (
+                    outcome.reason
+                    if outcome.source is ProviderId.TUSHARE
+                    and outcome.query == _TUSHARE_EXECUTION_STATUS_QUERY
+                    else FailureReason.INVALID_RESPONSE
+                )
+            elif isinstance(outcome, ExecutionStatusSnapshot):
+                if (
+                    outcome.source is not ProviderId.TUSHARE
+                    or outcome.query != _TUSHARE_EXECUTION_STATUS_QUERY
+                ):
+                    reason = FailureReason.INVALID_RESPONSE
+                else:
+                    cutoff = outcome.data_cutoff
             else:
                 reason = FailureReason.INVALID_RESPONSE
         elif isinstance(outcome, ProviderBatchFailure):
@@ -567,6 +612,8 @@ def _tushare_diagnostic(
         capabilities.add(MarketCapability.INSTRUMENTS)
     if SourceCategory.TRADING_CALENDAR in successful_categories:
         capabilities.add(MarketCapability.TRADING_CALENDAR)
+    if SourceCategory.EXECUTION_STATUS in successful_categories:
+        capabilities.add(MarketCapability.EXECUTION_STATUS)
 
     primary_gap = gaps[0] if gaps else None
     return SourceDiagnostic(

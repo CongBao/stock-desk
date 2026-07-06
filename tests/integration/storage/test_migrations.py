@@ -19,7 +19,7 @@ from stock_desk.storage.metadata import Base
 from stock_desk.tasks.repository import TaskRepository
 
 
-HEAD_REVISION = "0005_formula_catalog"
+HEAD_REVISION = "0006_execution_status"
 INSTRUMENT_TABLES = {
     "instrument_dataset",
     "instrument_dataset_item",
@@ -42,12 +42,17 @@ CATALOG_TABLES = {
     *POOL_TABLES,
 }
 FORMULA_TABLES = {"formula", "formula_draft", "formula_version"}
+EXECUTION_STATUS_TABLES = {
+    "execution_status_dataset",
+    "execution_status_routing_manifest",
+}
 CORE_TABLES = {
     "app_setting",
     "task_event",
     "task_run",
     *CATALOG_TABLES,
     *FORMULA_TABLES,
+    *EXECUTION_STATUS_TABLES,
 }
 LEGACY_CORE_TABLES = {"app_setting", "task_run"}
 APP_SETTING_COLUMNS = {"key", "encrypted_value", "updated_at"}
@@ -76,6 +81,28 @@ TASK_EVENT_COLUMNS = {
     "occurred_at",
 }
 MARKET_TABLE_COLUMNS = {
+    "execution_status_dataset": {
+        "dataset_version",
+        "source",
+        "symbol",
+        "exchange",
+        "query_start",
+        "query_end",
+        "period",
+        "fetched_at",
+        "data_cutoff",
+        "row_count",
+        "snapshot_json",
+        "created_at",
+    },
+    "execution_status_routing_manifest": {
+        "manifest_record_id",
+        "dataset_version",
+        "route_version",
+        "manifest_json",
+        "fetched_at",
+        "created_at",
+    },
     "instrument_dataset": {
         "dataset_version",
         "source",
@@ -261,6 +288,14 @@ IMMUTABLE_TRIGGER_NAMES = {
 UPDATE_ITEM_OWNER_TRIGGER = "trg_market_update_item_owner_running"
 UPDATE_ITEM_DUPLICATE_TRIGGER = "trg_market_update_item_immutable_insert"
 MARKET_TRIGGER_NAMES = {*IMMUTABLE_TRIGGER_NAMES, UPDATE_ITEM_OWNER_TRIGGER}
+EXECUTION_STATUS_TRIGGER_NAMES = {
+    f"trg_{table}_immutable_{operation}"
+    for table in (
+        "execution_status_dataset",
+        "execution_status_routing_manifest",
+    )
+    for operation in ("insert", "update", "delete")
+}
 FORMULA_TRIGGER_NAMES = {
     "trg_formula_version_immutable_insert",
     "trg_formula_version_immutable_update",
@@ -269,7 +304,11 @@ FORMULA_TRIGGER_NAMES = {
     "trg_formula_draft_executable_insert",
     "trg_formula_draft_executable_update",
 }
-ALL_TRIGGER_NAMES = {*MARKET_TRIGGER_NAMES, *FORMULA_TRIGGER_NAMES}
+ALL_TRIGGER_NAMES = {
+    *MARKET_TRIGGER_NAMES,
+    *FORMULA_TRIGGER_NAMES,
+    *EXECUTION_STATUS_TRIGGER_NAMES,
+}
 
 
 def _dispose(engine: Engine) -> None:
@@ -452,6 +491,12 @@ def test_market_catalog_has_exact_keys_constraints_and_indexes(tmp_path: Path) -
         assert inspector.get_pk_constraint("market_update_occurrence")[
             "constrained_columns"
         ] == ["schedule_id", "local_date"]
+        assert inspector.get_pk_constraint("execution_status_dataset")[
+            "constrained_columns"
+        ] == ["dataset_version"]
+        assert inspector.get_pk_constraint("execution_status_routing_manifest")[
+            "constrained_columns"
+        ] == ["manifest_record_id"]
 
         assert _unique_signatures(engine, "market_dataset_partition") == {
             ("dataset_version", "partition_year"),
@@ -492,6 +537,13 @@ def test_market_catalog_has_exact_keys_constraints_and_indexes(tmp_path: Path) -
                 False,
             )
         }
+        assert _index_signatures(engine, "execution_status_dataset") == {
+            (
+                "ix_execution_status_dataset_exact_query",
+                ("symbol", "exchange", "period", "query_start", "query_end"),
+                False,
+            )
+        }
 
         assert _check_names(engine, "market_dataset") == {
             "ck_market_dataset_row_count_positive"
@@ -508,6 +560,10 @@ def test_market_catalog_has_exact_keys_constraints_and_indexes(tmp_path: Path) -
         }
         assert _check_names(engine, "market_update_schedule") == {
             "ck_market_update_schedule_timezone"
+        }
+        assert _check_names(engine, "execution_status_dataset") == {
+            "ck_execution_status_dataset_period",
+            "ck_execution_status_dataset_row_count_positive",
         }
 
         partition_fks = inspector.get_foreign_keys("market_dataset_partition")

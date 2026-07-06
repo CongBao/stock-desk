@@ -100,6 +100,7 @@ class SourcePriorities(_SettingsModel):
         ProviderId.BAOSTOCK,
         ProviderId.EASTMONEY,
     )
+    execution_status: tuple[ProviderId, ...] = (ProviderId.TUSHARE,)
 
     @field_validator("*", mode="before")
     @classmethod
@@ -146,6 +147,7 @@ class SourcePriorities(_SettingsModel):
                 {ProviderId.TUSHARE, ProviderId.AKSHARE, ProviderId.BAOSTOCK}
             ),
             "trading_calendar": frozenset({ProviderId.TUSHARE, ProviderId.BAOSTOCK}),
+            "execution_status": frozenset({ProviderId.TUSHARE}),
         }
         for field_name, usable_sources in usable.items():
             configured = cast(tuple[ProviderId, ...], getattr(self, field_name))

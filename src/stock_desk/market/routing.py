@@ -12,10 +12,13 @@ from pydantic import BaseModel, ConfigDict, model_validator
 from stock_desk.market.provenance import (
     BarRoutingRequest,
     CalendarRoutingRequest,
+    ExecutionStatusRoutingRequest,
     RoutedBarFailure,
     RoutedBarSuccess,
     RoutedCalendarFailure,
     RoutedCalendarSuccess,
+    RoutedExecutionStatusFailure,
+    RoutedExecutionStatusSuccess,
     RoutedInstrumentFailure,
     RoutedInstrumentSuccess,
     RouterBatchFailure,
@@ -28,7 +31,13 @@ from stock_desk.market.provenance import (
     make_failure_audit,
     make_routing_manifest,
 )
+from stock_desk.market.execution_status import (
+    ExecutionStatusQuery,
+    ExecutionStatusSnapshot,
+)
+from stock_desk.market.providers.execution_status import ExecutionStatusFailure
 from stock_desk.market.providers.base import (
+    ExecutionStatusProvider,
     MarketDataProvider,
     ProviderBatch,
     ProviderBatchFailure,
@@ -74,6 +83,7 @@ class SourcePriorities(BaseModel):
         ProviderId.TUSHARE,
         ProviderId.BAOSTOCK,
     )
+    execution_status: tuple[ProviderId, ...] = (ProviderId.TUSHARE,)
 
     @model_validator(mode="after")
     def validate_unique_categories(self) -> Self:
@@ -84,6 +94,7 @@ class SourcePriorities(BaseModel):
             "minute_bars",
             "instruments",
             "trading_calendar",
+            "execution_status",
         ):
             values = getattr(self, category)
             if values is None:
@@ -106,7 +117,9 @@ class SourcePriorities(BaseModel):
             return self.bars
         if category is MarketCapability.INSTRUMENTS:
             return self.instruments
-        return self.trading_calendar
+        if category is MarketCapability.TRADING_CALENDAR:
+            return self.trading_calendar
+        return self.execution_status
 
 
 @dataclass(frozen=True, slots=True)
@@ -767,3 +780,145 @@ class SourceRouter:
             end=end,
         )
         return RoutedCalendarFailure(failure=failure, audit=audit)
+
+    def fetch_execution_status(
+        self,
+        query: ExecutionStatusQuery,
+        *,
+        previous_manifest: RoutingManifest | None = None,
+    ) -> RoutedExecutionStatusSuccess | RoutedExecutionStatusFailure:
+        category = MarketCapability.EXECUTION_STATUS
+        priority = self._priorities.execution_status
+        attempts: list[RoutingAttempt] = []
+        request = ExecutionStatusRoutingRequest(query=query)
+        previous_manifest = _validated_previous_manifest(
+            previous_manifest,
+            category=category,
+            request=request,
+        )
+
+        def record(
+            source: ProviderId,
+            decision: RoutingDecision,
+            reason: FailureReason,
+        ) -> None:
+            attempts.append(
+                RoutingAttempt.create(
+                    ordinal=len(attempts) + 1,
+                    source=source,
+                    category=category,
+                    decision=decision,
+                    reason=reason,
+                )
+            )
+
+        for source in priority:
+            registration = self._registry.get(source)
+            if registration is None:
+                record(
+                    source,
+                    RoutingDecision.REGISTRY_MISSING,
+                    FailureReason.PROVIDER_UNAVAILABLE,
+                )
+                continue
+            with registration.lock:
+                report, capability_failure = self._capability_report(
+                    source, registration
+                )
+                if capability_failure is not None:
+                    record(
+                        source,
+                        RoutingDecision.CAPABILITY_FAILURE,
+                        capability_failure,
+                    )
+                    continue
+                capability_reason = _category_capability_reason(report, category)
+                if capability_reason is not None:
+                    record(
+                        source,
+                        (
+                            RoutingDecision.CAPABILITY_SKIP
+                            if capability_reason is FailureReason.UNSUPPORTED
+                            else RoutingDecision.CAPABILITY_FAILURE
+                        ),
+                        capability_reason,
+                    )
+                    continue
+                try:
+                    if not isinstance(registration.provider, ExecutionStatusProvider):
+                        raise TypeError("provider execution-status contract is missing")
+                    raw = registration.provider.fetch_execution_status(query)
+                    if registration.provider.name is not source:
+                        raise ValueError("provider name changed")
+                    if isinstance(raw, ExecutionStatusSnapshot):
+                        outcome: ExecutionStatusSnapshot | ExecutionStatusFailure = (
+                            ExecutionStatusSnapshot.model_validate(
+                                raw.model_dump(mode="python")
+                            )
+                        )
+                    elif isinstance(raw, ExecutionStatusFailure):
+                        outcome = ExecutionStatusFailure.model_validate(
+                            raw.model_dump(mode="python")
+                        )
+                    else:
+                        raise TypeError("execution-status outcome has wrong type")
+                except Exception as error:
+                    record(
+                        source,
+                        RoutingDecision.FETCH_FAILURE,
+                        _safe_capability_reason(error),
+                    )
+                    continue
+
+            if isinstance(outcome, ExecutionStatusFailure):
+                reason = (
+                    outcome.reason
+                    if outcome.source is source
+                    and outcome.query == query
+                    and outcome.reason is not FailureReason.NO_PROVIDER
+                    else FailureReason.INVALID_RESPONSE
+                )
+                record(source, RoutingDecision.FETCH_FAILURE, reason)
+                continue
+            if outcome.query != query or outcome.source is not source:
+                record(
+                    source,
+                    RoutingDecision.FETCH_FAILURE,
+                    FailureReason.INVALID_RESPONSE,
+                )
+                continue
+            transition = derive_source_transition(
+                previous=previous_manifest,
+                category=category,
+                request=request,
+                priority=priority,
+                selected_source=source,
+                upstream_dataset_version=outcome.dataset_version,
+                observed_at=None,
+            )
+            manifest = make_routing_manifest(
+                category=category,
+                request=request,
+                priority=priority,
+                attempts=tuple(attempts),
+                selected_source=source,
+                upstream_dataset_version=outcome.dataset_version,
+                upstream_fetched_at=outcome.fetched_at,
+                upstream_data_cutoff=outcome.data_cutoff,
+                upstream_adjustment=None,
+                transition=transition,
+            )
+            return RoutedExecutionStatusSuccess(result=outcome, manifest=manifest)
+
+        audit = make_failure_audit(
+            category=category,
+            request=request,
+            priority=priority,
+            attempts=tuple(attempts),
+        )
+        return RoutedExecutionStatusFailure(
+            query=query,
+            reason=FailureReason.NO_PROVIDER,
+            detail="no configured provider can satisfy this request",
+            audit=audit,
+        )

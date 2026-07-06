@@ -63,6 +63,8 @@ try:
         "formula",
         "formula_draft",
         "formula_version",
+        "execution_status_dataset",
+        "execution_status_routing_manifest",
         "market_dataset",
         "market_dataset_partition",
         "market_routing_manifest",
@@ -89,6 +91,8 @@ try:
         "formula",
         "formula_draft",
         "formula_version",
+        "execution_status_dataset",
+        "execution_status_routing_manifest",
         "market_dataset",
         "market_dataset_partition",
         "market_routing_manifest",
@@ -124,3 +128,4 @@ finally:
         "stock_desk/migrations/versions/0004_instruments_and_pools.py" in packaged_files
     )
     assert "stock_desk/migrations/versions/0005_formula_catalog.py" in packaged_files
+    assert "stock_desk/migrations/versions/0006_execution_status.py" in packaged_files

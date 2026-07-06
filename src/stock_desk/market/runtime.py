@@ -32,6 +32,8 @@ from stock_desk.market.types import (
     Exchange,
     ProviderId,
 )
+from stock_desk.market.execution_status import ExecutionStatusQuery
+from stock_desk.market.providers.execution_status import ExecutionStatusFetchOutcome
 
 
 def _utc_now() -> datetime:
@@ -87,6 +89,11 @@ class _UnavailableProvider:
     def fetch_bars(self, _query: BarQuery) -> BarFetchOutcome:
         raise self._error_type()
 
+    def fetch_execution_status(
+        self, _query: ExecutionStatusQuery
+    ) -> ExecutionStatusFetchOutcome:
+        raise self._error_type()
+
     def fetch_instruments(self) -> InstrumentFetchOutcome:
         raise self._error_type()
 
@@ -134,6 +141,7 @@ def _configured_sources(settings: RuntimeSourceSettings) -> tuple[ProviderId, ..
         *priorities.minute_bars,
         *priorities.instruments,
         *priorities.trading_calendar,
+        *priorities.execution_status,
     )
     return tuple(dict.fromkeys(ordered))
 
@@ -202,6 +210,7 @@ class MarketProviderRuntime:
             minute_bars=persisted.minute_bars,
             instruments=persisted.instruments,
             trading_calendar=persisted.trading_calendar,
+            execution_status=persisted.execution_status,
         )
         try:
             router = SourceRouter(tuple(entries), priorities=priorities)

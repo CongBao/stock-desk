@@ -129,15 +129,30 @@ def test_provider_implements_protocol_and_truthful_static_capabilities(
         assert report.capabilities == frozenset(
             {MarketCapability.BARS, MarketCapability.INSTRUMENTS}
         )
-        assert len(report.gaps) == 1
-        gap = report.gaps[0]
+        assert len(report.gaps) == 2
+        gap = next(
+            item
+            for item in report.gaps
+            if item.capability is MarketCapability.TRADING_CALENDAR
+        )
         assert gap.capability is MarketCapability.TRADING_CALENDAR
         assert gap.state is CapabilityState.UNSUPPORTED
         assert gap.reason is FailureReason.UNSUPPORTED
         assert gap.detail is not None and "closed-day" in gap.detail
-    else:
+    elif provider_case.source is ProviderId.TUSHARE:
         assert report.capabilities == frozenset(MarketCapability)
         assert report.gaps == ()
+    else:
+        assert report.capabilities == frozenset(
+            {
+                MarketCapability.BARS,
+                MarketCapability.INSTRUMENTS,
+                MarketCapability.TRADING_CALENDAR,
+            }
+        )
+        assert {gap.capability for gap in report.gaps} == {
+            MarketCapability.EXECUTION_STATUS
+        }
     assert client.calls == []
 
 

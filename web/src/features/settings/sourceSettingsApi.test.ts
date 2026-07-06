@@ -161,6 +161,7 @@ it('accepts an available TDX source with explicit unsupported categories', async
       { category: 'weekly_bars', state: 'unsupported' },
       { category: 'instruments', state: 'unsupported' },
       { category: 'trading_calendar', state: 'unsupported' },
+      { category: 'execution_status', state: 'unsupported' },
     ],
     available_periods: ['1d'],
     gaps: [
@@ -187,6 +188,12 @@ it('accepts an available TDX source with explicit unsupported categories', async
         state: 'unsupported',
         reason: 'unsupported',
         detail: 'provider does not support trading calendar',
+      },
+      {
+        category: 'execution_status',
+        state: 'unsupported',
+        reason: 'unsupported',
+        detail: 'provider does not support execution status',
       },
     ],
     last_checked: '2026-07-06T09:30:00Z',

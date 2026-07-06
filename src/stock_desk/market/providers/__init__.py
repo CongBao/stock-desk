@@ -3,6 +3,7 @@ from stock_desk.market.providers.baostock import BaoStockProvider
 from stock_desk.market.providers.base import (
     CalendarFetchOutcome,
     DatasetProvenance,
+    ExecutionStatusProvider,
     InstrumentFetchOutcome,
     MarketDataProvider,
     ProviderBatch,
@@ -19,6 +20,10 @@ from stock_desk.market.providers.base import (
     ProviderUnavailable,
     ProviderUnsupported,
 )
+from stock_desk.market.providers.execution_status import (
+    ExecutionStatusFailure,
+    ExecutionStatusFetchOutcome,
+)
 from stock_desk.market.providers.tushare import TushareProvider
 from stock_desk.market.providers.tdx_local import (
     TdxInspectionFailure,
@@ -34,6 +39,9 @@ __all__ = [
     "BaoStockProvider",
     "CalendarFetchOutcome",
     "DatasetProvenance",
+    "ExecutionStatusFailure",
+    "ExecutionStatusFetchOutcome",
+    "ExecutionStatusProvider",
     "InstrumentFetchOutcome",
     "MarketDataProvider",
     "ProviderBatch",

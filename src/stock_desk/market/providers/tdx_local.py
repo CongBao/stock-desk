@@ -42,6 +42,11 @@ from stock_desk.market.providers.tdx_windows import (
     WindowsBackend,
     create_windows_backend,
 )
+from stock_desk.market.execution_status import ExecutionStatusQuery
+from stock_desk.market.providers.execution_status import (
+    ExecutionStatusFailure,
+    ExecutionStatusFetchOutcome,
+)
 from stock_desk.market.types import (
     Adjustment,
     Bar,
@@ -443,6 +448,12 @@ class TdxLocalProvider:
             data_cutoff=None,
             gaps=(
                 CapabilityGap(
+                    capability=MarketCapability.EXECUTION_STATUS,
+                    state=CapabilityState.UNSUPPORTED,
+                    reason=FailureReason.UNSUPPORTED,
+                    detail="Local TDX files do not prove historical suspension and limits",
+                ),
+                CapabilityGap(
                     capability=MarketCapability.INSTRUMENTS,
                     state=CapabilityState.UNSUPPORTED,
                     reason=FailureReason.UNSUPPORTED,
@@ -455,6 +466,16 @@ class TdxLocalProvider:
                     detail="Local TDX files do not prove calendar completeness",
                 ),
             ),
+        )
+
+    def fetch_execution_status(
+        self, query: ExecutionStatusQuery
+    ) -> ExecutionStatusFetchOutcome:
+        return ExecutionStatusFailure(
+            query=query,
+            source=self.name,
+            reason=FailureReason.UNSUPPORTED,
+            detail="provider does not support authoritative execution status",
         )
 
     def preflight(self) -> TdxInspectionOutcome:

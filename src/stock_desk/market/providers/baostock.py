@@ -44,14 +44,21 @@ from stock_desk.market.providers.sdk import (
     required_sdk_callable,
     validate_sdk_chunk_rows,
 )
+from stock_desk.market.execution_status import ExecutionStatusQuery
+from stock_desk.market.providers.execution_status import (
+    ExecutionStatusFailure,
+    ExecutionStatusFetchOutcome,
+)
 from stock_desk.market.types import (
     Adjustment,
     Bar,
     BarFetchOutcome,
     BarQuery,
+    CapabilityGap,
     CapabilityReport,
     CapabilityState,
     Exchange,
+    FailureReason,
     Instrument,
     InstrumentKind,
     ListingStatus,
@@ -266,12 +273,35 @@ class BaoStockProvider:
         return CapabilityReport(
             source=self.name,
             state=CapabilityState.AVAILABLE,
-            capabilities=frozenset(MarketCapability),
+            capabilities=frozenset(
+                {
+                    MarketCapability.BARS,
+                    MarketCapability.INSTRUMENTS,
+                    MarketCapability.TRADING_CALENDAR,
+                }
+            ),
             available_periods=frozenset(Period),
             available_adjustments=frozenset(Adjustment),
             markets=frozenset({Exchange.SH, Exchange.SZ}),
             data_cutoff=None,
-            gaps=(),
+            gaps=(
+                CapabilityGap(
+                    capability=MarketCapability.EXECUTION_STATUS,
+                    state=CapabilityState.UNSUPPORTED,
+                    reason=FailureReason.UNSUPPORTED,
+                    detail="BaoStock does not prove historical price-limit evidence",
+                ),
+            ),
+        )
+
+    def fetch_execution_status(
+        self, query: ExecutionStatusQuery
+    ) -> ExecutionStatusFetchOutcome:
+        return ExecutionStatusFailure(
+            query=query,
+            source=self.name,
+            reason=FailureReason.UNSUPPORTED,
+            detail="provider does not support authoritative execution status",
         )
 
     def fetch_bars(self, query: BarQuery) -> BarFetchOutcome:

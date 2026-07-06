@@ -274,6 +274,75 @@ class MarketUpdateItem(Base):
     )
 
 
+class ExecutionStatusDataset(Base):
+    __tablename__ = "execution_status_dataset"
+    __table_args__ = (
+        CheckConstraint(
+            "row_count > 0",
+            name="ck_execution_status_dataset_row_count_positive",
+        ),
+        CheckConstraint(
+            "period IN ('1d', '1w', '60m')",
+            name="ck_execution_status_dataset_period",
+        ),
+        Index(
+            "ix_execution_status_dataset_exact_query",
+            "symbol",
+            "exchange",
+            "period",
+            "query_start",
+            "query_end",
+        ),
+        {"sqlite_with_rowid": False},
+    )
+
+    dataset_version: Mapped[str] = mapped_column(String(71), primary_key=True)
+    source: Mapped[str] = mapped_column(String(32), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(9), nullable=False)
+    exchange: Mapped[str] = mapped_column(String(2), nullable=False)
+    period: Mapped[str] = mapped_column(String(8), nullable=False)
+    query_start: Mapped[date] = mapped_column(Date, nullable=False)
+    query_end: Mapped[date] = mapped_column(Date, nullable=False)
+    fetched_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    data_cutoff: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    row_count: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    snapshot_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utc_now, nullable=False
+    )
+
+
+class ExecutionStatusRoutingManifest(Base):
+    __tablename__ = "execution_status_routing_manifest"
+    __table_args__ = (
+        Index(
+            "ix_execution_status_manifest_latest",
+            "dataset_version",
+            "fetched_at",
+        ),
+        {"sqlite_with_rowid": False},
+    )
+
+    manifest_record_id: Mapped[str] = mapped_column(String(71), primary_key=True)
+    dataset_version: Mapped[str] = mapped_column(
+        String(71),
+        ForeignKey("execution_status_dataset.dataset_version", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    route_version: Mapped[str] = mapped_column(String(71), nullable=False)
+    manifest_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    fetched_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utc_now, nullable=False
+    )
+
+
 class MarketUpdateSchedule(Base):
     __tablename__ = "market_update_schedule"
     __table_args__ = (
