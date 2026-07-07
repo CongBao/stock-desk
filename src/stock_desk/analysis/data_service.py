@@ -88,19 +88,26 @@ class ResearchDataService:
                     )
                 )
                 continue
+            unavailable: ResearchDataUnavailable | None = None
             try:
                 section = loader.load(canonical_symbol)
             except ResearchDataUnavailable as error:
-                if error.kind is not kind:
-                    raise ValueError("research failure kind does not match loader kind")
+                unavailable = error
+                section = None
+            if unavailable is not None:
+                if unavailable.kind is not kind:
+                    raise ValueError(
+                        "research failure kind does not match loader kind"
+                    ) from None
                 outcomes.append(
                     self._missing(
                         kind=kind,
-                        reason=error.reason,
-                        attempted_sources=error.attempted_sources,
+                        reason=unavailable.reason,
+                        attempted_sources=unavailable.attempted_sources,
                     )
                 )
                 continue
+            assert section is not None
             if section.kind is not kind:
                 raise ValueError("research loader kind does not match section kind")
             outcomes.append(section)

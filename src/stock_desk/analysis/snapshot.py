@@ -7,7 +7,7 @@ import hashlib
 import json
 import math
 import re
-from typing import Annotated, cast, Final, Literal, Protocol, Self
+from typing import Annotated, Any, cast, Final, Literal, Protocol, Self
 from urllib.parse import urlsplit
 
 from pydantic import (
@@ -21,6 +21,7 @@ from pydantic import (
     model_validator,
     StringConstraints,
     TypeAdapter,
+    ValidationInfo,
 )
 
 from stock_desk.market.types import CanonicalSymbol, UtcDatetime
@@ -185,11 +186,21 @@ def _decoded_json_object(value: bytes) -> dict[str, JsonValue]:
     return cast(dict[str, JsonValue], decoded)
 
 
+def _content_object_schema(schema: dict[str, Any]) -> None:
+    schema.pop("format", None)
+    schema["type"] = "object"
+    schema["additionalProperties"] = True
+
+
 class ResearchSection(_FrozenAnalysisModel):
     kind: ResearchSectionKind
     canonical_source: str = Field(min_length=1, max_length=64)
     source_record: str = Field(min_length=1, max_length=1_024)
-    source_url: str | None = Field(default=None, max_length=2_048)
+    source_url: str | None = Field(
+        default=None,
+        max_length=2_048,
+        description="Display-only provenance URL; never fetched by this domain model.",
+    )
     published_at: UtcDatetime | None = None
     data_cutoff: UtcDatetime
     fetched_at: UtcDatetime
@@ -199,12 +210,15 @@ class ResearchSection(_FrozenAnalysisModel):
         validation_alias=AliasChoices("content", "content_json"),
         serialization_alias="content",
         repr=False,
+        json_schema_extra=_content_object_schema,
     )
 
     @field_validator("content_json", mode="before")
     @classmethod
     def freeze_content(cls, value: object) -> bytes:
         if isinstance(value, (bytes, bytearray)):
+            if len(value) > MAX_SECTION_CONTENT_BYTES:
+                raise ValueError("section content exceeds the byte limit")
             try:
                 value = json.loads(bytes(value))
             except (UnicodeDecodeError, ValueError, TypeError):
@@ -239,7 +253,13 @@ class ResearchSection(_FrozenAnalysisModel):
 
     @field_validator("quality_flags", mode="before")
     @classmethod
-    def canonicalize_quality_flags(cls, value: object) -> object:
+    def canonicalize_quality_flags(
+        cls,
+        value: object,
+        info: ValidationInfo,
+    ) -> object:
+        if info.mode == "json" and type(value) is list:
+            value = tuple(cast(list[object], value))
         if type(value) is not tuple:
             raise ValueError("quality flags must be a tuple")
         flags = cast(tuple[object, ...], value)
@@ -267,6 +287,10 @@ class ResearchSection(_FrozenAnalysisModel):
     @property
     def content(self) -> dict[str, JsonValue]:
         return _decoded_json_object(self.content_json)
+
+    @property
+    def section_id(self) -> str:
+        return _content_id(self.canonical_payload())
 
     def canonical_payload(self) -> dict[str, object]:
         return {

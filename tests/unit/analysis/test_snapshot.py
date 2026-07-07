@@ -10,6 +10,7 @@ from typing import cast
 from pydantic import ValidationError
 import pytest
 
+from stock_desk.analysis import snapshot as snapshot_module
 from stock_desk.analysis.data_service import (
     ResearchDataService,
     ResearchDataUnavailable,
@@ -194,6 +195,30 @@ def test_section_serialization_exposes_content_not_internal_bytes_name() -> None
     assert "content_json" not in payload
 
 
+def test_section_and_snapshot_json_round_trip_with_object_schema() -> None:
+    section = _section(
+        ResearchSectionKind.MARKET,
+        quality_flags=(ResearchQualityFlag.STALE,),
+    )
+    snapshot = _snapshot(
+        service=_service(overrides={ResearchSectionKind.MARKET: section})
+    )
+
+    restored_section = ResearchSection.model_validate_json(
+        section.model_dump_json(by_alias=True)
+    )
+    restored_snapshot = ResearchSnapshot.model_validate_json(
+        snapshot.model_dump_json(by_alias=True)
+    )
+    schema = ResearchSection.model_json_schema(by_alias=True)
+
+    assert restored_section == section
+    assert restored_snapshot == snapshot
+    assert schema["properties"]["content"]["type"] == "object"
+    assert "format" not in schema["properties"]["content"]
+    assert "content_json" not in schema["properties"]
+
+
 def test_missing_section_is_explicit_and_never_an_empty_success() -> None:
     unavailable = ResearchDataUnavailable(
         kind=ResearchSectionKind.NEWS,
@@ -283,6 +308,36 @@ def test_data_service_rejects_loader_kind_mismatch_and_unknown_errors() -> None:
     )
     with pytest.raises(RuntimeError, match="programming bug"):
         broken.load_all(SYMBOL)
+
+
+def test_data_service_public_mismatch_error_clears_adapter_secret_chain() -> None:
+    secret = "PROVIDER-SECRET-CAUSE"
+
+    class ChainedFailureLoader:
+        kind = ResearchSectionKind.MARKET
+
+        def load(self, _symbol: str) -> ResearchSection:
+            try:
+                raise RuntimeError(secret)
+            except RuntimeError as error:
+                raise ResearchDataUnavailable(
+                    kind=ResearchSectionKind.NEWS,
+                    reason=ResearchMissingReason.INVALID_RESPONSE,
+                    attempted_sources=("tushare",),
+                ) from error
+
+    service = ResearchDataService(
+        loaders=(ChainedFailureLoader(),),
+        clock=lambda: FROZEN_AT,
+    )
+
+    with pytest.raises(ValueError, match="failure kind") as captured:
+        service.load_all(SYMBOL)
+
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+    rendered = f"{captured.value!s} {captured.value!r}"
+    assert secret not in rendered
 
 
 def test_data_service_uses_fixed_category_order_even_if_registered_reversed() -> None:
@@ -399,6 +454,21 @@ def test_section_content_enforces_byte_depth_node_and_finite_budgets() -> None:
     for value in (math.nan, math.inf, -math.inf):
         with pytest.raises(ValueError, match="finite"):
             _section(ResearchSectionKind.MARKET, content={"value": value})
+
+
+def test_oversized_raw_content_bytes_are_rejected_before_json_decode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = _section(ResearchSectionKind.MARKET).model_dump(mode="python")
+    payload["content"] = b"{" + b" " * MAX_SECTION_CONTENT_BYTES + b"}"
+
+    def fail_decode(_value: object) -> object:
+        pytest.fail("oversized raw bytes reached json.loads")
+
+    monkeypatch.setattr(snapshot_module.json, "loads", fail_decode)
+
+    with pytest.raises(ValidationError, match="byte limit"):
+        ResearchSection.model_validate(payload)
 
 
 def test_quality_flags_are_unique_and_canonical() -> None:
