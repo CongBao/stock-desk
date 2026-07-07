@@ -164,6 +164,7 @@ def test_deployment_contract_is_complete_and_public_only() -> None:
         "acceptance",
         "acceptance-formula",
         "acceptance-backtest",
+        "acceptance-analysis",
         "benchmark",
         "benchmark-formula",
         "benchmark-backtest",
@@ -174,6 +175,7 @@ def test_deployment_contract_is_complete_and_public_only() -> None:
         "e2e-market",
         "e2e-formula",
         "e2e-backtest",
+        "e2e-analysis",
         "lint",
         "check-public-tree",
         "container-smoke",
@@ -191,10 +193,12 @@ def test_deployment_contract_is_complete_and_public_only() -> None:
     assert {
         "acceptance",
         "acceptance-backtest",
+        "acceptance-analysis",
         "benchmark",
         "benchmark-backtest",
         "e2e-market",
         "e2e-backtest",
+        "e2e-analysis",
     } <= set(release_targets)
 
     dev_script = _read("scripts/dev.py")

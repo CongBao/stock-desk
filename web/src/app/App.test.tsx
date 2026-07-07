@@ -27,6 +27,17 @@ vi.mock('../features/formulas/FormulaStudioPage', () => ({
   ),
 }));
 
+vi.mock('../features/analysis/AnalysisPage', () => ({
+  AnalysisPage: () => (
+    <article>
+      <h2 data-page-heading tabIndex={-1}>
+        智能分析
+      </h2>
+      <span>真实分析工作台</span>
+    </article>
+  ),
+}));
+
 const healthyResponse = {
   name: 'stock-desk',
   status: 'ok',
@@ -167,6 +178,7 @@ it('shows the product identity and all primary navigation items', () => {
   renderApp();
 
   expect(screen.getByText('stock-desk')).toBeInTheDocument();
+  expect(screen.getByText('v0.5.0 · Intelligent Analysis')).toBeInTheDocument();
   for (const label of [
     '行情',
     '自定义公式',
@@ -253,6 +265,20 @@ it('routes settings to the real data-source workspace', async () => {
   ).toBeInTheDocument();
   expect(screen.queryByText(/能力按阶段交付/u)).not.toBeInTheDocument();
   await waitFor(() => expect(document.title).toBe('数据源设置 · stock-desk'));
+});
+
+it('routes analysis to the real intelligent-analysis workspace', async () => {
+  renderApp(['/analysis']);
+
+  expect(
+    await screen.findByRole('heading', { level: 2, name: '智能分析' }),
+  ).toBeInTheDocument();
+  expect(screen.getByText('真实分析工作台')).toBeInTheDocument();
+  expect(screen.queryByText(/能力按阶段交付/u)).not.toBeInTheDocument();
+  expect(document.querySelector('.app-shell')).toHaveAttribute(
+    'data-workspace',
+    'analysis',
+  );
 });
 
 it('supports direct refresh of a dynamic backtest run route', async () => {

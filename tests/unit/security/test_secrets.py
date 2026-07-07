@@ -10,9 +10,10 @@ from typing import cast
 from cryptography.fernet import Fernet
 from pydantic import SecretStr
 import pytest
-from sqlalchemy import Engine, event, select, text
+from sqlalchemy import create_engine, Engine, event, select, text
 
 import stock_desk.security.secrets as secrets_module
+import stock_desk.storage.database as database_module
 from stock_desk.config import Settings
 from stock_desk.security.secrets import (
     SecretConfigurationError,
@@ -107,6 +108,21 @@ def test_secret_store_encrypts_and_exposes_only_intended_views(
     assert plaintext not in repr(store)
     assert not hasattr(store, "list_secrets")
     assert not hasattr(store, "export_secrets")
+
+
+def test_secret_store_exposes_one_frozen_database_identity(
+    secret_database: tuple[Engine, str],
+) -> None:
+    engine, _url = secret_database
+    store = SecretStore(engine, _settings(Fernet.generate_key()))
+
+    identity = store.database_identity
+
+    assert type(identity) is tuple
+    assert store.database_identity is identity
+    with pytest.raises(AttributeError):
+        store.database_identity = ("replacement",)  # type: ignore[misc]
+    assert store.database_identity is identity
 
 
 def test_repeated_save_uses_fresh_ciphertext_and_updates_timestamp(
@@ -250,6 +266,194 @@ def test_has_secret_does_not_decrypt(
     store_with_wrong_key = SecretStore(engine, _settings(Fernet.generate_key()))
 
     assert store_with_wrong_key.has_secret("provider_key") is True
+
+
+def test_caller_transaction_write_has_and_read_are_atomic(
+    secret_database: tuple[Engine, str],
+) -> None:
+    engine, _url = secret_database
+    store = SecretStore(engine, _settings(Fernet.generate_key()))
+
+    with engine.begin() as connection:
+        store.save_secret_in_transaction(
+            "provider_key", "transaction-value", connection
+        )
+        assert store.has_secret_in_transaction("provider_key", connection) is True
+        assert (
+            store.read_secret_for_server_call_in_transaction("provider_key", connection)
+            == "transaction-value"
+        )
+
+    assert store.read_secret_for_server_call("provider_key") == "transaction-value"
+
+
+def test_batch_mask_reads_one_in_query_and_fails_closed_for_missing_or_corrupt(
+    secret_database: tuple[Engine, str],
+) -> None:
+    engine, _url = secret_database
+    store = SecretStore(engine, _settings(Fernet.generate_key()))
+    store.save_secret("first_key", "first-private-value")
+    store.save_secret("second_key", "second-private-value")
+    selects: list[str] = []
+
+    def count_selects(
+        _connection: object,
+        _cursor: object,
+        statement: str,
+        _parameters: object,
+        _context: object,
+        _executemany: bool,
+    ) -> None:
+        if statement.lstrip().upper().startswith("SELECT"):
+            selects.append(statement)
+
+    event.listen(engine, "before_cursor_execute", count_selects)
+    try:
+        with engine.begin() as connection:
+            masked = store.masked_secrets_in_transaction(
+                ("first_key", "second_key"), connection
+            )
+        assert len(selects) == 1
+        assert " IN " in selects[0].upper()
+        assert masked == {
+            "first_key": "firs•••••••alue",
+            "second_key": "seco•••••••alue",
+        }
+
+        with engine.begin() as connection:
+            with pytest.raises(SecretNotFoundError):
+                store.masked_secrets_in_transaction(
+                    ("first_key", "missing_key"), connection
+                )
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "UPDATE app_setting SET encrypted_value='damaged' "
+                    "WHERE key='secret.second_key'"
+                )
+            )
+        with engine.begin() as connection:
+            with pytest.raises(SecretDecryptionError):
+                store.masked_secrets_in_transaction(
+                    ("first_key", "second_key"), connection
+                )
+    finally:
+        event.remove(engine, "before_cursor_execute", count_selects)
+
+
+def test_caller_transaction_secret_write_rolls_back_with_its_owner(
+    secret_database: tuple[Engine, str],
+) -> None:
+    engine, _url = secret_database
+    store = SecretStore(engine, _settings(Fernet.generate_key()))
+
+    with pytest.raises(RuntimeError, match="rollback"):
+        with engine.begin() as connection:
+            store.save_secret_in_transaction("provider_key", "never-commit", connection)
+            raise RuntimeError("rollback")
+
+    assert store.has_secret("provider_key") is False
+
+
+@pytest.mark.parametrize("standalone", ["save", "has", "read", "masked"])
+def test_standalone_pool_wait_never_deadlocks_caller_transaction_lock_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    standalone: str,
+) -> None:
+    url = f"sqlite:///{tmp_path / f'lock-order-{standalone}.db'}"
+    migrate(url)
+    engine = create_engine(
+        url,
+        future=True,
+        pool_size=1,
+        max_overflow=0,
+        pool_timeout=0.25,
+    )
+    event.listen(engine, "connect", database_module._configure_sqlite_connection)
+    store = SecretStore(engine, _settings(Fernet.generate_key()))
+    store.save_secret("provider_key", "initial-value")
+    real_connect = engine.connect
+    pool_wait_started = threading.Event()
+    owner_has_connection = threading.Event()
+    thread_state = threading.local()
+
+    def observed_connect() -> object:
+        if getattr(thread_state, "standalone", False):
+            pool_wait_started.set()
+        return real_connect()
+
+    monkeypatch.setattr(engine, "connect", observed_connect)
+
+    def transaction_owner() -> bool:
+        with real_connect() as connection:
+            with connection.begin():
+                owner_has_connection.set()
+                assert pool_wait_started.wait(timeout=2)
+                return store.has_secret_in_transaction("provider_key", connection)
+
+    def standalone_operation() -> object:
+        assert owner_has_connection.wait(timeout=2)
+        thread_state.standalone = True
+        if standalone == "save":
+            return store.save_secret("provider_key", "updated-value")
+        if standalone == "has":
+            return store.has_secret("provider_key")
+        if standalone == "read":
+            return store.read_secret_for_server_call("provider_key")
+        return store.masked_secret("provider_key")
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            owner = executor.submit(transaction_owner)
+            standalone_future = executor.submit(standalone_operation)
+            assert owner.result(timeout=2) is True
+            standalone_future.result(timeout=2)
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.parametrize("operation", ["save", "has", "read"])
+def test_transaction_methods_reject_wrong_engine_and_inactive_transaction(
+    secret_database: tuple[Engine, str],
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    engine, _url = secret_database
+    other_url = f"sqlite:///{tmp_path / 'other-secrets.db'}"
+    migrate(other_url)
+    other_engine = create_engine_for_url(other_url)
+    store = SecretStore(engine, _settings(Fernet.generate_key()))
+
+    def invoke(connection: object) -> object:
+        if operation == "save":
+            return store.save_secret_in_transaction(
+                "provider_key",
+                "must-not-write",
+                connection,  # type: ignore[arg-type]
+            )
+        if operation == "has":
+            return store.has_secret_in_transaction(
+                "provider_key",
+                connection,  # type: ignore[arg-type]
+            )
+        return store.read_secret_for_server_call_in_transaction(
+            "provider_key",
+            connection,  # type: ignore[arg-type]
+        )
+
+    try:
+        with other_engine.begin() as wrong_connection:
+            with pytest.raises(SecretStorageError):
+                invoke(wrong_connection)
+        inactive_connection = engine.connect()
+        try:
+            with pytest.raises(SecretStorageError):
+                invoke(inactive_connection)
+        finally:
+            inactive_connection.close()
+    finally:
+        other_engine.dispose()
 
 
 def test_secret_store_rejects_every_operation_after_atomic_database_replacement(

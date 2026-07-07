@@ -63,6 +63,7 @@ jobs:
           make acceptance
           make acceptance-formula
           make acceptance-backtest
+          make acceptance-analysis
           make benchmark
           make benchmark-formula
           make benchmark-backtest
@@ -74,6 +75,7 @@ jobs:
           make e2e-market
           make e2e-formula
           make e2e-backtest
+          make e2e-analysis
       - name: Build final release assets
         run: make build
       - name: Verify built release artifacts

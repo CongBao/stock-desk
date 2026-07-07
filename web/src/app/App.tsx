@@ -26,6 +26,11 @@ const FormulaStudioPage = lazy(async () => {
   return { default: module.FormulaStudioPage };
 });
 
+const AnalysisPage = lazy(async () => {
+  const module = await import('../features/analysis/AnalysisPage');
+  return { default: module.AnalysisPage };
+});
+
 const systemStateLabels = {
   checking: '系统检查中',
   healthy: '系统正常',
@@ -97,7 +102,7 @@ function NavigationRail({ collapsed, onToggle }: NavigationRailProps) {
       </nav>
 
       <div className="rail-footer">
-        <span className="version-label">v0.4.0 · Strategy Backtest</span>
+        <span className="version-label">v0.5.0 · Intelligent Analysis</span>
         <span>本地优先 · 个人使用</span>
       </div>
     </div>
@@ -147,7 +152,9 @@ function WorkspaceShell() {
             ? 'formulas'
             : location.pathname.startsWith('/backtests')
               ? 'backtests'
-              : 'default'
+              : location.pathname === '/analysis'
+                ? 'analysis'
+                : 'default'
         }
       >
         <NavigationRail
@@ -211,6 +218,16 @@ function WorkspaceShell() {
                     <DataSourcesPage />
                   ) : route.path === '/backtests' ? (
                     <BacktestWorkspacePage />
+                  ) : route.path === '/analysis' ? (
+                    <Suspense
+                      fallback={
+                        <p className="workspace-route-loading" role="status">
+                          正在加载智能分析工作台…
+                        </p>
+                      }
+                    >
+                      <AnalysisPage />
+                    </Suspense>
                   ) : (
                     <PlannedPage route={route} />
                   )

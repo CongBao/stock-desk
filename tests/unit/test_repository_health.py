@@ -146,6 +146,28 @@ def test_market_lake_runtime_dependency_is_exact_and_locked() -> None:
     assert duckdb_metadata["specifier"] == ">=1.4.5,<1.5"
 
 
+def test_model_transport_runtime_dependency_is_exact_and_locked() -> None:
+    project = tomllib.loads(_read("pyproject.toml"))
+    runtime_dependencies = project["project"]["dependencies"]
+    development_dependencies = project["dependency-groups"]["dev"]
+
+    assert "httpx2>=2,<3" in runtime_dependencies
+    assert "httpx2>=2,<3" not in development_dependencies
+
+    locked = tomllib.loads(_read("uv.lock"))
+    stock_desk = next(
+        package for package in locked["package"] if package["name"] == "stock-desk"
+    )
+    direct_names = {dependency["name"] for dependency in stock_desk["dependencies"]}
+    assert "httpx2" in direct_names
+    httpx2_metadata = next(
+        dependency
+        for dependency in stock_desk["metadata"]["requires-dist"]
+        if dependency["name"] == "httpx2"
+    )
+    assert httpx2_metadata["specifier"] == ">=2,<3"
+
+
 def test_required_open_source_files_exist() -> None:
     missing = sorted(
         path for path in REQUIRED_FILES if not (REPO_ROOT / path).is_file()
@@ -415,7 +437,7 @@ def test_public_runtime_version_surfaces_match() -> None:
     api_source = _read("src/stock_desk/main.py")
     api_version = re.search(r'\bversion="([0-9]+\.[0-9]+\.[0-9]+)"', api_source)
     assert api_version is not None
-    assert python_version == web_version == api_version.group(1)
+    assert python_version == web_version == api_version.group(1) == "0.5.0"
 
 
 def test_make_test_enforces_coverage_and_writes_reports() -> None:
@@ -621,6 +643,7 @@ def test_ci_and_release_gate_the_chromium_end_to_end_slice() -> None:
         "make e2e-market",
         "make e2e-formula",
         "make e2e-backtest",
+        "make e2e-analysis",
     ):
         assert required in ci_e2e
 
@@ -687,6 +710,7 @@ def test_e2e_is_a_root_script_without_changing_the_make_contract() -> None:
         "acceptance",
         "acceptance-formula",
         "acceptance-backtest",
+        "acceptance-analysis",
         "benchmark",
         "benchmark-formula",
         "benchmark-backtest",
@@ -698,6 +722,7 @@ def test_e2e_is_a_root_script_without_changing_the_make_contract() -> None:
         "e2e-market",
         "e2e-formula",
         "e2e-backtest",
+        "e2e-analysis",
         "test",
         "lint",
         "typecheck",
@@ -807,6 +832,40 @@ def test_stage_three_backtest_gates_extend_every_release_surface() -> None:
         assert command in release
 
 
+def test_stage_four_analysis_gates_extend_every_release_surface() -> None:
+    makefile = _read("Makefile")
+    assert re.search(
+        r"^acceptance-analysis:\n\tuv run --frozen pytest -W error "
+        r"tests/acceptance/test_analysis_flow\.py "
+        r"tests/security/test_analysis_boundaries\.py$",
+        makefile,
+        re.MULTILINE,
+    )
+    assert re.search(
+        r"^e2e-analysis:\n\tpnpm exec playwright test "
+        r"web/e2e/analysis\.spec\.ts --project=chromium$",
+        makefile,
+        re.MULTILINE,
+    )
+    release_check = re.search(r"^release-check:\s*(.+)$", makefile, re.MULTILINE)
+    assert release_check is not None
+    dependencies = release_check.group(1).split()
+    for target in ("acceptance-analysis", "e2e-analysis"):
+        assert target in dependencies
+
+    ci = _load_github_actions_yaml(_read(".github/workflows/ci.yml"))
+    ci_commands = "\n".join(
+        str(step.get("run", ""))
+        for job in ci["jobs"].values()
+        for step in job["steps"]
+        if isinstance(step, dict)
+    )
+    release = _read(".github/workflows/release.yml")
+    for command in ("make acceptance-analysis", "make e2e-analysis"):
+        assert command in ci_commands
+        assert command in release
+
+
 def test_dependabot_covers_all_package_ecosystems_weekly() -> None:
     dependabot = _load_yaml(".github/dependabot.yml")
     updates = dependabot["updates"]
@@ -857,7 +916,7 @@ def test_sdist_uses_an_explicit_source_only_allowlist() -> None:
     }
 
 
-def test_readmes_match_commands_and_describe_stage_one_limits() -> None:
+def test_readmes_match_commands_and_describe_current_release_limits() -> None:
     english = _read("README.md")
     chinese = _read("README.zh-CN.md")
     shared_facts = (
@@ -887,6 +946,7 @@ def test_readmes_match_commands_and_describe_stage_one_limits() -> None:
         "make e2e-market",
         "make e2e-formula",
         "make e2e-backtest",
+        "make e2e-analysis",
     )
     for fact in shared_facts:
         assert fact in english
@@ -896,6 +956,7 @@ def test_readmes_match_commands_and_describe_stage_one_limits() -> None:
         assert "Stage 0" in content
         assert "Stage 1" in content
         assert "Stage 2" in content
+        assert "Stage 4" in content
         assert "Apache-2.0" in content
         assert "Docker" in content
         assert "uv" in content
@@ -921,27 +982,42 @@ def test_security_and_support_use_the_right_reporting_channels() -> None:
 def test_changelog_roadmap_and_architecture_match_current_release_scope() -> None:
     changelog = _read("CHANGELOG.md")
     unreleased = re.search(
-        r"## \[Unreleased\](?P<body>.*?)## \[0\.4\.0\]",
+        r"## \[Unreleased\](?P<body>.*?)## \[0\.5\.0\]",
         changelog,
         re.DOTALL,
     )
     assert unreleased is not None
     assert unreleased.group("body").strip() == ""
     release_section = re.search(
-        r"## \[0\.4\.0\] - 2026-07-07(?P<body>.*?)## \[0\.3\.0\]",
+        r"## \[0\.5\.0\] - 2026-07-08(?P<body>.*?)## \[0\.4\.0\]",
         changelog,
         re.DOTALL,
     )
     assert release_section is not None
-    assert "### Added" in release_section.group("body")
-    assert "Stage 3" in release_section.group("body")
+    release_body = release_section.group("body")
+    for fact in (
+        "Stage 4",
+        "nine-stage",
+        "insufficient-evidence",
+        "Model API keys",
+    ):
+        assert fact in release_body
+    previous_release_section = re.search(
+        r"## \[0\.4\.0\] - 2026-07-07(?P<body>.*?)## \[0\.3\.0\]",
+        changelog,
+        re.DOTALL,
+    )
+    assert previous_release_section is not None
+    assert "### Added" in previous_release_section.group("body")
+    assert "Stage 3" in previous_release_section.group("body")
 
     roadmap = _read("ROADMAP.md")
     for stage in range(6):
         assert f"| {stage} —" in roadmap
-    assert roadmap.count("| Complete |") == 4
-    assert roadmap.count("| Current |") == 0
-    assert roadmap.count("| Planned |") == 2
+    assert len(re.findall(r"\|\s+Complete\s+\|", roadmap)) == 5
+    assert len(re.findall(r"\|\s+In verification\s+\|", roadmap)) == 0
+    assert len(re.findall(r"\|\s+Current\s+\|", roadmap)) == 0
+    assert len(re.findall(r"\|\s+Planned\s+\|", roadmap)) == 1
 
     architecture = _read("docs/architecture.md")
     for boundary in ("FastAPI", "worker", "SQLite", "security", "trust boundary"):
@@ -949,6 +1025,8 @@ def test_changelog_roadmap_and_architecture_match_current_release_scope() -> Non
     assert "formula engine" in architecture.casefold()
     assert "formula studio" in architecture.casefold()
     assert "backtest" in architecture.casefold()
+    for boundary in ("analysis", "model", "evidence", "prompt injection"):
+        assert boundary in architecture.casefold()
 
 
 def test_release_workflow_is_tag_only_and_scopes_write_permission() -> None:

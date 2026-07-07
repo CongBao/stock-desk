@@ -75,6 +75,11 @@ try:
         "market_update_schedule",
         "task_event",
         "task_run",
+        "analysis_run",
+        "analysis_stage",
+        "analysis_attempt",
+        "analysis_report",
+        "analysis_model_config",
     } <= set(inspect(engine).get_table_names())
 finally:
     engine.dispose()
@@ -134,3 +139,11 @@ finally:
     assert "stock_desk/migrations/versions/0005_formula_catalog.py" in packaged_files
     assert "stock_desk/migrations/versions/0006_execution_status.py" in packaged_files
     assert "stock_desk/migrations/versions/0007_backtest_runs.py" in packaged_files
+    assert "stock_desk/migrations/versions/0008_analysis_runs.py" in packaged_files
+    assert (
+        "stock_desk/migrations/versions/0009_analysis_model_configs.py"
+        in packaged_files
+    )
+    assert (
+        "stock_desk/migrations/versions/0010_parent_active_retry.py" in packaged_files
+    )

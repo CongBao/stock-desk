@@ -13,9 +13,17 @@ export type ApiGetOptions = {
   readonly signal?: AbortSignal;
 };
 
-export type ApiWriteOptions = ApiGetOptions & {
-  readonly body?: JsonValue;
-};
+export type ApiWriteOptions = ApiGetOptions &
+  (
+    | {
+        readonly body?: JsonValue;
+        readonly serializedBody?: never;
+      }
+    | {
+        readonly body?: never;
+        readonly serializedBody: string;
+      }
+  );
 
 export type ApiErrorKind = 'abort' | 'http' | 'network' | 'protocol';
 
@@ -27,6 +35,7 @@ type ApiErrorOptions = {
 };
 
 const MAX_TEXT_ERROR_DETAIL_LENGTH = 512;
+const MAX_SERIALIZED_BODY_BYTES = 1_048_576;
 
 export class ApiError extends Error {
   readonly details: JsonValue | string | undefined;
@@ -160,14 +169,40 @@ function isAbortFailure(error: unknown, signal?: AbortSignal): boolean {
   );
 }
 
+function validatedSerializedBody(options: ApiWriteOptions): string | undefined {
+  if (options.body !== undefined && options.serializedBody !== undefined) {
+    throw new TypeError('API body options are mutually exclusive');
+  }
+  if (options.serializedBody === undefined) {
+    return options.body === undefined
+      ? undefined
+      : JSON.stringify(options.body);
+  }
+  if (
+    new TextEncoder().encode(options.serializedBody).byteLength >
+    MAX_SERIALIZED_BODY_BYTES
+  ) {
+    throw new TypeError('Serialized API body is too large');
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(options.serializedBody) as unknown;
+  } catch {
+    throw new TypeError('Serialized API body is invalid');
+  }
+  if (!isJsonValue(parsed)) {
+    throw new TypeError('Serialized API body is invalid');
+  }
+  return options.serializedBody;
+}
+
 export function createApiClient(baseUrl = '/api'): ApiClient {
   async function request(
     method: 'DELETE' | 'GET' | 'POST' | 'PUT',
     path: string,
     options: ApiWriteOptions = {},
   ): Promise<JsonValue | undefined> {
-    const serializedBody =
-      options.body === undefined ? undefined : JSON.stringify(options.body);
+    const serializedBody = validatedSerializedBody(options);
     const callerHeaders = Object.fromEntries(
       Object.entries(options.headers ?? {}).filter(
         ([name]) => name.toLowerCase() !== 'content-type',

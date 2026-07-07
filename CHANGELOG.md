@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-08
+
+Stage 4 evidence-linked multi-agent research release.
+
+### Added
+
+- Low-code DeepSeek-oriented, generic OpenAI-compatible, and local Ollama model configuration with immutable successors, connection verification, masked credentials, and per-run frozen model settings.
+- Cache-only A-share research snapshots with category-specific Tushare-to-AKShare fallback, explicit permission and missing-data diagnostics, and no silent provider merging.
+- Durable nine-stage analysis runs covering market, fundamentals, announcements, news, technical and fundamental/news analysis, bull/bear review, and final risk decision, with immutable history, cancellation, bounded retries, partial reports, and linked child runs for failed-stage retries.
+- Evidence-linked five-level research reports with confidence, source and timing metadata, insufficient-evidence rating suppression, persistent history, and a responsive conclusion/process/evidence workspace.
+- Deterministic API, Worker, security, and browser acceptance coverage for complete, partial, insufficient-evidence, retry, cancellation, and evidence-navigation flows.
+
+### Security
+
+- Model API keys are encrypted at rest and remain masked across HTTP, logs, errors, and diagnostics; model URLs and resolved remote endpoints are constrained by provider-specific SSRF protections.
+- External announcements and news remain bounded untrusted data, analysis APIs exclude formula/backtest/trading inputs, and reports remain research-only without targets, position sizing, or order actions.
+
 ## [0.4.0] - 2026-07-07
 
 Stage 3 reproducible A-share backtesting release.

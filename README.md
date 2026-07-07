@@ -2,9 +2,9 @@
 
 # Stock Desk
 
-Stock Desk `v0.4.0` is a local-first A-share market, formula, and historical-backtest workspace. Stage 1 provides configurable market sources, durable updates, provenance, pools, schedules, and interactive daily, weekly, and 60-minute charts. Stage 2 adds a constrained TDX-compatible formula engine and immutable versions. Stage 3 turns saved BUY/SELL signals into reproducible single-stock or pool backtests with explicit A-share execution rules, costs, progress, reports, and pinned replay.
+Stock Desk `v0.5.0` is a local-first A-share market, formula, backtest, and evidence-linked research workspace. Stage 1 provides configurable sources and daily, weekly, and 60-minute charts; Stage 2 adds constrained TDX-compatible formulas; Stage 3 adds reproducible A-share backtests; Stage 4 adds on-demand multi-agent research through DeepSeek-oriented, OpenAI-compatible, or local Ollama models.
 
-LLM-assisted analysis remains a planned later stage; its navigation entry is a preview, not a completed capability. See the [roadmap](ROADMAP.md).
+Reports bind claims to frozen source evidence and suppress ratings when critical evidence is missing. They are research aids, not investment advice. See the [roadmap](ROADMAP.md).
 
 ## Quick start
 
@@ -27,7 +27,7 @@ docker compose down --volumes --remove-orphans
 
 The API health endpoint is [http://localhost:8000/api/health](http://localhost:8000/api/health), and its interactive documentation is at [http://localhost:8000/docs](http://localhost:8000/docs). Persistent native/container data lives under `data/`; API and worker must share the same database and market-lake paths.
 
-The Stage 0 foundation remains available: the `/market`, `/formulas`, `/backtests`, `/analysis`, `/tasks`, and `/settings` workspace routes share one shell, and the `demo.double` durable task remains useful for worker diagnostics. Stage 1 completes market data, Stage 2 completes formulas, and Stage 3 completes historical strategy backtests; intelligent analysis remains a preview.
+The Stage 0 foundation remains available: `/market`, `/formulas`, `/backtests`, `/analysis`, `/tasks`, and `/settings` share one shell, and the `demo.double` durable task remains useful for worker diagnostics. Stages 1–4 complete market data, formulas, backtests, and intelligent analysis respectively.
 
 The shared shell adapts to wide desktop, narrow desktop, and tablet ratios. Its left navigation automatically condenses to labeled SVG icons on narrow screens and can always be expanded or collapsed with the pointer or keyboard; core controls reflow rather than overlapping.
 
@@ -77,9 +77,16 @@ The supported subset and runtime semantics are published in the [formula compati
 
 Execution semantics, metric definitions, and limitations are documented in [backtesting semantics](docs/backtesting-semantics.md). Stock Desk does not place orders or connect to brokers.
 
+## Run intelligent analysis
+
+1. Open `/analysis`, create a DeepSeek-oriented, OpenAI-compatible, or Ollama configuration, and pass its connection test. API keys are encrypted locally and only a mask returns to the browser.
+2. Enter one A-share symbol and run the four-category preflight. Market data is cache-only; fundamentals, announcements, and news show their actual route, fallback, permission gaps, and cutoff.
+3. Start the asynchronous nine-stage run. Technical and fundamental/news analysis run first, bull and bear review follow, and risk decision produces a five-level rating only when critical evidence is sufficient.
+4. Select a conclusion to inspect its source and times. Partial reports retain successful work; retrying a failed stage creates a linked child run without overwriting history.
+
 ## Current scope and safety
 
-Stage 3 includes the market workspace, technical/trading formulas, and reproducible historical backtests. It does not include real-time quotes, a dynamic screener, drawing tools, shared-capital portfolio simulation, broker connectivity, live/automatic trading, or LLM analysis.
+Stage 4 includes the market workspace, technical/trading formulas, reproducible historical backtests, and evidence-linked LLM research. It does not include real-time quotes, a dynamic screener, drawing tools, shared-capital portfolio simulation, broker connectivity, live/automatic trading, target prices, position sizing, or personalized advice.
 
 This is a trusted, single-user local service without authentication, authorization, or TLS. Keep it on loopback, do not commit `.env`, tokens, the master key, local TDX paths, databases, or downloaded market data, and never paste them into issues. See [data-source details](docs/data-sources.md), [security](SECURITY.md), and [architecture](docs/architecture.md).
 
@@ -100,4 +107,4 @@ make public-tree
 make security
 ```
 
-After installing Chromium with `pnpm exec playwright install chromium`, run `make e2e-market`, `make e2e-formula`, and `make e2e-backtest` for the real Stage 1–3 browser flows. `make security` requires network access: it checks Python dependencies with OSV and JavaScript production dependencies through the npm registry after verifying that manifests match their lockfiles. With Docker running, `make release-check` runs all browser slices, security, and an isolated container smoke gate; it starts and cleans up its own Compose stack. The project is licensed under Apache-2.0. Stock Desk is research software, not investment advice; verify data and decisions independently.
+After installing Chromium with `pnpm exec playwright install chromium`, run `make e2e-market`, `make e2e-formula`, `make e2e-backtest`, and `make e2e-analysis` for the real Stage 1–4 browser flows. `make security` requires network access: it checks Python dependencies with OSV and JavaScript production dependencies through the npm registry after verifying that manifests match their lockfiles. With Docker running, `make release-check` runs all browser slices, security, and an isolated container smoke gate; it starts and cleans up its own Compose stack. The project is licensed under Apache-2.0. Stock Desk is research software, not investment advice; verify data and decisions independently.

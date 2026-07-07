@@ -2,10 +2,30 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 import os
 from pathlib import Path
+import secrets
 from threading import Lock
 
 from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+
+from stock_desk.analysis.model_catalog import AnalysisModelCatalog
+from stock_desk.analysis.model_settings import (
+    ModelProviderFactory,
+    ModelSettingsSecureStorageError,
+    ModelSettingsService,
+    ModelSettingsStorageError,
+)
+from stock_desk.analysis.repository import AnalysisRepository
+from stock_desk.analysis.runtime import (
+    AnalysisPreflightService,
+    ResearchDataServiceFactory,
+)
+from stock_desk.analysis.service import AnalysisService
+from stock_desk.api.analysis import (
+    AnalysisDatabaseMismatch,
+    router as analysis_router,
+)
 
 from stock_desk.api.backtests import (
     BacktestServiceDatabaseMismatch,
@@ -25,6 +45,10 @@ from stock_desk.api.market import (
     market_request_validation_handler,
     router as market_router,
 )
+from stock_desk.api.models import (
+    ModelSettingsDatabaseMismatch,
+    router as models_router,
+)
 from stock_desk.api.settings import (
     SourceSettingsServices,
     SourceSettingsStorageError,
@@ -35,8 +59,63 @@ from stock_desk.api.tasks import router as tasks_router
 from stock_desk.config import Settings, get_settings
 from stock_desk.formula.repository import FormulaRepository
 from stock_desk.formula.service import FormulaService, FormulaServiceDatabaseMismatch
-from stock_desk.tasks.repository import TaskRepository
+from stock_desk.security.secrets import (
+    SecretConfigurationError,
+    SecretStore,
+    SecretStoreError,
+)
+from stock_desk.tasks.repository import TaskRepository, TaskRepositoryError
 from stock_desk.web import install_web_routes
+
+
+class _ApplicationDatabaseMismatch(RuntimeError):
+    pass
+
+
+class _ApplicationDatabaseIdentity:
+    """Lazily bind one immutable database identity for this app instance."""
+
+    def __init__(self, explicit_dependencies: tuple[object, ...]) -> None:
+        self._lock = Lock()
+        identities: list[object] = []
+        compromised = False
+        for dependency in explicit_dependencies:
+            try:
+                identity = getattr(dependency, "database_identity", None)
+            except Exception:
+                compromised = True
+                continue
+            if identity is None:
+                compromised = True
+                continue
+            identities.append(identity)
+        self._identity: object | None = identities[0] if identities else None
+        try:
+            compromised = compromised or any(
+                identity != self._identity for identity in identities[1:]
+            )
+        except Exception:
+            compromised = True
+        self._compromised = compromised
+
+    def bind(self, identity: object) -> object:
+        if identity is None:
+            raise _ApplicationDatabaseMismatch()
+        with self._lock:
+            if self._compromised:
+                raise _ApplicationDatabaseMismatch()
+            if self._identity is None:
+                self._identity = identity
+            elif identity != self._identity:
+                self._compromised = True
+                raise _ApplicationDatabaseMismatch()
+            return self._identity
+
+    def current(self) -> object | None:
+        with self._lock:
+            if self._compromised:
+                raise _ApplicationDatabaseMismatch()
+            return self._identity
 
 
 def create_app(
@@ -46,8 +125,27 @@ def create_app(
     source_settings_services: SourceSettingsServices | None = None,
     formula_service: FormulaService | None = None,
     backtest_services: BacktestServices | None = None,
+    model_settings_service: ModelSettingsService | None = None,
+    analysis_service: AnalysisService | None = None,
+    analysis_preflight_service: AnalysisPreflightService | None = None,
 ) -> FastAPI:
     resolved_settings = settings if settings is not None else get_settings()
+    database_identity = _ApplicationDatabaseIdentity(
+        tuple(
+            dependency
+            for dependency in (
+                task_repository,
+                market_services,
+                source_settings_services,
+                formula_service,
+                backtest_services,
+                model_settings_service,
+                analysis_service,
+                analysis_preflight_service,
+            )
+            if dependency is not None
+        )
+    )
     owned_repository: TaskRepository | None = None
     repository_lock = Lock()
     owned_market_services: MarketServices | None = None
@@ -58,19 +156,49 @@ def create_app(
     formula_service_lock = Lock()
     owned_backtest_services: BacktestServices | None = None
     backtest_services_lock = Lock()
+    owned_model_catalog: AnalysisModelCatalog | None = None
+    model_catalog_lock = Lock()
+    owned_secret_store: SecretStore | None = None
+    secret_store_lock = Lock()
+    secret_store_initialized = False
+    secret_store_error = False
+    owned_model_settings_service: ModelSettingsService | None = None
+    model_settings_service_lock = Lock()
+    owned_analysis_service: AnalysisService | None = None
+    analysis_service_lock = Lock()
+    owned_analysis_preflight: AnalysisPreflightService | None = None
+    analysis_preflight_lock = Lock()
+    shutdown_lock = Lock()
+    active_lifespans = 0
+
+    def bind_dependency(dependency: object) -> None:
+        database_identity.bind(getattr(dependency, "database_identity", None))
 
     def provide_task_repository() -> TaskRepository:
         nonlocal owned_repository
         if task_repository is not None:
+            try:
+                bind_dependency(task_repository)
+            except _ApplicationDatabaseMismatch:
+                raise TaskRepositoryError(
+                    "Task storage does not match the application"
+                ) from None
             return task_repository
         with repository_lock:
             if owned_repository is None:
                 owned_repository = TaskRepository.open(resolved_settings.database_url)
+            try:
+                bind_dependency(owned_repository)
+            except _ApplicationDatabaseMismatch:
+                raise TaskRepositoryError(
+                    "Task storage does not match the application"
+                ) from None
             return owned_repository
 
     def provide_market_services() -> MarketServices:
         nonlocal owned_market_services
         if market_services is not None:
+            bind_dependency(market_services)
             return market_services
         with market_services_lock:
             if owned_market_services is None:
@@ -81,11 +209,13 @@ def create_app(
                     database_url=resolved_settings.database_url,
                     lake_root=data_dir / "market",
                 )
+            bind_dependency(owned_market_services)
             return owned_market_services
 
     def provide_source_settings_services() -> SourceSettingsServices:
         nonlocal owned_source_settings_services
         if source_settings_services is not None:
+            bind_dependency(source_settings_services)
             return source_settings_services
         with source_settings_services_lock:
             if owned_source_settings_services is None:
@@ -93,12 +223,18 @@ def create_app(
                     database_url=resolved_settings.database_url,
                     settings=resolved_settings,
                 )
+            bind_dependency(owned_source_settings_services)
             return owned_source_settings_services
 
     def provide_formula_service() -> FormulaService:
         nonlocal owned_formula_service
         if formula_service is not None:
-            services = provide_market_services()
+            try:
+                services = provide_market_services()
+            except _ApplicationDatabaseMismatch:
+                raise FormulaServiceDatabaseMismatch(
+                    "formula and market storage do not match"
+                ) from None
             if formula_service.database_identity != services.database_identity:
                 raise FormulaServiceDatabaseMismatch(
                     "formula and market storage do not match"
@@ -111,17 +247,27 @@ def create_app(
                     repository=FormulaRepository(services.engine),
                     lake=services.lake,
                 )
+            bind_dependency(owned_formula_service)
             return owned_formula_service
 
     def provide_backtest_services() -> BacktestServices:
         nonlocal owned_backtest_services
         if backtest_services is not None:
             if isinstance(backtest_services, BacktestServices):
-                identities = (
-                    provide_market_services().database_identity,
-                    provide_formula_service().database_identity,
-                    provide_task_repository().database_identity,
-                )
+                try:
+                    identities = (
+                        provide_market_services().database_identity,
+                        provide_formula_service().database_identity,
+                        provide_task_repository().database_identity,
+                    )
+                except (
+                    _ApplicationDatabaseMismatch,
+                    FormulaServiceDatabaseMismatch,
+                    TaskRepositoryError,
+                ):
+                    raise BacktestServiceDatabaseMismatch(
+                        "backtest dependencies do not share storage"
+                    ) from None
                 if any(
                     identity != backtest_services.database_identity
                     for identity in identities
@@ -132,9 +278,18 @@ def create_app(
             return backtest_services
         with backtest_services_lock:
             if owned_backtest_services is None:
-                shared_market = provide_market_services()
-                shared_formula = provide_formula_service()
-                shared_tasks = provide_task_repository()
+                try:
+                    shared_market = provide_market_services()
+                    shared_formula = provide_formula_service()
+                    shared_tasks = provide_task_repository()
+                except (
+                    _ApplicationDatabaseMismatch,
+                    FormulaServiceDatabaseMismatch,
+                    TaskRepositoryError,
+                ):
+                    raise BacktestServiceDatabaseMismatch(
+                        "backtest dependencies do not share storage"
+                    ) from None
                 if not (
                     shared_market.database_identity
                     == shared_formula.database_identity
@@ -148,23 +303,181 @@ def create_app(
                     formula_service=shared_formula,
                     tasks=shared_tasks,
                 )
+            bind_dependency(owned_backtest_services)
             return owned_backtest_services
+
+    def provide_model_catalog() -> AnalysisModelCatalog:
+        nonlocal owned_model_catalog
+        with model_catalog_lock:
+            if owned_model_catalog is None:
+                tasks = provide_task_repository()
+                owned_model_catalog = AnalysisModelCatalog(
+                    tasks.engine,
+                    expected_database_identity=tasks.database_identity,
+                    owns_engine=False,
+                )
+            bind_dependency(owned_model_catalog)
+            return owned_model_catalog
+
+    def provide_secret_store() -> SecretStore | None:
+        nonlocal owned_secret_store
+        nonlocal secret_store_error
+        nonlocal secret_store_initialized
+        with secret_store_lock:
+            if secret_store_error:
+                raise ModelSettingsSecureStorageError()
+            if secret_store_initialized:
+                return owned_secret_store
+            configured = resolved_settings.master_key
+            if configured is None or not configured.get_secret_value():
+                secret_store_initialized = True
+                return None
+            catalog = provide_model_catalog()
+            try:
+                candidate = SecretStore(
+                    catalog.engine,
+                    resolved_settings,
+                    expected_database_identity=catalog.database_identity,
+                )
+            except SecretConfigurationError:
+                secret_store_error = True
+                raise ModelSettingsSecureStorageError() from None
+            except SecretStoreError:
+                raise ModelSettingsStorageError() from None
+            bind_dependency(candidate)
+            owned_secret_store = candidate
+            secret_store_initialized = True
+            return owned_secret_store
+
+    def provide_model_settings_services() -> ModelSettingsService:
+        nonlocal owned_model_settings_service
+        if model_settings_service is not None:
+            try:
+                bind_dependency(model_settings_service)
+            except _ApplicationDatabaseMismatch:
+                raise ModelSettingsDatabaseMismatch() from None
+            return model_settings_service
+        with model_settings_service_lock:
+            if owned_model_settings_service is None:
+                catalog = provide_model_catalog()
+                secret_store = provide_secret_store()
+                owned_model_settings_service = ModelSettingsService(
+                    catalog=catalog,
+                    secret_store=secret_store,
+                    provider_factory=ModelProviderFactory(secret_store=secret_store),
+                )
+            try:
+                bind_dependency(owned_model_settings_service)
+            except _ApplicationDatabaseMismatch:
+                raise ModelSettingsDatabaseMismatch() from None
+            return owned_model_settings_service
+
+    def provide_analysis_services() -> AnalysisService:
+        nonlocal owned_analysis_service
+        if analysis_service is not None:
+            try:
+                bind_dependency(analysis_service)
+            except _ApplicationDatabaseMismatch:
+                raise AnalysisDatabaseMismatch() from None
+            return analysis_service
+        with analysis_service_lock:
+            if owned_analysis_service is None:
+                tasks = provide_task_repository()
+                catalog = provide_model_catalog()
+                model_settings = provide_model_settings_services()
+                repository = AnalysisRepository(tasks.engine)
+                owned_analysis_service = AnalysisService(
+                    repository=repository,
+                    tasks=tasks,
+                    model_catalog=catalog,
+                    execution_resolver=(
+                        model_settings.require_verified_execution_in_transaction
+                    ),
+                )
+            try:
+                bind_dependency(owned_analysis_service)
+            except _ApplicationDatabaseMismatch:
+                raise AnalysisDatabaseMismatch() from None
+            return owned_analysis_service
+
+    def provide_analysis_preflight() -> AnalysisPreflightService:
+        nonlocal owned_analysis_preflight
+        if analysis_preflight_service is not None:
+            try:
+                bind_dependency(analysis_preflight_service)
+            except _ApplicationDatabaseMismatch:
+                raise AnalysisDatabaseMismatch() from None
+            return analysis_preflight_service
+        with analysis_preflight_lock:
+            if owned_analysis_preflight is None:
+                market = provide_market_services()
+                source_settings = provide_source_settings_services()
+                factory = ResearchDataServiceFactory(
+                    source_settings=source_settings,
+                    market_lake=market.lake,
+                )
+                owned_analysis_preflight = AnalysisPreflightService(
+                    data_service_factory=factory
+                )
+            try:
+                bind_dependency(owned_analysis_preflight)
+            except _ApplicationDatabaseMismatch:
+                raise AnalysisDatabaseMismatch() from None
+            return owned_analysis_preflight
 
     @asynccontextmanager
     async def lifespan(_application: FastAPI) -> AsyncIterator[None]:
+        nonlocal active_lifespans
+        nonlocal owned_repository
+        nonlocal owned_market_services
+        nonlocal owned_source_settings_services
+        nonlocal owned_formula_service
+        nonlocal owned_backtest_services
+        nonlocal owned_model_catalog
+        nonlocal owned_secret_store
+        nonlocal secret_store_initialized
+        nonlocal secret_store_error
+        nonlocal owned_model_settings_service
+        nonlocal owned_analysis_service
+        nonlocal owned_analysis_preflight
+        with shutdown_lock:
+            active_lifespans += 1
         try:
             yield
         finally:
-            if owned_repository is not None:
-                owned_repository.close()
-            if owned_market_services is not None:
-                owned_market_services.close()
-            if owned_source_settings_services is not None:
-                owned_source_settings_services.close()
+            with shutdown_lock:
+                active_lifespans -= 1
+                if active_lifespans:
+                    return
+                resources = (
+                    owned_model_catalog,
+                    owned_source_settings_services,
+                    owned_market_services,
+                    owned_repository,
+                )
+                owned_repository = None
+                owned_market_services = None
+                owned_source_settings_services = None
+                owned_formula_service = None
+                owned_backtest_services = None
+                owned_model_catalog = None
+                owned_secret_store = None
+                secret_store_initialized = False
+                secret_store_error = False
+                owned_model_settings_service = None
+                owned_analysis_service = None
+                owned_analysis_preflight = None
+            for resource in resources:
+                if resource is None:
+                    continue
+                try:
+                    resource.close()
+                except Exception:
+                    continue
 
     application = FastAPI(
         title=resolved_settings.app_name,
-        version="0.4.0",
+        version="0.5.0",
         lifespan=lifespan,
     )
     application.state.task_repository_provider = provide_task_repository
@@ -174,6 +487,12 @@ def create_app(
     )
     application.state.formula_service_provider = provide_formula_service
     application.state.backtest_services_provider = provide_backtest_services
+    application.state.model_settings_services_provider = provide_model_settings_services
+    application.state.analysis_services_provider = provide_analysis_services
+    application.state.analysis_preflight_provider = provide_analysis_preflight
+    application.state.database_identity_provider = database_identity.current
+    application.state.model_settings_cursor_key = secrets.token_bytes(32)
+    application.state.analysis_cursor_key = secrets.token_bytes(32)
 
     async def request_validation_handler(
         request: Request, error: Exception
@@ -182,7 +501,35 @@ def create_app(
             "/api/backtests/"
         ):
             return await backtest_request_validation_handler(request, error)
+        if any(
+            request.url.path == prefix or request.url.path.startswith(f"{prefix}/")
+            for prefix in (
+                "/api/settings/models",
+                "/api/analysis",
+                "/api/tasks",
+            )
+        ):
+            return JSONResponse(status_code=422, content={"code": "invalid_request"})
         return await market_request_validation_handler(request, error)
+
+    async def application_database_mismatch_handler(
+        request: Request, _error: Exception
+    ) -> JSONResponse:
+        if (
+            request.url.path == "/api/formulas"
+            or request.url.path.startswith("/api/formulas/")
+            or (
+                request.url.path == "/api/market/bars"
+                and "formula_version_id" in request.query_params
+            )
+        ):
+            return await formula_service_database_mismatch_handler(
+                request,
+                FormulaServiceDatabaseMismatch(
+                    "formula and application storage do not match"
+                ),
+            )
+        return JSONResponse(status_code=503, content={"code": "storage_unavailable"})
 
     application.add_exception_handler(
         RequestValidationError,
@@ -200,10 +547,16 @@ def create_app(
         SourceSettingsStorageError,
         source_settings_storage_exception_handler,
     )
+    application.add_exception_handler(
+        _ApplicationDatabaseMismatch,
+        application_database_mismatch_handler,
+    )
     application.include_router(health_router, prefix="/api")
     application.include_router(tasks_router, prefix="/api")
     application.include_router(market_router, prefix="/api")
     application.include_router(settings_router, prefix="/api")
+    application.include_router(models_router, prefix="/api")
+    application.include_router(analysis_router, prefix="/api")
     application.include_router(formulas_router, prefix="/api")
     application.include_router(backtests_router, prefix="/api")
     if resolved_settings.web_dist_dir is not None:

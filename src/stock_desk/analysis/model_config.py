@@ -1,0 +1,501 @@
+from __future__ import annotations
+
+import asyncio
+from collections.abc import Awaitable, Callable, Sequence
+from enum import StrEnum
+import ipaddress
+import math
+import re
+import socket
+from threading import RLock
+from typing import Literal, Protocol, Self, TypeAlias
+from urllib.parse import SplitResult, urlsplit
+
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    StrictFloat,
+    field_validator,
+    model_validator,
+)
+
+DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+OLLAMA_BASE_URL = "http://127.0.0.1:11434"
+MODEL_API_KEY_SECRET_NAME = "analysis_model_api_key"
+HostResolver: TypeAlias = Callable[[str, int], Awaitable[Sequence[str]]]
+_MASK_SEPARATOR = "•••••••"
+_PROVIDER_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
+_MODEL_SECRET_REFERENCE = re.compile(
+    rf"{MODEL_API_KEY_SECRET_NAME}(?:_[0-9a-f]{{32}})?\Z"
+)
+
+_DANGEROUS_PORTS = frozenset(
+    {
+        21,
+        22,
+        23,
+        25,
+        53,
+        69,
+        110,
+        111,
+        135,
+        137,
+        138,
+        139,
+        143,
+        389,
+        445,
+        465,
+        587,
+        636,
+        993,
+        995,
+        1433,
+        1521,
+        2049,
+        2375,
+        2379,
+        3306,
+        5432,
+        5672,
+        6379,
+        9200,
+        11211,
+        27017,
+    }
+)
+
+
+class ModelProviderKind(StrEnum):
+    DEEPSEEK = "deepseek"
+    OPENAI_COMPATIBLE = "openai_compatible"
+    OLLAMA = "ollama"
+
+
+class ModelConfigStorageError(RuntimeError):
+    """A secret-bearing configuration write failed without exposing its input."""
+
+    def __init__(self, *_unsafe_context: object) -> None:
+        super().__init__("Model configuration could not be saved")
+
+
+class ModelHostResolutionError(RuntimeError):
+    """A provider hostname could not be resolved to validated addresses."""
+
+    def __init__(self, *_unsafe_context: object) -> None:
+        super().__init__("Model provider hostname resolution failed")
+
+
+class ModelResolvedEndpointError(RuntimeError):
+    """A resolved provider address is not an allowed public destination."""
+
+    def __init__(self, *_unsafe_context: object) -> None:
+        super().__init__("Model provider resolved endpoint is unsafe")
+
+
+class _FrozenModel(BaseModel):
+    model_config = ConfigDict(
+        allow_inf_nan=False,
+        extra="forbid",
+        frozen=True,
+        hide_input_in_errors=True,
+        strict=True,
+    )
+
+
+class ModelIdentity(_FrozenModel):
+    provider: ModelProviderKind
+    base_url: str
+    model: str
+
+
+class AnalysisModelPublicConfig(_FrozenModel):
+    """Secret-free immutable model execution snapshot stored with one run."""
+
+    schema_version: Literal["analysis-model-public-v1"] = "analysis-model-public-v1"
+    provider: ModelProviderKind
+    base_url: str = Field(min_length=1, max_length=2_048)
+    model: str = Field(min_length=1, max_length=256)
+    temperature: StrictFloat = Field(ge=0.0, le=2.0)
+    timeout_seconds: StrictFloat = Field(ge=1.0, le=300.0)
+    max_output_tokens: int = Field(ge=1, le=65_536)
+    secret_reference_id: str | None = Field(default=None, max_length=128)
+    api_key_configured: bool = False
+
+    @model_validator(mode="after")
+    def validate_secret_reference(self) -> Self:
+        validate_provider_url(self.provider, self.base_url)
+        _validate_model(self.model)
+        if self.api_key_configured != (self.secret_reference_id is not None):
+            raise ValueError("model secret reference is inconsistent")
+        if (
+            self.secret_reference_id is not None
+            and _MODEL_SECRET_REFERENCE.fullmatch(self.secret_reference_id) is None
+        ):
+            raise ValueError("model secret reference is invalid")
+        if self.provider is ModelProviderKind.OLLAMA and self.api_key_configured:
+            raise ValueError("Ollama cannot have an API key")
+        return self
+
+
+class ModelConfig(_FrozenModel):
+    provider: ModelProviderKind
+    base_url: str
+    model: str = Field(min_length=1, max_length=256)
+    temperature: StrictFloat = Field(ge=0.0, le=2.0)
+    timeout_seconds: StrictFloat = Field(ge=1.0, le=300.0)
+    max_output_tokens: int = Field(ge=1, le=65_536)
+    api_key_configured: bool
+    masked_api_key: str | None = Field(default=None, max_length=64)
+
+    @property
+    def identity(self) -> ModelIdentity:
+        return ModelIdentity(
+            provider=self.provider,
+            base_url=self.base_url,
+            model=self.model,
+        )
+
+    @field_validator("temperature", "timeout_seconds", mode="before")
+    @classmethod
+    def validate_float_fields(cls, value: object) -> object:
+        if type(value) is not float:
+            raise ValueError("model runtime value must be a float")
+        return value
+
+    @field_validator("masked_api_key")
+    @classmethod
+    def validate_masked_api_key(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if any(ord(character) < 32 or ord(character) == 127 for character in value):
+            raise ValueError("API key hint is not masked")
+        if value in {_MASK_SEPARATOR, "[MASKED]"}:
+            return value
+        if len(value) != 15 or value[4:11] != _MASK_SEPARATOR:
+            raise ValueError("API key hint is not masked")
+        return value
+
+    @model_validator(mode="after")
+    def validate_public_state(self) -> Self:
+        validate_provider_url(self.provider, self.base_url)
+        _validate_model(self.model)
+        _validate_finite(self.temperature)
+        _validate_finite(self.timeout_seconds)
+        if self.api_key_configured != (self.masked_api_key is not None):
+            raise ValueError("API key status is inconsistent")
+        if self.provider is ModelProviderKind.OLLAMA and self.api_key_configured:
+            raise ValueError("Ollama cannot have an API key")
+        return self
+
+
+class ModelConfigUpdate(_FrozenModel):
+    provider: ModelProviderKind
+    base_url: str | None = None
+    model: str = Field(min_length=1, max_length=256)
+    api_key: SecretStr | None = Field(
+        default=None,
+        min_length=4,
+        max_length=4_096,
+        exclude=True,
+        repr=False,
+        json_schema_extra={"writeOnly": True},
+    )
+    temperature: StrictFloat = Field(default=0.1, ge=0.0, le=2.0)
+    timeout_seconds: StrictFloat = Field(default=90.0, ge=1.0, le=300.0)
+    max_output_tokens: int = Field(default=4_096, ge=1, le=65_536)
+
+    @field_validator("temperature", "timeout_seconds", mode="before")
+    @classmethod
+    def validate_float_fields(cls, value: object) -> object:
+        if type(value) is not float:
+            raise ValueError("model runtime value must be a float")
+        return value
+
+    @field_validator("api_key")
+    @classmethod
+    def validate_api_key(cls, value: SecretStr | None) -> SecretStr | None:
+        if value is None:
+            return None
+        plaintext = value.get_secret_value()
+        if plaintext != plaintext.strip() or any(
+            ord(character) < 32 or ord(character) == 127 for character in plaintext
+        ):
+            raise ValueError("API key is invalid")
+        return value
+
+    @model_validator(mode="after")
+    def validate_update(self) -> Self:
+        if self.base_url is None:
+            if self.provider is ModelProviderKind.OPENAI_COMPATIBLE:
+                raise ValueError("OpenAI-compatible provider requires a base URL")
+        else:
+            validate_provider_url(self.provider, self.base_url)
+        _validate_model(self.model)
+        _validate_finite(self.temperature)
+        _validate_finite(self.timeout_seconds)
+        if self.provider is ModelProviderKind.OLLAMA and self.api_key is not None:
+            raise ValueError("Ollama does not accept an API key")
+        return self
+
+
+class ModelConfigRepository(Protocol):
+    def save(self, config: ModelConfig) -> None: ...
+
+    def load(self) -> ModelConfig | None: ...
+
+
+class ModelConfigSecretStore(Protocol):
+    def save_secret(self, name: str, value: str) -> None: ...
+
+    def has_secret(self, name: str) -> bool: ...
+
+    def masked_secret(self, name: str) -> str: ...
+
+
+class InMemoryModelConfigRepository:
+    """Minimal Task-1 repository; persistent storage is supplied in a later task."""
+
+    def __init__(self) -> None:
+        self._lock = RLock()
+        self._config: ModelConfig | None = None
+
+    def __repr__(self) -> str:
+        return "InMemoryModelConfigRepository(configured=%s)" % (
+            self._config is not None
+        )
+
+    def save(self, config: ModelConfig) -> None:
+        with self._lock:
+            self._config = config
+
+    def load(self) -> ModelConfig | None:
+        with self._lock:
+            return self._config
+
+
+class ModelConfigService:
+    def __init__(
+        self,
+        *,
+        repository: ModelConfigRepository,
+        secret_store: ModelConfigSecretStore,
+    ) -> None:
+        self._repository = repository
+        self._secret_store = secret_store
+        self._lock = RLock()
+
+    def __repr__(self) -> str:
+        return "ModelConfigService(configured=True)"
+
+    def save(self, update: ModelConfigUpdate) -> ModelConfig:
+        with self._lock:
+            configured = False
+            masked: str | None = None
+            interaction_failed = False
+            if update.provider is not ModelProviderKind.OLLAMA:
+                try:
+                    if update.api_key is not None:
+                        self._secret_store.save_secret(
+                            MODEL_API_KEY_SECRET_NAME,
+                            update.api_key.get_secret_value(),
+                        )
+                    configured = self._secret_store.has_secret(
+                        MODEL_API_KEY_SECRET_NAME
+                    )
+                    if configured:
+                        masked = self._secret_store.masked_secret(
+                            MODEL_API_KEY_SECRET_NAME
+                        )
+                except Exception:
+                    interaction_failed = True
+            if interaction_failed:
+                raise ModelConfigStorageError() from None
+            config = ModelConfig(
+                provider=update.provider,
+                base_url=_resolved_base_url(update),
+                model=update.model,
+                temperature=update.temperature,
+                timeout_seconds=update.timeout_seconds,
+                max_output_tokens=update.max_output_tokens,
+                api_key_configured=configured,
+                masked_api_key=masked,
+            )
+            self._repository.save(config)
+            return config
+
+
+def _resolved_base_url(update: ModelConfigUpdate) -> str:
+    if update.base_url is not None:
+        return update.base_url
+    if update.provider is ModelProviderKind.DEEPSEEK:
+        return DEEPSEEK_BASE_URL
+    if update.provider is ModelProviderKind.OLLAMA:
+        return OLLAMA_BASE_URL
+    raise ValueError("OpenAI-compatible provider requires a base URL")
+
+
+def _validate_model(model: str) -> None:
+    if (
+        not model
+        or model != model.strip()
+        or any(ord(character) < 32 or ord(character) == 127 for character in model)
+    ):
+        raise ValueError("model name is invalid")
+
+
+def _validate_provider_name(provider: str) -> None:
+    if _PROVIDER_NAME.fullmatch(provider) is None:
+        raise ValueError("model provider name is invalid")
+
+
+def _validate_finite(value: float) -> None:
+    if not math.isfinite(value):
+        raise ValueError("model runtime value must be finite")
+
+
+def _parse_safe_provider_url(value: str) -> tuple[SplitResult, int | None]:
+    if (
+        not value
+        or len(value) > 2_048
+        or value != value.strip()
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
+        raise ValueError("model provider URL is invalid")
+    try:
+        parsed = urlsplit(value)
+        explicit_port = parsed.port
+    except ValueError:
+        raise ValueError("model provider URL is invalid") from None
+    effective_port = explicit_port
+    if effective_port is None:
+        if parsed.scheme == "http":
+            effective_port = 80
+        elif parsed.scheme == "https":
+            effective_port = 443
+    if (
+        not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.fragment
+        or parsed.query
+        or _is_dangerous_port(effective_port)
+    ):
+        raise ValueError("model provider URL is unsafe")
+    return parsed, effective_port
+
+
+def validate_provider_url(provider: ModelProviderKind, value: str) -> str:
+    parsed, _effective_port = _parse_safe_provider_url(value)
+    parsed_hostname = parsed.hostname
+    if parsed_hostname is None:
+        raise ValueError("model provider URL is unsafe")
+    hostname = parsed_hostname.lower().rstrip(".")
+    if provider is ModelProviderKind.DEEPSEEK:
+        if value != DEEPSEEK_BASE_URL:
+            raise ValueError("DeepSeek URL must use the fixed service endpoint")
+        return value
+    if provider is ModelProviderKind.OLLAMA:
+        if parsed.scheme not in {"http", "https"} or not _is_loopback(hostname):
+            raise ValueError("Ollama URL must use a local HTTP endpoint")
+        return value
+    if parsed.scheme != "https" or _is_non_public_host(hostname):
+        raise ValueError("remote model URL must use a public HTTPS endpoint")
+    return value
+
+
+async def system_host_resolver(hostname: str, port: int) -> tuple[str, ...]:
+    records = await asyncio.get_running_loop().getaddrinfo(
+        hostname,
+        port,
+        family=socket.AF_UNSPEC,
+        type=socket.SOCK_STREAM,
+    )
+    addresses: list[str] = []
+    for _family, _type, _protocol, _canonical_name, socket_address in records:
+        if socket_address and isinstance(socket_address[0], str):
+            addresses.append(socket_address[0])
+    return tuple(dict.fromkeys(addresses))
+
+
+async def validate_resolved_remote_url(
+    value: str,
+    resolver: HostResolver,
+) -> tuple[str, ...]:
+    parsed = urlsplit(value)
+    hostname = parsed.hostname
+    if hostname is None:
+        raise ModelResolvedEndpointError()
+    port = parsed.port or 443
+    resolved: Sequence[str] | None = None
+    try:
+        resolved = await resolver(hostname, port)
+    except Exception:
+        pass
+    if resolved is None:
+        raise ModelHostResolutionError() from None
+    if isinstance(resolved, (str, bytes)) or not resolved or len(resolved) > 64:
+        raise ModelHostResolutionError()
+    for raw_address in resolved:
+        if not isinstance(raw_address, str) or len(raw_address) > 128:
+            raise ModelHostResolutionError()
+        address: ipaddress.IPv4Address | ipaddress.IPv6Address | None = None
+        try:
+            address = ipaddress.ip_address(raw_address)
+        except ValueError:
+            pass
+        if address is None:
+            raise ModelHostResolutionError() from None
+        if not address.is_global:
+            raise ModelResolvedEndpointError()
+    return tuple(resolved)
+
+
+def _is_loopback(hostname: str) -> bool:
+    if hostname == "localhost" or hostname.endswith(".localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return False
+
+
+def _is_dangerous_port(port: int | None) -> bool:
+    if port is None:
+        return False
+    return port == 0 or port in _DANGEROUS_PORTS or (port < 1_024 and port != 443)
+
+
+def _is_non_public_host(hostname: str) -> bool:
+    if (
+        hostname == "localhost"
+        or hostname.endswith((".localhost", ".local", ".internal", ".home.arpa"))
+        or "." not in hostname
+    ):
+        return True
+    try:
+        return not ipaddress.ip_address(hostname).is_global
+    except ValueError:
+        return not _is_valid_dns_hostname(hostname)
+
+
+def _is_valid_dns_hostname(hostname: str) -> bool:
+    try:
+        ascii_hostname = hostname.encode("idna").decode("ascii")
+    except UnicodeError:
+        return False
+    if len(ascii_hostname) > 253:
+        return False
+    for label in ascii_hostname.split("."):
+        if (
+            not label
+            or len(label) > 63
+            or label.startswith("-")
+            or label.endswith("-")
+            or not all(character.isalnum() or character == "-" for character in label)
+        ):
+            return False
+    return True

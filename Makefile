@@ -1,4 +1,4 @@
-.PHONY: bootstrap dev test acceptance acceptance-formula acceptance-backtest benchmark benchmark-formula benchmark-backtest e2e e2e-foundation e2e-market e2e-formula e2e-backtest lint typecheck build smoke container-smoke public-tree check-public-tree security release-check
+.PHONY: bootstrap dev test acceptance acceptance-formula acceptance-backtest acceptance-analysis benchmark benchmark-formula benchmark-backtest e2e e2e-foundation e2e-market e2e-formula e2e-backtest e2e-analysis lint typecheck build smoke container-smoke public-tree check-public-tree security release-check
 
 bootstrap:
 	uv sync --frozen --all-groups --extra providers
@@ -20,6 +20,9 @@ acceptance-formula:
 acceptance-backtest:
 	uv run --frozen pytest -W error tests/acceptance/test_backtest_semantics.py
 
+acceptance-analysis:
+	uv run --frozen pytest -W error tests/acceptance/test_analysis_flow.py tests/security/test_analysis_boundaries.py
+
 benchmark:
 	uv run --frozen pytest -W error tests/performance/test_chart_query.py
 
@@ -29,7 +32,7 @@ benchmark-formula:
 benchmark-backtest:
 	uv run --frozen pytest -W error tests/performance/test_single_backtest.py --benchmark-only
 
-e2e: e2e-foundation e2e-market e2e-formula e2e-backtest
+e2e: e2e-foundation e2e-market e2e-formula e2e-backtest e2e-analysis
 
 e2e-foundation:
 	pnpm exec playwright test web/e2e/foundation.spec.ts --project=chromium
@@ -42,6 +45,9 @@ e2e-formula:
 
 e2e-backtest:
 	pnpm exec playwright test web/e2e/backtest.spec.ts --project=chromium
+
+e2e-analysis:
+	pnpm exec playwright test web/e2e/analysis.spec.ts --project=chromium
 
 lint:
 	uv run --frozen ruff format --check .
@@ -80,4 +86,4 @@ security:
 	pnpm install --lockfile-only --frozen-lockfile --ignore-scripts
 	pnpm audit --prod --audit-level high
 
-release-check: test acceptance acceptance-formula acceptance-backtest benchmark benchmark-formula benchmark-backtest e2e-foundation e2e-market e2e-formula e2e-backtest lint typecheck build public-tree security container-smoke
+release-check: test acceptance acceptance-formula acceptance-backtest acceptance-analysis benchmark benchmark-formula benchmark-backtest e2e-foundation e2e-market e2e-formula e2e-backtest e2e-analysis lint typecheck build public-tree security container-smoke

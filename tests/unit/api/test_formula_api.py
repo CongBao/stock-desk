@@ -367,8 +367,8 @@ def test_timeout_terminates_worker_and_next_request_recovers(tmp_path: Path) -> 
     time.sleep(1.3)
 
     assert not marker.exists()
-    # Recovery proves executor reuse, not a subsecond spawn deadline.
-    executor.timeout_seconds = 3.0
+    # Recovery proves executor reuse, not a hosted-runner spawn deadline.
+    executor.timeout_seconds = 30.0
     assert executor.execute(b"fast") == b"recovered"
     assert {child.pid for child in multiprocessing.active_children()} == children_before
 
@@ -398,6 +398,9 @@ def test_partial_frame_cannot_block_past_deadline_and_next_request_recovers() ->
 
     assert partial_sent.is_set()
     executor._worker_target = echo_formula_worker
+    # The timed path above retains its 0.75s assertion; recovery is not a
+    # process-startup benchmark.
+    executor.timeout_seconds = 30.0
     assert executor.execute(b"recovered") == b"recovered"
     assert elapsed < 1.5
     assert {child.pid for child in multiprocessing.active_children()} == children_before
@@ -445,8 +448,8 @@ def test_executor_slot_wait_counts_against_request_deadline_and_recovers() -> No
                 future.result(timeout=1.0)
 
     executor._worker_target = _echo_formula_worker
-    # Keep the 0.2s slot deadline above; recovery uses the production default.
-    executor.timeout_seconds = 3.0
+    # Keep the 0.2s slot deadline above; recovery is not a spawn benchmark.
+    executor.timeout_seconds = 30.0
     assert executor.execute(b"recovered") == b"recovered"
 
 
@@ -454,7 +457,7 @@ def test_worker_crash_is_safe_and_next_request_recovers() -> None:
     children_before = {child.pid for child in multiprocessing.active_children()}
     # This test classifies a completed crash rather than measuring spawn latency.
     executor = IsolatedFormulaExecutor(
-        timeout_seconds=3.0,
+        timeout_seconds=30.0,
         worker_target=_controllable_worker,
     )
 
@@ -480,7 +483,7 @@ def test_worker_request_bytes_are_bounded() -> None:
 def test_worker_response_bytes_are_bounded() -> None:
     # This test classifies an oversized response rather than measuring spawn latency.
     executor = IsolatedFormulaExecutor(
-        timeout_seconds=3.0,
+        timeout_seconds=30.0,
         worker_target=_controllable_worker,
         max_request_bytes=8,
         max_response_bytes=4,
@@ -505,7 +508,9 @@ def test_worker_receive_cap_uses_configured_bound_and_recovers(
 
     monkeypatch.setattr(Connection, "recv_bytes", tracked_recv_bytes)
     executor = IsolatedFormulaExecutor(
-        timeout_seconds=3.0,
+        # This test classifies the receive bound, so use the maximum supported
+        # deadline rather than making hosted-runner spawn latency part of it.
+        timeout_seconds=30.0,
         worker_target=_echo_formula_worker,
         max_request_bytes=8,
         max_response_bytes=4,
@@ -519,9 +524,9 @@ def test_worker_receive_cap_uses_configured_bound_and_recovers(
 
 
 def test_rapid_worker_completion_does_not_race_with_process_exit() -> None:
-    # Keep the production timeout so loaded CI does not turn spawn latency into a race.
+    # This test classifies process-exit ordering rather than spawn latency.
     executor = IsolatedFormulaExecutor(
-        timeout_seconds=3.0,
+        timeout_seconds=30.0,
         worker_target=_controllable_worker,
     )
 
@@ -532,7 +537,7 @@ def test_rapid_worker_completion_does_not_race_with_process_exit() -> None:
     ("worker", "timeout_seconds", "status_code", "code"),
     [
         (_slow_formula_worker, 0.5, 504, "preview_timeout"),
-        (_crashing_formula_worker, 3.0, 503, "preview_worker_failed"),
+        (_crashing_formula_worker, 30.0, 503, "preview_worker_failed"),
     ],
 )
 def test_api_maps_isolated_worker_failures_to_safe_errors(

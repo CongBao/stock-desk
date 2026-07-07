@@ -7,6 +7,7 @@ from stock_desk.storage import models as _storage_models  # noqa: F401
 # This keeps market modules free to import storage models before formula modules.
 from stock_desk.formula import models as _formula_models  # noqa: F401,E402
 from stock_desk.backtest import models as _backtest_models  # noqa: F401,E402
+from stock_desk.analysis import models as _analysis_models  # noqa: F401,E402
 
 
 __all__ = ["Base"]

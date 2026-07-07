@@ -12,6 +12,16 @@ from typing import Any
 
 from sqlalchemy import Engine
 
+from stock_desk.analysis.model_catalog import AnalysisModelCatalog
+from stock_desk.analysis.data_service import ResearchDataService
+from stock_desk.analysis.model_settings import ModelProviderFactory
+from stock_desk.analysis.providers.base import ModelProvider
+from stock_desk.analysis.repository import AnalysisExecutionConfig, AnalysisRepository
+from stock_desk.analysis.runtime import (
+    ResearchDataServiceFactory,
+    production_evidence_factory,
+)
+from stock_desk.analysis.worker import AnalysisWorkerHandler
 from stock_desk.backtest.pool_runner import PoolBacktestRunner
 from stock_desk.backtest.repository import BacktestRepository
 from stock_desk.api.settings import SourceSettingsServices
@@ -45,14 +55,31 @@ from stock_desk.market.update import (
     UpdateService,
 )
 from stock_desk.security.redaction import scoped_log_redaction
+from stock_desk.security.secrets import SecretConfigurationError, SecretStore
 from stock_desk.storage.database import create_engine_for_url, migrate
 from stock_desk.tasks.models import TaskSnapshot
 from stock_desk.tasks.repository import TaskRepository
-from stock_desk.tasks.worker import TaskWorker, demo_double
+from stock_desk.tasks.worker import ClaimedTaskHandler, TaskWorker, demo_double
 
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _best_effort_cleanup(
+    actions: tuple[Callable[[], None], ...],
+    *,
+    raise_first: bool,
+) -> None:
+    first_error: BaseException | None = None
+    for action in actions:
+        try:
+            action()
+        except BaseException as error:
+            if first_error is None:
+                first_error = error
+    if raise_first and first_error is not None:
+        raise first_error
 
 
 class SettingsBackedMarketUpdateHandler:
@@ -237,12 +264,16 @@ class ProductionMarketWorker:
         source_settings: SourceSettingsServices,
         worker: TaskWorker,
         scheduler: MarketUpdateScheduler,
+        analysis_repository: AnalysisRepository,
+        model_catalog: AnalysisModelCatalog,
     ) -> None:
         self._engine = engine
         self.tasks = tasks
         self.source_settings = source_settings
         self.worker = worker
         self.scheduler = scheduler
+        self.analysis_repository = analysis_repository
+        self.model_catalog = model_catalog
         self._close_lock = Lock()
         self._closed = False
 
@@ -254,10 +285,15 @@ class ProductionMarketWorker:
         worker_id: str | None = None,
         provider_factory: RuntimeProviderFactory | None = None,
         composition_factory: Callable[[], CompositionProvider] | None = None,
+        analysis_handler: ClaimedTaskHandler | None = None,
+        analysis_provider_factory: Callable[[AnalysisExecutionConfig], ModelProvider]
+        | None = None,
+        analysis_data_service_factory: Callable[[], ResearchDataService] | None = None,
     ) -> ProductionMarketWorker:
         migrate(settings.database_url)
         engine = create_engine_for_url(settings.database_url)
         source_settings: SourceSettingsServices | None = None
+        model_catalog: AnalysisModelCatalog | None = None
         try:
             tasks = TaskRepository(engine)
             source_settings = SourceSettingsServices(engine=engine, settings=settings)
@@ -310,6 +346,54 @@ class ProductionMarketWorker:
                     formulas=formula_service,
                 ),
             )
+            analysis_repository = AnalysisRepository(engine)
+            model_catalog = AnalysisModelCatalog(
+                engine,
+                expected_database_identity=tasks.database_identity,
+                owns_engine=False,
+            )
+            identities = (
+                tasks.database_identity,
+                source_settings.database_identity,
+                lake.database_identity,
+                analysis_repository.database_identity,
+                model_catalog.database_identity,
+            )
+            if any(identity != identities[0] for identity in identities[1:]):
+                raise ValueError("analysis worker database identities do not match")
+            resolved_analysis_handler = analysis_handler
+            if resolved_analysis_handler is None:
+                try:
+                    model_secrets: SecretStore | None = SecretStore(
+                        engine,
+                        settings,
+                        expected_database_identity=tasks.database_identity,
+                    )
+                except SecretConfigurationError:
+                    model_secrets = None
+                model_providers = ModelProviderFactory(secret_store=model_secrets)
+                resolved_analysis_provider_factory = (
+                    analysis_provider_factory
+                    if analysis_provider_factory is not None
+                    else lambda execution: model_providers.create(
+                        execution.public_config
+                    )
+                )
+                resolved_analysis_handler = AnalysisWorkerHandler(
+                    repository=analysis_repository,
+                    provider_factory=resolved_analysis_provider_factory,
+                    data_service_factory=(
+                        analysis_data_service_factory
+                        if analysis_data_service_factory is not None
+                        else ResearchDataServiceFactory(
+                            source_settings=source_settings,
+                            market_lake=lake,
+                            clock=_utc_now,
+                        )
+                    ),
+                    evidence_factory=production_evidence_factory,
+                )
+            task_worker.register_claimed("analysis.run", resolved_analysis_handler)
             scheduler = MarketUpdateScheduler(schedules, tasks, clock=_utc_now)
             return cls(
                 engine=engine,
@@ -317,11 +401,22 @@ class ProductionMarketWorker:
                 source_settings=source_settings,
                 worker=task_worker,
                 scheduler=scheduler,
+                analysis_repository=analysis_repository,
+                model_catalog=model_catalog,
             )
         except BaseException:
-            if source_settings is not None:
-                source_settings.close()
-            engine.dispose()
+            _best_effort_cleanup(
+                tuple(
+                    action
+                    for action in (
+                        source_settings.close if source_settings is not None else None,
+                        model_catalog.close if model_catalog is not None else None,
+                        engine.dispose,
+                    )
+                    if action is not None
+                ),
+                raise_first=False,
+            )
             raise
 
     def run_once(self) -> TaskSnapshot | None:
@@ -339,8 +434,14 @@ class ProductionMarketWorker:
             if self._closed:
                 return
             self._closed = True
-        self.source_settings.close()
-        self._engine.dispose()
+        _best_effort_cleanup(
+            (
+                self.source_settings.close,
+                self.model_catalog.close,
+                self._engine.dispose,
+            ),
+            raise_first=True,
+        )
 
 
 __all__ = [
