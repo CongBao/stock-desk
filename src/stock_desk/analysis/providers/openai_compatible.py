@@ -21,8 +21,8 @@ from stock_desk.analysis.providers.base import (
     borrowed_transport,
     connection_failure,
     decode_provider_response_json,
-    ModelAuthenticationError,
     ModelConnectionResult,
+    ModelCredentialUnavailableError,
     ModelDNSResolutionError,
     ModelInvalidResponseError,
     ModelProviderError,
@@ -34,6 +34,8 @@ from stock_desk.analysis.providers.base import (
     ModelTransportError,
     ModelUnsafeEndpointError,
     ModelUsage,
+    read_model_secret_with_deadline,
+    read_bounded_provider_response,
     raise_for_status,
     validate_model_name,
 )
@@ -133,7 +135,7 @@ class OpenAICompatibleProvider:
         try:
             wire = _WireCompletion.model_validate(payload)
             content = _decode_content(wire.choices[0].message.content)
-            return ModelResponse(
+            return ModelResponse(  # type: ignore[call-arg]
                 provider=self.provider,
                 model=wire.model,
                 content=content,
@@ -187,31 +189,33 @@ class OpenAICompatibleProvider:
         body: dict[str, object] | None,
         timeout_seconds: float,
     ) -> object:
-        try:
-            api_key = self._secret_store.read_secret_for_server_call(self._secret_name)
-            if (
-                not isinstance(api_key, str)
-                or len(api_key) < 4
-                or len(api_key) > 4_096
-                or api_key != api_key.strip()
-                or any(
-                    ord(character) < 32 or ord(character) == 127
-                    for character in api_key
-                )
-            ):
-                raise ValueError
-        except Exception:
-            raise ModelAuthenticationError() from None
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        }
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout_seconds
-        response: httpx2.Response | None = None
+        content: bytes | None = None
         request_error: ModelProviderError | None = None
         try:
             async with asyncio.timeout(timeout_seconds):
+                api_key = await read_model_secret_with_deadline(
+                    self._secret_store,
+                    self._secret_name,
+                    timeout_seconds=timeout_seconds,
+                )
+                if (
+                    not isinstance(api_key, str)
+                    or len(api_key) < 4
+                    or len(api_key) > 4_096
+                    or api_key != api_key.strip()
+                    or any(
+                        ord(character) < 32 or ord(character) == 127
+                        for character in api_key
+                    )
+                ):
+                    raise ModelCredentialUnavailableError()
+                headers = {
+                    "Authorization": f"Bearer {api_key}",
+                    "Accept-Encoding": "identity",
+                    "Content-Type": "application/json",
+                }
                 (
                     pinned_url,
                     original_authority,
@@ -226,24 +230,27 @@ class OpenAICompatibleProvider:
                         follow_redirects=False,
                         trust_env=False,
                     ) as client:
-                        response = await client.request(
+                        async with client.stream(
                             method,
                             pinned_url,
                             headers={**headers, "Host": original_authority},
                             json=body,
                             timeout=remaining,
                             extensions={"sni_hostname": sni_hostname},
-                        )
+                        ) as response:
+                            raise_for_status(response.status_code)
+                            content = await read_bounded_provider_response(response)
         except (TimeoutError, httpx2.TimeoutException):
             request_error = ModelTimeoutError()
+        except ModelCredentialUnavailableError:
+            raise
         except httpx2.RequestError:
             request_error = ModelTransportError()
         if request_error is not None:
             raise request_error from None
-        if response is None:
+        if content is None:
             raise ModelServerError()
-        raise_for_status(response.status_code)
-        return decode_provider_response_json(response.content)
+        return decode_provider_response_json(content)
 
 
 def _compact_json(value: object) -> str:

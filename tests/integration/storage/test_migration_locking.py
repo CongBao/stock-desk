@@ -13,7 +13,7 @@ from stock_desk.storage.database import (
 )
 
 
-HEAD_REVISION = "0008_analysis_runs"
+HEAD_REVISION = "0010_parent_active_retry"
 CORE_TABLES = {
     "app_setting",
     "formula",
@@ -21,6 +21,7 @@ CORE_TABLES = {
     "formula_version",
     "task_event",
     "task_run",
+    "analysis_model_config",
 }
 
 

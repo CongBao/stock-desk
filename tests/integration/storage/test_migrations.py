@@ -19,7 +19,7 @@ from stock_desk.storage.metadata import Base
 from stock_desk.tasks.repository import TaskRepository
 
 
-HEAD_REVISION = "0008_analysis_runs"
+HEAD_REVISION = "0010_parent_active_retry"
 INSTRUMENT_TABLES = {
     "instrument_dataset",
     "instrument_dataset_item",
@@ -64,6 +64,7 @@ ANALYSIS_TABLES = {
     "analysis_attempt",
     "analysis_report",
 }
+MODEL_CONFIG_TABLES = {"analysis_model_config"}
 CORE_TABLES = {
     "app_setting",
     "task_event",
@@ -73,6 +74,7 @@ CORE_TABLES = {
     *EXECUTION_STATUS_TABLES,
     *BACKTEST_TABLES,
     *ANALYSIS_TABLES,
+    *MODEL_CONFIG_TABLES,
 }
 BACKTEST_TABLE_COLUMNS = {
     "backtest_run": {
@@ -424,6 +426,12 @@ ALL_TRIGGER_NAMES = {
     *BACKTEST_TRIGGER_NAMES,
     *ANALYSIS_TRIGGER_NAMES,
     *MARKET_TIMESTAMP_TRIGGER_NAMES,
+    "trg_analysis_model_config_immutable_update",
+    "trg_analysis_model_config_no_replace",
+    "trg_analysis_model_config_no_delete",
+    "trg_analysis_model_config_mutation_guard",
+    "trg_analysis_model_config_disabled_terminal",
+    "trg_analysis_model_config_initial_revision",
 }
 
 

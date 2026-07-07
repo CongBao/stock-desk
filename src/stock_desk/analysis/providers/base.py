@@ -1,23 +1,27 @@
 from __future__ import annotations
 
+import asyncio
+from concurrent.futures import Future
 from dataclasses import dataclass
 from enum import StrEnum
 import hashlib
+from itertools import count
 import json
 import math
+import threading
 from typing import cast, Final, Protocol, runtime_checkable
 
 import httpx2
 
 from pydantic import (
+    AliasChoices,
     BaseModel,
     ConfigDict,
     Field,
     JsonValue,
-    PrivateAttr,
     StrictBool,
     StrictFloat,
-    computed_field,
+    field_serializer,
     field_validator,
     model_validator,
 )
@@ -29,6 +33,9 @@ MAX_MODEL_JSON_NODES: Final = 10_000
 MAX_PROVIDER_RESPONSE_BYTES: Final = 1_048_576
 MAX_PROVIDER_RESPONSE_DEPTH: Final = 32
 MAX_PROVIDER_RESPONSE_NODES: Final = 20_000
+MAX_SECRET_READER_THREADS: Final = 4
+_SECRET_READER_SLOTS = threading.BoundedSemaphore(MAX_SECRET_READER_THREADS)
+_SECRET_READER_SEQUENCE = count(1)
 
 
 class _FrozenModel(BaseModel):
@@ -50,6 +57,7 @@ class ModelErrorCode(StrEnum):
     DNS = "dns"
     UNSAFE_ENDPOINT = "unsafe_endpoint"
     INVALID_RESPONSE = "invalid_response"
+    STORAGE = "storage"
 
 
 class ModelUsage(_FrozenModel):
@@ -139,27 +147,44 @@ class ModelRequest(_FrozenModel):
 
 
 class ModelResponse(_FrozenModel):
+    model_config = ConfigDict(
+        allow_inf_nan=False,
+        extra="forbid",
+        frozen=True,
+        hide_input_in_errors=True,
+        serialize_by_alias=True,
+        strict=True,
+    )
+
     provider: str = Field(min_length=1, max_length=64)
     model: str = Field(min_length=1, max_length=256)
     usage: ModelUsage
-    _content_json: bytes = PrivateAttr()
+    content_json: bytes = Field(
+        validation_alias=AliasChoices("content", "content_json"),
+        serialization_alias="content",
+        repr=False,
+        json_schema_extra=lambda schema: _content_object_schema(schema),
+    )
 
-    def __init__(
-        self,
-        *,
-        provider: str,
-        model: str,
-        content: dict[str, JsonValue],
-        usage: ModelUsage,
-    ) -> None:
-        content_json = _canonical_response_content(content)
-        super().__init__(**{"provider": provider, "model": model, "usage": usage})
-        object.__setattr__(self, "_content_json", content_json)
+    @field_validator("content_json", mode="before")
+    @classmethod
+    def freeze_content(cls, value: object) -> bytes:
+        if isinstance(value, (bytes, bytearray)):
+            try:
+                value = json.loads(bytes(value))
+            except (UnicodeDecodeError, ValueError, TypeError):
+                raise ValueError("model response content is invalid") from None
+        if not isinstance(value, dict):
+            raise ValueError("model response content must be an object")
+        return _canonical_response_content(value)
 
-    @computed_field(return_type=dict[str, JsonValue])  # type: ignore[prop-decorator]
+    @field_serializer("content_json")
+    def serialize_content(self, value: bytes) -> dict[str, JsonValue]:
+        return _decoded_response_object(value)
+
     @property
     def content(self) -> dict[str, JsonValue]:
-        return cast(dict[str, JsonValue], json.loads(self._content_json))
+        return _decoded_response_object(self.content_json)
 
 
 @dataclass(frozen=True, slots=True)
@@ -211,6 +236,11 @@ class ModelAuthenticationError(ModelProviderError):
     safe_message = "model provider authentication failed"
 
 
+class ModelCredentialUnavailableError(ModelProviderError):
+    code = ModelErrorCode.STORAGE
+    safe_message = "model provider credentials are unavailable"
+
+
 class ModelRateLimitError(ModelProviderError):
     code = ModelErrorCode.RATE_LIMIT
     safe_message = "model provider rate limit was reached"
@@ -244,6 +274,49 @@ class ModelInvalidResponseError(ModelProviderError):
 @runtime_checkable
 class ModelSecretReader(Protocol):
     def read_secret_for_server_call(self, name: str) -> str: ...
+
+
+async def read_model_secret_with_deadline(
+    reader: ModelSecretReader,
+    name: str,
+    *,
+    timeout_seconds: float,
+) -> str:
+    """Run a synchronous credential read in one bounded daemon worker."""
+    if not _SECRET_READER_SLOTS.acquire(blocking=False):
+        raise ModelCredentialUnavailableError()
+    future: Future[str] = Future()
+
+    def invoke() -> None:
+        try:
+            if future.set_running_or_notify_cancel():
+                try:
+                    future.set_result(reader.read_secret_for_server_call(name))
+                except BaseException as error:
+                    future.set_exception(error)
+        finally:
+            _SECRET_READER_SLOTS.release()
+
+    worker = threading.Thread(
+        target=invoke,
+        name=f"model-secret-reader-{next(_SECRET_READER_SEQUENCE)}",
+        daemon=True,
+    )
+    try:
+        worker.start()
+    except BaseException:
+        _SECRET_READER_SLOTS.release()
+        raise ModelCredentialUnavailableError() from None
+    deadline = asyncio.get_running_loop().time() + timeout_seconds
+    while not future.done():
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            raise ModelTimeoutError()
+        await asyncio.sleep(min(0.005, remaining))
+    try:
+        return future.result()
+    except BaseException:
+        raise ModelCredentialUnavailableError() from None
 
 
 @runtime_checkable
@@ -338,6 +411,43 @@ def decode_provider_response_json(content: bytes) -> object:
     return decoded
 
 
+async def read_bounded_provider_response(response: httpx2.Response) -> bytes:
+    """Read an identity-encoded provider response without unbounded buffering."""
+    content_encoding = response.headers.get("content-encoding")
+    if content_encoding is not None and content_encoding.strip().lower() not in {
+        "",
+        "identity",
+    }:
+        raise ModelInvalidResponseError()
+    content_length = response.headers.get("content-length")
+    if content_length is not None:
+        if (
+            not content_length
+            or not content_length.isascii()
+            or not content_length.isdecimal()
+            or len(content_length) > 20
+        ):
+            raise ModelInvalidResponseError()
+        try:
+            declared_length = int(content_length)
+        except ValueError:
+            raise ModelInvalidResponseError() from None
+        if declared_length > MAX_PROVIDER_RESPONSE_BYTES:
+            raise ModelInvalidResponseError()
+    if response.is_stream_consumed:
+        content = response.content
+        if len(content) > MAX_PROVIDER_RESPONSE_BYTES:
+            raise ModelInvalidResponseError()
+        return content
+    payload = bytearray()
+    async for chunk in response.aiter_raw():
+        remaining = MAX_PROVIDER_RESPONSE_BYTES + 1 - len(payload)
+        payload.extend(chunk[:remaining])
+        if len(payload) > MAX_PROVIDER_RESPONSE_BYTES or len(chunk) > remaining:
+            raise ModelInvalidResponseError()
+    return bytes(payload)
+
+
 def _canonical_request_json(
     data_blocks: object,
     output_schema: object,
@@ -390,6 +500,19 @@ def _canonical_response_content(content: object) -> bytes:
     if encoded is None or len(encoded) > MAX_PROVIDER_RESPONSE_BYTES:
         raise ValueError("model response content exceeds its budget") from None
     return encoded
+
+
+def _decoded_response_object(value: bytes) -> dict[str, JsonValue]:
+    decoded = json.loads(value)
+    if not isinstance(decoded, dict):
+        raise ValueError("model response content is invalid")
+    return cast(dict[str, JsonValue], decoded)
+
+
+def _content_object_schema(schema: dict[str, JsonValue]) -> None:
+    schema.pop("format", None)
+    schema["type"] = "object"
+    schema["additionalProperties"] = True
 
 
 def _validate_json_shape(

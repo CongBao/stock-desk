@@ -10,7 +10,7 @@ import threading
 import time
 from typing import cast
 
-from stock_desk.analysis.evidence import EvidenceGraph
+from stock_desk.analysis.evidence import EvidenceGraph, critical_evidence_eligible
 from stock_desk.analysis.data_service import (
     ResearchDataService,
     ResearchDataUnavailable,
@@ -34,7 +34,6 @@ from stock_desk.analysis.snapshot import (
     MissingResearchSection,
     RESEARCH_SECTION_ORDER,
     ResearchMissingReason,
-    ResearchQualityFlag,
     ResearchSection,
     ResearchSectionKind,
     ResearchSnapshot,
@@ -57,6 +56,12 @@ class AnalysisCancelled(asyncio.CancelledError):
     pass
 
 
+class AnalysisWorkerRestartRequired(BaseException):
+    """The process data-worker budget is poisoned and must be recreated."""
+
+    pass
+
+
 _DEPENDENCIES = {
     RoleName.TECHNICAL: (),
     RoleName.FUNDAMENTAL_NEWS: (),
@@ -64,28 +69,63 @@ _DEPENDENCIES = {
     RoleName.BEAR: (RoleName.TECHNICAL, RoleName.FUNDAMENTAL_NEWS),
     RoleName.RISK_DECISION: (RoleName.BULL, RoleName.BEAR),
 }
-_CRITICAL_SECTIONS = frozenset(
-    {ResearchSectionKind.MARKET, ResearchSectionKind.FUNDAMENTALS}
-)
-_INELIGIBLE_FLAGS = frozenset(
-    {
-        ResearchQualityFlag.STALE,
-        ResearchQualityFlag.EXPIRED,
-        ResearchQualityFlag.UNVERIFIED,
-    }
-)
 _ROLE_WAVES = (
     (RoleName.TECHNICAL, RoleName.FUNDAMENTAL_NEWS),
     (RoleName.BULL, RoleName.BEAR),
     (RoleName.RISK_DECISION,),
 )
 _MAX_DATA_WORKER_THREADS = 4
-_DATA_WORKER_SLOTS = threading.BoundedSemaphore(_MAX_DATA_WORKER_THREADS)
 _DATA_WORKER_SEQUENCE = count(1)
 
 
 class _DataWorkerCapacityExceeded(RuntimeError):
     pass
+
+
+@dataclass(slots=True)
+class _DataWorkerLease:
+    timed_out: bool = False
+    released: bool = False
+
+
+class _DataWorkerCapacity:
+    def __init__(self, maximum: int) -> None:
+        self._maximum = maximum
+        self._slots = threading.BoundedSemaphore(maximum)
+        self._lock = threading.Lock()
+        self._poisoned = 0
+
+    @property
+    def restart_required(self) -> bool:
+        with self._lock:
+            return self._poisoned >= self._maximum
+
+    def acquire(self, *, restart_on_poisoned: bool) -> _DataWorkerLease:
+        if self._slots.acquire(blocking=False):
+            return _DataWorkerLease()
+        with self._lock:
+            poisoned = self._poisoned
+        if restart_on_poisoned and poisoned >= self._maximum:
+            raise AnalysisWorkerRestartRequired()
+        raise _DataWorkerCapacityExceeded("analysis data worker capacity is exhausted")
+
+    def mark_timeout(self, lease: _DataWorkerLease) -> None:
+        with self._lock:
+            if not lease.released and not lease.timed_out:
+                lease.timed_out = True
+                self._poisoned += 1
+
+    def release(self, lease: _DataWorkerLease) -> None:
+        with self._lock:
+            if lease.released:
+                return
+            lease.released = True
+            if lease.timed_out:
+                self._poisoned -= 1
+        self._slots.release()
+
+
+_DATA_WORKER_CAPACITY = _DataWorkerCapacity(_MAX_DATA_WORKER_THREADS)
 
 
 class AnalysisRunner:
@@ -115,6 +155,7 @@ class AnalysisRunner:
         self._lease_interval_seconds = lease_interval_seconds
         self._lease_duration = lease_duration
         self._data_timeout_seconds = data_timeout_seconds
+        self._restart_on_data_capacity = _DATA_WORKER_CAPACITY.restart_required
         self._workflow = AnalysisWorkflow(
             provider=provider,
             clock=clock,
@@ -156,27 +197,7 @@ class AnalysisRunner:
                 now=self._clock(),
             )
 
-        critical_ineligible = (
-            bool(
-                _CRITICAL_SECTIONS.intersection(
-                    item.kind for item in snapshot.missing_sections
-                )
-            )
-            or any(
-                section.kind in _CRITICAL_SECTIONS
-                and bool(_INELIGIBLE_FLAGS.intersection(section.quality_flags))
-                for section in snapshot.sections
-            )
-            or any(
-                not any(
-                    item.section_kind is kind
-                    and not _INELIGIBLE_FLAGS.intersection(item.quality_flags)
-                    for item in evidence_graph.evidence_items
-                )
-                for kind in _CRITICAL_SECTIONS
-            )
-        )
-        if critical_ineligible:
+        if not critical_evidence_eligible(snapshot, evidence_graph):
             for role in ROLE_ORDER:
                 stage = self._repository.get_stage(run_id, role.value)
                 if stage.status is AnalysisStageStatus.PENDING:
@@ -529,10 +550,8 @@ class AnalysisRunner:
         symbol: str,
         kind: ResearchSectionKind,
     ) -> ResearchSection:
-        if not _DATA_WORKER_SLOTS.acquire(blocking=False):
-            raise _DataWorkerCapacityExceeded(
-                "analysis data worker capacity is exhausted"
-            )
+        capacity = _DATA_WORKER_CAPACITY
+        lease = capacity.acquire(restart_on_poisoned=self._restart_on_data_capacity)
         future: Future[ResearchSection] = Future()
 
         def invoke() -> None:
@@ -543,7 +562,7 @@ class AnalysisRunner:
                     except BaseException as error:
                         future.set_exception(error)
             finally:
-                _DATA_WORKER_SLOTS.release()
+                capacity.release(lease)
 
         worker = threading.Thread(
             target=invoke,
@@ -553,12 +572,13 @@ class AnalysisRunner:
         try:
             worker.start()
         except BaseException:
-            _DATA_WORKER_SLOTS.release()
+            capacity.release(lease)
             raise
         deadline = asyncio.get_running_loop().time() + self._data_timeout_seconds
         while not future.done():
             remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
+                capacity.mark_timeout(lease)
                 raise TimeoutError
             await asyncio.sleep(min(0.005, remaining))
         return future.result()

@@ -24,6 +24,37 @@ from sqlalchemy.orm import Mapped, mapped_column
 from stock_desk.storage.base import Base
 
 
+_MODEL_CONFIG_DISPLAY_NAME_CHECK = " AND ".join(
+    f"instr(display_name, char({codepoint})) = 0" for codepoint in (*range(32), 127)
+)
+_TIMESTAMP_GLOB = (
+    "[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] "
+    "[0-9][0-9]:[0-9][0-9]:[0-9][0-9]."
+    "[0-9][0-9][0-9][0-9][0-9][0-9]"
+)
+
+
+def _model_config_timestamp_check(column: str) -> str:
+    year = f"CAST(substr({column}, 1, 4) AS INTEGER)"
+    month = f"CAST(substr({column}, 6, 2) AS INTEGER)"
+    day = f"CAST(substr({column}, 9, 2) AS INTEGER)"
+    maximum_day = (
+        f"CASE {month} WHEN 2 THEN 28 + CASE WHEN "
+        f"(({year} % 4 = 0 AND {year} % 100 <> 0) OR {year} % 400 = 0) "
+        f"THEN 1 ELSE 0 END WHEN 4 THEN 30 WHEN 6 THEN 30 "
+        f"WHEN 9 THEN 30 WHEN 11 THEN 30 ELSE 31 END"
+    )
+    return (
+        f"length({column}) = 26 AND {column} GLOB '{_TIMESTAMP_GLOB}' "
+        f"AND {year} BETWEEN 1 AND 9999 "
+        f"AND {month} BETWEEN 1 AND 12 "
+        f"AND {day} BETWEEN 1 AND ({maximum_day}) "
+        f"AND CAST(substr({column}, 12, 2) AS INTEGER) BETWEEN 0 AND 23 "
+        f"AND CAST(substr({column}, 15, 2) AS INTEGER) BETWEEN 0 AND 59 "
+        f"AND CAST(substr({column}, 18, 2) AS INTEGER) BETWEEN 0 AND 59"
+    )
+
+
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -39,6 +70,182 @@ class AppSetting(Base):
     encrypted_value: Mapped[str] = mapped_column(Text, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utc_now, onupdate=_utc_now, nullable=False
+    )
+
+
+class AnalysisModelConfig(Base):
+    __tablename__ = "analysis_model_config"
+    __table_args__ = (
+        CheckConstraint(
+            "length(id) = 71 AND substr(id, 1, 7) = 'sha256:' "
+            "AND substr(id, 8) NOT GLOB '*[^0-9a-f]*'",
+            name="ck_analysis_model_config_id",
+        ),
+        CheckConstraint(
+            "id = public_config_hash",
+            name="ck_analysis_model_config_hash_binding",
+        ),
+        CheckConstraint(
+            "length(public_config_hash) = 71 "
+            "AND substr(public_config_hash, 1, 7) = 'sha256:' "
+            "AND substr(public_config_hash, 8) NOT GLOB '*[^0-9a-f]*'",
+            name="ck_analysis_model_config_hash",
+        ),
+        CheckConstraint(
+            "json_valid(public_config_json) = 1 "
+            "AND json_type(public_config_json) = 'object' "
+            "AND length(CAST(public_config_json AS BLOB)) <= 16384",
+            name="ck_analysis_model_config_json",
+        ),
+        CheckConstraint(
+            "coalesce(json_type(public_config_json, '$.schema_version'), '') "
+            "= 'text' AND json_extract(public_config_json, '$.schema_version') = "
+            "'analysis-model-public-v1' "
+            "AND coalesce(json_type(public_config_json, '$.provider'), '') = 'text' "
+            "AND coalesce(json_type(public_config_json, '$.model'), '') = 'text' "
+            "AND coalesce(json_type(public_config_json, '$.base_url'), '') = 'text' "
+            "AND length(json_extract(public_config_json, '$.base_url')) "
+            "BETWEEN 1 AND 2048 "
+            "AND coalesce(json_type(public_config_json, '$.temperature'), '') "
+            "= 'real' AND json_extract(public_config_json, '$.temperature') "
+            "BETWEEN 0.0 AND 2.0 "
+            "AND coalesce(json_type(public_config_json, '$.timeout_seconds'), '') "
+            "= 'real' AND json_extract(public_config_json, '$.timeout_seconds') "
+            "BETWEEN 1.0 AND 300.0 "
+            "AND coalesce(json_type(public_config_json, '$.max_output_tokens'), '') "
+            "= 'integer' "
+            "AND json_extract(public_config_json, '$.max_output_tokens') "
+            "BETWEEN 1 AND 65536 "
+            "AND coalesce(json_type(public_config_json, '$.api_key_configured'), '') "
+            "IN ('true','false') "
+            "AND coalesce(json_type(public_config_json, '$.secret_reference_id'), '') "
+            "IN ('null','text') "
+            "AND json_type(public_config_json, '$.api_key') IS NULL",
+            name="ck_analysis_model_config_public_shape",
+        ),
+        CheckConstraint(
+            "provider IN ('deepseek','openai_compatible','ollama') "
+            "AND provider = json_extract(public_config_json, '$.provider')",
+            name="ck_analysis_model_config_provider",
+        ),
+        CheckConstraint(
+            "length(model) BETWEEN 1 AND 256 "
+            "AND model = trim(model) "
+            "AND model = json_extract(public_config_json, '$.model')",
+            name="ck_analysis_model_config_model",
+        ),
+        CheckConstraint(
+            "(secret_reference_id IS NULL "
+            "AND json_type(public_config_json, '$.secret_reference_id') = 'null' "
+            "AND json_extract(public_config_json, '$.api_key_configured') = 0) "
+            "OR (secret_reference_id IS NOT NULL "
+            "AND secret_reference_id = "
+            "json_extract(public_config_json, '$.secret_reference_id') "
+            "AND json_extract(public_config_json, '$.api_key_configured') = 1)",
+            name="ck_analysis_model_config_secret_binding",
+        ),
+        CheckConstraint(
+            "secret_reference_id IS NULL "
+            "OR secret_reference_id = 'analysis_model_api_key' "
+            "OR (length(secret_reference_id) = 55 "
+            "AND substr(secret_reference_id, 1, 23) = 'analysis_model_api_key_' "
+            "AND substr(secret_reference_id, 24) NOT GLOB '*[^0-9a-f]*')",
+            name="ck_analysis_model_config_secret_reference",
+        ),
+        CheckConstraint(
+            "supersedes_id IS NULL OR supersedes_id <> id",
+            name="ck_analysis_model_config_supersedes",
+        ),
+        CheckConstraint(
+            "length(display_name) BETWEEN 1 AND 128 "
+            "AND display_name = trim(display_name) "
+            f"AND {_MODEL_CONFIG_DISPLAY_NAME_CHECK}",
+            name="ck_analysis_model_config_display_name",
+        ),
+        CheckConstraint(
+            "status IN ('unverified','verified','failed','disabled')",
+            name="ck_analysis_model_config_status",
+        ),
+        CheckConstraint(
+            "error_code IS NULL OR (length(error_code) BETWEEN 1 AND 64 "
+            "AND error_code NOT GLOB '*[^a-z0-9_]*')",
+            name="ck_analysis_model_config_error_code",
+        ),
+        CheckConstraint(
+            "typeof(revision) = 'integer' AND revision >= 0",
+            name="ck_analysis_model_config_revision",
+        ),
+        CheckConstraint(
+            f"({_model_config_timestamp_check('created_at')}) AND "
+            f"({_model_config_timestamp_check('updated_at')}) AND "
+            "(verified_at IS NULL OR "
+            f"({_model_config_timestamp_check('verified_at')})) AND "
+            "(last_tested_at IS NULL OR "
+            f"({_model_config_timestamp_check('last_tested_at')}))",
+            name="ck_analysis_model_config_timestamp_format",
+        ),
+        CheckConstraint(
+            "updated_at >= created_at "
+            "AND (verified_at IS NULL OR "
+            "(verified_at >= created_at AND verified_at <= updated_at)) "
+            "AND (last_tested_at IS NULL OR "
+            "(last_tested_at >= created_at AND last_tested_at <= updated_at))",
+            name="ck_analysis_model_config_timestamp_order",
+        ),
+        CheckConstraint(
+            "(status = 'unverified' AND verified_at IS NULL "
+            "AND last_tested_at IS NULL AND error_code IS NULL) OR "
+            "(status = 'verified' AND verified_at IS NOT NULL "
+            "AND last_tested_at IS NOT NULL AND verified_at = last_tested_at "
+            "AND error_code IS NULL) OR "
+            "(status = 'failed' AND verified_at IS NULL "
+            "AND last_tested_at IS NOT NULL AND error_code IS NOT NULL) OR "
+            "(status = 'disabled' AND error_code IS NULL "
+            "AND (verified_at IS NULL OR (last_tested_at IS NOT NULL "
+            "AND verified_at = last_tested_at)))",
+            name="ck_analysis_model_config_state_shape",
+        ),
+        ForeignKeyConstraint(
+            ["supersedes_id"],
+            ["analysis_model_config.id"],
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("supersedes_id", name="uq_analysis_model_config_supersedes"),
+        Index(
+            "ix_analysis_model_config_list",
+            "display_name",
+            "id",
+        ),
+        Index(
+            "ix_analysis_model_config_status",
+            "status",
+            "updated_at",
+            "id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(71), primary_key=True)
+    display_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    model: Mapped[str] = mapped_column(String(256), nullable=False)
+    public_config_json: Mapped[str] = mapped_column(Text, nullable=False)
+    public_config_hash: Mapped[str] = mapped_column(String(71), nullable=False)
+    secret_reference_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    supersedes_id: Mapped[str | None] = mapped_column(String(71), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    verified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_tested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
     )
 
 

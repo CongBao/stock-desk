@@ -6,11 +6,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlalchemy.exc import IntegrityError
 
 from stock_desk.analysis.repository import (
     AnalysisConflict,
+    AnalysisHistoryKey,
     AnalysisRepository,
     AnalysisRunStatus,
     AnalysisStageStatus,
@@ -249,6 +250,129 @@ def test_enqueue_run_atomically_creates_matching_task_run_and_stages(
     assert enqueued.run.model_provider == "openai_compatible"
     assert enqueued.run.current_stage == "market"
     assert len(repository.list_stages(enqueued.run.id)) == 9
+
+
+def test_enqueue_run_rolls_back_task_and_run_when_stage_insert_fails(
+    tmp_path: Path,
+) -> None:
+    url = f"sqlite:///{tmp_path / 'analysis-enqueue-rollback.db'}"
+    migrate(url)
+    engine = create_engine_for_url(url)
+    repository = AnalysisRepository(engine)
+
+    def fail_stage_insert(
+        _connection: object,
+        _cursor: object,
+        statement: str,
+        _parameters: object,
+        _context: object,
+        _executemany: bool,
+    ) -> None:
+        if statement.lstrip().startswith("INSERT INTO analysis_stage"):
+            raise RuntimeError("injected stage insert failure")
+
+    event.listen(engine, "before_cursor_execute", fail_stage_insert)
+    try:
+        with pytest.raises(RuntimeError, match="injected stage insert failure"):
+            repository.enqueue_run(
+                symbol="600000.SH",
+                retry_policy=RetryPolicy(max_retries=0),
+                now=NOW,
+            )
+    finally:
+        event.remove(engine, "before_cursor_execute", fail_stage_insert)
+
+    with engine.connect() as connection:
+        assert connection.scalar(text("SELECT count(*) FROM task_run")) == 0
+        assert connection.scalar(text("SELECT count(*) FROM analysis_run")) == 0
+        assert connection.scalar(text("SELECT count(*) FROM analysis_stage")) == 0
+
+
+def test_history_page_uses_stable_descending_keyset_and_symbol_filter(
+    tmp_path: Path,
+) -> None:
+    url = f"sqlite:///{tmp_path / 'analysis-history.db'}"
+    migrate(url)
+    repository = AnalysisRepository(create_engine_for_url(url))
+    first = repository.enqueue_run(
+        symbol="600000.SH", retry_policy=RetryPolicy(max_retries=0), now=NOW
+    )
+    second = repository.enqueue_run(
+        symbol="000001.SZ", retry_policy=RetryPolicy(max_retries=0), now=NOW
+    )
+    third = repository.enqueue_run(
+        symbol="600000.SH", retry_policy=RetryPolicy(max_retries=0), now=NOW
+    )
+
+    page_one = repository.list_history_page(limit=2)
+    assert tuple(item.id for item in page_one.items) == tuple(
+        sorted((first.run.id, second.run.id, third.run.id), reverse=True)[:2]
+    )
+    assert page_one.next_key is not None
+    page_two = repository.list_history_page(limit=2, after=page_one.next_key)
+    assert (
+        len(
+            {
+                *(item.id for item in page_one.items),
+                *(item.id for item in page_two.items),
+            }
+        )
+        == 3
+    )
+    assert set(item.id for item in page_one.items).isdisjoint(
+        item.id for item in page_two.items
+    )
+
+    filtered = repository.list_history_page(limit=10, symbol="600000.SH")
+    assert tuple(item.symbol for item in filtered.items) == ("600000.SH",) * 2
+    assert tuple(item.id for item in filtered.items) == tuple(
+        sorted((first.run.id, third.run.id), reverse=True)
+    )
+
+    exact_after = AnalysisHistoryKey(
+        created_at=page_one.items[-1].created_at,
+        id=page_one.items[-1].id,
+    )
+    assert repository.list_history_page(limit=2, after=exact_after) == page_two
+
+
+def test_stage_projection_exposes_safe_timing_and_duration(tmp_path: Path) -> None:
+    url = f"sqlite:///{tmp_path / 'analysis-stage-timing.db'}"
+    migrate(url)
+    engine = create_engine_for_url(url)
+    tasks = TaskRepository(engine)
+    repository = AnalysisRepository(engine)
+    enqueued = repository.enqueue_run(
+        symbol="600000.SH", retry_policy=RetryPolicy(max_retries=0), now=NOW
+    )
+    claim = tasks.claim_next(
+        "timing-worker", now=NOW, lease_duration=timedelta(minutes=1)
+    )
+    assert isinstance(claim, TaskClaim)
+    repository.start_run(claim, enqueued.run.id, now=NOW)
+    attempt = repository.start_attempt(
+        claim,
+        enqueued.run.id,
+        "technical",
+        provider="openai_compatible",
+        model="vendor-chat",
+        request_hash=DIGEST,
+        now=NOW,
+    )
+    repository.finish_attempt_failure(
+        claim,
+        enqueued.run.id,
+        "technical",
+        attempt.attempt_no,
+        RetryDecision(False, "model_authentication", "safe failure"),
+        exhausted=True,
+        now=NOW + timedelta(milliseconds=250),
+    )
+
+    stage = repository.get_stage(enqueued.run.id, "technical")
+    assert stage.started_at == NOW
+    assert stage.finished_at == NOW + timedelta(milliseconds=250)
+    assert stage.duration_ms == 250.0
 
 
 def test_checkpoint_progress_derives_current_stage_from_durable_stage_order(

@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictFloat, model_validator
 from stock_desk.analysis.data_service import ResearchDataUnavailable
 from stock_desk.analysis.providers.base import (
     ModelAuthenticationError,
+    ModelCredentialUnavailableError,
     ModelDNSResolutionError,
     ModelInvalidResponseError,
     ModelRateLimitError,
@@ -81,6 +82,14 @@ _MODEL_FAILURES: Final = (
     (
         ModelAuthenticationError,
         RetryDecision(False, "model_authentication", "model authentication failed"),
+    ),
+    (
+        ModelCredentialUnavailableError,
+        RetryDecision(
+            False,
+            "model_credentials_unavailable",
+            "model credentials are unavailable",
+        ),
     ),
     (
         ModelTransportError,

@@ -3,7 +3,11 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from types import MappingProxyType
 
-from stock_desk.analysis.data_service import ResearchDataUnavailable
+from stock_desk.analysis.data_service import (
+    ResearchDataUnavailable,
+    ResearchLoadDiagnostic,
+    ResearchSourceCandidate,
+)
 from stock_desk.analysis.snapshot import (
     ResearchMissingReason,
     ResearchQualityFlag,
@@ -159,14 +163,122 @@ class ResearchSourceRouter:
         self._sources = registered
 
     def load(self, symbol: CanonicalSymbol) -> ResearchSection:
+        section, _diagnostic = self.load_with_diagnostics(symbol)
+        return section
+
+    def diagnostic_template(self) -> ResearchLoadDiagnostic:
+        candidates: list[ResearchSourceCandidate] = []
+        for position, source_id in enumerate(self._priority):
+            supported = RESEARCH_SOURCE_CAPABILITIES[source_id].supports(self.kind)
+            source = self._sources.get(source_id)
+            configured = source is not None and bool(
+                getattr(source, "configured", True)
+            )
+            failure_reason = (
+                getattr(source, "unavailable_reason", None)
+                if source is not None and not configured
+                else None
+            )
+            candidates.append(
+                ResearchSourceCandidate(
+                    source=source_id.value,
+                    position=position,
+                    supported=supported,
+                    configured=configured,
+                    outcome=(
+                        "unsupported"
+                        if not supported
+                        else "unconfigured"
+                        if not configured
+                        else "not_attempted"
+                    ),
+                    failure_reason=(
+                        ResearchMissingReason.UNSUPPORTED
+                        if not supported
+                        else failure_reason
+                        if isinstance(failure_reason, ResearchMissingReason)
+                        else None
+                    ),
+                )
+            )
+        return ResearchLoadDiagnostic(
+            kind=self.kind,
+            route_source=self._priority[0].value,
+            actual_source=None,
+            attempted_sources=tuple(
+                item.source
+                for item in candidates
+                if item.outcome == "unconfigured" and item.failure_reason is not None
+            ),
+            ordered_candidates=tuple(candidates),
+        )
+
+    def load_with_diagnostics(
+        self, symbol: CanonicalSymbol
+    ) -> tuple[ResearchSection, ResearchLoadDiagnostic]:
         attempted: list[str] = []
         failure_reasons: list[ResearchMissingReason] = []
-        for source_id in self._priority:
+        candidates: list[ResearchSourceCandidate] = []
+        selected: ResearchSection | None = None
+        selected_position: int | None = None
+        for position, source_id in enumerate(self._priority):
             capability = RESEARCH_SOURCE_CAPABILITIES[source_id]
             if not capability.supports(self.kind):
+                candidates.append(
+                    ResearchSourceCandidate(
+                        source=source_id.value,
+                        position=position,
+                        supported=False,
+                        configured=source_id in self._sources,
+                        outcome="unsupported",
+                        failure_reason=ResearchMissingReason.UNSUPPORTED,
+                    )
+                )
                 continue
             source = self._sources.get(source_id)
             if source is None:
+                candidates.append(
+                    ResearchSourceCandidate(
+                        source=source_id.value,
+                        position=position,
+                        supported=True,
+                        configured=False,
+                        outcome="unconfigured",
+                    )
+                )
+                continue
+            if selected is not None:
+                configured = bool(getattr(source, "configured", True))
+                candidates.append(
+                    ResearchSourceCandidate(
+                        source=source_id.value,
+                        position=position,
+                        supported=True,
+                        configured=configured,
+                        outcome=("not_attempted" if configured else "unconfigured"),
+                    )
+                )
+                continue
+            configured = bool(getattr(source, "configured", True))
+            if not configured:
+                unavailable_reason = getattr(source, "unavailable_reason", None)
+                reason = (
+                    unavailable_reason
+                    if isinstance(unavailable_reason, ResearchMissingReason)
+                    else ResearchMissingReason.PROVIDER_UNAVAILABLE
+                )
+                attempted.append(source_id.value)
+                failure_reasons.append(reason)
+                candidates.append(
+                    ResearchSourceCandidate(
+                        source=source_id.value,
+                        position=position,
+                        supported=True,
+                        configured=False,
+                        outcome="unconfigured",
+                        failure_reason=reason,
+                    )
+                )
                 continue
             try:
                 section = _validated_section(
@@ -205,9 +317,47 @@ class ResearchSourceRouter:
                     else ResearchMissingReason.INVALID_RESPONSE
                 )
             else:
-                return section
+                selected = section
+                selected_position = position
+                candidates.append(
+                    ResearchSourceCandidate(
+                        source=source_id.value,
+                        position=position,
+                        supported=True,
+                        configured=bool(getattr(source, "configured", True)),
+                        outcome="selected",
+                    )
+                )
+                continue
             attempted.append(source_id.value)
             failure_reasons.append(reason)
+            candidates.append(
+                ResearchSourceCandidate(
+                    source=source_id.value,
+                    position=position,
+                    supported=True,
+                    configured=bool(getattr(source, "configured", True)),
+                    outcome="failed",
+                    failure_reason=reason,
+                )
+            )
+        if selected is not None:
+            assert selected_position is not None
+            return selected, ResearchLoadDiagnostic(
+                kind=self.kind,
+                route_source=self._priority[0].value,
+                actual_source=selected.canonical_source,
+                attempted_sources=tuple(
+                    candidate.source
+                    for candidate in candidates
+                    if candidate.outcome in {"failed", "selected"}
+                    or (
+                        candidate.outcome == "unconfigured"
+                        and candidate.failure_reason is not None
+                    )
+                ),
+                ordered_candidates=tuple(candidates),
+            )
         raise ResearchDataUnavailable(
             kind=self.kind,
             reason=(
@@ -216,6 +366,8 @@ class ResearchSourceRouter:
                 else ResearchMissingReason.NO_PROVIDER
             ),
             attempted_sources=tuple(attempted),
+            ordered_candidates=tuple(candidates),
+            route_source=self._priority[0].value,
         ) from None
 
 

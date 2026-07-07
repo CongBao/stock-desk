@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from stock_desk.analysis.data_service import ResearchDataUnavailable
+from stock_desk.analysis.data_service import (
+    ResearchDataUnavailable,
+    ResearchLoadDiagnostic,
+    ResearchSourceCandidate,
+)
 from stock_desk.analysis.snapshot import (
     ResearchMissingReason,
     ResearchQualityFlag,
@@ -112,6 +116,59 @@ class MarketCacheLoader:
             reason=ResearchMissingReason.INVALID_RESPONSE,
             attempted_sources=("market_cache",),
         ) from None
+
+    def load_with_diagnostics(
+        self, symbol: CanonicalSymbol
+    ) -> tuple[ResearchSection, ResearchLoadDiagnostic]:
+        try:
+            section = self.load(symbol)
+        except ResearchDataUnavailable as error:
+            candidate = ResearchSourceCandidate(
+                source="market_cache",
+                position=0,
+                supported=True,
+                configured=True,
+                outcome="failed",
+                failure_reason=error.reason,
+            )
+            raise ResearchDataUnavailable(
+                kind=self.kind,
+                reason=error.reason,
+                attempted_sources=error.attempted_sources,
+                ordered_candidates=(candidate,),
+                route_source="market_cache",
+            ) from None
+        candidate = ResearchSourceCandidate(
+            source="market_cache",
+            position=0,
+            supported=True,
+            configured=True,
+            outcome="selected",
+        )
+        return section, ResearchLoadDiagnostic(
+            kind=self.kind,
+            route_source="market_cache",
+            actual_source=section.canonical_source,
+            attempted_sources=("market_cache",),
+            ordered_candidates=(candidate,),
+        )
+
+    def diagnostic_template(self) -> ResearchLoadDiagnostic:
+        return ResearchLoadDiagnostic(
+            kind=self.kind,
+            route_source="market_cache",
+            actual_source=None,
+            attempted_sources=(),
+            ordered_candidates=(
+                ResearchSourceCandidate(
+                    source="market_cache",
+                    position=0,
+                    supported=True,
+                    configured=True,
+                    outcome="not_attempted",
+                ),
+            ),
+        )
 
 
 __all__ = [

@@ -328,6 +328,45 @@ class EvidenceGraph(_FrozenEvidenceModel):
             raise ValueError("claim must reference existing evidence") from None
 
 
+_CRITICAL_SECTION_KINDS = frozenset(
+    {ResearchSectionKind.MARKET, ResearchSectionKind.FUNDAMENTALS}
+)
+_INELIGIBLE_EVIDENCE_FLAGS = frozenset(
+    {
+        ResearchQualityFlag.STALE,
+        ResearchQualityFlag.EXPIRED,
+        ResearchQualityFlag.UNVERIFIED,
+    }
+)
+
+
+def critical_evidence_eligible(
+    snapshot: ResearchSnapshot,
+    evidence_graph: EvidenceGraph,
+) -> bool:
+    """Single critical-evidence gate shared by preflight and execution."""
+    return not (
+        bool(
+            _CRITICAL_SECTION_KINDS.intersection(
+                item.kind for item in snapshot.missing_sections
+            )
+        )
+        or any(
+            section.kind in _CRITICAL_SECTION_KINDS
+            and bool(_INELIGIBLE_EVIDENCE_FLAGS.intersection(section.quality_flags))
+            for section in snapshot.sections
+        )
+        or any(
+            not any(
+                item.section_kind is kind
+                and not _INELIGIBLE_EVIDENCE_FLAGS.intersection(item.quality_flags)
+                for item in evidence_graph.evidence_items
+            )
+            for kind in _CRITICAL_SECTION_KINDS
+        )
+    )
+
+
 def _evidence_fields(item: EvidenceItem) -> dict[str, object]:
     fields: dict[str, object] = {
         "snapshot_id": item.snapshot_id,

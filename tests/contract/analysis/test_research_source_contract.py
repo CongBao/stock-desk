@@ -488,6 +488,42 @@ def test_router_falls_back_without_merging_and_marks_degraded_source() -> None:
     )
 
 
+def test_router_does_not_call_unconfigured_placeholder_but_records_boundary() -> None:
+    class UnconfiguredTushare:
+        name = ProviderId.TUSHARE
+        configured = False
+        unavailable_reason = ResearchMissingReason.PERMISSION_DENIED
+
+        def fetch(self, _symbol: str, _kind: ResearchSectionKind) -> ResearchSection:
+            raise AssertionError("unconfigured provider must not be called")
+
+    akshare = StubSource(
+        ProviderId.AKSHARE,
+        {
+            ResearchSectionKind.FUNDAMENTALS: section(
+                ProviderId.AKSHARE,
+                ResearchSectionKind.FUNDAMENTALS,
+            )
+        },
+    )
+    router = ResearchSourceRouter(
+        kind=ResearchSectionKind.FUNDAMENTALS,
+        priority=(ProviderId.TUSHARE, ProviderId.AKSHARE),
+        sources=(UnconfiguredTushare(), akshare),
+    )
+
+    loaded, diagnostic = router.load_with_diagnostics(SYMBOL)
+
+    assert loaded.route is not None
+    assert loaded.route.attempted_sources == ("tushare",)
+    assert loaded.route.failure_reasons == (ResearchMissingReason.PERMISSION_DENIED,)
+    assert diagnostic.attempted_sources == ("tushare", "akshare")
+    assert diagnostic.ordered_candidates[0].outcome == "unconfigured"
+    assert diagnostic.ordered_candidates[0].failure_reason == (
+        ResearchMissingReason.PERMISSION_DENIED
+    )
+
+
 def test_router_preserves_multiple_failure_order_in_terminal_missing() -> None:
     tushare = StubSource(
         ProviderId.TUSHARE,

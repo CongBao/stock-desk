@@ -7,11 +7,12 @@ from datetime import datetime, timedelta, timezone
 from enum import StrEnum
 import hashlib
 import json
+import re
 from types import MappingProxyType
-from typing import cast
+from typing import Any, cast
 from uuid import uuid4
 
-from sqlalchemy import Engine, func, insert, select, update
+from sqlalchemy import Engine, and_, func, insert, or_, select, update
 from sqlalchemy.engine import Connection, RowMapping
 from sqlalchemy.exc import IntegrityError
 
@@ -93,10 +94,21 @@ class AnalysisRunSnapshot:
     status: AnalysisRunStatus
     current_stage: str | None
     snapshot_id: str | None
+    report_id: str | None
+    failure_code: str | None
     created_at: datetime
     updated_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
+
+    @property
+    def duration_ms(self) -> float | None:
+        if self.started_at is None or self.finished_at is None:
+            return None
+        return max(
+            0.0,
+            (self.finished_at - self.started_at).total_seconds() * 1_000.0,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,6 +121,54 @@ class AnalysisStageSnapshot:
     failure_code: str | None
     retryable: bool | None
     attempt_count: int
+    started_at: datetime | None
+    finished_at: datetime | None
+
+    @property
+    def duration_ms(self) -> float | None:
+        if self.started_at is None or self.finished_at is None:
+            return None
+        return max(
+            0.0,
+            (self.finished_at - self.started_at).total_seconds() * 1_000.0,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class AnalysisHistoryKey:
+    created_at: datetime
+    id: str
+
+
+@dataclass(frozen=True, slots=True)
+class AnalysisHistoryPage:
+    items: tuple[AnalysisOverviewSnapshot, ...]
+    next_key: AnalysisHistoryKey | None
+
+
+@dataclass(frozen=True, slots=True)
+class AnalysisOverviewSnapshot:
+    run: AnalysisRunSnapshot
+    task: TaskSnapshot
+
+    @property
+    def id(self) -> str:
+        return self.run.id
+
+    @property
+    def symbol(self) -> str:
+        return self.run.symbol
+
+    @property
+    def created_at(self) -> datetime:
+        return self.run.created_at
+
+
+@dataclass(frozen=True, slots=True)
+class AnalysisDetailSnapshot:
+    run: AnalysisRunSnapshot
+    task: TaskSnapshot
+    stages: tuple[AnalysisStageSnapshot, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -348,6 +408,20 @@ def _stage_progress(
 
 
 def _run_snapshot(row: RowMapping) -> AnalysisRunSnapshot:
+    failure_code: str | None = None
+    raw_error = row["error_json"]
+    if raw_error is not None:
+        try:
+            decoded = json.loads(cast(str, raw_error))
+        except (TypeError, ValueError):
+            raise AnalysisRepositoryError("analysis failure is invalid") from None
+        candidate = decoded.get("code") if type(decoded) is dict else None
+        if (
+            type(candidate) is not str
+            or re.fullmatch(r"[a-z][a-z0-9_]{0,63}", candidate) is None
+        ):
+            raise AnalysisRepositoryError("analysis failure is invalid")
+        failure_code = candidate
     return AnalysisRunSnapshot(
         id=cast(str, row["id"]),
         task_id=cast(str, row["task_id"]),
@@ -361,6 +435,8 @@ def _run_snapshot(row: RowMapping) -> AnalysisRunSnapshot:
         status=AnalysisRunStatus(cast(str, row["status"])),
         current_stage=cast(str | None, row["current_stage"]),
         snapshot_id=cast(str | None, row["snapshot_id"]),
+        report_id=cast(str | None, row.get("_report_id")),
+        failure_code=failure_code,
         created_at=_utc(row["created_at"]),
         updated_at=_utc(row["updated_at"]),
         started_at=_utc(row["started_at"]) if row["started_at"] is not None else None,
@@ -370,7 +446,9 @@ def _run_snapshot(row: RowMapping) -> AnalysisRunSnapshot:
     )
 
 
-def _stage_snapshot(row: RowMapping) -> AnalysisStageSnapshot:
+def _stage_snapshot(
+    row: RowMapping | Mapping[str, object],
+) -> AnalysisStageSnapshot:
     return AnalysisStageSnapshot(
         run_id=cast(str, row["run_id"]),
         role=cast(str, row["role"]),
@@ -380,6 +458,10 @@ def _stage_snapshot(row: RowMapping) -> AnalysisStageSnapshot:
         failure_code=cast(str | None, row["failure_code"]),
         retryable=cast(bool | None, row["retryable"]),
         attempt_count=cast(int, row["attempt_count"]),
+        started_at=(_utc(row["started_at"]) if row["started_at"] is not None else None),
+        finished_at=(
+            _utc(row["finished_at"]) if row["finished_at"] is not None else None
+        ),
     )
 
 
@@ -404,10 +486,98 @@ def _attempt_snapshot(row: RowMapping) -> AnalysisAttemptSnapshot:
     )
 
 
+_TASK_PROJECTION_FIELDS = (
+    "id",
+    "kind",
+    "status",
+    "progress",
+    "payload_json",
+    "result_json",
+    "error_json",
+    "cancel_requested",
+    "worker_id",
+    "created_at",
+    "updated_at",
+    "started_at",
+    "finished_at",
+)
+_RUN_PROJECTION_FIELDS = (
+    "id",
+    "task_id",
+    "parent_run_id",
+    "requested_stage",
+    "symbol",
+    "model_config_id",
+    "model_provider",
+    "model_name",
+    "status",
+    "current_stage",
+    "error_json",
+    "config_fingerprint",
+    "snapshot_id",
+    "created_at",
+    "updated_at",
+    "started_at",
+    "finished_at",
+)
+_STAGE_PROJECTION_FIELDS = (
+    "run_id",
+    "role",
+    "ordinal",
+    "status",
+    "source_run_id",
+    "failure_code",
+    "retryable",
+    "attempt_count",
+    "started_at",
+    "finished_at",
+)
+
+
+def _run_projection_columns() -> tuple[Any, ...]:
+    return tuple(
+        AnalysisRunRow.__table__.columns[field] for field in _RUN_PROJECTION_FIELDS
+    )
+
+
+def _task_projection_columns() -> tuple[Any, ...]:
+    return tuple(
+        TaskRun.__table__.columns[field].label(f"_task_{field}")
+        for field in _TASK_PROJECTION_FIELDS
+    )
+
+
+def _stage_projection_columns() -> tuple[Any, ...]:
+    return tuple(
+        AnalysisStageRow.__table__.columns[field].label(f"_stage_{field}")
+        for field in _STAGE_PROJECTION_FIELDS
+    )
+
+
+def _task_projection(row: RowMapping, tasks: TaskRepository) -> TaskSnapshot:
+    if row["_task_id"] is None:
+        raise AnalysisRepositoryError("analysis task projection is missing")
+    return tasks.snapshot_from_mapping(
+        {field: row[f"_task_{field}"] for field in _TASK_PROJECTION_FIELDS}
+    )
+
+
+def _stage_projection(row: RowMapping) -> AnalysisStageSnapshot:
+    if row["_stage_run_id"] is None:
+        raise AnalysisRepositoryError("analysis stage projection is missing")
+    return _stage_snapshot(
+        {field: row[f"_stage_{field}"] for field in _STAGE_PROJECTION_FIELDS}
+    )
+
+
 class AnalysisRepository:
     def __init__(self, engine: Engine) -> None:
         self._engine = engine
         self._tasks = TaskRepository(engine)
+
+    @property
+    def database_identity(self) -> object:
+        return self._tasks.database_identity
 
     def close(self) -> None:
         self._engine.dispose()
@@ -645,40 +815,62 @@ class AnalysisRepository:
         model_name: str = "vendor-chat",
         model_public_config: AnalysisModelPublicConfig | None = None,
     ) -> EnqueuedAnalysisRun:
+        with self._engine.begin() as connection:
+            return self.enqueue_run_in_transaction(
+                connection,
+                symbol=symbol,
+                retry_policy=retry_policy,
+                now=now,
+                model_config_id=model_config_id,
+                model_provider=model_provider,
+                model_name=model_name,
+                model_public_config=model_public_config,
+            )
+
+    def enqueue_run_in_transaction(
+        self,
+        connection: Connection,
+        *,
+        symbol: str,
+        retry_policy: RetryPolicy,
+        now: datetime,
+        model_config_id: str | None = None,
+        model_provider: str = ModelProviderKind.OPENAI_COMPATIBLE.value,
+        model_name: str = "vendor-chat",
+        model_public_config: AnalysisModelPublicConfig | None = None,
+    ) -> EnqueuedAnalysisRun:
+        """Create a task, run, and stages in a caller-owned transaction."""
         task_id = str(uuid4())
         run_id = str(uuid4())
-        with self._engine.begin() as connection:
-            task = self._tasks.enqueue_in_transaction(
-                connection,
-                "analysis.run",
-                {"symbol": symbol},
-                task_id=task_id,
-                now=now,
-            )
-            row = (
-                connection.execute(
-                    insert(AnalysisRunRow)
-                    .values(
-                        **_run_values(
-                            run_id=run_id,
-                            task_id=task_id,
-                            symbol=symbol,
-                            retry_policy=retry_policy,
-                            model_config_id=model_config_id,
-                            model_provider=model_provider,
-                            model_name=model_name,
-                            model_public_config=model_public_config,
-                            now=now,
-                        )
-                    )
-                    .returning(AnalysisRunRow)
-                )
-                .mappings()
-                .one()
-            )
+        task = self._tasks.enqueue_in_transaction(
+            connection,
+            "analysis.run",
+            {"symbol": symbol},
+            task_id=task_id,
+            now=now,
+        )
+        row = (
             connection.execute(
-                insert(AnalysisStageRow), _pending_stage_values(run_id, now)
+                insert(AnalysisRunRow)
+                .values(
+                    **_run_values(
+                        run_id=run_id,
+                        task_id=task_id,
+                        symbol=symbol,
+                        retry_policy=retry_policy,
+                        model_config_id=model_config_id,
+                        model_provider=model_provider,
+                        model_name=model_name,
+                        model_public_config=model_public_config,
+                        now=now,
+                    )
+                )
+                .returning(AnalysisRunRow)
             )
+            .mappings()
+            .one()
+        )
+        connection.execute(insert(AnalysisStageRow), _pending_stage_values(run_id, now))
         return EnqueuedAnalysisRun(task=task, run=_run_snapshot(row))
 
     def load_execution_config(self, run_id: str) -> AnalysisExecutionConfig:
@@ -763,7 +955,15 @@ class AnalysisRepository:
         with self._engine.connect() as connection:
             row = (
                 connection.execute(
-                    select(AnalysisRunRow).where(AnalysisRunRow.id == run_id)
+                    select(
+                        *_run_projection_columns(),
+                        AnalysisReportRow.report_id.label("_report_id"),
+                    )
+                    .outerjoin(
+                        AnalysisReportRow,
+                        AnalysisReportRow.run_id == AnalysisRunRow.id,
+                    )
+                    .where(AnalysisRunRow.id == run_id)
                 )
                 .mappings()
                 .one_or_none()
@@ -776,7 +976,15 @@ class AnalysisRepository:
         with self._engine.connect() as connection:
             row = (
                 connection.execute(
-                    select(AnalysisRunRow).where(AnalysisRunRow.task_id == task_id)
+                    select(
+                        *_run_projection_columns(),
+                        AnalysisReportRow.report_id.label("_report_id"),
+                    )
+                    .outerjoin(
+                        AnalysisReportRow,
+                        AnalysisReportRow.run_id == AnalysisRunRow.id,
+                    )
+                    .where(AnalysisRunRow.task_id == task_id)
                 )
                 .mappings()
                 .one_or_none()
@@ -784,6 +992,84 @@ class AnalysisRepository:
         if row is None:
             raise AnalysisNotFound("analysis run was not found")
         return _run_snapshot(row)
+
+    def get_detail(self, run_id: str) -> AnalysisDetailSnapshot:
+        statement = (
+            select(
+                *_run_projection_columns(),
+                AnalysisReportRow.report_id.label("_report_id"),
+                *_task_projection_columns(),
+                *_stage_projection_columns(),
+            )
+            .outerjoin(TaskRun, TaskRun.id == AnalysisRunRow.task_id)
+            .outerjoin(AnalysisReportRow, AnalysisReportRow.run_id == AnalysisRunRow.id)
+            .outerjoin(AnalysisStageRow, AnalysisStageRow.run_id == AnalysisRunRow.id)
+            .where(AnalysisRunRow.id == run_id)
+            .order_by(AnalysisStageRow.ordinal)
+        )
+        with self._engine.connect() as connection:
+            rows = connection.execute(statement).mappings().all()
+        if not rows:
+            raise AnalysisNotFound("analysis run was not found")
+        run = _run_snapshot(rows[0])
+        task = _task_projection(rows[0], self._tasks)
+        stages = tuple(_stage_projection(row) for row in rows)
+        if (
+            len(stages) != len(_STAGES)
+            or tuple((stage.role, stage.ordinal) for stage in stages) != _STAGES
+        ):
+            raise AnalysisRepositoryError("analysis stage projection is inconsistent")
+        return AnalysisDetailSnapshot(run=run, task=task, stages=stages)
+
+    def list_history_page(
+        self,
+        *,
+        limit: int = 50,
+        after: AnalysisHistoryKey | None = None,
+        symbol: str | None = None,
+    ) -> AnalysisHistoryPage:
+        if not 1 <= limit <= 100:
+            raise ValueError("analysis history limit must be between 1 and 100")
+        statement = (
+            select(
+                *_run_projection_columns(),
+                AnalysisReportRow.report_id.label("_report_id"),
+                *_task_projection_columns(),
+            )
+            .join(TaskRun, TaskRun.id == AnalysisRunRow.task_id)
+            .outerjoin(AnalysisReportRow, AnalysisReportRow.run_id == AnalysisRunRow.id)
+        )
+        if symbol is not None:
+            statement = statement.where(AnalysisRunRow.symbol == symbol)
+        if after is not None:
+            after_time = _utc(after.created_at)
+            statement = statement.where(
+                or_(
+                    AnalysisRunRow.created_at < after_time,
+                    and_(
+                        AnalysisRunRow.created_at == after_time,
+                        AnalysisRunRow.id < after.id,
+                    ),
+                )
+            )
+        statement = statement.order_by(
+            AnalysisRunRow.created_at.desc(), AnalysisRunRow.id.desc()
+        ).limit(limit + 1)
+        with self._engine.connect() as connection:
+            rows = connection.execute(statement).mappings().all()
+        has_more = len(rows) > limit
+        items = tuple(
+            AnalysisOverviewSnapshot(
+                run=_run_snapshot(row), task=_task_projection(row, self._tasks)
+            )
+            for row in rows[:limit]
+        )
+        next_key = (
+            AnalysisHistoryKey(created_at=items[-1].run.created_at, id=items[-1].run.id)
+            if has_more and items
+            else None
+        )
+        return AnalysisHistoryPage(items=items, next_key=next_key)
 
     def enqueue_retry(
         self,
@@ -858,6 +1144,14 @@ class AnalysisRepository:
                         )
                     ).mappings()
                 }
+                rerun = frozenset().union(
+                    *(
+                        _RETRY_CLOSURES[role]
+                        for role, parent_stage in parent_stages.items()
+                        if role in _RETRY_CLOSURES
+                        and parent_stage["status"] == AnalysisStageStatus.FAILED.value
+                    )
+                )
                 stage_values = _pending_stage_values(run_id, now)
                 by_role = {cast(str, item["role"]): item for item in stage_values}
                 for role, parent_stage in parent_stages.items():

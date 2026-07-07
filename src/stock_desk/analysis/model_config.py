@@ -27,6 +27,9 @@ MODEL_API_KEY_SECRET_NAME = "analysis_model_api_key"
 HostResolver: TypeAlias = Callable[[str, int], Awaitable[Sequence[str]]]
 _MASK_SEPARATOR = "•••••••"
 _PROVIDER_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
+_MODEL_SECRET_REFERENCE = re.compile(
+    rf"{MODEL_API_KEY_SECRET_NAME}(?:_[0-9a-f]{{32}})?\Z"
+)
 
 _DANGEROUS_PORTS = frozenset(
     {
@@ -130,7 +133,7 @@ class AnalysisModelPublicConfig(_FrozenModel):
             raise ValueError("model secret reference is inconsistent")
         if (
             self.secret_reference_id is not None
-            and self.secret_reference_id != MODEL_API_KEY_SECRET_NAME
+            and _MODEL_SECRET_REFERENCE.fullmatch(self.secret_reference_id) is None
         ):
             raise ValueError("model secret reference is invalid")
         if self.provider is ModelProviderKind.OLLAMA and self.api_key_configured:

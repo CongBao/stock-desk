@@ -23,6 +23,7 @@ from stock_desk.analysis.providers.base import (
     ModelTimeoutError,
     ModelTransportError,
     ModelUsage,
+    read_bounded_provider_response,
     raise_for_status,
     validate_model_name,
 )
@@ -105,7 +106,7 @@ class OllamaProvider:
             if not wire.done:
                 raise ValueError
             content = _decode_content(wire.message.content)
-            return ModelResponse(
+            return ModelResponse(  # type: ignore[call-arg]
                 provider=self.provider,
                 model=wire.model,
                 content=content,
@@ -167,19 +168,23 @@ class OllamaProvider:
                 follow_redirects=False,
                 trust_env=False,
             ) as client:
-                response = await client.request(
+                async with client.stream(
                     method,
                     url,
-                    headers={"Content-Type": "application/json"},
+                    headers={
+                        "Accept-Encoding": "identity",
+                        "Content-Type": "application/json",
+                    },
                     json=body,
                     timeout=timeout_seconds,
-                )
+                ) as response:
+                    raise_for_status(response.status_code)
+                    content = await read_bounded_provider_response(response)
         except httpx2.TimeoutException:
             raise ModelTimeoutError() from None
         except httpx2.RequestError:
             raise ModelTransportError() from None
-        raise_for_status(response.status_code)
-        return decode_provider_response_json(response.content)
+        return decode_provider_response_json(content)
 
 
 def _compact_json(value: object) -> str:

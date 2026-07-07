@@ -56,6 +56,7 @@ class TaskValidationError(TaskRepositoryError, ValueError):
 
 
 _MAX_JSON_DEPTH = 128
+_TASK_STATUSES = frozenset({"queued", "running", "succeeded", "failed", "cancelled"})
 _BACKTEST_TASK_KIND = "backtest.run"
 _ANALYSIS_TASK_KIND = "analysis.run"
 _LEASED_TASK_KINDS = frozenset({_BACKTEST_TASK_KIND, _ANALYSIS_TASK_KIND})
@@ -285,7 +286,16 @@ def _transition_time(sampled_at: datetime) -> ColumnElement[datetime]:
     )
 
 
-def _snapshot(row: RowMapping) -> TaskSnapshot:
+def _snapshot(row: RowMapping | Mapping[str, Any]) -> TaskSnapshot:
+    raw_status = row["status"]
+    if type(raw_status) is not str or raw_status not in _TASK_STATUSES:
+        raise TaskRepositoryError("Stored task status is invalid")
+    raw_progress = row["progress"]
+    if type(raw_progress) not in {int, float}:
+        raise TaskRepositoryError("Stored task progress is invalid")
+    progress = float(raw_progress)
+    if not math.isfinite(progress) or not 0.0 <= progress <= 1.0:
+        raise TaskRepositoryError("Stored task progress is invalid")
     created_at = _aware_utc(cast(datetime, row["created_at"]))
     updated_at = _aware_utc(cast(datetime, row["updated_at"]))
     if created_at is None or updated_at is None:
@@ -293,8 +303,8 @@ def _snapshot(row: RowMapping) -> TaskSnapshot:
     return TaskSnapshot(
         id=cast(str, row["id"]),
         kind=cast(str, row["kind"]),
-        status=cast(TaskStatus, row["status"]),
-        progress=cast(float, row["progress"]),
+        status=cast(TaskStatus, raw_status),
+        progress=progress,
         payload=_freeze_json_object(cast(Mapping[str, Any], row["payload_json"])),
         result=(
             _freeze_json_object(cast(Mapping[str, Any], row["result_json"]))
@@ -379,6 +389,16 @@ class TaskRepository:
     @property
     def database_identity(self) -> DatabaseIdentity:
         return self._database_identity
+
+    @property
+    def engine(self) -> Engine:
+        """Expose the bound engine for same-database application composition."""
+        return self._engine
+
+    @staticmethod
+    def snapshot_from_mapping(row: Mapping[str, Any]) -> TaskSnapshot:
+        """Build the validated immutable task projection used by joined reads."""
+        return _snapshot(row)
 
     @classmethod
     def open(cls, url: str) -> "TaskRepository":

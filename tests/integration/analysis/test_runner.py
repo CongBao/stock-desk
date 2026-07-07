@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import stock_desk.analysis.runner as runner_module
 import threading
 import time
 from collections import Counter
@@ -1653,7 +1654,7 @@ def test_worker_data_deadline_does_not_fake_retry_or_starve_other_loaders(
     assert missing.checked_at == FROZEN_AT
 
 
-def test_abandoned_data_workers_are_process_bounded(tmp_path) -> None:
+def test_abandoned_data_workers_are_process_bounded(tmp_path, monkeypatch) -> None:
     snapshot = frozen_snapshot()
     releases: list[threading.Event] = []
     started: list[threading.Event] = []
@@ -1696,15 +1697,22 @@ def test_abandoned_data_workers_are_process_bounded(tmp_path) -> None:
                 clock=lambda: FROZEN_AT,
                 monotonic=lambda: 1.0,
             )
-            run(
-                runner.run_from_data(
-                    claim=claim,
-                    run_id=enqueued.run.id,
-                    symbol=snapshot.symbol,
-                    data_service=service,
-                    evidence_factory=evidence_graph,
-                )
+            operation = runner.run_from_data(
+                claim=claim,
+                run_id=enqueued.run.id,
+                symbol=snapshot.symbol,
+                data_service=service,
+                evidence_factory=evidence_graph,
             )
+            if index < _MAX_DATA_WORKER_THREADS:
+                run(operation)
+            else:
+                with pytest.raises(runner_module.AnalysisWorkerRestartRequired):
+                    run(operation)
+                assert tasks.get(claim.snapshot.id).status == "running"
+                assert repository.get_run(enqueued.run.id).status is (
+                    AnalysisRunStatus.RUNNING
+                )
 
         active = [
             thread
@@ -1714,8 +1722,58 @@ def test_abandoned_data_workers_are_process_bounded(tmp_path) -> None:
         assert len(active) <= _MAX_DATA_WORKER_THREADS
         assert all(thread.daemon for thread in active)
         assert sum(event.is_set() for event in started) == _MAX_DATA_WORKER_THREADS
+
+        monkeypatch.setattr(
+            runner_module,
+            "_DATA_WORKER_CAPACITY",
+            runner_module._DataWorkerCapacity(_MAX_DATA_WORKER_THREADS),
+        )
+        reset_url = f"sqlite:///{tmp_path / 'reset-data-worker.db'}"
+        migrate(reset_url)
+        reset_engine = create_engine_for_url(reset_url)
+        engines.append(reset_engine)
+        reset_tasks = TaskRepository(reset_engine)
+        reset_repository = AnalysisRepository(reset_engine)
+        reset_enqueued = reset_repository.enqueue_run(
+            symbol=snapshot.symbol,
+            retry_policy=RetryPolicy(max_retries=0),
+            now=FROZEN_AT,
+        )
+        reset_claim = reset_tasks.claim_next("reset-worker", now=FROZEN_AT)
+        assert isinstance(reset_claim, TaskClaim)
+        reset_result = run(
+            AnalysisRunner(
+                repository=reset_repository,
+                provider=ScriptedProvider(),
+                retry_policy=RetryPolicy(max_retries=0),
+                sleeper=lambda _delay: asyncio.sleep(0),
+                data_timeout_seconds=0.01,
+                clock=lambda: FROZEN_AT,
+                monotonic=lambda: 1.0,
+            ).run_from_data(
+                claim=reset_claim,
+                run_id=reset_enqueued.run.id,
+                symbol=snapshot.symbol,
+                data_service=ResearchDataService(
+                    loaders=tuple(
+                        ScriptedSectionLoader(item) for item in snapshot.sections
+                    ),
+                    clock=lambda: FROZEN_AT,
+                ),
+                evidence_factory=evidence_graph,
+            )
+        )
+        assert reset_result.run.status is AnalysisRunStatus.SUCCEEDED
     finally:
         for release in releases:
             release.set()
         for engine in engines:
             engine.dispose()
+
+
+def test_restart_required_is_a_process_boundary_not_an_exception() -> None:
+    restart = getattr(runner_module, "AnalysisWorkerRestartRequired", None)
+
+    assert isinstance(restart, type)
+    assert issubclass(restart, BaseException)
+    assert not issubclass(restart, Exception)

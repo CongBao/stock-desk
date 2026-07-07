@@ -1,9 +1,12 @@
 from collections.abc import Mapping
 from datetime import datetime
-from typing import Annotated, Any, Callable, cast
+from typing import Annotated, Any, Callable, cast, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from pydantic import BaseModel, Field, field_validator
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from fastapi.routing import APIRoute
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from stock_desk.tasks.models import (
     TaskEventLevel,
@@ -16,7 +19,18 @@ from stock_desk.tasks.repository import (
     TaskConflict,
     TaskNotFound,
     TaskRepository,
+    TaskRepositoryError,
     TaskValidationError,
+)
+
+
+_RESERVED_DOMAIN_TASK_KINDS = frozenset(
+    {
+        "analysis.run",
+        "backtest.run",
+        "market.update",
+        "market.catalog.update",
+    }
 )
 
 
@@ -33,6 +47,8 @@ def _json_response_object(value: Mapping[str, Any]) -> dict[str, Any]:
 
 
 class CreateTaskRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     kind: str = Field(min_length=1, max_length=64)
     payload: dict[str, Any] = Field(default_factory=dict)
 
@@ -42,6 +58,16 @@ class CreateTaskRequest(BaseModel):
         if not value or value != value.strip():
             raise ValueError("Task kind must not be blank or padded")
         return value
+
+
+class TaskErrorResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    code: Literal[
+        "invalid_request",
+        "reserved_task_kind",
+        "storage_unavailable",
+    ]
 
 
 class TaskResponse(BaseModel):
@@ -141,20 +167,62 @@ def get_task_repository(request: Request) -> TaskRepository:
 
 RepositoryDependency = Annotated[TaskRepository, Depends(get_task_repository)]
 
-router = APIRouter(prefix="/tasks", tags=["tasks"])
+
+class _SafeTaskRoute(APIRoute):
+    def get_route_handler(self) -> Callable[[Request], Any]:
+        route_handler = super().get_route_handler()
+
+        async def safe_route_handler(request: Request) -> Any:
+            try:
+                return await route_handler(request)
+            except RequestValidationError:
+                return JSONResponse(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    content={"code": "invalid_request"},
+                )
+            except TaskRepositoryError:
+                return JSONResponse(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    content={"code": "storage_unavailable"},
+                )
+
+        return safe_route_handler
 
 
-@router.post("", response_model=TaskResponse, status_code=status.HTTP_201_CREATED)
+router = APIRouter(
+    prefix="/tasks",
+    tags=["tasks"],
+    route_class=_SafeTaskRoute,
+    responses={
+        status.HTTP_422_UNPROCESSABLE_CONTENT: {"model": TaskErrorResponse},
+        status.HTTP_503_SERVICE_UNAVAILABLE: {"model": TaskErrorResponse},
+    },
+)
+
+
+@router.post(
+    "",
+    response_model=TaskResponse,
+    status_code=status.HTTP_201_CREATED,
+    responses={
+        status.HTTP_422_UNPROCESSABLE_CONTENT: {"model": TaskErrorResponse},
+    },
+)
 def create_task(
     request: CreateTaskRequest, repository: RepositoryDependency
-) -> TaskResponse:
+) -> TaskResponse | JSONResponse:
+    if request.kind in _RESERVED_DOMAIN_TASK_KINDS:
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            content={"code": "reserved_task_kind"},
+        )
     try:
         task = repository.create(request.kind, request.payload)
-    except TaskValidationError as error:
-        raise HTTPException(
+    except TaskValidationError:
+        return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="Invalid task",
-        ) from error
+            content={"code": "invalid_request"},
+        )
     return TaskResponse.from_snapshot(task)
 
 

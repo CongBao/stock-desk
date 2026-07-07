@@ -8,6 +8,7 @@ from typing import Final
 
 ROOT = Path(__file__).resolve().parents[1]
 ANALYSIS_ROOT = ROOT / "src/stock_desk/analysis"
+ANALYSIS_API_PATH = ROOT / "src/stock_desk/api/analysis.py"
 FORBIDDEN_ANALYSIS_DEPENDENCIES: Final = (
     "stock_desk.formula",
     "stock_desk.backtest",
@@ -103,8 +104,28 @@ def find_import_boundary_violations(
     return tuple(violations)
 
 
+def find_analysis_api_boundary_violations(
+    analysis_api_path: Path = ANALYSIS_API_PATH,
+) -> tuple[str, ...]:
+    try:
+        tree = ast.parse(
+            analysis_api_path.read_text(encoding="utf-8"),
+            filename=str(analysis_api_path),
+        )
+    except (OSError, UnicodeError, SyntaxError):
+        return (f"{analysis_api_path.name}: unable to inspect Python imports",)
+    return tuple(
+        f"{analysis_api_path.name}:{line}: forbidden analysis API dependency {module}"
+        for line, module in _imports(tree, package=("stock_desk", "api"))
+        if _matches(module, FORBIDDEN_ANALYSIS_DEPENDENCIES)
+    )
+
+
 def main() -> int:
-    violations = find_import_boundary_violations()
+    violations = (
+        *find_import_boundary_violations(),
+        *find_analysis_api_boundary_violations(),
+    )
     if violations:
         sys.stderr.write("\n".join(violations) + "\n")
         return 1

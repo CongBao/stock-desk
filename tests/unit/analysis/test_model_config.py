@@ -153,6 +153,47 @@ def test_analysis_public_config_accepts_named_secret_reference() -> None:
     assert config.secret_reference_id == "analysis_model_api_key"
 
 
+@pytest.mark.parametrize(
+    "secret_reference_id",
+    [
+        "analysis_model_api_key_0123456789abcdef0123456789abcdef",
+        "analysis_model_api_key_ffffffffffffffffffffffffffffffff",
+    ],
+)
+def test_analysis_public_config_accepts_versioned_secret_references(
+    secret_reference_id: str,
+) -> None:
+    config = public_analysis_config(
+        secret_reference_id=secret_reference_id,
+        api_key_configured=True,
+    )
+
+    assert config.secret_reference_id == secret_reference_id
+
+
+@pytest.mark.parametrize(
+    "secret_reference_id",
+    [
+        "analysis_model_api_key_0123456789ABCDEF0123456789abcdef",
+        "analysis_model_api_key_0123456789abcdef",
+        "analysis_model_api_key_0123456789abcdef0123456789abcdef0",
+        "analysis_model_api_key_gggggggggggggggggggggggggggggggg",
+        "analysis_model_api_key_suffix",
+    ],
+)
+def test_analysis_public_config_rejects_malformed_versioned_secret_references(
+    secret_reference_id: str,
+) -> None:
+    with pytest.raises(ValidationError) as captured:
+        public_analysis_config(
+            secret_reference_id=secret_reference_id,
+            api_key_configured=True,
+        )
+
+    assert secret_reference_id not in str(captured.value)
+    assert secret_reference_id not in repr(captured.value)
+
+
 def test_analysis_public_config_rejects_unsupported_provider() -> None:
     with pytest.raises(ValidationError):
         public_analysis_config(provider="stub-provider")

@@ -2,14 +2,14 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import re
-from threading import RLock
+from threading import Condition, RLock
 from typing import Final
 
 from cryptography.fernet import Fernet, InvalidToken
-from sqlalchemy import Engine, case, select
+from sqlalchemy import Engine, case, insert, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import Connection
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from stock_desk.config import Settings
 from stock_desk.storage.database import (
@@ -98,6 +98,9 @@ class SecretStore:
             ) from None
         self._engine = engine
         self._state_lock = RLock()
+        self._activity = Condition()
+        self._active_operations = 0
+        self._poison_pending = False
         self._compromised = False
         try:
             with engine.connect() as connection:
@@ -114,16 +117,64 @@ class SecretStore:
     def __repr__(self) -> str:
         return "SecretStore(configured=True)"
 
+    @property
+    def database_identity(self) -> DatabaseIdentity:
+        return self._database_identity
+
     def save_secret(self, name: str, value: str) -> None:
-        with self._state_lock:
-            self._ensure_available()
-            self._save_secret_locked(name, value)
+        self._ensure_available()
+        self._save_secret_locked(name, value)
 
     def _save_secret_locked(self, name: str, value: str) -> None:
+        with self._checked_begin() as connection:
+            self._save_secret_on_connection(name, value, connection)
+
+    def save_secret_in_transaction(
+        self,
+        name: str,
+        value: str,
+        connection: Connection,
+    ) -> None:
+        """Encrypt and write plaintext in a validated caller-owned transaction."""
+        with self._transaction_operation(connection):
+            try:
+                self._save_secret_on_connection(name, value, connection)
+            except SecretStoreError:
+                raise
+            except SQLAlchemyError:
+                raise SecretStorageError("Secret storage is unavailable") from None
+
+    def create_secret_in_transaction(
+        self,
+        name: str,
+        value: str,
+        connection: Connection,
+    ) -> None:
+        """Insert a new encrypted secret without ever replacing an existing row."""
+        with self._transaction_operation(connection):
+            key = _setting_key(name)
+            token = self._encrypt_value(value)
+            try:
+                connection.execute(
+                    insert(AppSetting).values(
+                        key=key,
+                        encrypted_value=token,
+                        updated_at=_utc_now(),
+                    )
+                )
+            except IntegrityError:
+                raise
+            except SQLAlchemyError:
+                raise SecretStorageError("Secret storage is unavailable") from None
+
+    def _save_secret_on_connection(
+        self,
+        name: str,
+        value: str,
+        connection: Connection,
+    ) -> None:
         key = _setting_key(name)
-        if not isinstance(value, str) or not value:
-            raise SecretValidationError("Secret value is invalid")
-        token = self._fernet.encrypt(value.encode("utf-8")).decode("ascii")
+        token = self._encrypt_value(value)
         now = _utc_now()
         statement = sqlite_insert(AppSetting).values(
             key=key,
@@ -140,13 +191,11 @@ class SecretStore:
                 ),
             },
         )
-        with self._checked_begin() as connection:
-            connection.execute(statement)
+        connection.execute(statement)
 
     def has_secret(self, name: str) -> bool:
-        with self._state_lock:
-            self._ensure_available()
-            return self._has_secret_locked(name)
+        self._ensure_available()
+        return self._has_secret_locked(name)
 
     def _has_secret_locked(self, name: str) -> bool:
         key = _setting_key(name)
@@ -158,23 +207,64 @@ class SecretStore:
                 is not None
             )
 
+    def has_secret_in_transaction(
+        self,
+        name: str,
+        connection: Connection,
+    ) -> bool:
+        """Check a secret in a validated caller-owned transaction."""
+        with self._transaction_operation(connection):
+            try:
+                return (
+                    connection.execute(
+                        select(AppSetting.key).where(
+                            AppSetting.key == _setting_key(name)
+                        )
+                    ).scalar_one_or_none()
+                    is not None
+                )
+            except SecretStoreError:
+                raise
+            except SQLAlchemyError:
+                raise SecretStorageError("Secret storage is unavailable") from None
+
     def read_secret_for_server_call(self, name: str) -> str:
-        with self._state_lock:
-            self._ensure_available()
-            return self._read_secret_locked(name)
+        self._ensure_available()
+        return self._read_secret_locked(name)
 
     def _read_secret_locked(self, name: str) -> str:
         token = self._read_token(name)
         return self._decrypt_token(token)
 
+    def _encrypt_value(self, value: str) -> str:
+        if not isinstance(value, str) or not value:
+            raise SecretValidationError("Secret value is invalid")
+        with self._state_lock:
+            self._ensure_available_locked()
+            return self._fernet.encrypt(value.encode("utf-8")).decode("ascii")
+
     def _decrypt_token(self, token: str) -> str:
-        try:
-            plaintext = self._fernet.decrypt(token.encode("ascii"))
-            return plaintext.decode("utf-8")
-        except (InvalidToken, UnicodeDecodeError, UnicodeEncodeError):
-            raise SecretDecryptionError(
-                "Stored secret could not be decrypted"
-            ) from None
+        with self._state_lock:
+            self._ensure_available_locked()
+            try:
+                plaintext = self._fernet.decrypt(token.encode("ascii"))
+                return plaintext.decode("utf-8")
+            except (InvalidToken, UnicodeDecodeError, UnicodeEncodeError):
+                raise SecretDecryptionError(
+                    "Stored secret could not be decrypted"
+                ) from None
+
+    def _decrypt_validated_token(self, token: object) -> str:
+        if token is None:
+            raise SecretNotFoundError("Secret is not configured")
+        if (
+            type(token) is not str
+            or not token
+            or len(token) > _MAX_ENCRYPTED_SECRET_LENGTH
+            or not token.isascii()
+        ):
+            raise SecretDecryptionError("Stored secret could not be decrypted")
+        return self._decrypt_token(token)
 
     def read_secret_for_server_call_in_transaction(
         self,
@@ -182,35 +272,63 @@ class SecretStore:
         connection: Connection,
     ) -> str:
         """Decrypt a secret from the caller's already-open database snapshot."""
-        with self._state_lock:
-            self._ensure_available()
-            if (
-                connection.closed
-                or connection.engine is not self._engine
-                or not connection.in_transaction()
-            ):
-                raise SecretStorageError("Secret storage connection is invalid")
-            self._validate_connection(connection)
-            token = connection.execute(
-                select(AppSetting.encrypted_value).where(
-                    AppSetting.key == _setting_key(name)
+        with self._transaction_operation(connection):
+            try:
+                token = connection.execute(
+                    select(AppSetting.encrypted_value).where(
+                        AppSetting.key == _setting_key(name)
+                    )
+                ).scalar_one_or_none()
+            except SQLAlchemyError:
+                raise SecretStorageError("Secret storage is unavailable") from None
+            return self._decrypt_validated_token(token)
+
+    def masked_secrets_in_transaction(
+        self,
+        names: tuple[str, ...],
+        connection: Connection,
+    ) -> dict[str, str]:
+        """Read and mask a strict bounded set with one caller-transaction query."""
+        if type(names) is not tuple or len(names) > 100:
+            raise SecretValidationError("Secret names are invalid")
+        if len(names) != len(frozenset(names)):
+            raise SecretValidationError("Secret names are invalid")
+        validated = tuple(_validated_name(name) for name in names)
+        keys = tuple(_setting_key(name) for name in validated)
+        with self._transaction_operation(connection):
+            if not keys:
+                return {}
+            try:
+                rows = tuple(
+                    connection.execute(
+                        select(AppSetting.key, AppSetting.encrypted_value).where(
+                            AppSetting.key.in_(keys)
+                        )
+                    ).tuples()
                 )
-            ).scalar_one_or_none()
-            if token is None:
+            except SQLAlchemyError:
+                raise SecretStorageError("Secret storage is unavailable") from None
+            tokens = {str(key): token for key, token in rows}
+            if len(tokens) != len(keys) or any(key not in tokens for key in keys):
                 raise SecretNotFoundError("Secret is not configured")
-            if (
-                type(token) is not str
-                or not token
-                or len(token) > _MAX_ENCRYPTED_SECRET_LENGTH
-                or not token.isascii()
-            ):
-                raise SecretDecryptionError("Stored secret could not be decrypted")
-            return self._decrypt_token(token)
+            plaintext = {
+                name: self._decrypt_validated_token(tokens[key])
+                for name, key in zip(validated, keys, strict=True)
+            }
+            return {name: mask_secret(value) for name, value in plaintext.items()}
+
+    def _validate_transaction_connection(self, connection: Connection) -> None:
+        if (
+            connection.closed
+            or connection.engine is not self._engine
+            or not connection.in_transaction()
+        ):
+            raise SecretStorageError("Secret storage connection is invalid")
+        self._validate_connection(connection)
 
     def masked_secret(self, name: str) -> str:
-        with self._state_lock:
-            self._ensure_available()
-            return mask_secret(self._read_secret_locked(name))
+        self._ensure_available()
+        return mask_secret(self._read_secret_locked(name))
 
     def _read_token(self, name: str) -> str:
         key = _setting_key(name)
@@ -240,33 +358,77 @@ class SecretStore:
             self._poison()
             raise SecretStorageError("Secret storage is unavailable") from None
         with self._state_lock:
-            if self._compromised:
-                raise SecretStorageError("Secret storage is unavailable")
+            self._ensure_available_locked()
             if identity != self._database_identity:
-                self._compromised = True
-                raise SecretStorageError("Secret storage database identity changed")
+                pass
+            else:
+                return
+        self._poison_after_active_operations()
+        raise SecretStorageError("Secret storage database identity changed")
+
+    def _register_operation(self) -> None:
+        with self._activity:
+            if self._poison_pending:
+                raise SecretStorageError("Secret storage is unavailable")
+            self._ensure_available()
+            self._active_operations += 1
+
+    def _unregister_operation(self) -> None:
+        with self._activity:
+            self._active_operations -= 1
+            if self._active_operations == 0:
+                self._activity.notify_all()
+
+    def _poison_after_active_operations(self) -> None:
+        with self._activity:
+            while self._poison_pending:
+                self._activity.wait()
+            self._ensure_available()
+            self._poison_pending = True
+            try:
+                while self._active_operations:
+                    self._activity.wait()
+                self._poison()
+            finally:
+                self._poison_pending = False
+                self._activity.notify_all()
 
     def _ensure_available(self) -> None:
         with self._state_lock:
-            if self._compromised:
-                raise SecretStorageError("Secret storage is unavailable")
+            self._ensure_available_locked()
+
+    def _ensure_available_locked(self) -> None:
+        if self._compromised:
+            raise SecretStorageError("Secret storage is unavailable")
 
     def _poison(self) -> None:
         with self._state_lock:
             self._compromised = True
 
     @contextmanager
+    def _transaction_operation(self, connection: Connection) -> Iterator[None]:
+        self._validate_transaction_connection(connection)
+        self._register_operation()
+        try:
+            yield
+        finally:
+            self._unregister_operation()
+
+    @contextmanager
     def _checked_connection(self) -> Iterator[Connection]:
-        with self._state_lock:
-            self._ensure_available()
-            try:
-                with self._engine.connect() as connection:
-                    self._validate_connection(connection)
+        self._ensure_available()
+        try:
+            with self._engine.connect() as connection:
+                self._validate_connection(connection)
+                self._register_operation()
+                try:
                     yield connection
-            except SecretStorageError:
-                raise
-            except SQLAlchemyError:
-                raise SecretStorageError("Secret storage is unavailable") from None
+                finally:
+                    self._unregister_operation()
+        except SecretStorageError:
+            raise
+        except SQLAlchemyError:
+            raise SecretStorageError("Secret storage is unavailable") from None
 
     @contextmanager
     def _checked_begin(self) -> Iterator[Connection]:

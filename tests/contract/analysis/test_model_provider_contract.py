@@ -4,6 +4,7 @@ import asyncio
 import inspect
 import json
 import math
+import threading
 import time
 from typing import Any, cast
 
@@ -18,13 +19,16 @@ from stock_desk.analysis.providers.base import (
     MAX_PROVIDER_RESPONSE_BYTES,
     MAX_PROVIDER_RESPONSE_DEPTH,
     MAX_PROVIDER_RESPONSE_NODES,
+    MAX_SECRET_READER_THREADS,
     ModelAuthenticationError,
+    ModelCredentialUnavailableError,
     ModelDNSResolutionError,
     ModelInvalidResponseError,
     ModelProvider,
     ModelProviderError,
     ModelRateLimitError,
     ModelRequest,
+    ModelResponse,
     ModelServerError,
     ModelTimeoutError,
     ModelUnsafeEndpointError,
@@ -34,6 +38,7 @@ from stock_desk.analysis.providers.ollama import OllamaProvider
 from stock_desk.analysis.providers.openai_compatible import (
     OpenAICompatibleProvider,
 )
+from stock_desk.security.secrets import SecretStorageError
 
 
 API_KEY = "sk-contract-secret-never-leak"
@@ -43,6 +48,28 @@ class StubSecretStore:
     def read_secret_for_server_call(self, name: str) -> str:
         assert name == "analysis_model_api_key"
         return API_KEY
+
+
+class AdversarialStream(httpx2.AsyncByteStream):
+    def __init__(self, chunks: tuple[bytes, ...]) -> None:
+        self.chunks = chunks
+        self.yielded = 0
+        self.closed = False
+
+    async def __aiter__(self):
+        for chunk in self.chunks:
+            self.yielded += 1
+            yield chunk
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+class TimeoutStream(AdversarialStream):
+    async def __aiter__(self):
+        self.yielded += 1
+        yield b"{"
+        raise httpx2.ReadTimeout("unsafe timeout detail")
 
 
 async def resolve_public(_hostname: str, _port: int) -> tuple[str, ...]:
@@ -428,7 +455,7 @@ def test_connection_failure_is_a_safe_result_instead_of_an_exception() -> None:
     assert API_KEY not in repr(result)
 
 
-def test_unavailable_or_header_unsafe_api_key_is_typed_as_authentication() -> None:
+def test_header_unsafe_local_api_key_is_typed_as_credential_storage_failure() -> None:
     class UnsafeSecretStore:
         def read_secret_for_server_call(self, _name: str) -> str:
             return "unsafe\nsecret"
@@ -443,7 +470,7 @@ def test_unavailable_or_header_unsafe_api_key_is_typed_as_authentication() -> No
         resolver=resolve_public,
     )
 
-    with pytest.raises(ModelAuthenticationError):
+    with pytest.raises(ModelCredentialUnavailableError):
         run(provider.complete(request()))
 
 
@@ -635,6 +662,154 @@ def test_model_response_content_access_returns_defensive_deep_copies() -> None:
     assert response.content["items"][0]["value"] == 1  # type: ignore[index]
 
 
+def test_model_response_content_is_a_real_aliased_field_with_exact_round_trip() -> None:
+    payload = {
+        "provider": "openai_compatible",
+        "model": "vendor-chat",
+        "usage": {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3},
+        "content": {"items": [{"value": 1}], "summary": "ok"},
+    }
+
+    response = ModelResponse.model_validate(payload)
+    dumped = response.model_dump(mode="json")
+    restored = ModelResponse.model_validate(dumped)
+    exposed = dumped["content"]
+    exposed["items"][0]["value"] = 99  # type: ignore[index]
+
+    assert dumped.keys() == payload.keys()
+    assert restored == response
+    assert response.content == payload["content"]
+    assert response.content["items"][0]["value"] == 1  # type: ignore[index]
+    assert "content_json" not in dumped
+
+
+@pytest.mark.parametrize("invalid_content", [None, [], "text"])
+def test_model_response_rejects_non_object_content(invalid_content: object) -> None:
+    with pytest.raises(ValidationError):
+        ModelResponse.model_validate(
+            {
+                "provider": "openai_compatible",
+                "model": "vendor-chat",
+                "usage": {
+                    "input_tokens": 1,
+                    "output_tokens": 2,
+                    "total_tokens": 3,
+                },
+                "content": invalid_content,
+            }
+        )
+
+
+def test_model_response_validation_and_serialization_schemas_require_content_object() -> (
+    None
+):
+    for mode in ("validation", "serialization"):
+        schema = ModelResponse.model_json_schema(mode=mode, by_alias=True)
+        assert "content" in schema["required"]
+        assert schema["properties"]["content"]["type"] == "object"
+        assert "content_json" not in schema["properties"]
+
+
+def test_secret_reader_storage_error_is_typed_and_not_authentication() -> None:
+    class BrokenReader:
+        def read_secret_for_server_call(self, _name: str) -> str:
+            raise SecretStorageError("unsafe-storage-detail")
+
+    provider = OpenAICompatibleProvider(
+        base_url="https://models.example.com/v1",
+        model="vendor-chat",
+        secret_store=BrokenReader(),
+        transport=httpx2.MockTransport(
+            lambda _request: pytest.fail("storage failure reached transport")
+        ),
+        resolver=resolve_public,
+    )
+
+    result = run(provider.test_connection(timeout_seconds=1.0))
+
+    assert result.connected is False
+    assert result.error_code == "storage"
+    with pytest.raises(ModelCredentialUnavailableError) as captured:
+        run(provider.complete(request()))
+    assert "unsafe-storage-detail" not in str(captured.value)
+
+
+def test_blocking_secret_reader_is_bounded_by_provider_deadline() -> None:
+    release = threading.Event()
+    started = threading.Event()
+
+    class BlockingReader:
+        def read_secret_for_server_call(self, _name: str) -> str:
+            started.set()
+            assert release.wait(timeout=5)
+            return API_KEY
+
+    provider = OpenAICompatibleProvider(
+        base_url="https://models.example.com/v1",
+        model="vendor-chat",
+        secret_store=BlockingReader(),
+        transport=httpx2.MockTransport(
+            lambda _request: pytest.fail("blocked credential reached transport")
+        ),
+        resolver=resolve_public,
+    )
+    before = time.monotonic()
+    try:
+        result = run(provider.test_connection(timeout_seconds=0.05))
+        elapsed = time.monotonic() - before
+    finally:
+        release.set()
+
+    assert started.wait(timeout=1)
+    assert elapsed < 0.5
+    assert result.error_code == "timeout"
+
+
+def test_blocking_secret_reader_is_cancellable_and_worker_capacity_is_bounded() -> None:
+    release = threading.Event()
+    entered = threading.Barrier(MAX_SECRET_READER_THREADS + 1)
+
+    class BlockingReader:
+        def read_secret_for_server_call(self, _name: str) -> str:
+            entered.wait(timeout=5)
+            assert release.wait(timeout=5)
+            return API_KEY
+
+    def provider() -> OpenAICompatibleProvider:
+        return OpenAICompatibleProvider(
+            base_url="https://models.example.com/v1",
+            model="vendor-chat",
+            secret_store=BlockingReader(),
+            transport=httpx2.MockTransport(
+                lambda _request: httpx2.Response(
+                    200, json={"data": [{"id": "vendor-chat"}]}
+                )
+            ),
+            resolver=resolve_public,
+        )
+
+    async def scenario() -> None:
+        tasks = [
+            asyncio.create_task(provider().test_connection(timeout_seconds=2.0))
+            for _ in range(MAX_SECRET_READER_THREADS)
+        ]
+        await asyncio.to_thread(entered.wait, 5)
+        overflow = await provider().test_connection(timeout_seconds=1.0)
+        assert overflow.error_code == "storage"
+        tasks[0].cancel()
+        before = time.monotonic()
+        with pytest.raises(asyncio.CancelledError):
+            await tasks[0]
+        assert time.monotonic() - before < 0.5
+        release.set()
+        await asyncio.gather(*tasks[1:])
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        release.set()
+
+
 class TrackingBorrowedTransport(httpx2.AsyncBaseTransport):
     def __init__(self, kind: str) -> None:
         self.kind = kind
@@ -787,6 +962,121 @@ def test_provider_rejects_response_larger_than_fixed_byte_limit(kind: str) -> No
 
     with pytest.raises(ModelInvalidResponseError):
         run(provider.complete(request()))
+
+
+def _streaming_provider(
+    kind: str,
+    handler: Any,
+) -> ModelProvider:
+    transport = httpx2.MockTransport(handler)
+    if kind == "openai":
+        return OpenAICompatibleProvider(
+            base_url="https://models.example.com/v1",
+            model="vendor-chat",
+            secret_store=StubSecretStore(),
+            transport=transport,
+            resolver=resolve_public,
+        )
+    return OllamaProvider(model="qwen3:8b", transport=transport)
+
+
+@pytest.mark.parametrize("kind", ["openai", "ollama"])
+@pytest.mark.parametrize(
+    ("headers", "chunks", "expected_yields"),
+    [
+        (
+            {"Content-Length": str(MAX_PROVIDER_RESPONSE_BYTES + 1)},
+            (b"{}",),
+            0,
+        ),
+        ({"Content-Length": "not-a-decimal"}, (b"{}",), 0),
+        (
+            {"Content-Encoding": "gzip"},
+            (b"compressed-bomb",) * 40,
+            0,
+        ),
+        ({}, (b"x" * 65_536,) * 40, 17),
+        (
+            {"Content-Length": "2"},
+            (b"x" * 65_536,) * 40,
+            17,
+        ),
+    ],
+    ids=(
+        "oversized-content-length",
+        "malformed-content-length",
+        "content-encoding",
+        "chunked-oversize",
+        "misleading-small-content-length",
+    ),
+)
+def test_provider_streaming_response_budget_closes_and_stops_consumption(
+    kind: str,
+    headers: dict[str, str],
+    chunks: tuple[bytes, ...],
+    expected_yields: int,
+) -> None:
+    stream = AdversarialStream(chunks)
+    captured: list[httpx2.Request] = []
+
+    def handler(http_request: httpx2.Request) -> httpx2.Response:
+        captured.append(http_request)
+        return httpx2.Response(200, headers=headers, stream=stream)
+
+    provider = _streaming_provider(kind, handler)
+
+    with pytest.raises(ModelInvalidResponseError):
+        run(provider.complete(request()))
+
+    assert captured[0].headers["accept-encoding"] == "identity"
+    assert stream.yielded == expected_yields
+    assert stream.yielded < len(chunks)
+    assert stream.closed is True
+
+
+@pytest.mark.parametrize("kind", ["openai", "ollama"])
+def test_provider_streaming_response_accepts_exact_maximum_json(kind: str) -> None:
+    payload = (
+        openai_response("vendor-chat")
+        if kind == "openai"
+        else ollama_response("qwen3:8b")
+    )
+    encoded = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    exact = encoded + (b" " * (MAX_PROVIDER_RESPONSE_BYTES - len(encoded)))
+    stream = AdversarialStream(
+        tuple(
+            exact[offset : offset + 65_536] for offset in range(0, len(exact), 65_536)
+        )
+    )
+    provider = _streaming_provider(
+        kind,
+        lambda _request: httpx2.Response(
+            200,
+            headers={"Content-Length": str(MAX_PROVIDER_RESPONSE_BYTES)},
+            stream=stream,
+        ),
+    )
+
+    response = run(provider.complete(request()))
+
+    assert response.content == {"summary": "ok"}
+    assert stream.yielded == len(stream.chunks)
+    assert stream.closed is True
+
+
+@pytest.mark.parametrize("kind", ["openai", "ollama"])
+def test_provider_streaming_timeout_closes_response(kind: str) -> None:
+    stream = TimeoutStream(())
+    provider = _streaming_provider(
+        kind,
+        lambda _request: httpx2.Response(200, stream=stream),
+    )
+
+    with pytest.raises(ModelTimeoutError):
+        run(provider.complete(request()))
+
+    assert stream.yielded == 1
+    assert stream.closed is True
 
 
 @pytest.mark.parametrize("limit_kind", ["depth", "nodes"])

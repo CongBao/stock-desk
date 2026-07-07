@@ -33,6 +33,8 @@ SYMBOL = "600000.SH"
 
 
 class FakeMarketLake:
+    database_identity = ("sqlite", "runtime")
+
     def __init__(self, outcome: RoutedBarSuccess | None) -> None:
         self.outcome = outcome
         self.calls: list[tuple[str, Period, Adjustment]] = []

@@ -146,7 +146,6 @@ class AnalysisRunRow(Base):
         Index(
             "uq_analysis_run_active_retry",
             "parent_run_id",
-            "requested_stage",
             unique=True,
             sqlite_where=text(
                 "parent_run_id IS NOT NULL AND status IN ('queued','running')"

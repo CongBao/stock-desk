@@ -7,6 +7,7 @@ from stock_desk.analysis.content_policy import ContentPolicyError
 from stock_desk.analysis.data_service import ResearchDataUnavailable
 from stock_desk.analysis.providers.base import (
     ModelAuthenticationError,
+    ModelCredentialUnavailableError,
     ModelDNSResolutionError,
     ModelInvalidResponseError,
     ModelRateLimitError,
@@ -96,3 +97,11 @@ def test_auth_validation_policy_unsafe_and_terminal_data_errors_never_retry(
     assert decision.code
     assert "secret" not in decision.safe_message
     assert "token" not in decision.safe_message
+
+
+def test_credential_storage_failure_has_explicit_nonretry_classification() -> None:
+    decision = classify_retry(ModelCredentialUnavailableError("secret"))
+
+    assert decision.retryable is False
+    assert decision.code == "model_credentials_unavailable"
+    assert "secret" not in decision.safe_message

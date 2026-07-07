@@ -1,13 +1,19 @@
 from pathlib import Path
 
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 import pytest
 from sqlalchemy import Engine, event, text
 
 from stock_desk.config import Settings
 from stock_desk.main import create_app
+from stock_desk.api.tasks import router as tasks_router
 from stock_desk.storage.database import create_engine_for_url, migrate
-from stock_desk.tasks.repository import TaskRepository
+from stock_desk.tasks.repository import (
+    TaskRepository,
+    TaskRepositoryError,
+    TaskValidationError,
+)
 
 
 def _injected_repository(tmp_path: Path) -> tuple[TaskRepository, Engine]:
@@ -166,7 +172,36 @@ def test_task_event_api_maps_missing_tasks_and_invalid_limits(tmp_path: Path) ->
         assert missing.status_code == 404
         assert missing.json() == {"detail": "Task not found"}
         assert too_small.status_code == 422
+        assert too_small.json() == {"code": "invalid_request"}
         assert too_large.status_code == 422
+        assert too_large.json() == {"code": "invalid_request"}
+
+        schema = create_app(task_repository=repository).openapi()
+        expected = {"$ref": "#/components/schemas/TaskErrorResponse"}
+        assert (
+            schema["paths"]["/api/tasks"]["get"]["responses"]["422"]["content"][
+                "application/json"
+            ]["schema"]
+            == expected
+        )
+        assert (
+            schema["paths"]["/api/tasks/{task_id}/events"]["get"]["responses"]["422"][
+                "content"
+            ]["application/json"]["schema"]
+            == expected
+        )
+        for path, path_item in schema["paths"].items():
+            if not path.startswith("/api/tasks"):
+                continue
+            for operation in path_item.values():
+                if not isinstance(operation, dict) or "responses" not in operation:
+                    continue
+                assert (
+                    operation["responses"]["422"]["content"]["application/json"][
+                        "schema"
+                    ]
+                    == expected
+                )
     finally:
         engine.dispose()
 
@@ -196,10 +231,131 @@ def test_task_api_maps_not_found_conflict_and_validation(tmp_path: Path) -> None
         assert conflict.status_code == 409
         assert conflict.json() == {"detail": "Task state conflict"}
         assert invalid_limit.status_code == 422
+        assert invalid_limit.json() == {"code": "invalid_request"}
         assert invalid_kind.status_code == 422
         assert padded_kind.status_code == 422
     finally:
         engine.dispose()
+
+
+def test_generic_task_create_rejects_analysis_run_without_orphan_task(
+    tmp_path: Path,
+) -> None:
+    repository, engine = _injected_repository(tmp_path)
+    try:
+        with TestClient(create_app(task_repository=repository)) as client:
+            response = client.post(
+                "/api/tasks",
+                json={"kind": "analysis.run", "payload": {"symbol": "600000.SH"}},
+            )
+
+        assert response.status_code == 422
+        assert response.json() == {"code": "reserved_task_kind"}
+        assert _task_event_counts(engine) == (0, 0)
+
+        schema = create_app(task_repository=repository).openapi()
+        reserved_schema = schema["components"]["schemas"]["TaskErrorResponse"]
+        assert set(reserved_schema["properties"]) == {"code"}
+        assert reserved_schema["properties"]["code"]["enum"] == [
+            "invalid_request",
+            "reserved_task_kind",
+            "storage_unavailable",
+        ]
+        assert schema["paths"]["/api/tasks"]["post"]["responses"]["422"]["content"][
+            "application/json"
+        ]["schema"] == {"$ref": "#/components/schemas/TaskErrorResponse"}
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"kind": "", "payload": {}},
+        {"kind": "demo.double", "payload": []},
+        {"kind": "demo.double", "payload": {}, "secret_extra": "TOP-SECRET"},
+    ],
+    ids=("blank-kind", "non-object-payload", "extra-field"),
+)
+def test_task_create_request_validation_returns_single_safe_code(
+    tmp_path: Path,
+    body: dict[str, object],
+) -> None:
+    repository, engine = _injected_repository(tmp_path)
+    try:
+        before = _task_event_counts(engine)
+        with TestClient(create_app(task_repository=repository)) as client:
+            response = client.post("/api/tasks", json=body)
+
+        assert response.status_code == 422
+        assert response.json() == {"code": "invalid_request"}
+        assert "TOP-SECRET" not in response.text
+        assert _task_event_counts(engine) == before
+    finally:
+        engine.dispose()
+
+
+def test_standalone_task_router_uses_same_safe_validation_contract() -> None:
+    class RejectingRepository:
+        def create(self, _kind: str, _payload: object) -> object:
+            raise TaskValidationError("TOP-SECRET repository validation detail")
+
+    application = FastAPI()
+    application.state.task_repository_provider = RejectingRepository
+    application.include_router(tasks_router)
+
+    with TestClient(application) as client:
+        request_invalid = client.post(
+            "/tasks",
+            json={"kind": "demo.double", "payload": {}, "extra": "TOP-SECRET"},
+        )
+        repository_invalid = client.post(
+            "/tasks",
+            json={"kind": "demo.double", "payload": {}},
+        )
+
+    assert request_invalid.status_code == 422
+    assert request_invalid.json() == {"code": "invalid_request"}
+    assert repository_invalid.status_code == 422
+    assert repository_invalid.json() == {"code": "invalid_request"}
+    assert "TOP-SECRET" not in request_invalid.text
+    assert "TOP-SECRET" not in repository_invalid.text
+
+
+def test_task_storage_failures_return_single_safe_503_contract() -> None:
+    class CorruptRepository:
+        def list_recent(self, *, limit: int) -> object:
+            del limit
+            raise TaskRepositoryError("TOP-SECRET list corruption")
+
+        def get(self, _task_id: str) -> object:
+            raise TaskRepositoryError("TOP-SECRET get corruption")
+
+    application = FastAPI()
+    application.state.task_repository_provider = CorruptRepository
+    application.include_router(tasks_router)
+
+    with TestClient(application, raise_server_exceptions=False) as client:
+        listed = client.get("/tasks")
+        fetched = client.get("/tasks/task-id")
+
+    assert listed.status_code == 503
+    assert listed.json() == {"code": "storage_unavailable"}
+    assert fetched.status_code == 503
+    assert fetched.json() == {"code": "storage_unavailable"}
+    assert "TOP-SECRET" not in listed.text
+    assert "TOP-SECRET" not in fetched.text
+
+    schema = application.openapi()
+    expected = {"$ref": "#/components/schemas/TaskErrorResponse"}
+    for path_item in schema["paths"].values():
+        for operation in path_item.values():
+            if not isinstance(operation, dict) or "responses" not in operation:
+                continue
+            assert (
+                operation["responses"]["503"]["content"]["application/json"]["schema"]
+                == expected
+            )
 
 
 @pytest.mark.parametrize(
@@ -228,7 +384,7 @@ def test_task_api_rejects_isolated_surrogates_without_committing(
             )
 
         assert response.status_code == 422
-        assert response.json() == {"detail": "Invalid task"}
+        assert response.json() == {"code": "invalid_request"}
         assert _task_event_counts(engine) == before
     finally:
         engine.dispose()

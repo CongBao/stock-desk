@@ -13,6 +13,7 @@ from typing import Any, cast
 from pydantic import JsonValue
 import pytest
 
+import scripts.check_import_boundaries as import_boundaries
 from scripts.check_import_boundaries import find_import_boundary_violations
 from stock_desk.analysis.evidence import (
     EvidenceGraph,
@@ -695,6 +696,24 @@ def test_analysis_import_boundary_rejects_domain_and_direct_network_imports(
         "relative.py:1: forbidden analysis dependency stock_desk.formula",
         "workflow.py:1: forbidden workflow runtime dependency httpx2",
         "workflow.py:2: forbidden workflow runtime dependency akshare",
+    )
+
+
+def test_analysis_api_import_boundary_rejects_formula_and_backtest(
+    tmp_path: Path,
+) -> None:
+    api_path = Path(__file__).resolve().parents[3] / "src/stock_desk/api/analysis.py"
+    assert import_boundaries.find_analysis_api_boundary_violations(api_path) == ()
+
+    bad_api_path = tmp_path / "analysis.py"
+    bad_api_path.write_text(
+        "import stock_desk.formula\nfrom stock_desk.backtest import service\n",
+        encoding="utf-8",
+    )
+
+    assert import_boundaries.find_analysis_api_boundary_violations(bad_api_path) == (
+        "analysis.py:1: forbidden analysis API dependency stock_desk.formula",
+        "analysis.py:2: forbidden analysis API dependency stock_desk.backtest",
     )
 
 

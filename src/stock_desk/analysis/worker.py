@@ -30,7 +30,7 @@ class AnalysisWorkerHandler:
         *,
         repository: AnalysisRepository,
         provider_factory: Callable[[AnalysisExecutionConfig], ModelProvider],
-        data_service: ResearchDataService,
+        data_service_factory: Callable[[], ResearchDataService],
         evidence_factory: Callable[[ResearchSnapshot], EvidenceGraph],
         sleeper: Callable[[float], Awaitable[None]] = asyncio.sleep,
         clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
@@ -41,7 +41,7 @@ class AnalysisWorkerHandler:
     ) -> None:
         self._repository = repository
         self._provider_factory = provider_factory
-        self._data_service = data_service
+        self._data_service_factory = data_service_factory
         self._evidence_factory = evidence_factory
         self._clock = clock
         self._sleeper = sleeper
@@ -56,6 +56,13 @@ class AnalysisWorkerHandler:
         run = self._repository.get_run_by_task(claim.snapshot.id)
         try:
             execution = self._repository.load_execution_config(run.id)
+            data_service: ResearchDataService | None = None
+            if run.snapshot_id is None:
+                data_service = self._data_service_factory()
+                if not isinstance(data_service, ResearchDataService):
+                    raise TypeError(
+                        "analysis data service factory returned invalid service"
+                    )
             provider = self._provider_factory(execution)
             if (
                 provider.provider != execution.provider
@@ -79,11 +86,12 @@ class AnalysisWorkerHandler:
                 lease_duration=self._lease_duration,
             )
             if run.snapshot_id is None:
+                assert data_service is not None
                 operation = runner.run_from_data(
                     claim=claim,
                     run_id=run.id,
                     symbol=run.symbol,
-                    data_service=self._data_service,
+                    data_service=data_service,
                     evidence_factory=self._evidence_factory,
                 )
             else:
