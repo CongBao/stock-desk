@@ -91,6 +91,34 @@ def test_public_config_rejects_unmasked_key_without_echoing_input() -> None:
     assert API_KEY not in repr(captured.value)
 
 
+@pytest.mark.parametrize(
+    "invalid_mask",
+    [
+        f"{API_KEY}•••••••",
+        "abc•••••••def",
+        "aaaa•••••••bbbbb",
+        "aaaa•••••••bbbb\n",
+    ],
+)
+def test_public_config_accepts_only_exact_mask_secret_shapes(
+    invalid_mask: str,
+) -> None:
+    with pytest.raises(ValidationError) as captured:
+        ModelConfig(
+            provider=ModelProviderKind.DEEPSEEK,
+            base_url="https://api.deepseek.com",
+            model="deepseek-v4",
+            temperature=0.1,
+            timeout_seconds=90.0,
+            max_output_tokens=4096,
+            api_key_configured=True,
+            masked_api_key=invalid_mask,
+        )
+
+    assert invalid_mask not in str(captured.value)
+    assert invalid_mask not in repr(captured.value)
+
+
 def test_service_stores_key_only_in_secret_store_and_public_safe_config() -> None:
     secrets = StubSecretStore()
     repository = InMemoryModelConfigRepository()
@@ -108,10 +136,25 @@ def test_service_stores_key_only_in_secret_store_and_public_safe_config() -> Non
     assert API_KEY not in public_rendered
 
 
-def test_secret_store_write_failure_is_typed_and_never_echoes_key() -> None:
+@pytest.mark.parametrize("failure_point", ["save", "has", "masked"])
+def test_every_secret_store_failure_is_typed_and_never_echoes_key(
+    failure_point: str,
+) -> None:
     class ExplodingSecretStore(StubSecretStore):
-        def save_secret(self, _name: str, value: str) -> None:
-            raise RuntimeError(f"failed to save {value}")
+        def save_secret(self, name: str, value: str) -> None:
+            if failure_point == "save":
+                raise RuntimeError(f"failed to save {value}")
+            super().save_secret(name, value)
+
+        def has_secret(self, name: str) -> bool:
+            if failure_point == "has":
+                raise RuntimeError(f"failed to find {API_KEY}")
+            return super().has_secret(name)
+
+        def masked_secret(self, name: str) -> str:
+            if failure_point == "masked":
+                raise RuntimeError(f"failed to mask {API_KEY}")
+            return super().masked_secret(name)
 
     repository = InMemoryModelConfigRepository()
     service = ModelConfigService(
@@ -171,6 +214,7 @@ def test_deepseek_and_ollama_resolve_named_provider_defaults() -> None:
         (ModelProviderKind.OLLAMA, "https://ollama.example.com:11434"),
         (ModelProviderKind.OLLAMA, "http://192.168.1.2:11434"),
         (ModelProviderKind.OLLAMA, "ftp://localhost:11434"),
+        (ModelProviderKind.OLLAMA, "http://localhost"),
         (ModelProviderKind.OLLAMA, "http://localhost:6379"),
     ],
 )
@@ -194,6 +238,7 @@ def test_provider_urls_reject_ssrf_and_credential_hazards(
         (ModelProviderKind.OPENAI_COMPATIBLE, "https://models.example.com:8443/v1"),
         (ModelProviderKind.OLLAMA, "http://localhost:11434"),
         (ModelProviderKind.OLLAMA, "https://[::1]:11434"),
+        (ModelProviderKind.OLLAMA, "https://localhost"),
     ],
 )
 def test_provider_urls_accept_only_expected_remote_or_local_endpoints(

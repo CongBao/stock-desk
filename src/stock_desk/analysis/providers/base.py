@@ -1,17 +1,22 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import StrEnum
 import json
 import math
-from typing import Final, Protocol, runtime_checkable
+from typing import cast, Final, Protocol, runtime_checkable
+
+import httpx2
 
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
     JsonValue,
+    PrivateAttr,
     StrictBool,
     StrictFloat,
+    computed_field,
     field_validator,
     model_validator,
 )
@@ -20,6 +25,9 @@ from pydantic import (
 MAX_MODEL_JSON_BYTES: Final = 262_144
 MAX_MODEL_JSON_DEPTH: Final = 32
 MAX_MODEL_JSON_NODES: Final = 10_000
+MAX_PROVIDER_RESPONSE_BYTES: Final = 1_048_576
+MAX_PROVIDER_RESPONSE_DEPTH: Final = 32
+MAX_PROVIDER_RESPONSE_NODES: Final = 20_000
 
 
 class _FrozenModel(BaseModel):
@@ -93,27 +101,62 @@ class ModelRequest(_FrozenModel):
 
     @model_validator(mode="after")
     def validate_json_budget(self) -> ModelRequest:
-        _validate_json_shape((self.data_blocks, self.output_schema))
-        encoded = json.dumps(
-            {
-                "data_blocks": self.data_blocks,
-                "output_schema": self.output_schema,
-            },
-            allow_nan=False,
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-        ).encode("utf-8")
-        if len(encoded) > MAX_MODEL_JSON_BYTES:
-            raise ValueError("model request JSON exceeds the byte limit")
+        _canonical_request_json(self.data_blocks, self.output_schema)
         return self
+
+    def stable_snapshot(self) -> ModelRequestSnapshot:
+        return ModelRequestSnapshot(
+            system=self.system,
+            structured_json=_canonical_request_json(
+                self.data_blocks,
+                self.output_schema,
+            ),
+            temperature=self.temperature,
+            timeout_seconds=self.timeout_seconds,
+            max_output_tokens=self.max_output_tokens,
+        )
 
 
 class ModelResponse(_FrozenModel):
     provider: str = Field(min_length=1, max_length=64)
     model: str = Field(min_length=1, max_length=256)
-    content: dict[str, JsonValue]
     usage: ModelUsage
+    _content_json: bytes = PrivateAttr()
+
+    def __init__(
+        self,
+        *,
+        provider: str,
+        model: str,
+        content: dict[str, JsonValue],
+        usage: ModelUsage,
+    ) -> None:
+        content_json = _canonical_response_content(content)
+        super().__init__(**{"provider": provider, "model": model, "usage": usage})
+        object.__setattr__(self, "_content_json", content_json)
+
+    @computed_field(return_type=dict[str, JsonValue])  # type: ignore[prop-decorator]
+    @property
+    def content(self) -> dict[str, JsonValue]:
+        return cast(dict[str, JsonValue], json.loads(self._content_json))
+
+
+@dataclass(frozen=True, slots=True)
+class ModelRequestSnapshot:
+    system: str
+    structured_json: bytes
+    temperature: float
+    timeout_seconds: float
+    max_output_tokens: int
+
+    def structured_parts(
+        self,
+    ) -> tuple[list[dict[str, JsonValue]], dict[str, JsonValue]]:
+        decoded = cast(dict[str, object], json.loads(self.structured_json))
+        return (
+            cast(list[dict[str, JsonValue]], decoded["data_blocks"]),
+            cast(dict[str, JsonValue], decoded["output_schema"]),
+        )
 
 
 class ModelConnectionResult(_FrozenModel):
@@ -225,16 +268,120 @@ def validate_model_name(model: str) -> str:
     return model
 
 
-def _validate_json_shape(roots: tuple[object, ...]) -> None:
+class BorrowedAsyncTransport(httpx2.AsyncBaseTransport):
+    """Delegate requests without closing the caller-owned transport."""
+
+    def __init__(self, transport: httpx2.AsyncBaseTransport) -> None:
+        self._transport = transport
+
+    async def handle_async_request(
+        self,
+        request: httpx2.Request,
+    ) -> httpx2.Response:
+        return await self._transport.handle_async_request(request)
+
+    async def aclose(self) -> None:
+        return None
+
+
+def borrowed_transport(
+    transport: httpx2.AsyncBaseTransport | None,
+) -> httpx2.AsyncBaseTransport | None:
+    return BorrowedAsyncTransport(transport) if transport is not None else None
+
+
+def decode_provider_response_json(content: bytes) -> object:
+    if len(content) > MAX_PROVIDER_RESPONSE_BYTES:
+        raise ModelInvalidResponseError()
+    decoded: object | None = None
+    try:
+        decoded = json.loads(content)
+    except (UnicodeDecodeError, ValueError, TypeError, RecursionError):
+        pass
+    if decoded is None:
+        raise ModelInvalidResponseError() from None
+    try:
+        _validate_json_shape(
+            (decoded,),
+            max_depth=MAX_PROVIDER_RESPONSE_DEPTH,
+            max_nodes=MAX_PROVIDER_RESPONSE_NODES,
+            label="model provider response",
+        )
+    except ValueError:
+        raise ModelInvalidResponseError() from None
+    return decoded
+
+
+def _canonical_request_json(
+    data_blocks: object,
+    output_schema: object,
+) -> bytes:
+    _validate_json_shape(
+        (data_blocks, output_schema),
+        max_depth=MAX_MODEL_JSON_DEPTH,
+        max_nodes=MAX_MODEL_JSON_NODES,
+        label="model request JSON",
+    )
+    encoded: bytes | None = None
+    try:
+        encoded = json.dumps(
+            {
+                "data_blocks": data_blocks,
+                "output_schema": output_schema,
+            },
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    except (TypeError, ValueError, RecursionError):
+        pass
+    if encoded is None:
+        raise ValueError("model request JSON is invalid") from None
+    if len(encoded) > MAX_MODEL_JSON_BYTES:
+        raise ValueError("model request JSON exceeds the byte limit")
+    return encoded
+
+
+def _canonical_response_content(content: object) -> bytes:
+    _validate_json_shape(
+        (content,),
+        max_depth=MAX_PROVIDER_RESPONSE_DEPTH,
+        max_nodes=MAX_PROVIDER_RESPONSE_NODES,
+        label="model response content",
+    )
+    encoded: bytes | None = None
+    try:
+        encoded = json.dumps(
+            content,
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    except (TypeError, ValueError, RecursionError):
+        pass
+    if encoded is None or len(encoded) > MAX_PROVIDER_RESPONSE_BYTES:
+        raise ValueError("model response content exceeds its budget") from None
+    return encoded
+
+
+def _validate_json_shape(
+    roots: tuple[object, ...],
+    *,
+    max_depth: int,
+    max_nodes: int,
+    label: str,
+) -> None:
     stack = [(root, 1) for root in roots]
     node_count = 0
     while stack:
         value, depth = stack.pop()
-        if depth > MAX_MODEL_JSON_DEPTH:
-            raise ValueError("model request JSON exceeds the depth limit")
+        if depth > max_depth:
+            raise ValueError(f"{label} exceeds the depth limit")
         node_count += 1
-        if node_count > MAX_MODEL_JSON_NODES:
-            raise ValueError("model request JSON exceeds the node limit")
+        if node_count > max_nodes:
+            raise ValueError(f"{label} exceeds the node limit")
         if isinstance(value, dict):
             stack.extend((child, depth + 1) for child in value.values())
         elif isinstance(value, (list, tuple)):

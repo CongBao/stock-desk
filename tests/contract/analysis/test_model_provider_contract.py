@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import math
+import time
 from typing import Any, cast
 
 import httpx2
@@ -13,6 +15,9 @@ from stock_desk.analysis.providers.base import (
     MAX_MODEL_JSON_BYTES,
     MAX_MODEL_JSON_DEPTH,
     MAX_MODEL_JSON_NODES,
+    MAX_PROVIDER_RESPONSE_BYTES,
+    MAX_PROVIDER_RESPONSE_DEPTH,
+    MAX_PROVIDER_RESPONSE_NODES,
     ModelAuthenticationError,
     ModelDNSResolutionError,
     ModelInvalidResponseError,
@@ -196,15 +201,25 @@ def test_all_adapters_share_async_contract_and_parse_structured_responses(
 
     assert response.model == expected_model
     assert response.content == {"summary": "ok"}
-    assert response.usage.input_tokens in {11, 13}
-    assert response.usage.output_tokens in {7, 5}
+    expected_usage = {
+        "deepseek": (11, 7, 18),
+        "openai": (11, 7, 18),
+        "ollama": (13, 5, 18),
+    }[kind]
+    assert response.usage.input_tokens == expected_usage[0]
+    assert response.usage.output_tokens == expected_usage[1]
+    assert response.usage.total_tokens == expected_usage[2]
     assert str(captured[0].url) == expected_endpoint
-    assert captured[0].extensions["timeout"] == {
-        "connect": 17.0,
-        "read": 17.0,
-        "write": 17.0,
-        "pool": 17.0,
-    }
+    observed_timeouts = captured[0].extensions["timeout"]
+    if kind == "ollama":
+        assert observed_timeouts == {
+            "connect": 17.0,
+            "read": 17.0,
+            "write": 17.0,
+            "pool": 17.0,
+        }
+    else:
+        assert all(0 < value <= 17.0 for value in observed_timeouts.values())
     body = json.loads(captured[0].content)
     assert body["model"] == expected_model
     assert "tools" not in body
@@ -267,7 +282,11 @@ def test_connection_uses_provider_endpoint_and_returns_typed_result(kind: str) -
     assert result.error_code is None
     assert captured[0].method == "GET"
     assert str(captured[0].url) == endpoint
-    assert captured[0].extensions["timeout"]["read"] == 4.0
+    observed_read_timeout = captured[0].extensions["timeout"]["read"]
+    if kind == "ollama":
+        assert observed_read_timeout == 4.0
+    else:
+        assert 0 < observed_read_timeout <= 4.0
 
 
 @pytest.mark.parametrize(
@@ -435,3 +454,275 @@ def test_dns_failure_is_typed_safe_and_happens_before_transport() -> None:
     assert dns_secret not in rendered
     assert API_KEY not in rendered
     assert captured.value.__context__ is None
+
+
+def test_mutated_request_is_revalidated_before_transport() -> None:
+    mutable_request = request()
+    mutable_request.data_blocks[0]["payload"] = "x" * (MAX_MODEL_JSON_BYTES + 1)
+    calls: list[httpx2.Request] = []
+    provider = OpenAICompatibleProvider(
+        base_url="https://models.example.com/v1",
+        model="vendor-chat",
+        secret_store=StubSecretStore(),
+        transport=httpx2.MockTransport(
+            lambda http_request: (
+                calls.append(http_request)
+                or httpx2.Response(200, json=openai_response("vendor-chat"))
+            )
+        ),
+        resolver=resolve_public,
+    )
+
+    with pytest.raises(ValueError, match="byte limit"):
+        run(provider.complete(mutable_request))
+
+    assert calls == []
+
+
+def test_concurrent_mutation_cannot_change_one_validated_request_snapshot() -> None:
+    mutable_request = request()
+    captured: list[httpx2.Request] = []
+
+    async def scenario() -> None:
+        resolver_started = asyncio.Event()
+        release_resolver = asyncio.Event()
+
+        async def blocking_resolver(_hostname: str, _port: int) -> tuple[str, ...]:
+            resolver_started.set()
+            await release_resolver.wait()
+            return ("93.184.216.34",)
+
+        provider = OpenAICompatibleProvider(
+            base_url="https://models.example.com/v1",
+            model="vendor-chat",
+            secret_store=StubSecretStore(),
+            transport=httpx2.MockTransport(
+                lambda http_request: (
+                    captured.append(http_request)
+                    or httpx2.Response(200, json=openai_response("vendor-chat"))
+                )
+            ),
+            resolver=blocking_resolver,
+        )
+        completion = asyncio.create_task(provider.complete(mutable_request))
+        await resolver_started.wait()
+        mutable_request.output_schema["properties"] = {"mutated": {"type": "boolean"}}
+        mutable_request.data_blocks[0]["symbol"] = "MUTATED"
+        release_resolver.set()
+        await completion
+
+    asyncio.run(scenario())
+
+    body = json.loads(captured[0].content)
+    user_content = json.loads(body["messages"][1]["content"])
+    assert user_content["data_blocks"][0]["symbol"] == "600000.SH"
+    assert "mutated" not in body["response_format"]["json_schema"]["schema"].get(
+        "properties", {}
+    )
+
+
+def test_model_response_content_access_returns_defensive_deep_copies() -> None:
+    nested_response = openai_response("vendor-chat")
+    nested_response["choices"] = [
+        {
+            "message": {
+                "role": "assistant",
+                "content": '{"summary":"ok","items":[{"value":1}]}',
+            }
+        }
+    ]
+    provider = OpenAICompatibleProvider(
+        base_url="https://models.example.com/v1",
+        model="vendor-chat",
+        secret_store=StubSecretStore(),
+        transport=httpx2.MockTransport(
+            lambda _request: httpx2.Response(200, json=nested_response)
+        ),
+        resolver=resolve_public,
+    )
+
+    response = run(provider.complete(request()))
+    first = response.content
+    first["items"][0]["value"] = 99  # type: ignore[index]
+
+    assert response.content["items"][0]["value"] == 1  # type: ignore[index]
+
+
+class TrackingBorrowedTransport(httpx2.AsyncBaseTransport):
+    def __init__(self, kind: str) -> None:
+        self.kind = kind
+        self.calls = 0
+        self.close_calls = 0
+
+    async def handle_async_request(
+        self, http_request: httpx2.Request
+    ) -> httpx2.Response:
+        if self.close_calls:
+            raise RuntimeError("borrowed transport was closed")
+        self.calls += 1
+        if self.kind == "ollama":
+            return httpx2.Response(200, json=ollama_response("qwen3:8b"))
+        model = "deepseek-v4" if self.kind == "deepseek" else "vendor-chat"
+        return httpx2.Response(200, json=openai_response(model))
+
+    async def aclose(self) -> None:
+        self.close_calls += 1
+
+
+@pytest.mark.parametrize("kind", ["deepseek", "openai", "ollama"])
+def test_injected_transport_is_borrowed_and_reusable_across_calls(kind: str) -> None:
+    transport = TrackingBorrowedTransport(kind)
+    if kind == "deepseek":
+        provider: ModelProvider = DeepSeekProvider(
+            model="deepseek-v4",
+            secret_store=StubSecretStore(),
+            transport=transport,
+            resolver=resolve_public,
+        )
+    elif kind == "openai":
+        provider = OpenAICompatibleProvider(
+            base_url="https://models.example.com/v1",
+            model="vendor-chat",
+            secret_store=StubSecretStore(),
+            transport=transport,
+            resolver=resolve_public,
+        )
+    else:
+        provider = OllamaProvider(model="qwen3:8b", transport=transport)
+
+    run(provider.complete(request()))
+    run(provider.complete(request()))
+
+    assert transport.calls == 2
+    assert transport.close_calls == 0
+    run(transport.aclose())
+
+
+@pytest.mark.parametrize("kind", ["openai", "deepseek"])
+@pytest.mark.parametrize("models", [[], [{"id": "different-model"}]])
+def test_remote_connection_requires_configured_model_in_model_list(
+    kind: str,
+    models: list[dict[str, str]],
+) -> None:
+    transport = httpx2.MockTransport(
+        lambda _request: httpx2.Response(200, json={"data": models})
+    )
+    if kind == "deepseek":
+        provider: ModelProvider = DeepSeekProvider(
+            model="deepseek-v4",
+            secret_store=StubSecretStore(),
+            transport=transport,
+            resolver=resolve_public,
+        )
+    else:
+        provider = OpenAICompatibleProvider(
+            base_url="https://models.example.com/v1",
+            model="vendor-chat",
+            secret_store=StubSecretStore(),
+            transport=transport,
+            resolver=resolve_public,
+        )
+
+    result = run(provider.test_connection(timeout_seconds=1.0))
+
+    assert result.connected is False
+    assert result.error_code == "invalid_response"
+
+
+@pytest.mark.parametrize("kind", ["openai", "deepseek"])
+def test_dns_resolution_is_bounded_by_total_connection_deadline(kind: str) -> None:
+    async def stalled_resolver(_hostname: str, _port: int) -> tuple[str, ...]:
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+    transport = httpx2.MockTransport(
+        lambda _request: pytest.fail("stalled DNS reached HTTP transport")
+    )
+    if kind == "deepseek":
+        provider: ModelProvider = DeepSeekProvider(
+            model="deepseek-v4",
+            secret_store=StubSecretStore(),
+            transport=transport,
+            resolver=stalled_resolver,
+        )
+    else:
+        provider = OpenAICompatibleProvider(
+            base_url="https://models.example.com/v1",
+            model="vendor-chat",
+            secret_store=StubSecretStore(),
+            transport=transport,
+            resolver=stalled_resolver,
+        )
+
+    started = time.monotonic()
+    result = run(provider.test_connection(timeout_seconds=0.02))
+    elapsed = time.monotonic() - started
+
+    assert result.connected is False
+    assert result.error_code == "timeout"
+    assert elapsed < 0.5
+
+
+@pytest.mark.parametrize("value", [math.nan, math.inf, -math.inf])
+def test_connection_timeout_rejects_non_finite_values(value: float) -> None:
+    provider = OpenAICompatibleProvider(
+        base_url="https://models.example.com/v1",
+        model="vendor-chat",
+        secret_store=StubSecretStore(),
+        transport=httpx2.MockTransport(
+            lambda _request: pytest.fail("invalid timeout reached transport")
+        ),
+        resolver=resolve_public,
+    )
+
+    result = run(provider.test_connection(timeout_seconds=value))
+
+    assert result.connected is False
+    assert result.error_code == "invalid_response"
+
+
+@pytest.mark.parametrize("kind", ["openai", "ollama"])
+def test_provider_rejects_response_larger_than_fixed_byte_limit(kind: str) -> None:
+    oversized = b'{"ignored":"' + (b"x" * MAX_PROVIDER_RESPONSE_BYTES) + b'"}'
+    transport = httpx2.MockTransport(
+        lambda _request: httpx2.Response(200, content=oversized)
+    )
+    if kind == "openai":
+        provider: ModelProvider = OpenAICompatibleProvider(
+            base_url="https://models.example.com/v1",
+            model="vendor-chat",
+            secret_store=StubSecretStore(),
+            transport=transport,
+            resolver=resolve_public,
+        )
+    else:
+        provider = OllamaProvider(model="qwen3:8b", transport=transport)
+
+    with pytest.raises(ModelInvalidResponseError):
+        run(provider.complete(request()))
+
+
+@pytest.mark.parametrize("limit_kind", ["depth", "nodes"])
+def test_provider_rejects_response_exceeding_structural_budget(
+    limit_kind: str,
+) -> None:
+    payload = openai_response("vendor-chat")
+    if limit_kind == "depth":
+        nested: dict[str, Any] = {"leaf": True}
+        for _ in range(MAX_PROVIDER_RESPONSE_DEPTH + 1):
+            nested = {"nested": nested}
+        payload["ignored"] = nested
+    else:
+        payload["ignored"] = list(range(MAX_PROVIDER_RESPONSE_NODES + 1))
+    provider = OpenAICompatibleProvider(
+        base_url="https://models.example.com/v1",
+        model="vendor-chat",
+        secret_store=StubSecretStore(),
+        transport=httpx2.MockTransport(
+            lambda _request: httpx2.Response(200, json=payload)
+        ),
+        resolver=resolve_public,
+    )
+
+    with pytest.raises(ModelInvalidResponseError):
+        run(provider.complete(request()))

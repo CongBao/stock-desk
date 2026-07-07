@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Any, ClassVar, cast
 
 import httpx2
@@ -11,7 +12,9 @@ from stock_desk.analysis.model_config import (
     validate_provider_url,
 )
 from stock_desk.analysis.providers.base import (
+    borrowed_transport,
     connection_failure,
+    decode_provider_response_json,
     ModelConnectionResult,
     ModelInvalidResponseError,
     ModelProviderError,
@@ -65,7 +68,7 @@ class OllamaProvider:
             base_url,
         ).rstrip("/")
         self.model = validate_model_name(model)
-        self._transport = transport
+        self._transport = borrowed_transport(transport)
 
     def __repr__(self) -> str:
         return (
@@ -73,27 +76,29 @@ class OllamaProvider:
         )
 
     async def complete(self, request: ModelRequest) -> ModelResponse:
+        snapshot = request.stable_snapshot()
+        data_blocks, output_schema = snapshot.structured_parts()
         body: dict[str, object] = {
             "model": self.model,
             "messages": [
-                {"role": "system", "content": request.system},
+                {"role": "system", "content": snapshot.system},
                 {
                     "role": "user",
-                    "content": _compact_json({"data_blocks": request.data_blocks}),
+                    "content": _compact_json({"data_blocks": data_blocks}),
                 },
             ],
             "stream": False,
-            "format": request.output_schema,
+            "format": output_schema,
             "options": {
-                "temperature": request.temperature,
-                "num_predict": request.max_output_tokens,
+                "temperature": snapshot.temperature,
+                "num_predict": snapshot.max_output_tokens,
             },
         }
         payload = await self._request_json(
             "POST",
             f"{self._base_url}/api/chat",
             body=body,
-            timeout_seconds=request.timeout_seconds,
+            timeout_seconds=snapshot.timeout_seconds,
         )
         try:
             wire = _WireCompletion.model_validate(payload)
@@ -174,10 +179,7 @@ class OllamaProvider:
         except httpx2.RequestError:
             raise ModelServerError() from None
         raise_for_status(response.status_code)
-        try:
-            return cast(object, response.json())
-        except (ValueError, TypeError):
-            raise ModelInvalidResponseError() from None
+        return decode_provider_response_json(response.content)
 
 
 def _compact_json(value: object) -> str:
@@ -202,6 +204,11 @@ def _decode_content(value: str) -> dict[str, Any]:
 
 
 def _validate_timeout(value: float) -> float:
-    if not isinstance(value, float) or value < 1.0 or value > 300.0:
+    if (
+        not isinstance(value, float)
+        or not math.isfinite(value)
+        or value < 0.01
+        or value > 300.0
+    ):
         raise ValueError("connection timeout is invalid")
     return value

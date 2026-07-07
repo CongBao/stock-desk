@@ -24,6 +24,7 @@ DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 OLLAMA_BASE_URL = "http://127.0.0.1:11434"
 MODEL_API_KEY_SECRET_NAME = "analysis_model_api_key"
 HostResolver: TypeAlias = Callable[[str, int], Awaitable[Sequence[str]]]
+_MASK_SEPARATOR = "•••••••"
 
 _DANGEROUS_PORTS = frozenset(
     {
@@ -134,7 +135,13 @@ class ModelConfig(_FrozenModel):
     @field_validator("masked_api_key")
     @classmethod
     def validate_masked_api_key(cls, value: str | None) -> str | None:
-        if value is not None and "•••••••" not in value and value != "[MASKED]":
+        if value is None:
+            return None
+        if any(ord(character) < 32 or ord(character) == 127 for character in value):
+            raise ValueError("API key hint is not masked")
+        if value in {_MASK_SEPARATOR, "[MASKED]"}:
+            return value
+        if len(value) != 15 or value[4:11] != _MASK_SEPARATOR:
             raise ValueError("API key hint is not masked")
         return value
 
@@ -252,27 +259,27 @@ class ModelConfigService:
 
     def save(self, update: ModelConfigUpdate) -> ModelConfig:
         with self._lock:
-            if update.api_key is not None:
-                write_failed = False
+            configured = False
+            masked: str | None = None
+            interaction_failed = False
+            if update.provider is not ModelProviderKind.OLLAMA:
                 try:
-                    self._secret_store.save_secret(
-                        MODEL_API_KEY_SECRET_NAME,
-                        update.api_key.get_secret_value(),
+                    if update.api_key is not None:
+                        self._secret_store.save_secret(
+                            MODEL_API_KEY_SECRET_NAME,
+                            update.api_key.get_secret_value(),
+                        )
+                    configured = self._secret_store.has_secret(
+                        MODEL_API_KEY_SECRET_NAME
                     )
+                    if configured:
+                        masked = self._secret_store.masked_secret(
+                            MODEL_API_KEY_SECRET_NAME
+                        )
                 except Exception:
-                    write_failed = True
-                if write_failed:
-                    raise ModelConfigStorageError() from None
-            configured = (
-                False
-                if update.provider is ModelProviderKind.OLLAMA
-                else self._secret_store.has_secret(MODEL_API_KEY_SECRET_NAME)
-            )
-            masked = (
-                self._secret_store.masked_secret(MODEL_API_KEY_SECRET_NAME)
-                if configured
-                else None
-            )
+                    interaction_failed = True
+            if interaction_failed:
+                raise ModelConfigStorageError() from None
             config = ModelConfig(
                 provider=update.provider,
                 base_url=_resolved_base_url(update),
@@ -321,16 +328,22 @@ def validate_provider_url(provider: ModelProviderKind, value: str) -> str:
         raise ValueError("model provider URL is invalid")
     try:
         parsed = urlsplit(value)
-        port = parsed.port
+        explicit_port = parsed.port
     except ValueError:
         raise ValueError("model provider URL is invalid") from None
+    effective_port = explicit_port
+    if effective_port is None:
+        if parsed.scheme == "http":
+            effective_port = 80
+        elif parsed.scheme == "https":
+            effective_port = 443
     if (
         not parsed.hostname
         or parsed.username is not None
         or parsed.password is not None
         or parsed.fragment
         or parsed.query
-        or _is_dangerous_port(port)
+        or _is_dangerous_port(effective_port)
     ):
         raise ValueError("model provider URL is unsafe")
     hostname = parsed.hostname.lower().rstrip(".")

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import math
 from typing import Any, ClassVar, cast
 
 import httpx2
@@ -16,7 +18,9 @@ from stock_desk.analysis.model_config import (
     validate_provider_url,
 )
 from stock_desk.analysis.providers.base import (
+    borrowed_transport,
     connection_failure,
+    decode_provider_response_json,
     ModelAuthenticationError,
     ModelConnectionResult,
     ModelDNSResolutionError,
@@ -87,7 +91,7 @@ class OpenAICompatibleProvider:
         self.model = validate_model_name(model)
         self._secret_store = secret_store
         self._secret_name = secret_name
-        self._transport = transport
+        self._transport = borrowed_transport(transport)
         self._resolver = resolver
 
     def __repr__(self) -> str:
@@ -97,13 +101,15 @@ class OpenAICompatibleProvider:
         )
 
     async def complete(self, request: ModelRequest) -> ModelResponse:
+        snapshot = request.stable_snapshot()
+        data_blocks, output_schema = snapshot.structured_parts()
         body: dict[str, object] = {
             "model": self.model,
             "messages": [
-                {"role": "system", "content": request.system},
+                {"role": "system", "content": snapshot.system},
                 {
                     "role": "user",
-                    "content": _compact_json({"data_blocks": request.data_blocks}),
+                    "content": _compact_json({"data_blocks": data_blocks}),
                 },
             ],
             "response_format": {
@@ -111,17 +117,17 @@ class OpenAICompatibleProvider:
                 "json_schema": {
                     "name": "structured_response",
                     "strict": True,
-                    "schema": request.output_schema,
+                    "schema": output_schema,
                 },
             },
-            "temperature": request.temperature,
-            "max_tokens": request.max_output_tokens,
+            "temperature": snapshot.temperature,
+            "max_tokens": snapshot.max_output_tokens,
         }
         payload = await self._request_json(
             "POST",
             f"{self._base_url}/chat/completions",
             body=body,
-            timeout_seconds=request.timeout_seconds,
+            timeout_seconds=snapshot.timeout_seconds,
         )
         try:
             wire = _WireCompletion.model_validate(payload)
@@ -151,7 +157,9 @@ class OpenAICompatibleProvider:
                 body=None,
                 timeout_seconds=_validate_timeout(timeout_seconds),
             )
-            _WireModels.model_validate(payload)
+            models = _WireModels.model_validate(payload)
+            if not any(entry.id == self.model for entry in models.data):
+                raise ValueError
         except (ModelProviderError, ValidationError, ValueError, TypeError) as error:
             safe_error = (
                 error
@@ -197,38 +205,41 @@ class OpenAICompatibleProvider:
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         }
-        resolution_error: ModelProviderError | None = None
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout_seconds
+        response: httpx2.Response | None = None
+        request_error: ModelProviderError | None = None
         try:
-            await validate_resolved_remote_url(url, self._resolver)
-        except ModelHostResolutionError:
-            resolution_error = ModelDNSResolutionError()
-        except ModelResolvedEndpointError:
-            resolution_error = ModelUnsafeEndpointError()
-        if resolution_error is not None:
-            raise resolution_error from None
-        try:
-            with scoped_log_redaction(api_key):
-                async with httpx2.AsyncClient(
-                    transport=self._transport,
-                    follow_redirects=False,
-                    trust_env=False,
-                ) as client:
-                    response = await client.request(
-                        method,
-                        url,
-                        headers=headers,
-                        json=body,
-                        timeout=timeout_seconds,
-                    )
-        except httpx2.TimeoutException:
-            raise ModelTimeoutError() from None
+            async with asyncio.timeout(timeout_seconds):
+                # This preflight rejects current unsafe DNS answers, but httpx2
+                # resolves again while connecting; it does not eliminate rebinding.
+                await _validate_remote_endpoint(url, self._resolver)
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    raise TimeoutError
+                with scoped_log_redaction(api_key):
+                    async with httpx2.AsyncClient(
+                        transport=self._transport,
+                        follow_redirects=False,
+                        trust_env=False,
+                    ) as client:
+                        response = await client.request(
+                            method,
+                            url,
+                            headers=headers,
+                            json=body,
+                            timeout=remaining,
+                        )
+        except (TimeoutError, httpx2.TimeoutException):
+            request_error = ModelTimeoutError()
         except httpx2.RequestError:
-            raise ModelServerError() from None
+            request_error = ModelServerError()
+        if request_error is not None:
+            raise request_error from None
+        if response is None:
+            raise ModelServerError()
         raise_for_status(response.status_code)
-        try:
-            return cast(object, response.json())
-        except (ValueError, TypeError):
-            raise ModelInvalidResponseError() from None
+        return decode_provider_response_json(response.content)
 
 
 def _compact_json(value: object) -> str:
@@ -253,6 +264,23 @@ def _decode_content(value: str) -> dict[str, Any]:
 
 
 def _validate_timeout(value: float) -> float:
-    if not isinstance(value, float) or value < 1.0 or value > 300.0:
+    if (
+        not isinstance(value, float)
+        or not math.isfinite(value)
+        or value < 0.01
+        or value > 300.0
+    ):
         raise ValueError("connection timeout is invalid")
     return value
+
+
+async def _validate_remote_endpoint(url: str, resolver: HostResolver) -> None:
+    resolution_error: ModelProviderError | None = None
+    try:
+        await validate_resolved_remote_url(url, resolver)
+    except ModelHostResolutionError:
+        resolution_error = ModelDNSResolutionError()
+    except ModelResolvedEndpointError:
+        resolution_error = ModelUnsafeEndpointError()
+    if resolution_error is not None:
+        raise resolution_error from None
