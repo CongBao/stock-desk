@@ -23,6 +23,8 @@ const terminalStatuses = new Set([
   'cancelled',
 ]);
 
+const retryCreatedStatus = '已创建阶段重试子任务；当前正在显示该子任务。';
+
 export function AnalysisPage({
   api = analysisApi,
   initialRunId = null,
@@ -114,7 +116,9 @@ export function AnalysisPage({
         if (!active) return;
         transientFailures = 0;
         setRun(detail);
-        setStatusMessage('');
+        setStatusMessage((current) =>
+          current === retryCreatedStatus ? current : '',
+        );
         if (terminalStatuses.has(detail.status)) {
           setHistory((current) =>
             [
@@ -252,7 +256,7 @@ export function AnalysisPage({
       const child = await api.retryStage(run.runId, stage, {
         signal: controller.signal,
       });
-      setStatusMessage('已创建阶段重试子任务，正在跟随新任务。');
+      setStatusMessage(retryCreatedStatus);
       setRunId(child.runId);
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : '阶段重试失败');

@@ -266,6 +266,9 @@ it('retries a failed partial module and follows the child run', async () => {
   await waitFor(() =>
     expect(client.getRun).toHaveBeenCalledWith(childRunId, expect.anything()),
   );
+  expect(
+    screen.getByText('已创建阶段重试子任务；当前正在显示该子任务。'),
+  ).toBeInTheDocument();
 });
 
 it('omits rating for insufficient evidence and provides recovery actions', async () => {
