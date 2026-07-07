@@ -119,9 +119,9 @@ def _launch_worker(
         suffix=".json",
         delete=False,
     )
-    temporary.close()
     result_path = Path(temporary.name)
     try:
+        temporary.close()
         process = subprocess.Popen(
             (
                 sys.executable,
@@ -136,6 +136,10 @@ def _launch_worker(
             stderr=subprocess.DEVNULL,
         )
     except BaseException:
+        try:
+            temporary.close()
+        except BaseException:
+            pass
         try:
             result_path.unlink(missing_ok=True)
         except BaseException:

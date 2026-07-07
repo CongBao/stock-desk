@@ -1249,6 +1249,89 @@ def test_launch_worker_unlinks_temporary_result_when_popen_is_interrupted(
     assert not result_path.exists()
 
 
+@pytest.mark.parametrize("interrupt", [KeyboardInterrupt(), SystemExit(130)])
+def test_launch_worker_unlinks_temporary_result_when_initial_close_is_interrupted(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    interrupt: BaseException,
+) -> None:
+    result_path = tmp_path / "worker-result.json"
+
+    class InterruptedTemporary:
+        name = str(result_path)
+
+        def __init__(self) -> None:
+            self.close_calls = 0
+            result_path.write_bytes(b"")
+
+        def close(self) -> None:
+            self.close_calls += 1
+            raise interrupt
+
+    temporary = InterruptedTemporary()
+    monkeypatch.setattr(
+        akshare_source_module.tempfile,
+        "NamedTemporaryFile",
+        lambda **_kwargs: temporary,
+    )
+    monkeypatch.setattr(
+        akshare_source_module.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: pytest.fail(
+            "worker must not start after temporary close is interrupted"
+        ),
+    )
+
+    with pytest.raises(type(interrupt)) as captured:
+        akshare_source_module._launch_worker("stock_news_em", {"symbol": "600000"})
+
+    assert captured.value is interrupt
+    assert temporary.close_calls == 2
+    assert not result_path.exists()
+
+
+def test_akshare_isolated_facade_maps_initial_close_failure_and_cleans_result(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    result_path = tmp_path / "worker-result.json"
+
+    class BrokenTemporary:
+        name = str(result_path)
+
+        def __init__(self) -> None:
+            self.close_calls = 0
+            result_path.write_bytes(b"")
+
+        def close(self) -> None:
+            self.close_calls += 1
+            raise RuntimeError("TOP-SECRET")
+
+    temporary = BrokenTemporary()
+    monkeypatch.setattr(
+        akshare_source_module.tempfile,
+        "NamedTemporaryFile",
+        lambda **_kwargs: temporary,
+    )
+    monkeypatch.setattr(
+        akshare_source_module.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: pytest.fail(
+            "worker must not start after temporary close fails"
+        ),
+    )
+    facade = AkShareIsolatedSdkFacade(launcher=akshare_source_module._launch_worker)
+
+    with pytest.raises(ProviderInvalidResponse) as captured:
+        facade.stock_news_em(symbol="600000")
+
+    assert temporary.close_calls == 2
+    assert not result_path.exists()
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+    assert "TOP-SECRET" not in exception_chain_text(captured.value)
+
+
 def test_capability_model_rejects_market_as_a_network_research_category() -> None:
     with pytest.raises(ValidationError):
         ResearchSourceCapability(
