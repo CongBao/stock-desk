@@ -113,6 +113,8 @@ jobs:
         run: make benchmark-formula
       - name: Test Stage 3 backtest acceptance
         run: make acceptance-backtest
+      - name: Test Stage 4 analysis acceptance and security
+        run: make acceptance-analysis
       - name: Benchmark ten-year single-stock backtest
         run: make benchmark-backtest
       - name: Build Python package
@@ -176,7 +178,7 @@ jobs:
           retention-days: 7
 
   e2e:
-    name: Chromium foundation, market, and formula end-to-end
+    name: Chromium Stage 0–4 end-to-end slices
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -217,6 +219,8 @@ jobs:
         run: make e2e-formula
       - name: Test live Stage 3 backtest slice
         run: make e2e-backtest
+      - name: Test live Stage 4 analysis slice
+        run: make e2e-analysis
       - name: Upload Playwright failure artifacts
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

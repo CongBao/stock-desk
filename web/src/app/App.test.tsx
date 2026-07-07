@@ -178,6 +178,7 @@ it('shows the product identity and all primary navigation items', () => {
   renderApp();
 
   expect(screen.getByText('stock-desk')).toBeInTheDocument();
+  expect(screen.getByText('v0.5.0 · Intelligent Analysis')).toBeInTheDocument();
   for (const label of [
     '行情',
     '自定义公式',

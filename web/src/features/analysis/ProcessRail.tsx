@@ -22,6 +22,7 @@ const statusLabels: Readonly<Record<string, string>> = {
   failed: '失败',
   skipped: '已跳过',
   cancelled: '已取消',
+  reused: '已复用',
 };
 
 export function ProcessRail({ run }: { readonly run: AnalysisDetail | null }) {
@@ -67,6 +68,24 @@ export function ProcessRail({ run }: { readonly run: AnalysisDetail | null }) {
               ))}
           </ol>
           <dl className="analysis-snapshot-list">
+            {run.parentRunId === null ? null : (
+              <>
+                <div>
+                  <dt>运行类型</dt>
+                  <dd>阶段重试子运行</dd>
+                </div>
+                <div>
+                  <dt>历史关系</dt>
+                  <dd>父运行保持不可变</dd>
+                </div>
+              </>
+            )}
+            {run.requestedStage === null ? null : (
+              <div>
+                <dt>重试阶段</dt>
+                <dd>{stageLabels[run.requestedStage] ?? run.requestedStage}</dd>
+              </div>
+            )}
             <div>
               <dt>快照</dt>
               <dd>{run.snapshotId ?? '运行前暂未生成'}</dd>

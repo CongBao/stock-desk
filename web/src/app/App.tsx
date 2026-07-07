@@ -102,7 +102,7 @@ function NavigationRail({ collapsed, onToggle }: NavigationRailProps) {
       </nav>
 
       <div className="rail-footer">
-        <span className="version-label">v0.4.0 · Strategy Backtest</span>
+        <span className="version-label">v0.5.0 · Intelligent Analysis</span>
         <span>本地优先 · 个人使用</span>
       </div>
     </div>
