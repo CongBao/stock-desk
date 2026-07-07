@@ -19,6 +19,46 @@ it('keeps write bodies explicit and methods fixed by the client surface', () => 
   expectTypeOf<ApiWriteOptions>().not.toHaveProperty('method');
 });
 
+it('sends a prevalidated serialized JSON body without changing numeric tokens', async () => {
+  const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+    new Response(JSON.stringify({ status: 'ok' }), {
+      headers: { 'Content-Type': 'application/json' },
+    }),
+  );
+  vi.stubGlobal('fetch', fetchMock);
+
+  await createApiClient().post('/settings/models', {
+    serializedBody: '{"temperature":0.0,"timeout":90.0,"max_output":4096}',
+  });
+
+  expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/settings/models');
+  const request = fetchMock.mock.calls[0]?.[1];
+  expect(request?.body).toBe(
+    '{"temperature":0.0,"timeout":90.0,"max_output":4096}',
+  );
+  expect(new Headers(request?.headers).get('content-type')).toBe(
+    'application/json',
+  );
+});
+
+it('rejects malformed, oversized, or ambiguous serialized request bodies', async () => {
+  const client = createApiClient();
+  await expect(
+    client.post('/settings/models', { serializedBody: '{not-json' }),
+  ).rejects.toThrow('Serialized API body is invalid');
+  await expect(
+    client.post('/settings/models', {
+      serializedBody: `"${'x'.repeat(1_048_577)}"`,
+    }),
+  ).rejects.toThrow('Serialized API body is too large');
+  await expect(
+    client.post('/settings/models', {
+      body: { model: 'x' },
+      serializedBody: '{"model":"x"}',
+    } as unknown as ApiWriteOptions),
+  ).rejects.toThrow('API body options are mutually exclusive');
+});
+
 it.each(['put', 'post'] as const)(
   'sends bounded JSON through %s with caller headers and signal',
   async (method) => {
