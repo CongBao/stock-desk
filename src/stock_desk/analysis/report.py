@@ -774,7 +774,7 @@ def _validate_safe_report_text(report: ResearchReport) -> None:
     values = (
         report.confidence_explanation,
         report.disclaimer,
-        *(claim.text for claim in report.all_claims),
+        *(claim.text for output in report.role_outputs for claim in output.claims),
         *(output.summary for output in report.role_outputs),
     )
     if any(contains_forbidden_financial_action(value) for value in values):
