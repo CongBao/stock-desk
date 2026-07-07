@@ -90,6 +90,80 @@ class _FrozenAnalysisModel(BaseModel):
     )
 
 
+class ResearchRouteMetadata(_FrozenAnalysisModel):
+    """Deterministic, public-safe routing identity for one successful section."""
+
+    selected_source: str = Field(min_length=1, max_length=64)
+    attempted_sources: tuple[str, ...] = Field(default=(), max_length=16)
+    failure_reasons: tuple[ResearchMissingReason, ...] = Field(
+        default=(), max_length=16
+    )
+    primary_failure_reason: ResearchMissingReason | None = None
+    degraded_from: str | None = Field(default=None, min_length=1, max_length=64)
+
+    @field_validator("attempted_sources", "failure_reasons", mode="before")
+    @classmethod
+    def decode_json_tuples(
+        cls,
+        value: object,
+        info: ValidationInfo,
+    ) -> object:
+        if info.mode == "json" and type(value) is list:
+            return tuple(cast(list[object], value))
+        return value
+
+    @field_validator("selected_source")
+    @classmethod
+    def validate_selected_source(cls, value: str) -> str:
+        if _SOURCE_PATTERN.fullmatch(value) is None:
+            raise ValueError("selected route source is invalid")
+        return value
+
+    @field_validator("attempted_sources")
+    @classmethod
+    def validate_attempted_sources(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(value) != len(frozenset(value)):
+            raise ValueError("route attempts cannot contain duplicate sources")
+        if any(_SOURCE_PATTERN.fullmatch(source) is None for source in value):
+            raise ValueError("route attempt source is invalid")
+        return value
+
+    @field_validator("degraded_from")
+    @classmethod
+    def validate_degraded_from(cls, value: str | None) -> str | None:
+        if value is not None and _SOURCE_PATTERN.fullmatch(value) is None:
+            raise ValueError("degraded route source is invalid")
+        return value
+
+    @model_validator(mode="after")
+    def validate_route(self) -> Self:
+        if len(self.attempted_sources) != len(self.failure_reasons):
+            raise ValueError("route sources and failure reasons must align")
+        if self.selected_source in self.attempted_sources:
+            raise ValueError("selected route source cannot be a failed attempt")
+        if self.attempted_sources:
+            if self.primary_failure_reason is not self.failure_reasons[0]:
+                raise ValueError("primary route failure must be the first failure")
+            if self.degraded_from != self.attempted_sources[0]:
+                raise ValueError("degraded route boundary must start at primary source")
+        elif self.primary_failure_reason is not None or self.degraded_from is not None:
+            raise ValueError("direct route cannot contain a degraded boundary")
+        return self
+
+    def canonical_payload(self) -> dict[str, object]:
+        return {
+            "selected_source": self.selected_source,
+            "attempted_sources": self.attempted_sources,
+            "failure_reasons": tuple(reason.value for reason in self.failure_reasons),
+            "primary_failure_reason": (
+                self.primary_failure_reason.value
+                if self.primary_failure_reason is not None
+                else None
+            ),
+            "degraded_from": self.degraded_from,
+        }
+
+
 def _validate_safe_text(
     value: str,
     *,
@@ -206,6 +280,7 @@ class ResearchSection(_FrozenAnalysisModel):
     fetched_at: UtcDatetime
     dataset_version: str = Field(min_length=1, max_length=256)
     quality_flags: tuple[ResearchQualityFlag, ...] = ()
+    route: ResearchRouteMetadata | None = None
     content_json: bytes = Field(
         validation_alias=AliasChoices("content", "content_json"),
         serialization_alias="content",
@@ -282,6 +357,15 @@ class ResearchSection(_FrozenAnalysisModel):
             and self.published_at is None
         ):
             raise ValueError("published research section requires publication time")
+        if self.route is not None:
+            if self.route.selected_source != self.canonical_source:
+                raise ValueError("route source must match canonical source")
+            is_degraded = bool(self.route.attempted_sources)
+            has_degraded_flag = (
+                ResearchQualityFlag.DEGRADED_SOURCE in self.quality_flags
+            )
+            if is_degraded != has_degraded_flag:
+                raise ValueError("route boundary must match degraded quality flag")
         return self
 
     @property
@@ -293,7 +377,7 @@ class ResearchSection(_FrozenAnalysisModel):
         return _content_id(self.canonical_payload())
 
     def canonical_payload(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "kind": self.kind.value,
             "canonical_source": self.canonical_source,
             "source_record": self.source_record,
@@ -305,6 +389,9 @@ class ResearchSection(_FrozenAnalysisModel):
             "quality_flags": tuple(flag.value for flag in self.quality_flags),
             "content": self.content,
         }
+        if self.route is not None:
+            payload["route"] = self.route.canonical_payload()
+        return payload
 
 
 class MissingResearchSection(_FrozenAnalysisModel):

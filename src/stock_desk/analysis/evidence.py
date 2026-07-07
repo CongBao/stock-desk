@@ -20,6 +20,7 @@ from pydantic import (
 
 from stock_desk.analysis.snapshot import (
     ResearchQualityFlag,
+    ResearchRouteMetadata,
     ResearchSection,
     ResearchSectionKind,
     ResearchSnapshot,
@@ -70,6 +71,7 @@ class EvidenceItem(_FrozenEvidenceModel):
     dataset_version: str = Field(min_length=1, max_length=256)
     excerpt: str = Field(min_length=1, max_length=4_096)
     quality_flags: tuple[ResearchQualityFlag, ...] = ()
+    route: ResearchRouteMetadata | None = None
 
     @field_validator("canonical_source")
     @classmethod
@@ -158,6 +160,8 @@ class EvidenceItem(_FrozenEvidenceModel):
             "excerpt": excerpt,
             "quality_flags": section.quality_flags,
         }
+        if section.route is not None:
+            fields["route"] = section.route.canonical_payload()
         return cls(
             evidence_id=_evidence_id(fields),
             snapshot_id=canonical_snapshot.snapshot_id,
@@ -172,6 +176,7 @@ class EvidenceItem(_FrozenEvidenceModel):
             dataset_version=section.dataset_version,
             excerpt=excerpt,
             quality_flags=section.quality_flags,
+            route=section.route,
         )
 
     @field_validator("excerpt")
@@ -203,6 +208,11 @@ class EvidenceItem(_FrozenEvidenceModel):
             and self.published_at is None
         ):
             raise ValueError("published evidence requires publication time")
+        if (
+            self.route is not None
+            and self.route.selected_source != self.canonical_source
+        ):
+            raise ValueError("evidence route must match canonical source")
         if self.evidence_id != _evidence_id(_evidence_fields(self)):
             raise ValueError("evidence_id does not match canonical evidence content")
         return self
@@ -317,7 +327,7 @@ class EvidenceGraph(_FrozenEvidenceModel):
 
 
 def _evidence_fields(item: EvidenceItem) -> dict[str, object]:
-    return {
+    fields: dict[str, object] = {
         "snapshot_id": item.snapshot_id,
         "section_id": item.section_id,
         "section_kind": item.section_kind.value,
@@ -331,6 +341,9 @@ def _evidence_fields(item: EvidenceItem) -> dict[str, object]:
         "excerpt": item.excerpt,
         "quality_flags": tuple(flag.value for flag in item.quality_flags),
     }
+    if item.route is not None:
+        fields["route"] = item.route.canonical_payload()
+    return fields
 
 
 def _matches_snapshot_section(
@@ -350,6 +363,7 @@ def _matches_snapshot_section(
         and item.fetched_at == section.fetched_at
         and item.dataset_version == section.dataset_version
         and item.quality_flags == section.quality_flags
+        and item.route == section.route
     )
 
 

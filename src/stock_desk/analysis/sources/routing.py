@@ -7,6 +7,7 @@ from stock_desk.analysis.data_service import ResearchDataUnavailable
 from stock_desk.analysis.snapshot import (
     ResearchMissingReason,
     ResearchQualityFlag,
+    ResearchRouteMetadata,
     ResearchSection,
     ResearchSectionKind,
 )
@@ -92,21 +93,36 @@ def _validated_section(
         not isinstance(section, ResearchSection)
         or section.kind is not kind
         or section.canonical_source != source.value
+        or section.route is not None
+        or ResearchQualityFlag.DEGRADED_SOURCE in section.quality_flags
     ):
         raise ProviderInvalidResponse()
     return section
 
 
-def _mark_degraded(section: ResearchSection) -> ResearchSection:
-    flags = tuple(
-        sorted(
-            {*section.quality_flags, ResearchQualityFlag.DEGRADED_SOURCE},
-            key=lambda item: item.value,
-        )
+def _attach_route(
+    section: ResearchSection,
+    *,
+    attempted_sources: tuple[str, ...],
+    failure_reasons: tuple[ResearchMissingReason, ...],
+) -> ResearchSection:
+    flags = set(section.quality_flags)
+    if attempted_sources:
+        flags.add(ResearchQualityFlag.DEGRADED_SOURCE)
+    route = ResearchRouteMetadata(
+        selected_source=section.canonical_source,
+        attempted_sources=attempted_sources,
+        failure_reasons=failure_reasons,
+        primary_failure_reason=failure_reasons[0] if failure_reasons else None,
+        degraded_from=attempted_sources[0] if attempted_sources else None,
     )
     try:
         return ResearchSection.model_validate(
-            {**section.model_dump(mode="python"), "quality_flags": flags}
+            {
+                **section.model_dump(mode="python"),
+                "quality_flags": tuple(sorted(flags, key=lambda item: item.value)),
+                "route": route,
+            }
         )
     except Exception:
         pass
@@ -144,7 +160,7 @@ class ResearchSourceRouter:
 
     def load(self, symbol: CanonicalSymbol) -> ResearchSection:
         attempted: list[str] = []
-        first_reason: ResearchMissingReason | None = None
+        failure_reasons: list[ResearchMissingReason] = []
         for source_id in self._priority:
             capability = RESEARCH_SOURCE_CAPABILITIES[source_id]
             if not capability.supports(self.kind):
@@ -152,19 +168,33 @@ class ResearchSourceRouter:
             source = self._sources.get(source_id)
             if source is None:
                 continue
-            attempted.append(source_id.value)
             try:
                 section = _validated_section(
                     source.fetch(symbol, self.kind),
                     kind=self.kind,
                     source=source_id,
                 )
-                if len(attempted) > 1:
-                    section = _mark_degraded(section)
+                if attempted:
+                    section = _attach_route(
+                        section,
+                        attempted_sources=tuple(attempted),
+                        failure_reasons=tuple(failure_reasons),
+                    )
             except ResearchDataUnavailable as error:
-                reason = error.reason
+                reason = (
+                    error.reason
+                    if isinstance(error.reason, ResearchMissingReason)
+                    else ResearchMissingReason.INVALID_RESPONSE
+                )
             except ProviderClientError as error:
-                reason = _MISSING_REASONS[error.reason]
+                reason = (
+                    _MISSING_REASONS.get(
+                        error.reason,
+                        ResearchMissingReason.INVALID_RESPONSE,
+                    )
+                    if isinstance(error.reason, FailureReason)
+                    else ResearchMissingReason.INVALID_RESPONSE
+                )
             except Exception as error:
                 # Third-party adapters are a trust boundary. Unknown failures become
                 # a typed invalid response so raw messages, chains, and credentials
@@ -176,13 +206,13 @@ class ResearchSourceRouter:
                 )
             else:
                 return section
-            if first_reason is None:
-                first_reason = reason
+            attempted.append(source_id.value)
+            failure_reasons.append(reason)
         raise ResearchDataUnavailable(
             kind=self.kind,
             reason=(
-                first_reason
-                if first_reason is not None
+                failure_reasons[0]
+                if failure_reasons
                 else ResearchMissingReason.NO_PROVIDER
             ),
             attempted_sources=tuple(attempted),

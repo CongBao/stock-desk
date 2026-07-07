@@ -151,6 +151,8 @@ class TushareResearchSource:
                     symbol=symbol,
                     table=table,
                     fetched_at=self._clock(),
+                    identity_fields=("ts_code",),
+                    expected_identity=symbol,
                     cutoff_fields=("ann_date", "f_ann_date", "end_date"),
                     default_source_url="https://tushare.pro/document/2?doc_id=33",
                 )
@@ -162,6 +164,8 @@ class TushareResearchSource:
                     symbol=symbol,
                     table=table,
                     fetched_at=self._clock(),
+                    identity_fields=("ts_code",),
+                    expected_identity=symbol,
                     cutoff_fields=("ann_date",),
                     published_fields=("ann_date",),
                     url_fields=("url",),

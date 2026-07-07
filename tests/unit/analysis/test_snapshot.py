@@ -22,6 +22,7 @@ from stock_desk.analysis.snapshot import (
     MissingResearchSection,
     ResearchMissingReason,
     ResearchQualityFlag,
+    ResearchRouteMetadata,
     ResearchSection,
     ResearchSectionKind,
     ResearchSnapshot,
@@ -53,6 +54,7 @@ def _section(
     published_at: datetime | None = DATA_CUTOFF,
     source_url: str | None = "https://example.com/source/record-1",
     quality_flags: tuple[ResearchQualityFlag, ...] = (),
+    route: ResearchRouteMetadata | None = None,
 ) -> ResearchSection:
     return ResearchSection(
         kind=kind,
@@ -64,6 +66,7 @@ def _section(
         fetched_at=fetched_at,
         dataset_version=dataset_version,
         quality_flags=quality_flags,
+        route=route,
         content=cast(
             dict[str, object],
             content
@@ -196,9 +199,20 @@ def test_section_serialization_exposes_content_not_internal_bytes_name() -> None
 
 
 def test_section_and_snapshot_json_round_trip_with_object_schema() -> None:
+    route = ResearchRouteMetadata(
+        selected_source="tushare",
+        attempted_sources=("akshare",),
+        failure_reasons=(ResearchMissingReason.PERMISSION_DENIED,),
+        primary_failure_reason=ResearchMissingReason.PERMISSION_DENIED,
+        degraded_from="akshare",
+    )
     section = _section(
         ResearchSectionKind.MARKET,
-        quality_flags=(ResearchQualityFlag.STALE,),
+        quality_flags=(
+            ResearchQualityFlag.DEGRADED_SOURCE,
+            ResearchQualityFlag.STALE,
+        ),
+        route=route,
     )
     snapshot = _snapshot(
         service=_service(overrides={ResearchSectionKind.MARKET: section})
@@ -217,6 +231,33 @@ def test_section_and_snapshot_json_round_trip_with_object_schema() -> None:
     assert schema["properties"]["content"]["type"] == "object"
     assert "format" not in schema["properties"]["content"]
     assert "content_json" not in schema["properties"]
+    assert restored_section.route == route
+    assert schema["properties"]["route"]
+
+
+def test_route_metadata_changes_section_and_snapshot_identity() -> None:
+    direct = _section(ResearchSectionKind.FUNDAMENTALS)
+    routed = _section(
+        ResearchSectionKind.FUNDAMENTALS,
+        quality_flags=(ResearchQualityFlag.DEGRADED_SOURCE,),
+        route=ResearchRouteMetadata(
+            selected_source="tushare",
+            attempted_sources=("akshare",),
+            failure_reasons=(ResearchMissingReason.TIMEOUT,),
+            primary_failure_reason=ResearchMissingReason.TIMEOUT,
+            degraded_from="akshare",
+        ),
+    )
+
+    direct_snapshot = _snapshot(
+        service=_service(overrides={ResearchSectionKind.FUNDAMENTALS: direct})
+    )
+    routed_snapshot = _snapshot(
+        service=_service(overrides={ResearchSectionKind.FUNDAMENTALS: routed})
+    )
+
+    assert direct.section_id != routed.section_id
+    assert direct_snapshot.snapshot_id != routed_snapshot.snapshot_id
 
 
 def test_missing_section_is_explicit_and_never_an_empty_success() -> None:

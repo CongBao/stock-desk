@@ -117,6 +117,36 @@ def test_market_loader_removes_cache_exception_context() -> None:
     assert "TOP-SECRET" not in repr(captured.value)
 
 
+@pytest.mark.parametrize(
+    ("requested_symbol", "period", "adjustment"),
+    [
+        (SYMBOL, Period.WEEK, Adjustment.QFQ),
+        (SYMBOL, Period.DAY, Adjustment.NONE),
+        ("000001.SZ", Period.DAY, Adjustment.QFQ),
+    ],
+)
+def test_market_loader_rejects_cache_results_for_a_different_query(
+    requested_symbol: str,
+    period: Period,
+    adjustment: Adjustment,
+) -> None:
+    routed = routed_daily_bars(
+        (date(2025, 7, 4),),
+        symbol=SYMBOL,
+        adjustment=Adjustment.QFQ,
+    )
+    loader = MarketCacheLoader(
+        lake=FakeMarketLake(routed),
+        period=period,
+        adjustment=adjustment,
+    )
+
+    with pytest.raises(ResearchDataUnavailable) as captured:
+        loader.load(requested_symbol)
+
+    assert captured.value.reason is ResearchMissingReason.INVALID_RESPONSE
+
+
 def test_composed_service_builds_snapshot_from_real_or_explicit_missing_only() -> None:
     routed = routed_daily_bars(
         (date(2025, 7, 3), date(2025, 7, 4)),

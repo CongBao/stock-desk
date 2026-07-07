@@ -8,14 +8,17 @@ from datetime import datetime, timezone
 import json
 import os
 
+from pydantic import TypeAdapter, ValidationError
+
 from stock_desk.analysis.snapshot import ResearchSectionKind
 from stock_desk.analysis.sources.akshare import AkShareResearchSource
 from stock_desk.analysis.sources.base import ResearchSourceAdapter
 from stock_desk.analysis.sources.tushare import TushareResearchSource
-from stock_desk.market.types import ProviderId
+from stock_desk.market.types import CanonicalSymbol, ProviderId
 
 
 _OPT_IN = "STOCK_DESK_RESEARCH_LIVE_PROBE"
+_SYMBOL_ADAPTER = TypeAdapter(CanonicalSymbol)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -46,6 +49,11 @@ def main(
 
     provider = ProviderId(args.provider)
     kind = ResearchSectionKind(args.category)
+    try:
+        symbol = _SYMBOL_ADAPTER.validate_python(args.symbol, strict=True)
+    except ValidationError:
+        emit("symbol is invalid")
+        return 2
     if provider is ProviderId.TUSHARE and kind is ResearchSectionKind.NEWS:
         emit("tushare does not support news")
         return 2
@@ -58,7 +66,7 @@ def main(
         source = TushareResearchSource.from_sdk(token=token, clock=clock)
     else:
         source = AkShareResearchSource.from_sdk(clock=clock)
-    section = source.fetch(args.symbol, kind)
+    section = source.fetch(symbol, kind)
     items = section.content.get("items")
     if not isinstance(items, list):
         raise RuntimeError("research source returned invalid content")

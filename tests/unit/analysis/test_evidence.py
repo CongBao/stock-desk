@@ -19,7 +19,9 @@ from stock_desk.analysis.evidence import (
     MAX_EVIDENCE_ITEMS,
 )
 from stock_desk.analysis.snapshot import (
+    ResearchMissingReason,
     ResearchQualityFlag,
+    ResearchRouteMetadata,
     ResearchSection,
     ResearchSectionKind,
     ResearchSnapshot,
@@ -38,6 +40,7 @@ def _section(
     kind: ResearchSectionKind = ResearchSectionKind.FUNDAMENTALS,
     *,
     quality_flags: tuple[ResearchQualityFlag, ...] = (),
+    route: ResearchRouteMetadata | None = None,
 ) -> ResearchSection:
     return ResearchSection(
         kind=kind,
@@ -49,6 +52,7 @@ def _section(
         fetched_at=FETCHED_AT,
         dataset_version=DIGEST,
         quality_flags=quality_flags,
+        route=route,
         content={"metric": "净利润", "value": "123.45"},
     )
 
@@ -114,7 +118,20 @@ def test_evidence_identity_is_content_addressed_stable_and_sensitive() -> None:
 
 
 def test_evidence_and_graph_json_round_trip() -> None:
-    section = _section(quality_flags=(ResearchQualityFlag.STALE,))
+    route = ResearchRouteMetadata(
+        selected_source="tushare",
+        attempted_sources=("akshare",),
+        failure_reasons=(ResearchMissingReason.TIMEOUT,),
+        primary_failure_reason=ResearchMissingReason.TIMEOUT,
+        degraded_from="akshare",
+    )
+    section = _section(
+        quality_flags=(
+            ResearchQualityFlag.DEGRADED_SOURCE,
+            ResearchQualityFlag.STALE,
+        ),
+        route=route,
+    )
     snapshot = _snapshot(section)
     evidence = _evidence(snapshot=snapshot, section=section)
     claim = _claim(evidence, EvidenceStance.SUPPORT)
@@ -133,6 +150,33 @@ def test_evidence_and_graph_json_round_trip() -> None:
 
     assert restored_evidence == evidence
     assert restored_graph == graph
+    assert evidence.route == route
+
+
+def test_evidence_identity_includes_route_metadata() -> None:
+    direct_section = _section()
+    routed_section = _section(
+        quality_flags=(ResearchQualityFlag.DEGRADED_SOURCE,),
+        route=ResearchRouteMetadata(
+            selected_source="tushare",
+            attempted_sources=("akshare",),
+            failure_reasons=(ResearchMissingReason.TIMEOUT,),
+            primary_failure_reason=ResearchMissingReason.TIMEOUT,
+            degraded_from="akshare",
+        ),
+    )
+    direct = _evidence(
+        snapshot=_snapshot(direct_section),
+        section=direct_section,
+    )
+    routed = _evidence(
+        snapshot=_snapshot(routed_section),
+        section=routed_section,
+    )
+
+    assert direct.route is None
+    assert routed.route == routed_section.route
+    assert direct.evidence_id != routed.evidence_id
 
 
 def test_evidence_rejects_forged_content_address() -> None:
@@ -209,6 +253,8 @@ def test_graph_rejects_cross_snapshot_relabel_and_duplicate_evidence() -> None:
     identity = {
         key: value for key, value in relabelled_payload.items() if key != "evidence_id"
     }
+    if identity.get("route") is None:
+        identity.pop("route")
     relabelled_payload["evidence_id"] = (
         "sha256:"
         + hashlib.sha256(

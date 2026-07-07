@@ -4,6 +4,7 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import subprocess
 from typing import cast
 
 from pydantic import ValidationError
@@ -12,6 +13,7 @@ from requests.exceptions import Timeout as RequestsTimeout
 
 from scripts.research_source_probe import main as live_probe_main
 import stock_desk.analysis.sources.tushare as tushare_source_module
+from stock_desk.analysis.sources import _akshare_worker
 from stock_desk.analysis.data_service import ResearchDataUnavailable
 from stock_desk.analysis.snapshot import (
     ResearchMissingReason,
@@ -20,6 +22,7 @@ from stock_desk.analysis.snapshot import (
     ResearchSectionKind,
 )
 from stock_desk.analysis.sources.akshare import (
+    AkShareIsolatedSdkFacade,
     AkShareResearchSdkFacade,
     AkShareResearchSource,
 )
@@ -31,6 +34,7 @@ from stock_desk.analysis.sources.base import (
     RESEARCH_SOURCE_CATEGORIES,
     ResearchSourceCapability,
     normalize_research_table,
+    research_section_from_table,
 )
 from stock_desk.analysis.sources.routing import (
     RESEARCH_SOURCE_CAPABILITIES,
@@ -41,12 +45,14 @@ from stock_desk.analysis.sources.tushare import (
     TushareResearchSource,
 )
 from stock_desk.market.providers.base import (
+    ProviderClientError,
     ProviderInvalidResponse,
     ProviderNoData,
     ProviderPermissionDenied,
     ProviderTimeout,
+    ProviderUnavailable,
 )
-from stock_desk.market.types import ProviderId
+from stock_desk.market.types import FailureReason, ProviderId
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -263,6 +269,103 @@ def test_fixed_sdk_fixtures_normalize_to_nonempty_traceable_sections(
         assert result.published_at == datetime(2025, 7, 5, 0, 30, tzinfo=timezone.utc)
 
 
+def test_tushare_rejects_missing_or_conflicting_row_identity() -> None:
+    class Client:
+        def __init__(self, row: dict[str, object]) -> None:
+            self.row = row
+
+        def income(self, **_kwargs: object) -> object:
+            return [self.row]
+
+        def anns_d(self, **_kwargs: object) -> object:
+            return [self.row]
+
+    cases = (
+        (ResearchSectionKind.FUNDAMENTALS, {"ann_date": "20250430"}),
+        (
+            ResearchSectionKind.FUNDAMENTALS,
+            {"ts_code": "000001.SZ", "ann_date": "20250430"},
+        ),
+        (ResearchSectionKind.ANNOUNCEMENTS, {"ann_date": "20250430"}),
+        (
+            ResearchSectionKind.ANNOUNCEMENTS,
+            {"ts_code": "000001.SZ", "ann_date": "20250430"},
+        ),
+    )
+    for kind, row in cases:
+        with pytest.raises(ProviderInvalidResponse):
+            TushareResearchSource(client=Client(row), clock=lambda: NOW).fetch(
+                SYMBOL, kind
+            )
+
+
+def test_akshare_rejects_missing_or_conflicting_row_identity() -> None:
+    class Client:
+        def __init__(self, row: dict[str, object]) -> None:
+            self.row = row
+
+        def stock_financial_analysis_indicator_em(self, **_kwargs: object) -> object:
+            return [self.row]
+
+        def stock_individual_notice_report(self, **_kwargs: object) -> object:
+            return [self.row]
+
+        def stock_news_em(self, **_kwargs: object) -> object:
+            return [self.row]
+
+    cases = (
+        (
+            ResearchSectionKind.FUNDAMENTALS,
+            {"REPORT_DATE": "2024-12-31 00:00:00"},
+        ),
+        (
+            ResearchSectionKind.FUNDAMENTALS,
+            {"SECUCODE": "000001.SZ", "REPORT_DATE": "2024-12-31 00:00:00"},
+        ),
+        (ResearchSectionKind.ANNOUNCEMENTS, {"公告日期": "2025-07-04"}),
+        (
+            ResearchSectionKind.ANNOUNCEMENTS,
+            {"代码": "000001", "公告日期": "2025-07-04"},
+        ),
+        (ResearchSectionKind.NEWS, {"发布时间": "2025-07-05 08:30:00"}),
+        (
+            ResearchSectionKind.NEWS,
+            {"关键词": "000001", "发布时间": "2025-07-05 08:30:00"},
+        ),
+    )
+    for kind, row in cases:
+        with pytest.raises(ProviderInvalidResponse):
+            AkShareResearchSource(client=Client(row), clock=lambda: NOW).fetch(
+                SYMBOL, kind
+            )
+
+
+def test_nonempty_fundamentals_without_real_cutoff_are_typed_invalid() -> None:
+    class ClientWithoutCutoff:
+        def income(self, **_kwargs: object) -> object:
+            return [{"ts_code": SYMBOL, "basic_eps": 1.0}]
+
+        def anns_d(self, **_kwargs: object) -> object:
+            return []
+
+    source = TushareResearchSource(
+        client=ClientWithoutCutoff(),
+        clock=lambda: NOW,
+    )
+    router = ResearchSourceRouter(
+        kind=ResearchSectionKind.FUNDAMENTALS,
+        priority=(ProviderId.TUSHARE,),
+        sources=(source,),
+    )
+
+    with pytest.raises(ProviderInvalidResponse):
+        source.fetch(SYMBOL, ResearchSectionKind.FUNDAMENTALS)
+    with pytest.raises(ResearchDataUnavailable) as captured:
+        router.load(SYMBOL)
+
+    assert captured.value.reason is ResearchMissingReason.INVALID_RESPONSE
+
+
 @pytest.mark.parametrize("symbol", ["600000.SH", "000001.SZ", "920001.BJ"])
 def test_akshare_fundamentals_passes_the_canonical_exchange_to_the_sdk(
     symbol: str,
@@ -327,6 +430,7 @@ def test_router_skips_unsupported_sources_and_never_calls_them() -> None:
     loaded = router.load(SYMBOL)
 
     assert loaded.canonical_source == "akshare"
+    assert loaded.route is None
     assert tushare.calls == []
     assert baostock.calls == []
     assert akshare.calls == [(SYMBOL, ResearchSectionKind.NEWS)]
@@ -358,6 +462,48 @@ def test_router_falls_back_without_merging_and_marks_degraded_source() -> None:
     assert loaded.canonical_source == "akshare"
     assert loaded.content == {"items": [{"marker": "fallback-only"}]}
     assert loaded.quality_flags == (ResearchQualityFlag.DEGRADED_SOURCE,)
+    assert loaded.route is not None
+    assert loaded.route.selected_source == "akshare"
+    assert loaded.route.attempted_sources == ("tushare",)
+    assert loaded.route.failure_reasons == (ResearchMissingReason.PERMISSION_DENIED,)
+    assert (
+        loaded.route.primary_failure_reason is ResearchMissingReason.PERMISSION_DENIED
+    )
+    assert loaded.route.degraded_from == "tushare"
+    assert (
+        ResearchSection.model_validate_json(loaded.model_dump_json(by_alias=True)).route
+        == loaded.route
+    )
+    assert (
+        loaded.section_id
+        != section(
+            ProviderId.AKSHARE,
+            ResearchSectionKind.FUNDAMENTALS,
+            marker="fallback-only",
+        ).section_id
+    )
+
+
+def test_router_preserves_multiple_failure_order_in_terminal_missing() -> None:
+    tushare = StubSource(
+        ProviderId.TUSHARE,
+        {ResearchSectionKind.FUNDAMENTALS: ProviderPermissionDenied()},
+    )
+    akshare = StubSource(
+        ProviderId.AKSHARE,
+        {ResearchSectionKind.FUNDAMENTALS: ProviderTimeout()},
+    )
+    router = ResearchSourceRouter(
+        kind=ResearchSectionKind.FUNDAMENTALS,
+        priority=(ProviderId.TUSHARE, ProviderId.AKSHARE),
+        sources=(tushare, akshare),
+    )
+
+    with pytest.raises(ResearchDataUnavailable) as captured:
+        router.load(SYMBOL)
+
+    assert captured.value.reason is ResearchMissingReason.PERMISSION_DENIED
+    assert captured.value.attempted_sources == ("tushare", "akshare")
 
 
 def test_malformed_fallback_section_cannot_escape_the_router_secret_boundary() -> None:
@@ -430,6 +576,39 @@ def test_router_maps_failures_to_typed_secret_safe_missing(
     assert "TOP-SECRET" not in str(captured.value)
     assert "TOP-SECRET" not in repr(captured.value)
     assert captured.value.__cause__ is None
+
+
+def test_router_fail_closes_malformed_provider_failure_reasons() -> None:
+    class MalformedProviderError(ProviderClientError):
+        reason = cast(FailureReason, "TOP-SECRET")
+
+    failures = (
+        MalformedProviderError(),
+        ResearchDataUnavailable(
+            kind=ResearchSectionKind.NEWS,
+            reason=cast(ResearchMissingReason, "TOP-SECRET"),
+            attempted_sources=("unsafe",),
+        ),
+    )
+    for failure in failures:
+        router = ResearchSourceRouter(
+            kind=ResearchSectionKind.NEWS,
+            priority=(ProviderId.AKSHARE,),
+            sources=(
+                StubSource(
+                    ProviderId.AKSHARE,
+                    {ResearchSectionKind.NEWS: failure},
+                ),
+            ),
+        )
+
+        with pytest.raises(ResearchDataUnavailable) as captured:
+            router.load(SYMBOL)
+
+        assert captured.value.reason is ResearchMissingReason.INVALID_RESPONSE
+        assert captured.value.__cause__ is None
+        assert captured.value.__context__ is None
+        assert "TOP-SECRET" not in exception_chain_text(captured.value)
 
 
 def test_tushare_default_sdk_path_classifies_permission_without_leaking(
@@ -593,6 +772,275 @@ def test_source_normalization_preserves_provider_missing_cells_as_json_null() ->
     assert normalize_research_table([{"metric": float("nan")}]) == ({"metric": None},)
 
 
+def test_dataframe_row_budget_is_checked_before_materialization() -> None:
+    class OversizedFrame:
+        shape = (MAX_RESEARCH_ITEMS + 1, 3)
+        columns = ("SECUCODE", "REPORT_DATE", "BASIC_EPS")
+
+        def to_dict(self, **_kwargs: object) -> object:
+            pytest.fail("oversized DataFrame was materialized")
+
+    with pytest.raises(ProviderInvalidResponse):
+        normalize_research_table(OversizedFrame())
+
+
+def test_every_configured_identity_field_is_required_on_every_row() -> None:
+    with pytest.raises(ProviderInvalidResponse):
+        research_section_from_table(
+            source=ProviderId.AKSHARE,
+            kind=ResearchSectionKind.FUNDAMENTALS,
+            symbol=SYMBOL,
+            table=[
+                {
+                    "id_a": SYMBOL,
+                    "REPORT_DATE": "2024-12-31 00:00:00",
+                }
+            ],
+            fetched_at=NOW,
+            identity_fields=("id_a", "id_b"),
+            expected_identity=SYMBOL,
+            cutoff_fields=("REPORT_DATE",),
+        )
+
+
+def test_akshare_isolated_facade_kills_and_reaps_timed_out_process() -> None:
+    class BlockingProcess:
+        def __init__(self) -> None:
+            self.killed = False
+            self.reaped = False
+            self.events: list[str] = []
+
+        def communicate(
+            self,
+            input: bytes | None = None,
+            timeout: float | None = None,
+        ) -> tuple[bytes, bytes]:
+            del input
+            self.events.append("communicate")
+            if not self.killed:
+                raise subprocess.TimeoutExpired("akshare-worker", timeout)
+            self.reaped = True
+            return b"", b""
+
+        def kill(self) -> None:
+            self.events.append("kill")
+            self.killed = True
+
+        def read_result(self, maximum_bytes: int) -> bytes:
+            del maximum_bytes
+            pytest.fail("timed out worker result must not be read")
+
+        def close_result(self) -> None:
+            self.events.append("close_result")
+
+    process = BlockingProcess()
+    launched: list[tuple[str, dict[str, object]]] = []
+
+    def launch(operation: str, kwargs: dict[str, object]) -> BlockingProcess:
+        launched.append((operation, kwargs))
+        return process
+
+    facade = AkShareIsolatedSdkFacade(
+        launcher=launch,
+        timeout_seconds=0.01,
+    )
+
+    with pytest.raises(ProviderTimeout) as captured:
+        facade.stock_news_em(symbol="600000")
+
+    assert launched == [("stock_news_em", {"symbol": "600000"})]
+    assert process.killed is True
+    assert process.reaped is True
+    assert process.events == ["communicate", "kill", "communicate", "close_result"]
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+
+
+def test_akshare_isolated_facade_rejects_noncanonical_worker_output_safely() -> None:
+    class ResultProcess:
+        def __init__(self, payload: bytes) -> None:
+            self.payload = payload
+            self.read_limits: list[int] = []
+            self.closed = False
+
+        def communicate(
+            self,
+            input: bytes | None = None,
+            timeout: float | None = None,
+        ) -> tuple[bytes, bytes]:
+            del input, timeout
+            return b"", b""
+
+        def kill(self) -> None:
+            pytest.fail("completed worker must not be killed")
+
+        def read_result(self, maximum_bytes: int) -> bytes:
+            self.read_limits.append(maximum_bytes)
+            return self.payload[:maximum_bytes]
+
+        def close_result(self) -> None:
+            self.closed = True
+
+    payloads = (
+        b'noise{"status":"no_data"}',
+        b'{"status":"no_data"}\n',
+        b'{"status":"no_data"}\n{"status":"no_data"}',
+        b'{"status":"no_data","secret":"TOP-SECRET"}',
+        b'{"status":"ok","rows":[],"extra":true}',
+        b'{"status":"ok","rows":"TOP-SECRET"}',
+    )
+    for payload in payloads:
+        process = ResultProcess(payload)
+        facade = AkShareIsolatedSdkFacade(
+            launcher=lambda _operation, _kwargs, current=process: current,
+        )
+
+        with pytest.raises(ProviderInvalidResponse) as captured:
+            facade.stock_news_em(symbol="600000")
+
+        assert process.read_limits == [262_145]
+        assert process.closed is True
+        assert captured.value.__cause__ is None
+        assert captured.value.__context__ is None
+        assert "TOP-SECRET" not in exception_chain_text(captured.value)
+
+
+def test_akshare_isolated_facade_preserves_typed_no_data() -> None:
+    class EmptyProcess:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def communicate(
+            self,
+            input: bytes | None = None,
+            timeout: float | None = None,
+        ) -> tuple[bytes, bytes]:
+            del input, timeout
+            return b"", b""
+
+        def kill(self) -> None:
+            pytest.fail("completed worker must not be killed")
+
+        def read_result(self, maximum_bytes: int) -> bytes:
+            assert maximum_bytes == 262_145
+            return b'{"status":"no_data"}'
+
+        def close_result(self) -> None:
+            self.closed = True
+
+    process = EmptyProcess()
+    source = AkShareResearchSource(
+        client=AkShareIsolatedSdkFacade(launcher=lambda _operation, _kwargs: process),
+        clock=lambda: NOW,
+    )
+
+    with pytest.raises(ProviderNoData) as captured:
+        source.fetch(SYMBOL, ResearchSectionKind.NEWS)
+
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+    assert process.closed is True
+
+
+def test_akshare_isolated_facade_cleans_up_non_timeout_communicate_failure() -> None:
+    class FailingProcess:
+        def __init__(self) -> None:
+            self.killed = False
+            self.events: list[str] = []
+
+        def communicate(
+            self,
+            input: bytes | None = None,
+            timeout: float | None = None,
+        ) -> tuple[bytes, bytes]:
+            del input, timeout
+            self.events.append("communicate")
+            if not self.killed:
+                raise RuntimeError("TOP-SECRET")
+            return b"", b""
+
+        def kill(self) -> None:
+            self.events.append("kill")
+            self.killed = True
+
+        def read_result(self, maximum_bytes: int) -> bytes:
+            del maximum_bytes
+            pytest.fail("failed worker result must not be read")
+
+        def close_result(self) -> None:
+            self.events.append("close_result")
+
+    process = FailingProcess()
+    facade = AkShareIsolatedSdkFacade(
+        launcher=lambda _operation, _kwargs: process,
+    )
+
+    with pytest.raises(ProviderInvalidResponse) as captured:
+        facade.stock_news_em(symbol="600000")
+
+    assert process.events == ["communicate", "kill", "communicate", "close_result"]
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+    assert "TOP-SECRET" not in exception_chain_text(captured.value)
+
+
+def test_akshare_isolated_facade_reports_cleanup_failure_safely() -> None:
+    class BrokenCleanupProcess:
+        def communicate(
+            self,
+            input: bytes | None = None,
+            timeout: float | None = None,
+        ) -> tuple[bytes, bytes]:
+            del input, timeout
+            raise RuntimeError("TOP-SECRET")
+
+        def kill(self) -> None:
+            raise RuntimeError("TOP-SECRET")
+
+        def read_result(self, maximum_bytes: int) -> bytes:
+            del maximum_bytes
+            pytest.fail("failed worker result must not be read")
+
+        def close_result(self) -> None:
+            return None
+
+    facade = AkShareIsolatedSdkFacade(
+        launcher=lambda _operation, _kwargs: BrokenCleanupProcess(),
+    )
+
+    with pytest.raises(ProviderUnavailable) as captured:
+        facade.stock_news_em(symbol="600000")
+
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+    assert "TOP-SECRET" not in exception_chain_text(captured.value)
+
+
+def test_akshare_worker_emits_fixed_no_data_code_without_network(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    class EmptyModule:
+        def stock_news_em(self, **_kwargs: object) -> object:
+            return []
+
+    def noisy_import(name: str) -> object:
+        print("TOP-SECRET")
+        return EmptyModule() if name == "akshare" else None
+
+    monkeypatch.setattr(_akshare_worker, "import_optional_sdk", noisy_import)
+    result_path = tmp_path / "worker-result.json"
+
+    result = _akshare_worker.main(
+        ["stock_news_em", '{"symbol":"600000"}', str(result_path)]
+    )
+
+    assert result == 1
+    assert capsys.readouterr().out == ""
+    assert result_path.read_bytes() == b'{"status":"no_data"}'
+
+
 def test_capability_model_rejects_market_as_a_network_research_category() -> None:
     with pytest.raises(ValidationError):
         ResearchSourceCapability(
@@ -627,3 +1075,22 @@ def test_live_probe_rejects_unsupported_provider_category_before_sdk_loading() -
 
     assert result == 2
     assert messages == ["tushare does not support news"]
+
+
+def test_live_probe_validates_symbol_before_sdk_initialization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_sdk(cls: type[object], **_kwargs: object) -> object:
+        pytest.fail("invalid symbol reached SDK initialization")
+
+    monkeypatch.setattr(AkShareResearchSource, "from_sdk", classmethod(fail_sdk))
+    messages: list[str] = []
+
+    result = live_probe_main(
+        ("akshare", "news", "not-a-symbol"),
+        environ={"STOCK_DESK_RESEARCH_LIVE_PROBE": "1"},
+        emit=messages.append,
+    )
+
+    assert result == 2
+    assert messages == ["symbol is invalid"]

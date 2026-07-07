@@ -69,6 +69,17 @@ class MarketCacheLoader:
                 reason=ResearchMissingReason.INVALID_RESPONSE,
                 attempted_sources=("market_cache",),
             ) from None
+        query = routed.result.query
+        if (
+            query.symbol != symbol
+            or query.period is not self._period
+            or query.adjustment is not self._adjustment
+        ):
+            raise ResearchDataUnavailable(
+                kind=self.kind,
+                reason=ResearchMissingReason.INVALID_RESPONSE,
+                attempted_sources=("market_cache",),
+            ) from None
         bars = routed.result.bars
         selected = bars[-MAX_RESEARCH_MARKET_BARS:]
         quality_flags = (

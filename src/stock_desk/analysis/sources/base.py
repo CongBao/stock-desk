@@ -164,6 +164,26 @@ def _normalize_value(
 
 
 def _normalize_research_table(table: object) -> tuple[dict[str, object], ...]:
+    to_dict = getattr(table, "to_dict", None)
+    if callable(to_dict):
+        raw_shape = getattr(table, "shape", None)
+        row_count: int | None = None
+        if (
+            isinstance(raw_shape, tuple)
+            and len(raw_shape) == 2
+            and type(raw_shape[0]) is int
+            and raw_shape[0] >= 0
+        ):
+            row_count = raw_shape[0]
+        else:
+            try:
+                measured = len(cast(Sequence[object], table))
+            except Exception:
+                measured = None
+            if type(measured) is int and measured >= 0:
+                row_count = measured
+        if row_count is None or row_count > MAX_RESEARCH_ITEMS:
+            raise ProviderInvalidResponse()
     try:
         raw_rows = records_from_table(table, required=frozenset())
     except Exception as error:
@@ -299,6 +319,8 @@ def _research_section_from_table(
     symbol: CanonicalSymbol,
     table: object,
     fetched_at: datetime,
+    identity_fields: tuple[str, ...],
+    expected_identity: str,
     cutoff_fields: tuple[str, ...],
     published_fields: tuple[str, ...] = (),
     url_fields: tuple[str, ...] = (),
@@ -310,9 +332,21 @@ def _research_section_from_table(
         raise ProviderInvalidResponse()
     canonical_fetched_at = fetched_at.astimezone(timezone.utc)
     rows = normalize_research_table(table)
+    if not identity_fields or not expected_identity:
+        raise ProviderInvalidResponse()
+    for row in rows:
+        if any(field not in row for field in identity_fields):
+            raise ProviderInvalidResponse()
+        identities = tuple(row[field] for field in identity_fields)
+        if (
+            not identities
+            or any(type(value) is not str for value in identities)
+            or any(value != expected_identity for value in identities)
+        ):
+            raise ProviderInvalidResponse()
     cutoff = _latest_timestamp(rows, cutoff_fields)
     if cutoff is None:
-        cutoff = canonical_fetched_at
+        raise ProviderInvalidResponse()
     published_at = _latest_timestamp(rows, published_fields)
     if kind in {ResearchSectionKind.ANNOUNCEMENTS, ResearchSectionKind.NEWS}:
         if published_at is None:
@@ -354,6 +388,8 @@ def research_section_from_table(
     symbol: CanonicalSymbol,
     table: object,
     fetched_at: datetime,
+    identity_fields: tuple[str, ...],
+    expected_identity: str,
     cutoff_fields: tuple[str, ...],
     published_fields: tuple[str, ...] = (),
     url_fields: tuple[str, ...] = (),
@@ -367,6 +403,8 @@ def research_section_from_table(
             symbol=symbol,
             table=table,
             fetched_at=fetched_at,
+            identity_fields=identity_fields,
+            expected_identity=expected_identity,
             cutoff_fields=cutoff_fields,
             published_fields=published_fields,
             url_fields=url_fields,
