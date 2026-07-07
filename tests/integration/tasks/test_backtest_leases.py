@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -13,7 +13,11 @@ from stock_desk.tasks.worker import TaskWorker
 
 
 LEASE = timedelta(seconds=30)
-START = datetime(2026, 7, 7, 1, 2, 3, tzinfo=timezone.utc)
+
+
+def _start_after(task: TaskSnapshot) -> datetime:
+    """Use a deterministic monotonic instant after the task's real creation."""
+    return task.updated_at + timedelta(seconds=1)
 
 
 def _repository(tmp_path: Path) -> tuple[TaskRepository, object]:
@@ -31,22 +35,23 @@ def test_backtest_claim_has_private_rotating_lease_and_preserves_started_at(
         created = repository.create(
             "backtest.run", {"run_id": "run-1", "snapshot_id": "snapshot-1"}
         )
+        start = _start_after(created)
 
-        first = repository.claim_next("worker-1", now=START, lease_duration=LEASE)
+        first = repository.claim_next("worker-1", now=start, lease_duration=LEASE)
         assert isinstance(first, TaskClaim)
         assert first.snapshot.id == created.id
-        assert first.snapshot.started_at == START
+        assert first.snapshot.started_at == start
         assert first.attempt_count == 1
-        assert first.lease_expires_at == START + LEASE
+        assert first.lease_expires_at == start + LEASE
 
         reclaimed = repository.claim_next(
-            "worker-2", now=START + LEASE, lease_duration=LEASE
+            "worker-2", now=start + LEASE, lease_duration=LEASE
         )
         assert isinstance(reclaimed, TaskClaim)
         assert reclaimed.snapshot.id == created.id
         assert reclaimed.claim_token != first.claim_token
         assert reclaimed.attempt_count == 2
-        assert reclaimed.snapshot.started_at == START
+        assert reclaimed.snapshot.started_at == start
 
         public = repository.get(created.id)
         assert isinstance(public, TaskSnapshot)
@@ -65,10 +70,11 @@ def test_heartbeat_and_every_terminal_write_are_fenced_by_claim_token(
     repository, engine = _repository(tmp_path)
     try:
         created = repository.create("backtest.run", {"run_id": "run-1"})
-        stale = repository.claim_next("worker-1", now=START, lease_duration=LEASE)
+        start = _start_after(created)
+        stale = repository.claim_next("worker-1", now=start, lease_duration=LEASE)
         assert isinstance(stale, TaskClaim)
         current = repository.claim_next(
-            "worker-2", now=START + LEASE, lease_duration=LEASE
+            "worker-2", now=start + LEASE, lease_duration=LEASE
         )
         assert isinstance(current, TaskClaim)
 
@@ -76,7 +82,7 @@ def test_heartbeat_and_every_terminal_write_are_fenced_by_claim_token(
             repository.heartbeat(
                 created.id,
                 stale.claim_token,
-                now=START + LEASE + timedelta(seconds=1),
+                now=start + LEASE + timedelta(seconds=1),
                 lease_duration=LEASE,
             )
         with pytest.raises(TaskConflict):
@@ -93,16 +99,16 @@ def test_heartbeat_and_every_terminal_write_are_fenced_by_claim_token(
         heartbeat = repository.heartbeat(
             created.id,
             current.claim_token,
-            now=START + LEASE + timedelta(seconds=1),
+            now=start + LEASE + timedelta(seconds=1),
             lease_duration=LEASE,
         )
         assert heartbeat.claim_token == current.claim_token
-        assert heartbeat.lease_expires_at == START + LEASE + timedelta(seconds=31)
+        assert heartbeat.lease_expires_at == start + LEASE + timedelta(seconds=31)
         completed = repository.complete(
             created.id,
             {"ok": True},
             claim_token=current.claim_token,
-            now=START + LEASE + timedelta(seconds=2),
+            now=start + LEASE + timedelta(seconds=2),
         )
         assert completed.status == "succeeded"
     finally:
@@ -115,8 +121,9 @@ def test_legacy_tasks_keep_snapshot_claims_and_null_lease_fields(
     repository, engine = _repository(tmp_path)
     try:
         created = repository.create("demo.double", {"value": 3})
+        start = _start_after(created)
         claimed = repository.claim_next(
-            "worker-legacy", now=START, lease_duration=LEASE
+            "worker-legacy", now=start, lease_duration=LEASE
         )
         assert isinstance(claimed, TaskSnapshot)
         assert claimed.id == created.id
@@ -138,13 +145,14 @@ def test_legacy_tasks_keep_snapshot_claims_and_null_lease_fields(
 def test_nonexpired_backtest_claim_cannot_be_stolen(tmp_path: Path) -> None:
     repository, engine = _repository(tmp_path)
     try:
-        repository.create("backtest.run", {"run_id": "run-1"})
-        first = repository.claim_next("worker-1", now=START, lease_duration=LEASE)
+        created = repository.create("backtest.run", {"run_id": "run-1"})
+        start = _start_after(created)
+        first = repository.claim_next("worker-1", now=start, lease_duration=LEASE)
         assert isinstance(first, TaskClaim)
         assert (
             repository.claim_next(
                 "worker-2",
-                now=START + LEASE - timedelta(microseconds=1),
+                now=start + LEASE - timedelta(microseconds=1),
                 lease_duration=LEASE,
             )
             is None
@@ -161,9 +169,10 @@ def test_expired_unreclaimed_claim_cannot_write(
     repository, engine = _repository(tmp_path)
     try:
         created = repository.create("backtest.run", {"run_id": "run-1"})
-        claim = repository.claim_next("worker-1", now=START, lease_duration=LEASE)
+        start = _start_after(created)
+        claim = repository.claim_next("worker-1", now=start, lease_duration=LEASE)
         assert isinstance(claim, TaskClaim)
-        expired_at = START + LEASE
+        expired_at = start + LEASE
 
         with pytest.raises(TaskConflict):
             if operation == "progress":
@@ -231,21 +240,22 @@ def test_expired_cancel_requested_backtest_is_terminalized_without_handler(
     repository, engine = _repository(tmp_path)
     try:
         created = repository.create("backtest.run", {"run_id": "run-1"})
-        stale = repository.claim_next("worker-1", now=START, lease_duration=LEASE)
+        start = _start_after(created)
+        stale = repository.claim_next("worker-1", now=start, lease_duration=LEASE)
         assert isinstance(stale, TaskClaim)
         repository.request_cancel(created.id)
 
         assert (
             repository.claim_next(
                 "worker-2",
-                now=START + LEASE,
+                now=start + LEASE,
                 lease_duration=LEASE,
             )
             is None
         )
         terminal = repository.get(created.id)
         assert terminal.status == "cancelled"
-        assert terminal.finished_at == START + LEASE
+        assert terminal.finished_at == start + LEASE
         with engine.connect() as connection:  # type: ignore[union-attr]
             lease = connection.execute(
                 text(
@@ -260,7 +270,7 @@ def test_expired_cancel_requested_backtest_is_terminalized_without_handler(
                 created.id,
                 {"code": "stale"},
                 claim_token=stale.claim_token,
-                now=START + LEASE,
+                now=start + LEASE,
             )
         assert [event.event_name for event in repository.list_events(created.id)] == [
             "task.created",
@@ -278,10 +288,11 @@ def test_transaction_checkpoint_guard_requires_current_unexpired_claim(
     repository, engine = _repository(tmp_path)
     try:
         created = repository.create("backtest.run", {"run_id": "run-1"})
-        stale = repository.claim_next("worker-1", now=START, lease_duration=LEASE)
+        start = _start_after(created)
+        stale = repository.claim_next("worker-1", now=start, lease_duration=LEASE)
         assert isinstance(stale, TaskClaim)
         current = repository.claim_next(
-            "worker-2", now=START + LEASE, lease_duration=LEASE
+            "worker-2", now=start + LEASE, lease_duration=LEASE
         )
         assert isinstance(current, TaskClaim)
 
@@ -292,7 +303,7 @@ def test_transaction_checkpoint_guard_requires_current_unexpired_claim(
                     created.id,
                     stale.claim_token,
                     progress=0.5,
-                    now=START + LEASE + timedelta(seconds=1),
+                    now=start + LEASE + timedelta(seconds=1),
                 )
 
         with engine.begin() as connection:  # type: ignore[union-attr]
@@ -301,7 +312,7 @@ def test_transaction_checkpoint_guard_requires_current_unexpired_claim(
                 created.id,
                 current.claim_token,
                 progress=0.5,
-                now=START + LEASE + timedelta(seconds=1),
+                now=start + LEASE + timedelta(seconds=1),
             )
         assert guarded.progress == 0.5
     finally:
