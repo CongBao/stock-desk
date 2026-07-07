@@ -7,10 +7,10 @@ requirements:
     acceptance: The unified data layer supplies adjusted bars, instruments, calendars, trading status, fundamentals, announcements, news, index membership, and industry classification, and reports an explicit missing category instead of substituting unlike data.
     source_refs: [{capability: market-data-charting, requirement: base-a-share-data-scope, scenario: load-stock-analysis-data}, {capability: market-data-charting, requirement: base-a-share-data-scope, scenario: report-missing-category}]
     owning_stage: 1
-    status: verified
+    status: mapped
     evidence:
       - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_market_flow.py, selector: "tests/acceptance/test_market_flow.py::test_settings_route_worker_cache_api_and_schedule_flow_without_network", assertion: "The accepted market flow exercises the unified cached data categories and explicit source diagnostics."}
-      - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_full_user_journey.py, selector: "tests/acceptance/test_full_user_journey.py::test_demo_data_categories_and_missing_category_are_visible", assertion: "The integrated journey will prove every declared analysis category and the visible missing-data state."}
+      - {state: planned, runner: pytest, kind: acceptance, path: tests/acceptance/test_full_user_journey.py, selector: "tests/acceptance/test_full_user_journey.py::test_demo_data_categories_and_missing_category_are_visible", assertion: "The integrated journey will prove every declared analysis category and the visible missing-data state."}
   - id: R-002
     category: market
     kind: user_visible

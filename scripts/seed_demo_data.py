@@ -10,10 +10,12 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import stat
 import sys
 from typing import Literal, Self, cast
 from zoneinfo import ZoneInfo
+from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, JsonValue, model_validator
 
@@ -104,6 +106,19 @@ class DemoScenario(_FixtureModel):
     detail: str
 
 
+class DemoFormula(_FixtureModel):
+    key: Literal["macd", "custom"]
+    name: str
+    source: str
+
+
+class DemoPool(_FixtureModel):
+    key: str
+    category: Literal["index", "industry"]
+    name: str
+    symbols: tuple[str, ...]
+
+
 class DemoCategoryOutcome(_FixtureModel):
     status: Literal["actual", "missing"]
     source: str
@@ -140,10 +155,10 @@ class _DemoResearchLoader:
             raise ResearchDataUnavailable(
                 kind=self.kind,
                 reason=ResearchMissingReason.NO_DATA,
-                attempted_sources=("synthetic_fixture",),
+                attempted_sources=("stock_desk_demo",),
                 ordered_candidates=(
                     ResearchSourceCandidate(
-                        source="synthetic_fixture",
+                        source="stock_desk_demo",
                         position=0,
                         supported=True,
                         configured=True,
@@ -151,7 +166,7 @@ class _DemoResearchLoader:
                         failure_reason=ResearchMissingReason.NO_DATA,
                     ),
                 ),
-                route_source="synthetic_fixture",
+                route_source="stock_desk_demo",
             )
         cutoff = _parse_datetime(self._fixture.data_cutoff)
         published = (
@@ -165,7 +180,7 @@ class _DemoResearchLoader:
         )
         return ResearchSection(  # type: ignore[call-arg]
             kind=self.kind,
-            canonical_source="synthetic_fixture",
+            canonical_source="stock_desk_demo",
             source_record=self._item.source_record,
             source_url=f"https://example.invalid/stock-desk-demo/{self.kind.value}",
             published_at=published,
@@ -189,12 +204,12 @@ class _DemoResearchLoader:
         section = self.load(symbol)
         return section, ResearchLoadDiagnostic(
             kind=self.kind,
-            route_source="synthetic_fixture",
-            actual_source="synthetic_fixture",
-            attempted_sources=("synthetic_fixture",),
+            route_source="stock_desk_demo",
+            actual_source="stock_desk_demo",
+            attempted_sources=("stock_desk_demo",),
             ordered_candidates=(
                 ResearchSourceCandidate(
-                    source="synthetic_fixture",
+                    source="stock_desk_demo",
                     position=0,
                     supported=True,
                     configured=True,
@@ -209,6 +224,7 @@ class DemoFixture(_FixtureModel):
     fixture_id: str
     label: str
     license: Literal["CC0-1.0"]
+    market_source: Literal["stock_desk_demo"]
     network_policy: Literal["forbidden"]
     investment_recommendation_claims: Literal[False]
     generated_at: str
@@ -218,6 +234,8 @@ class DemoFixture(_FixtureModel):
     scoring_start: str
     scoring_end: str
     symbols: tuple[DemoSymbol, ...]
+    formulas: tuple[DemoFormula, ...]
+    pools: tuple[DemoPool, ...]
     scenarios: tuple[DemoScenario, ...]
     category_outcomes: dict[str, DemoCategoryOutcome]
     research: dict[str, DemoResearchItem]
@@ -372,14 +390,14 @@ def _routed_bars(
         )
     cutoff = bars[-1].timestamp + min(interval, timedelta(hours=8))
     version = dataset_version(
-        source=ProviderId.TUSHARE,
+        source=ProviderId.STOCK_DESK_DEMO,
         operation="bars",
         request={"query": query},
         data_cutoff=cutoff,
         items=tuple(bars),
     )
     provenance = Provenance(
-        source=ProviderId.TUSHARE,
+        source=ProviderId.STOCK_DESK_DEMO,
         fetched_at=cutoff + timedelta(minutes=5),
         data_cutoff=cutoff,
         adjustment=adjustment,
@@ -395,9 +413,9 @@ def _routed_bars(
     manifest = make_routing_manifest(
         category=MarketCapability.BARS,
         request=BarRoutingRequest(query=query),
-        priority=(ProviderId.TUSHARE,),
+        priority=(ProviderId.STOCK_DESK_DEMO,),
         attempts=(),
-        selected_source=ProviderId.TUSHARE,
+        selected_source=ProviderId.STOCK_DESK_DEMO,
         upstream_dataset_version=version,
         upstream_fetched_at=provenance.fetched_at,
         upstream_data_cutoff=cutoff,
@@ -474,16 +492,16 @@ def _routed_status(routed: RoutedBarSuccess) -> RoutedExecutionStatusSuccess:
         query=query,
         days=days,
         raw_opens=raw_opens,
-        source=ProviderId.TUSHARE,
+        source=ProviderId.STOCK_DESK_DEMO,
         fetched_at=result.provenance.fetched_at,
         data_cutoff=result.provenance.data_cutoff,
     )
     manifest = make_routing_manifest(
         category=MarketCapability.EXECUTION_STATUS,
         request=ExecutionStatusRoutingRequest(query=query),
-        priority=(ProviderId.TUSHARE,),
+        priority=(ProviderId.STOCK_DESK_DEMO,),
         attempts=(),
-        selected_source=ProviderId.TUSHARE,
+        selected_source=ProviderId.STOCK_DESK_DEMO,
         upstream_dataset_version=status_result.dataset_version,
         upstream_fetched_at=status_result.fetched_at,
         upstream_data_cutoff=status_result.data_cutoff,
@@ -513,7 +531,7 @@ def _routed_instruments(fixture: DemoFixture) -> RoutedInstrumentSuccess:
     cutoff = _parse_datetime(fixture.data_cutoff)
     fetched = _parse_datetime(fixture.generated_at)
     version = dataset_version(
-        source=ProviderId.TUSHARE,
+        source=ProviderId.STOCK_DESK_DEMO,
         operation="instruments",
         request={},
         data_cutoff=cutoff,
@@ -522,7 +540,7 @@ def _routed_instruments(fixture: DemoFixture) -> RoutedInstrumentSuccess:
     batch = ProviderBatch[Instrument](
         items=items,
         provenance=DatasetProvenance(
-            source=ProviderId.TUSHARE,
+            source=ProviderId.STOCK_DESK_DEMO,
             fetched_at=fetched,
             data_cutoff=cutoff,
             dataset_version=version,
@@ -533,9 +551,9 @@ def _routed_instruments(fixture: DemoFixture) -> RoutedInstrumentSuccess:
         manifest=make_routing_manifest(
             category=MarketCapability.INSTRUMENTS,
             request=InstrumentRoutingRequest(),
-            priority=(ProviderId.TUSHARE,),
+            priority=(ProviderId.STOCK_DESK_DEMO,),
             attempts=(),
-            selected_source=ProviderId.TUSHARE,
+            selected_source=ProviderId.STOCK_DESK_DEMO,
             upstream_dataset_version=version,
             upstream_fetched_at=fetched,
             upstream_data_cutoff=cutoff,
@@ -577,42 +595,27 @@ def _seed_fresh(destination: Path, fixture: DemoFixture) -> dict[str, object]:
         pools = PoolRepository(engine)
         full_a = pools.publish_full_a()
         cutoff = _parse_datetime(fixture.data_cutoff)
-        index = pools.publish_preset(
-            PoolComposition(
-                preset_key="index-synthetic-demo",
-                category=PoolCategory.INDEX,
-                display_name="Synthetic Demo Index",
-                symbols=("600000.SH", "000001.SZ", "600036.SH"),
-                source=ProviderId.AKSHARE,
-                dataset_version=_digest(
-                    {"fixture": fixture.fixture_id, "pool": "index"}
-                ),
-                route_version=_digest(
-                    {"fixture": fixture.fixture_id, "route": "index"}
-                ),
-                fetched_at=cutoff,
-                data_cutoff=cutoff,
-                complete=True,
+        published_pools = {
+            spec.key: pools.publish_preset(
+                PoolComposition(
+                    preset_key=spec.key,
+                    category=PoolCategory(spec.category),
+                    display_name=spec.name,
+                    symbols=spec.symbols,
+                    source=ProviderId.STOCK_DESK_DEMO,
+                    dataset_version=_digest(
+                        {"fixture": fixture.fixture_id, "pool": spec.key}
+                    ),
+                    route_version=_digest(
+                        {"fixture": fixture.fixture_id, "route": spec.key}
+                    ),
+                    fetched_at=cutoff,
+                    data_cutoff=cutoff,
+                    complete=True,
+                )
             )
-        )
-        industry = pools.publish_preset(
-            PoolComposition(
-                preset_key="industry-synthetic-demo",
-                category=PoolCategory.INDUSTRY,
-                display_name="Synthetic Demo Industry",
-                symbols=("600000.SH", "300001.SZ"),
-                source=ProviderId.AKSHARE,
-                dataset_version=_digest(
-                    {"fixture": fixture.fixture_id, "pool": "industry"}
-                ),
-                route_version=_digest(
-                    {"fixture": fixture.fixture_id, "route": "industry"}
-                ),
-                fetched_at=cutoff,
-                data_cutoff=cutoff,
-                complete=True,
-            )
-        )
+            for spec in fixture.pools
+        }
         lake = MarketLake(engine=engine, root=(destination / "market").resolve())
         statuses = ExecutionStatusLake(engine)
         bar_versions: dict[str, str] = {}
@@ -626,20 +629,14 @@ def _seed_fresh(destination: Path, fixture: DemoFixture) -> dict[str, object]:
                     )
                     statuses.write(_routed_status(routed))
         formulas = FormulaRepository(engine)
-        formulas.create(
-            "Demo MACD (synthetic)",
-            "trading",
-            MACD_SOURCE,
-            {},
-            placement="subchart",
-        )
-        formulas.create(
-            "Demo custom wave (synthetic)",
-            "trading",
-            CUSTOM_SOURCE,
-            {},
-            placement="subchart",
-        )
+        for formula in fixture.formulas:
+            formulas.create(
+                formula.name,
+                "trading",
+                formula.source,
+                {},
+                placement="subchart",
+            )
         catalog = AnalysisModelCatalog(engine, owns_engine=False, clock=fixture.clock)
         model = catalog.create(
             display_name="Deterministic demo model",
@@ -666,8 +663,10 @@ def _seed_fresh(destination: Path, fixture: DemoFixture) -> dict[str, object]:
             "license": fixture.license,
             "instrument_dataset_version": instrument_manifest.dataset_version,
             "full_a_snapshot_id": full_a.snapshot_id,
-            "index_snapshot_id": index.snapshot_id,
-            "industry_snapshot_id": industry.snapshot_id,
+            "index_snapshot_id": published_pools["index-synthetic-demo"].snapshot_id,
+            "industry_snapshot_id": published_pools[
+                "industry-synthetic-demo"
+            ].snapshot_id,
             "primary_bar_dataset_version": bar_versions["600000.SH:1d:none"],
             "model_config_id": verified.id,
             "symbols": [item.symbol for item in fixture.symbols],
@@ -691,14 +690,28 @@ def seed_demo_data(destination: Path) -> dict[str, object]:
         ):
             raise ValueError("existing demo destination is invalid")
         return {**payload, "seed_state": "already_seeded"}
+    if target.exists():
+        target.rmdir()
     fixture = load_demo_fixture()
-    summary = _seed_fresh(target, fixture)
-    marker.write_text(
-        json.dumps(summary, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
-        + "\n",
-        encoding="utf-8",
-    )
-    marker.chmod(0o600)
+    staging = target.parent / (f".{target.name}.stock-desk-demo-staging-{uuid4().hex}")
+    try:
+        summary = _seed_fresh(staging, fixture)
+        staging_marker = staging / DEMO_MARKER
+        staging_marker.write_text(
+            json.dumps(
+                summary,
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        staging_marker.chmod(0o600)
+        os.replace(staging, target)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
     return summary
 
 

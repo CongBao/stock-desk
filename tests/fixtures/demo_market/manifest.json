@@ -3,6 +3,7 @@
   "fixture_id": "stock-desk-synthetic-market-2026-07-08",
   "label": "PUBLIC SYNTHETIC DEMO DATA — NOT REAL MARKET DATA",
   "license": "CC0-1.0",
+  "market_source": "stock_desk_demo",
   "network_policy": "forbidden",
   "investment_recommendation_claims": false,
   "generated_at": "2026-07-07T08:00:00Z",
@@ -12,10 +13,18 @@
   "scoring_start": "2024-02-12T00:00:00+08:00",
   "scoring_end": "2024-06-28T00:00:00+08:00",
   "symbols": [
-    {"symbol": "600000.SH", "name": "Synthetic Alpha", "wave_phase": 0},
-    {"symbol": "000001.SZ", "name": "Synthetic Suspended", "wave_phase": 3},
-    {"symbol": "300001.SZ", "name": "Synthetic Limits", "wave_phase": 7},
-    {"symbol": "600036.SH", "name": "Synthetic Missing", "wave_phase": 0}
+    {"symbol": "600000.SH", "name": "Stock Desk Synthetic Alpha (CC0 Demo)", "wave_phase": 0},
+    {"symbol": "000001.SZ", "name": "Stock Desk Synthetic Suspended (CC0 Demo)", "wave_phase": 3},
+    {"symbol": "300001.SZ", "name": "Stock Desk Synthetic Limits (CC0 Demo)", "wave_phase": 7},
+    {"symbol": "600036.SH", "name": "Stock Desk Synthetic Missing (CC0 Demo)", "wave_phase": 0}
+  ],
+  "formulas": [
+    {"key": "macd", "name": "Stock Desk Demo MACD (CC0 synthetic)", "source": "DIF:EMA(C,12)-EMA(C,26);DEA:EMA(DIF,9);MACD:(DIF-DEA)*2;BUY:CROSS(DIF,DEA);SELL:CROSS(DEA,DIF);"},
+    {"key": "custom", "name": "Stock Desk Demo custom wave (CC0 synthetic)", "source": "FAST:EMA(C,3);SLOW:EMA(C,7);BUY:CROSS(FAST,SLOW);SELL:CROSS(SLOW,FAST);"}
+  ],
+  "pools": [
+    {"key": "index-synthetic-demo", "category": "index", "name": "Stock Desk Synthetic Demo Index (CC0)", "symbols": ["600000.SH", "000001.SZ", "600036.SH"]},
+    {"key": "industry-synthetic-demo", "category": "industry", "name": "Stock Desk Synthetic Demo Industry (CC0)", "symbols": ["600000.SH", "300001.SZ"]}
   ],
   "scenarios": [
     {"kind": "normal", "symbol": "600000.SH", "detail": "ordinary synthetic OHLCV bars"},
@@ -27,13 +36,13 @@
     {"kind": "missing_data", "symbol": "600036.SH", "detail": "instrument and pool membership exist while bars are explicitly absent"}
   ],
   "category_outcomes": {
-    "bars_adjustment": {"status": "actual", "source": "synthetic_fixture", "data_cutoff": "2025-10-27T08:00:00Z", "missing_reason": null, "substitute": null},
-    "instrument_calendar_trading_status": {"status": "actual", "source": "synthetic_fixture", "data_cutoff": "2025-10-27T08:00:00Z", "missing_reason": null, "substitute": null},
-    "fundamentals": {"status": "actual", "source": "synthetic_fixture", "data_cutoff": "2025-10-27T08:00:00Z", "missing_reason": null, "substitute": null},
-    "announcements": {"status": "missing", "source": "synthetic_fixture", "data_cutoff": "2025-10-27T08:00:00Z", "missing_reason": "no_data", "substitute": null},
-    "news": {"status": "actual", "source": "synthetic_fixture", "data_cutoff": "2025-10-27T08:00:00Z", "missing_reason": null, "substitute": null},
-    "index_membership": {"status": "actual", "source": "synthetic_fixture", "data_cutoff": "2025-10-27T08:00:00Z", "missing_reason": null, "substitute": null},
-    "industry": {"status": "actual", "source": "synthetic_fixture", "data_cutoff": "2025-10-27T08:00:00Z", "missing_reason": null, "substitute": null}
+    "bars_adjustment": {"status": "actual", "source": "stock_desk_demo", "data_cutoff": "2025-10-27T08:00:00Z", "missing_reason": null, "substitute": null},
+    "instrument_calendar_trading_status": {"status": "actual", "source": "stock_desk_demo", "data_cutoff": "2025-10-27T08:00:00Z", "missing_reason": null, "substitute": null},
+    "fundamentals": {"status": "actual", "source": "stock_desk_demo", "data_cutoff": "2025-10-27T08:00:00Z", "missing_reason": null, "substitute": null},
+    "announcements": {"status": "missing", "source": "stock_desk_demo", "data_cutoff": "2025-10-27T08:00:00Z", "missing_reason": "no_data", "substitute": null},
+    "news": {"status": "actual", "source": "stock_desk_demo", "data_cutoff": "2025-10-27T08:00:00Z", "missing_reason": null, "substitute": null},
+    "index_membership": {"status": "actual", "source": "stock_desk_demo", "data_cutoff": "2025-10-27T08:00:00Z", "missing_reason": null, "substitute": null},
+    "industry": {"status": "actual", "source": "stock_desk_demo", "data_cutoff": "2025-10-27T08:00:00Z", "missing_reason": null, "substitute": null}
   },
   "research": {
     "market": {"source_record": "synthetic:market:600000.SH:v1", "content": {"observation": "synthetic price series oscillates; no recommendation"}},

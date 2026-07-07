@@ -28,6 +28,7 @@ const providers = new Set([
   'baostock',
   'eastmoney',
   'tdx_local',
+  'stock_desk_demo',
   'tushare',
 ]);
 type MarketCapability = 'bars' | 'instruments' | 'trading_calendar';

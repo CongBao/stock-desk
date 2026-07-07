@@ -196,6 +196,7 @@ def test_complete_no_network_application_journey(tmp_path: Path) -> None:
         )
         assert chart.status_code == 200
         assert chart.json()["provenance"]["dataset_version"].startswith("sha256:")
+        assert chart.json()["provenance"]["source"] == "stock_desk_demo"
 
         macd = _formula(client, name="Demo MACD", source=MACD_SOURCE)
         custom = _formula(client, name="Demo custom wave", source=CUSTOM_SOURCE)
@@ -224,7 +225,8 @@ def test_complete_no_network_application_journey(tmp_path: Path) -> None:
         pool = next(
             item
             for item in client.get("/api/market/pools").json()["items"]
-            if item["category"] == "index" and item["name"] == "Synthetic Demo Index"
+            if item["category"] == "index"
+            and item["name"] == "Stock Desk Synthetic Demo Index (CC0)"
         )
         _, pooled = _run_backtest(
             client,
@@ -388,6 +390,7 @@ def test_demo_data_categories_and_missing_category_are_visible() -> None:
     fixture = load_demo_fixture(DEMO_FIXTURE_PATH)
     assert fixture.schema_version == "stock-desk-public-demo-v1"
     assert fixture.license == "CC0-1.0"
+    assert fixture.market_source == "stock_desk_demo"
     outcomes = fixture.category_outcomes
     assert set(outcomes) == {
         "bars_adjustment",
@@ -400,6 +403,7 @@ def test_demo_data_categories_and_missing_category_are_visible() -> None:
     }
     assert all(outcome.status in {"actual", "missing"} for outcome in outcomes.values())
     assert all(outcome.source and outcome.data_cutoff for outcome in outcomes.values())
+    assert {outcome.source for outcome in outcomes.values()} == {"stock_desk_demo"}
     assert outcomes["announcements"].status == "missing"
     assert outcomes["announcements"].missing_reason == "no_data"
     assert outcomes["announcements"].substitute is None
@@ -419,6 +423,7 @@ def test_demo_data_categories_and_missing_category_are_visible() -> None:
 
 def test_demo_seed_is_idempotent_and_rejects_unsafe_destinations(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     destination = tmp_path / "controlled-demo"
     first = seed_demo_data(destination)
@@ -446,3 +451,19 @@ def test_demo_seed_is_idempotent_and_rejects_unsafe_destinations(
         seed_demo_data(symlink)
     with pytest.raises(ValueError, match="unsafe"):
         seed_demo_data(Path.home())
+
+    interrupted = tmp_path / "interrupted-demo"
+
+    def fail_after_partial_write(destination: Path, _fixture: object) -> object:
+        destination.mkdir(parents=True, exist_ok=True)
+        (destination / "partial.db").write_text("partial", encoding="utf-8")
+        raise RuntimeError("injected seed failure")
+
+    monkeypatch.setattr(
+        "scripts.seed_demo_data._seed_fresh",
+        fail_after_partial_write,
+    )
+    with pytest.raises(RuntimeError, match="injected seed failure"):
+        seed_demo_data(interrupted)
+    assert not interrupted.exists()
+    assert not tuple(tmp_path.glob(".interrupted-demo.stock-desk-demo-staging-*"))

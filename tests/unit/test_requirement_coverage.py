@@ -608,7 +608,18 @@ def test_exact_schema_and_status_strength_are_enforced(
     message: str,
 ) -> None:
     changed = copy.deepcopy(matrix)
-    item = changed["requirements"][0]
+    item = (
+        next(
+            requirement
+            for requirement in changed["requirements"]
+            if requirement["status"] == "mapped"
+            and any(
+                evidence["state"] == "planned" for evidence in requirement["evidence"]
+            )
+        )
+        if message == "verified item"
+        else changed["requirements"][0]
+    )
     mutation(item)
 
     with pytest.raises(checker.ValidationError, match=message):

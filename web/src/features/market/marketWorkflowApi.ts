@@ -219,6 +219,7 @@ const providerIds = new Set([
   'baostock',
   'tdx_local',
   'eastmoney',
+  'stock_desk_demo',
 ]);
 const poolCategories = new Set(['all_a', 'index', 'industry']);
 const presetKeyPattern = /^[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?$/u;

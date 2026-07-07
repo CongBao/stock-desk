@@ -120,6 +120,7 @@ class ProviderId(StrEnum):
     EASTMONEY = "eastmoney"
     TDX_LOCAL = "tdx_local"
     TUSHARE = "tushare"
+    STOCK_DESK_DEMO = "stock_desk_demo"
 
 
 class Exchange(StrEnum):

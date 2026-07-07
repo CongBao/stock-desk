@@ -1,11 +1,11 @@
 import { expect, test, type Page } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 
-const MACD_NAME = 'E2E MACD 金叉死叉';
-const CUSTOM_NAME = 'E2E 自定义波段';
-const PARTIAL_POOL_NAME = 'E2E 部分池';
+const MACD_NAME = 'Stock Desk Demo MACD (CC0 synthetic)';
+const CUSTOM_NAME = 'Stock Desk Demo custom wave (CC0 synthetic)';
+const PARTIAL_POOL_NAME = 'Stock Desk Synthetic Demo Index (CC0)';
 const START = '2024-02-10';
-const END = '2024-03-15';
+const END = '2024-06-28';
 
 async function noHorizontalOverflow(page: Page) {
   return page.evaluate(() => {
@@ -103,7 +103,10 @@ test.describe.serial('Stage 3 real local backtesting', () => {
     await page.goto('/market');
     await page.getByRole('combobox', { name: '搜索证券' }).fill('600000');
     await page
-      .getByRole('option', { name: '浦发银行 600000.SH', exact: true })
+      .getByRole('option', {
+        name: 'Stock Desk Synthetic Alpha (CC0 Demo) 600000.SH',
+        exact: true,
+      })
       .click();
     await expect(page.locator('.market-chart-canvas canvas')).toHaveCount(1);
     await page.getByLabel('开始日期').fill(START);
@@ -145,7 +148,7 @@ test.describe.serial('Stage 3 real local backtesting', () => {
     await page.getByRole('radio', { name: '按月' }).click();
     await expect(
       page.getByRole('region', { name: '可横向滚动的分组表现表' }),
-    ).toContainText('2024-02');
+    ).toContainText('2024-03');
     await page.getByRole('tab', { name: '交易明细' }).click();
     const realizedRows = page.locator(
       '[aria-label="可横向滚动的交易表"] tbody tr',
@@ -218,7 +221,7 @@ test.describe.serial('Stage 3 real local backtesting', () => {
     await page.getByRole('radio', { name: '预设股票池' }).click();
     await page
       .locator('.backtest-step select')
-      .selectOption({ label: `${PARTIAL_POOL_NAME} · 2 只` });
+      .selectOption({ label: `${PARTIAL_POOL_NAME} · 3 只` });
     await page.getByRole('button', { name: '下一步' }).click();
     await page.getByLabel('开始日期（上海时区，含）').fill(START);
     await page.getByLabel('结束日期（上海时区，不含）').fill(END);
@@ -226,7 +229,7 @@ test.describe.serial('Stage 3 real local backtesting', () => {
     await page.getByRole('button', { name: '下一步' }).click();
     await page.getByRole('button', { name: '运行预检' }).click();
     const preflight = page.getByLabel('服务端预检结果');
-    await expect(preflight).toContainText('可运行 1 / 2');
+    await expect(preflight).toContainText('可运行 2 / 3');
     await expect(preflight).toContainText('缺口 1');
     await preflight.getByRole('checkbox').check();
     await page.getByRole('button', { name: '提交回测' }).click();
@@ -238,7 +241,7 @@ test.describe.serial('Stage 3 real local backtesting', () => {
     await expect(metadata).toContainText('backtest-engine-v1');
     await expect(page.getByText('数据不足', { exact: true })).toBeVisible();
     await page.getByRole('tab', { name: '失败记录' }).click();
-    await expect(page.getByText('000001.SZ')).toBeVisible();
+    await expect(page.getByText('600036.SH')).toBeVisible();
   });
 
   test('1024 keeps wizard and completed replay reachable without page overflow', async ({

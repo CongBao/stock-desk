@@ -2,8 +2,21 @@ import { expect, test, type Page } from '@playwright/test';
 
 const START = '2024-02-10';
 const END = '2024-06-28';
-const CUSTOM_NAME = 'E2E 自定义波段';
-const PARTIAL_POOL_NAME = 'E2E 部分池';
+const MACD_NAME = 'Stock Desk Demo MACD (CC0 synthetic)';
+const CUSTOM_NAME = 'Stock Desk Demo custom wave (CC0 synthetic)';
+const PARTIAL_POOL_NAME = 'Stock Desk Synthetic Demo Index (CC0)';
+
+type PreviewBody = {
+  readonly formula: {
+    readonly formula_version_id: string;
+    readonly formula_checksum: string;
+    readonly timestamps: readonly string[];
+    readonly signals: readonly {
+      readonly name: string;
+      readonly values: readonly (boolean | null)[];
+    }[];
+  };
+};
 
 async function noHorizontalOverflow(page: Page): Promise<boolean> {
   return page.evaluate(() => {
@@ -30,6 +43,26 @@ async function waitForBacktestReport(page: Page) {
   });
 }
 
+async function previewSavedFormula(
+  page: Page,
+  name: string,
+): Promise<PreviewBody> {
+  await page
+    .getByLabel('打开已保存公式')
+    .selectOption({ label: `${name} · v1` });
+  await expect(page.getByText(`已打开：${name}`)).toBeVisible();
+  const response = page.waitForResponse((candidate) => {
+    const url = new URL(candidate.url());
+    return (
+      url.pathname === '/api/market/bars' &&
+      url.searchParams.has('formula_version_id') &&
+      candidate.status() === 200
+    );
+  });
+  await page.getByRole('button', { name: '运行预览' }).click();
+  return (await (await response).json()) as PreviewBody;
+}
+
 test('complete public demo journey uses real API worker and frozen provenance', async ({
   page,
   request,
@@ -44,36 +77,25 @@ test('complete public demo journey uses real API worker and frozen provenance', 
   const search = page.getByRole('combobox', { name: '搜索证券' });
   await search.fill('600000');
   await page
-    .getByRole('option', { name: '浦发银行 600000.SH', exact: true })
+    .getByRole('option', {
+      name: 'Stock Desk Synthetic Alpha (CC0 Demo) 600000.SH',
+      exact: true,
+    })
     .click();
   await expect(page.locator('.market-chart-canvas canvas')).toHaveCount(1);
-  await expect(page.getByText(/数据来源：Tushare/u)).toBeVisible();
+  await expect(
+    page.getByText(/数据来源：Stock Desk 合成演示 · CC0-1\.0/u),
+  ).toBeVisible();
 
   await page.getByRole('link', { name: '自定义公式' }).click();
-  await page
-    .getByLabel('打开已保存公式')
-    .selectOption({ label: 'E2E MACD 金叉死叉 · v1' });
-  await expect(page.getByText('已打开：E2E MACD 金叉死叉')).toBeVisible();
-  const previewResponse = page.waitForResponse((response) => {
-    const url = new URL(response.url());
-    return (
-      url.pathname === '/api/market/bars' &&
-      url.searchParams.has('formula_version_id') &&
-      response.status() === 200
-    );
-  });
-  await page.getByRole('button', { name: '运行预览' }).click();
-  const previewBody = (await (await previewResponse).json()) as {
-    readonly formula: {
-      readonly formula_version_id: string;
-      readonly formula_checksum: string;
-      readonly timestamps: readonly string[];
-      readonly signals: readonly {
-        readonly name: string;
-        readonly values: readonly (boolean | null)[];
-      }[];
-    };
-  };
+  const macdPreview = await previewSavedFormula(page, MACD_NAME);
+  await expect(page.getByText(/[1-9]\d* 个买点/u)).toBeVisible();
+  expect(
+    macdPreview.formula.signals
+      .find((signal) => signal.name === 'BUY')
+      ?.values.some(Boolean),
+  ).toBe(true);
+  const previewBody = await previewSavedFormula(page, CUSTOM_NAME);
   await expect(page.getByText(/[1-9]\d* 个买点/u)).toBeVisible();
   const customFormula = (await (
     await request.get('/api/formulas?limit=100')
@@ -87,9 +109,7 @@ test('complete public demo journey uses real API worker and frozen provenance', 
   await page.goto(
     `/backtests?symbol=600000.SH&period=1d&adjustment=qfq&start=${START}&end=${END}`,
   );
-  await page
-    .getByLabel('保存的交易公式')
-    .selectOption({ label: 'E2E MACD 金叉死叉' });
+  await page.getByLabel('保存的交易公式').selectOption({ label: CUSTOM_NAME });
   await page.getByRole('button', { name: '下一步' }).click();
   await finishCommonBacktestSteps(page);
   await expect(page.getByLabel('服务端预检结果')).toContainText('可运行 1 / 1');
@@ -152,12 +172,12 @@ test('complete public demo journey uses real API worker and frozen provenance', 
   expect(replay.fill_markers[0]?.signal_at).toBe(firstEligibleBuy);
 
   await page.goto('/backtests');
-  await page.getByLabel('保存的交易公式').selectOption({ label: CUSTOM_NAME });
+  await page.getByLabel('保存的交易公式').selectOption({ label: MACD_NAME });
   await page.getByRole('button', { name: '下一步' }).click();
   await page.getByRole('radio', { name: '预设股票池' }).click();
   await page
     .locator('.backtest-step select')
-    .selectOption({ label: `${PARTIAL_POOL_NAME} · 2 只` });
+    .selectOption({ label: `${PARTIAL_POOL_NAME} · 3 只` });
   await page.getByRole('button', { name: '下一步' }).click();
   await page.getByLabel('开始日期（上海时区，含）').fill(START);
   await page.getByLabel('结束日期（上海时区，不含）').fill(END);
@@ -165,7 +185,7 @@ test('complete public demo journey uses real API worker and frozen provenance', 
   await page.getByRole('button', { name: '下一步' }).click();
   await page.getByRole('button', { name: '运行预检' }).click();
   const poolPreflight = page.getByLabel('服务端预检结果');
-  await expect(poolPreflight).toContainText('可运行 1 / 2');
+  await expect(poolPreflight).toContainText('可运行 2 / 3');
   await poolPreflight.getByRole('checkbox').check();
   await page.getByRole('button', { name: '提交回测' }).click();
   await page.getByRole('button', { name: '收起主导航' }).click();
