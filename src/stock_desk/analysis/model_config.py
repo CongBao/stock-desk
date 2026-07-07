@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Awaitable, Callable, Sequence
 from enum import StrEnum
 import ipaddress
 import math
+import socket
 from threading import RLock
-from typing import Protocol, Self
+from typing import Protocol, Self, TypeAlias
 from urllib.parse import urlsplit
 
 from pydantic import (
@@ -17,10 +20,10 @@ from pydantic import (
     model_validator,
 )
 
-
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 OLLAMA_BASE_URL = "http://127.0.0.1:11434"
 MODEL_API_KEY_SECRET_NAME = "analysis_model_api_key"
+HostResolver: TypeAlias = Callable[[str, int], Awaitable[Sequence[str]]]
 
 _DANGEROUS_PORTS = frozenset(
     {
@@ -64,6 +67,27 @@ class ModelProviderKind(StrEnum):
     DEEPSEEK = "deepseek"
     OPENAI_COMPATIBLE = "openai_compatible"
     OLLAMA = "ollama"
+
+
+class ModelConfigStorageError(RuntimeError):
+    """A secret-bearing configuration write failed without exposing its input."""
+
+    def __init__(self, *_unsafe_context: object) -> None:
+        super().__init__("Model configuration could not be saved")
+
+
+class ModelHostResolutionError(RuntimeError):
+    """A provider hostname could not be resolved to validated addresses."""
+
+    def __init__(self, *_unsafe_context: object) -> None:
+        super().__init__("Model provider hostname resolution failed")
+
+
+class ModelResolvedEndpointError(RuntimeError):
+    """A resolved provider address is not an allowed public destination."""
+
+    def __init__(self, *_unsafe_context: object) -> None:
+        super().__init__("Model provider resolved endpoint is unsafe")
 
 
 class _FrozenModel(BaseModel):
@@ -229,10 +253,16 @@ class ModelConfigService:
     def save(self, update: ModelConfigUpdate) -> ModelConfig:
         with self._lock:
             if update.api_key is not None:
-                self._secret_store.save_secret(
-                    MODEL_API_KEY_SECRET_NAME,
-                    update.api_key.get_secret_value(),
-                )
+                write_failed = False
+                try:
+                    self._secret_store.save_secret(
+                        MODEL_API_KEY_SECRET_NAME,
+                        update.api_key.get_secret_value(),
+                    )
+                except Exception:
+                    write_failed = True
+                if write_failed:
+                    raise ModelConfigStorageError() from None
             configured = (
                 False
                 if update.provider is ModelProviderKind.OLLAMA
@@ -311,6 +341,52 @@ def validate_provider_url(provider: ModelProviderKind, value: str) -> str:
     if parsed.scheme != "https" or _is_non_public_host(hostname):
         raise ValueError("remote model URL must use a public HTTPS endpoint")
     return value
+
+
+async def system_host_resolver(hostname: str, port: int) -> tuple[str, ...]:
+    records = await asyncio.get_running_loop().getaddrinfo(
+        hostname,
+        port,
+        family=socket.AF_UNSPEC,
+        type=socket.SOCK_STREAM,
+    )
+    addresses: list[str] = []
+    for _family, _type, _protocol, _canonical_name, socket_address in records:
+        if socket_address and isinstance(socket_address[0], str):
+            addresses.append(socket_address[0])
+    return tuple(dict.fromkeys(addresses))
+
+
+async def validate_resolved_remote_url(
+    value: str,
+    resolver: HostResolver,
+) -> None:
+    parsed = urlsplit(value)
+    hostname = parsed.hostname
+    if hostname is None:
+        raise ModelResolvedEndpointError()
+    port = parsed.port or 443
+    resolved: Sequence[str] | None = None
+    try:
+        resolved = await resolver(hostname, port)
+    except Exception:
+        pass
+    if resolved is None:
+        raise ModelHostResolutionError() from None
+    if isinstance(resolved, (str, bytes)) or not resolved or len(resolved) > 64:
+        raise ModelHostResolutionError()
+    for raw_address in resolved:
+        if not isinstance(raw_address, str) or len(raw_address) > 128:
+            raise ModelHostResolutionError()
+        address: ipaddress.IPv4Address | ipaddress.IPv6Address | None = None
+        try:
+            address = ipaddress.ip_address(raw_address)
+        except ValueError:
+            pass
+        if address is None:
+            raise ModelHostResolutionError() from None
+        if not address.is_global:
+            raise ModelResolvedEndpointError()
 
 
 def _is_loopback(hostname: str) -> bool:

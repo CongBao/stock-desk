@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from enum import StrEnum
+import json
 import math
-from typing import Protocol, runtime_checkable
+from typing import Final, Protocol, runtime_checkable
 
 from pydantic import (
     BaseModel,
@@ -14,6 +15,11 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+
+
+MAX_MODEL_JSON_BYTES: Final = 262_144
+MAX_MODEL_JSON_DEPTH: Final = 32
+MAX_MODEL_JSON_NODES: Final = 10_000
 
 
 class _FrozenModel(BaseModel):
@@ -31,6 +37,8 @@ class ModelErrorCode(StrEnum):
     AUTHENTICATION = "authentication"
     RATE_LIMIT = "rate_limit"
     SERVER = "server"
+    DNS = "dns"
+    UNSAFE_ENDPOINT = "unsafe_endpoint"
     INVALID_RESPONSE = "invalid_response"
 
 
@@ -83,6 +91,23 @@ class ModelRequest(_FrozenModel):
             raise ValueError("output schema must describe a JSON object")
         return value
 
+    @model_validator(mode="after")
+    def validate_json_budget(self) -> ModelRequest:
+        _validate_json_shape((self.data_blocks, self.output_schema))
+        encoded = json.dumps(
+            {
+                "data_blocks": self.data_blocks,
+                "output_schema": self.output_schema,
+            },
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        if len(encoded) > MAX_MODEL_JSON_BYTES:
+            raise ValueError("model request JSON exceeds the byte limit")
+        return self
+
 
 class ModelResponse(_FrozenModel):
     provider: str = Field(min_length=1, max_length=64)
@@ -130,6 +155,16 @@ class ModelRateLimitError(ModelProviderError):
 class ModelServerError(ModelProviderError):
     code = ModelErrorCode.SERVER
     safe_message = "model provider is unavailable"
+
+
+class ModelDNSResolutionError(ModelProviderError):
+    code = ModelErrorCode.DNS
+    safe_message = "model provider hostname could not be resolved"
+
+
+class ModelUnsafeEndpointError(ModelProviderError):
+    code = ModelErrorCode.UNSAFE_ENDPOINT
+    safe_message = "model provider resolved to an unsafe endpoint"
 
 
 class ModelInvalidResponseError(ModelProviderError):
@@ -188,3 +223,19 @@ def validate_model_name(model: str) -> str:
     ):
         raise ValueError("model name is invalid")
     return model
+
+
+def _validate_json_shape(roots: tuple[object, ...]) -> None:
+    stack = [(root, 1) for root in roots]
+    node_count = 0
+    while stack:
+        value, depth = stack.pop()
+        if depth > MAX_MODEL_JSON_DEPTH:
+            raise ValueError("model request JSON exceeds the depth limit")
+        node_count += 1
+        if node_count > MAX_MODEL_JSON_NODES:
+            raise ValueError("model request JSON exceeds the node limit")
+        if isinstance(value, dict):
+            stack.extend((child, depth + 1) for child in value.values())
+        elif isinstance(value, (list, tuple)):
+            stack.extend((child, depth + 1) for child in value)

@@ -6,14 +6,20 @@ import httpx2
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from stock_desk.analysis.model_config import (
+    HostResolver,
     MODEL_API_KEY_SECRET_NAME,
+    ModelHostResolutionError,
     ModelProviderKind,
+    ModelResolvedEndpointError,
+    system_host_resolver,
+    validate_resolved_remote_url,
     validate_provider_url,
 )
 from stock_desk.analysis.providers.base import (
     connection_failure,
     ModelAuthenticationError,
     ModelConnectionResult,
+    ModelDNSResolutionError,
     ModelInvalidResponseError,
     ModelProviderError,
     ModelRequest,
@@ -21,6 +27,7 @@ from stock_desk.analysis.providers.base import (
     ModelSecretReader,
     ModelServerError,
     ModelTimeoutError,
+    ModelUnsafeEndpointError,
     ModelUsage,
     raise_for_status,
     validate_model_name,
@@ -71,6 +78,7 @@ class OpenAICompatibleProvider:
         secret_store: ModelSecretReader,
         secret_name: str = MODEL_API_KEY_SECRET_NAME,
         transport: httpx2.AsyncBaseTransport | None = None,
+        resolver: HostResolver = system_host_resolver,
     ) -> None:
         self._base_url = validate_provider_url(
             ModelProviderKind.OPENAI_COMPATIBLE,
@@ -80,6 +88,7 @@ class OpenAICompatibleProvider:
         self._secret_store = secret_store
         self._secret_name = secret_name
         self._transport = transport
+        self._resolver = resolver
 
     def __repr__(self) -> str:
         return (
@@ -188,6 +197,15 @@ class OpenAICompatibleProvider:
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         }
+        resolution_error: ModelProviderError | None = None
+        try:
+            await validate_resolved_remote_url(url, self._resolver)
+        except ModelHostResolutionError:
+            resolution_error = ModelDNSResolutionError()
+        except ModelResolvedEndpointError:
+            resolution_error = ModelUnsafeEndpointError()
+        if resolution_error is not None:
+            raise resolution_error from None
         try:
             with scoped_log_redaction(api_key):
                 async with httpx2.AsyncClient(

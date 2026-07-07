@@ -6,8 +6,10 @@ import httpx2
 
 from stock_desk.analysis.model_config import (
     DEEPSEEK_BASE_URL,
+    HostResolver,
     MODEL_API_KEY_SECRET_NAME,
     ModelProviderKind,
+    system_host_resolver,
 )
 from stock_desk.analysis.providers.base import ModelSecretReader
 from stock_desk.analysis.providers.openai_compatible import OpenAICompatibleProvider
@@ -26,6 +28,7 @@ class DeepSeekProvider(OpenAICompatibleProvider):
         base_url: str = DEEPSEEK_BASE_URL,
         secret_name: str = MODEL_API_KEY_SECRET_NAME,
         transport: httpx2.AsyncBaseTransport | None = None,
+        resolver: HostResolver = system_host_resolver,
     ) -> None:
         super().__init__(
             base_url=base_url,
@@ -33,4 +36,5 @@ class DeepSeekProvider(OpenAICompatibleProvider):
             secret_store=secret_store,
             secret_name=secret_name,
             transport=transport,
+            resolver=resolver,
         )

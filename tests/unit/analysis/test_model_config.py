@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import subprocess
+import sys
 from typing import Any
 
 import pytest
@@ -8,6 +10,7 @@ from pydantic import SecretStr, ValidationError
 from stock_desk.analysis.model_config import (
     InMemoryModelConfigRepository,
     ModelConfig,
+    ModelConfigStorageError,
     ModelConfigService,
     ModelConfigUpdate,
     ModelProviderKind,
@@ -30,6 +33,15 @@ class StubSecretStore:
     def masked_secret(self, name: str) -> str:
         assert name in self.values
         return "sk-c•••••••leak"
+
+
+def test_model_config_imports_without_loading_provider_adapters() -> None:
+    subprocess.run(
+        [sys.executable, "-c", "import stock_desk.analysis.model_config"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
 
 
 def update(**overrides: Any) -> ModelConfigUpdate:
@@ -94,6 +106,27 @@ def test_service_stores_key_only_in_secret_store_and_public_safe_config() -> Non
     assert repository.load() == saved
     public_rendered = f"{saved!r} {saved.model_dump()} {saved.model_dump_json()}"
     assert API_KEY not in public_rendered
+
+
+def test_secret_store_write_failure_is_typed_and_never_echoes_key() -> None:
+    class ExplodingSecretStore(StubSecretStore):
+        def save_secret(self, _name: str, value: str) -> None:
+            raise RuntimeError(f"failed to save {value}")
+
+    repository = InMemoryModelConfigRepository()
+    service = ModelConfigService(
+        repository=repository,
+        secret_store=ExplodingSecretStore(),
+    )
+
+    with pytest.raises(ModelConfigStorageError) as captured:
+        service.save(update())
+
+    rendered = f"{captured.value!r} {captured.value}"
+    assert API_KEY not in rendered
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+    assert repository.load() is None
 
 
 def test_deepseek_and_ollama_resolve_named_provider_defaults() -> None:
