@@ -1,0 +1,488 @@
+from __future__ import annotations
+
+from collections.abc import Callable, Mapping, Sequence
+from datetime import datetime, timezone
+from enum import StrEnum
+import hashlib
+import json
+import math
+import re
+from typing import Annotated, cast, Final, Literal, Protocol, Self
+from urllib.parse import urlsplit
+
+from pydantic import (
+    BaseModel,
+    AliasChoices,
+    ConfigDict,
+    Field,
+    field_serializer,
+    field_validator,
+    JsonValue,
+    model_validator,
+    StringConstraints,
+    TypeAdapter,
+)
+
+from stock_desk.market.types import CanonicalSymbol, UtcDatetime
+
+
+MAX_SECTION_CONTENT_BYTES: Final = 262_144
+MAX_SECTION_CONTENT_DEPTH: Final = 32
+MAX_SECTION_CONTENT_NODES: Final = 20_000
+SNAPSHOT_SCHEMA_VERSION: Final = "analysis-snapshot-v1"
+
+Sha256Digest = Annotated[
+    str,
+    StringConstraints(strict=True, pattern=r"^sha256:[0-9a-f]{64}$"),
+]
+_SOURCE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,63}$")
+_RECOVERY_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+_SYMBOL_ADAPTER = TypeAdapter(CanonicalSymbol)
+
+
+class ResearchSectionKind(StrEnum):
+    MARKET = "market"
+    FUNDAMENTALS = "fundamentals"
+    ANNOUNCEMENTS = "announcements"
+    NEWS = "news"
+
+
+RESEARCH_SECTION_ORDER: Final = (
+    ResearchSectionKind.MARKET,
+    ResearchSectionKind.FUNDAMENTALS,
+    ResearchSectionKind.ANNOUNCEMENTS,
+    ResearchSectionKind.NEWS,
+)
+_SECTION_ORDINAL = {
+    kind: ordinal for ordinal, kind in enumerate(RESEARCH_SECTION_ORDER)
+}
+
+
+class ResearchQualityFlag(StrEnum):
+    PARTIAL = "partial"
+    STALE = "stale"
+    EXPIRED = "expired"
+    DEGRADED_SOURCE = "degraded_source"
+    UNVERIFIED = "unverified"
+    CONFLICTING = "conflicting"
+
+
+class ResearchMissingReason(StrEnum):
+    NO_PROVIDER = "no_provider"
+    MISSING = "missing"
+    NO_DATA = "no_data"
+    PERMISSION_DENIED = "permission_denied"
+    UNSUPPORTED = "unsupported"
+    PROVIDER_UNAVAILABLE = "provider_unavailable"
+    TIMEOUT = "timeout"
+    INVALID_RESPONSE = "invalid_response"
+
+
+class _FrozenAnalysisModel(BaseModel):
+    model_config = ConfigDict(
+        allow_inf_nan=False,
+        extra="forbid",
+        frozen=True,
+        hide_input_in_errors=True,
+        serialize_by_alias=True,
+        strict=True,
+    )
+
+
+def _validate_safe_text(
+    value: str,
+    *,
+    label: str,
+    maximum: int,
+) -> str:
+    if (
+        not value
+        or len(value) > maximum
+        or value != value.strip()
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
+        raise ValueError(f"{label} is invalid")
+    return value
+
+
+def _validate_source_url(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if (
+        len(value) > 2_048
+        or value != value.strip()
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
+        raise ValueError("source URL is invalid")
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except ValueError:
+        raise ValueError("source URL is invalid") from None
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or port == 0
+    ):
+        raise ValueError("source URL is unsafe")
+    return value
+
+
+def _validate_json_shape(value: object) -> None:
+    stack: list[tuple[object, int]] = [(value, 1)]
+    node_count = 0
+    while stack:
+        current, depth = stack.pop()
+        if depth > MAX_SECTION_CONTENT_DEPTH:
+            raise ValueError("section content exceeds the depth limit")
+        node_count += 1
+        if node_count > MAX_SECTION_CONTENT_NODES:
+            raise ValueError("section content exceeds the node limit")
+        if isinstance(current, Mapping):
+            for key, child in current.items():
+                if type(key) is not str:
+                    raise ValueError("section content keys must be strings")
+                stack.append((child, depth + 1))
+        elif isinstance(current, Sequence) and not isinstance(
+            current, (str, bytes, bytearray)
+        ):
+            stack.extend((child, depth + 1) for child in current)
+        elif type(current) is float:
+            if not math.isfinite(current):
+                raise ValueError("section content must contain only finite numbers")
+        elif current is not None and type(current) not in {str, int, bool}:
+            raise ValueError("section content contains a non-JSON value")
+
+
+def _canonical_content_json(value: object) -> bytes:
+    if not isinstance(value, Mapping) or not value:
+        raise ValueError("section content must be a nonempty JSON object")
+    _validate_json_shape(value)
+    encoded: bytes | None = None
+    try:
+        encoded = json.dumps(
+            value,
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    except (TypeError, ValueError, RecursionError):
+        pass
+    if encoded is None:
+        raise ValueError("section content is invalid") from None
+    if len(encoded) > MAX_SECTION_CONTENT_BYTES:
+        raise ValueError("section content exceeds the byte limit")
+    return encoded
+
+
+def _decoded_json_object(value: bytes) -> dict[str, JsonValue]:
+    decoded = json.loads(value)
+    if not isinstance(decoded, dict):
+        raise ValueError("section content is invalid")
+    return cast(dict[str, JsonValue], decoded)
+
+
+class ResearchSection(_FrozenAnalysisModel):
+    kind: ResearchSectionKind
+    canonical_source: str = Field(min_length=1, max_length=64)
+    source_record: str = Field(min_length=1, max_length=1_024)
+    source_url: str | None = Field(default=None, max_length=2_048)
+    published_at: UtcDatetime | None = None
+    data_cutoff: UtcDatetime
+    fetched_at: UtcDatetime
+    dataset_version: str = Field(min_length=1, max_length=256)
+    quality_flags: tuple[ResearchQualityFlag, ...] = ()
+    content_json: bytes = Field(
+        validation_alias=AliasChoices("content", "content_json"),
+        serialization_alias="content",
+        repr=False,
+    )
+
+    @field_validator("content_json", mode="before")
+    @classmethod
+    def freeze_content(cls, value: object) -> bytes:
+        if isinstance(value, (bytes, bytearray)):
+            try:
+                value = json.loads(bytes(value))
+            except (UnicodeDecodeError, ValueError, TypeError):
+                raise ValueError("section content is invalid") from None
+        return _canonical_content_json(value)
+
+    @field_serializer("content_json")
+    def serialize_content(self, value: bytes) -> dict[str, JsonValue]:
+        return _decoded_json_object(value)
+
+    @field_validator("canonical_source")
+    @classmethod
+    def validate_source(cls, value: str) -> str:
+        if _SOURCE_PATTERN.fullmatch(value) is None:
+            raise ValueError("canonical source is invalid")
+        return value
+
+    @field_validator("source_record")
+    @classmethod
+    def validate_source_record(cls, value: str) -> str:
+        return _validate_safe_text(value, label="source record", maximum=1_024)
+
+    @field_validator("source_url")
+    @classmethod
+    def validate_source_url(cls, value: str | None) -> str | None:
+        return _validate_source_url(value)
+
+    @field_validator("dataset_version")
+    @classmethod
+    def validate_dataset_version(cls, value: str) -> str:
+        return _validate_safe_text(value, label="dataset version", maximum=256)
+
+    @field_validator("quality_flags", mode="before")
+    @classmethod
+    def canonicalize_quality_flags(cls, value: object) -> object:
+        if type(value) is not tuple:
+            raise ValueError("quality flags must be a tuple")
+        flags = cast(tuple[object, ...], value)
+        if len(flags) != len(frozenset(flags)):
+            raise ValueError("quality flags cannot contain duplicate values")
+        return tuple(sorted(flags, key=lambda item: str(item)))
+
+    @model_validator(mode="after")
+    def validate_provenance(self) -> Self:
+        if self.data_cutoff > self.fetched_at:
+            raise ValueError("data cutoff cannot be later than fetch time")
+        if self.published_at is not None and self.published_at > self.fetched_at:
+            raise ValueError("publication time cannot be later than fetch time")
+        if (
+            self.kind
+            in {
+                ResearchSectionKind.ANNOUNCEMENTS,
+                ResearchSectionKind.NEWS,
+            }
+            and self.published_at is None
+        ):
+            raise ValueError("published research section requires publication time")
+        return self
+
+    @property
+    def content(self) -> dict[str, JsonValue]:
+        return _decoded_json_object(self.content_json)
+
+    def canonical_payload(self) -> dict[str, object]:
+        return {
+            "kind": self.kind.value,
+            "canonical_source": self.canonical_source,
+            "source_record": self.source_record,
+            "source_url": self.source_url,
+            "published_at": _canonical_datetime(self.published_at),
+            "data_cutoff": _canonical_datetime(self.data_cutoff),
+            "fetched_at": _canonical_datetime(self.fetched_at),
+            "dataset_version": self.dataset_version,
+            "quality_flags": tuple(flag.value for flag in self.quality_flags),
+            "content": self.content,
+        }
+
+
+class MissingResearchSection(_FrozenAnalysisModel):
+    kind: ResearchSectionKind
+    reason: ResearchMissingReason
+    checked_at: UtcDatetime
+    attempted_sources: tuple[str, ...] = Field(max_length=16)
+    recovery_code: str = Field(min_length=1, max_length=64)
+
+    @field_validator("attempted_sources")
+    @classmethod
+    def validate_attempted_sources(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(value) != len(frozenset(value)):
+            raise ValueError("attempted sources cannot contain duplicates")
+        for source in value:
+            if _SOURCE_PATTERN.fullmatch(source) is None:
+                raise ValueError("attempted source is invalid")
+        return value
+
+    @field_validator("recovery_code")
+    @classmethod
+    def validate_recovery_code(cls, value: str) -> str:
+        if _RECOVERY_PATTERN.fullmatch(value) is None:
+            raise ValueError("recovery code is invalid")
+        return value
+
+    def canonical_payload(self) -> dict[str, object]:
+        return {
+            "kind": self.kind.value,
+            "reason": self.reason.value,
+            "checked_at": _canonical_datetime(self.checked_at),
+            "attempted_sources": self.attempted_sources,
+            "recovery_code": self.recovery_code,
+        }
+
+
+class ResearchDataServiceProtocol(Protocol):
+    def load_all(
+        self,
+        symbol: CanonicalSymbol,
+    ) -> tuple[ResearchSection | MissingResearchSection, ...]: ...
+
+
+class ResearchSnapshot(_FrozenAnalysisModel):
+    schema_version: Literal["analysis-snapshot-v1"] = SNAPSHOT_SCHEMA_VERSION
+    snapshot_id: Sha256Digest
+    symbol: CanonicalSymbol
+    frozen_at: UtcDatetime
+    sections: tuple[ResearchSection, ...]
+    missing_sections: tuple[MissingResearchSection, ...]
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        symbol: str,
+        frozen_at: datetime,
+        sections: tuple[ResearchSection, ...],
+        missing_sections: tuple[MissingResearchSection, ...],
+    ) -> ResearchSnapshot:
+        ordered_sections = tuple(
+            sorted(sections, key=lambda item: _SECTION_ORDINAL[item.kind])
+        )
+        ordered_missing = tuple(
+            sorted(missing_sections, key=lambda item: _SECTION_ORDINAL[item.kind])
+        )
+        identity = _snapshot_identity_payload(
+            symbol=symbol,
+            frozen_at=frozen_at,
+            sections=ordered_sections,
+            missing_sections=ordered_missing,
+        )
+        return cls(
+            snapshot_id=_content_id(identity),
+            symbol=symbol,
+            frozen_at=frozen_at,
+            sections=ordered_sections,
+            missing_sections=ordered_missing,
+        )
+
+    @model_validator(mode="after")
+    def validate_snapshot(self) -> Self:
+        kinds = tuple(section.kind for section in self.sections) + tuple(
+            missing.kind for missing in self.missing_sections
+        )
+        if len(kinds) != len(RESEARCH_SECTION_ORDER) or set(kinds) != set(
+            RESEARCH_SECTION_ORDER
+        ):
+            raise ValueError("snapshot requires exactly one outcome for every kind")
+        if self.sections != tuple(
+            sorted(self.sections, key=lambda item: _SECTION_ORDINAL[item.kind])
+        ) or self.missing_sections != tuple(
+            sorted(
+                self.missing_sections,
+                key=lambda item: _SECTION_ORDINAL[item.kind],
+            )
+        ):
+            raise ValueError("snapshot outcomes must use canonical order")
+        if any(section.fetched_at > self.frozen_at for section in self.sections):
+            raise ValueError("section fetch time cannot be later than snapshot freeze")
+        if any(
+            missing.checked_at > self.frozen_at for missing in self.missing_sections
+        ):
+            raise ValueError("missing check cannot be later than snapshot freeze")
+        expected = _content_id(
+            _snapshot_identity_payload(
+                symbol=self.symbol,
+                frozen_at=self.frozen_at,
+                sections=self.sections,
+                missing_sections=self.missing_sections,
+            )
+        )
+        if self.snapshot_id != expected:
+            raise ValueError("snapshot_id does not match canonical snapshot content")
+        return self
+
+    def section(self, kind: ResearchSectionKind) -> ResearchSection | None:
+        for section in self.sections:
+            if section.kind is kind:
+                return section
+        return None
+
+    def canonical_json_bytes(self) -> bytes:
+        return _canonical_json_bytes(
+            {
+                "snapshot_id": self.snapshot_id,
+                **_snapshot_identity_payload(
+                    symbol=self.symbol,
+                    frozen_at=self.frozen_at,
+                    sections=self.sections,
+                    missing_sections=self.missing_sections,
+                ),
+            }
+        )
+
+
+class ResearchSnapshotBuilder:
+    def __init__(
+        self,
+        *,
+        data_service: ResearchDataServiceProtocol,
+        clock: Callable[[], datetime],
+    ) -> None:
+        self._data_service = data_service
+        self._clock = clock
+
+    def build(self, symbol: str) -> ResearchSnapshot:
+        canonical_symbol = _SYMBOL_ADAPTER.validate_python(symbol, strict=True)
+        outcomes = self._data_service.load_all(canonical_symbol)
+        sections = tuple(
+            outcome for outcome in outcomes if isinstance(outcome, ResearchSection)
+        )
+        missing = tuple(
+            outcome
+            for outcome in outcomes
+            if isinstance(outcome, MissingResearchSection)
+        )
+        if len(sections) + len(missing) != len(outcomes):
+            raise TypeError("research data service returned an invalid outcome")
+        return ResearchSnapshot.create(
+            symbol=canonical_symbol,
+            frozen_at=self._clock(),
+            sections=sections,
+            missing_sections=missing,
+        )
+
+
+def _snapshot_identity_payload(
+    *,
+    symbol: str,
+    frozen_at: datetime,
+    sections: tuple[ResearchSection, ...],
+    missing_sections: tuple[MissingResearchSection, ...],
+) -> dict[str, object]:
+    return {
+        "schema_version": SNAPSHOT_SCHEMA_VERSION,
+        "symbol": symbol,
+        "frozen_at": _canonical_datetime(frozen_at),
+        "sections": tuple(section.canonical_payload() for section in sections),
+        "missing_sections": tuple(
+            missing.canonical_payload() for missing in missing_sections
+        ),
+    }
+
+
+def _canonical_datetime(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError("canonical datetime must be timezone-aware")
+    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _canonical_json_bytes(value: object) -> bytes:
+    return json.dumps(
+        value,
+        allow_nan=False,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+
+
+def _content_id(value: object) -> str:
+    return f"sha256:{hashlib.sha256(_canonical_json_bytes(value)).hexdigest()}"
