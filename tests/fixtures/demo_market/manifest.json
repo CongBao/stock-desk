@@ -1,0 +1,43 @@
+{
+  "schema_version": "stock-desk-public-demo-v1",
+  "fixture_id": "stock-desk-synthetic-market-2026-07-08",
+  "label": "PUBLIC SYNTHETIC DEMO DATA — NOT REAL MARKET DATA",
+  "license": "CC0-1.0",
+  "network_policy": "forbidden",
+  "investment_recommendation_claims": false,
+  "generated_at": "2026-07-07T08:00:00Z",
+  "data_cutoff": "2025-10-27T08:00:00Z",
+  "window_start": "2024-01-02T00:00:00+08:00",
+  "window_end": "2025-10-28T00:00:00+08:00",
+  "scoring_start": "2024-02-12T00:00:00+08:00",
+  "scoring_end": "2024-06-28T00:00:00+08:00",
+  "symbols": [
+    {"symbol": "600000.SH", "name": "Synthetic Alpha", "wave_phase": 0},
+    {"symbol": "000001.SZ", "name": "Synthetic Suspended", "wave_phase": 3},
+    {"symbol": "300001.SZ", "name": "Synthetic Limits", "wave_phase": 7},
+    {"symbol": "600036.SH", "name": "Synthetic Missing", "wave_phase": 0}
+  ],
+  "scenarios": [
+    {"kind": "normal", "symbol": "600000.SH", "detail": "ordinary synthetic OHLCV bars"},
+    {"kind": "formula_signal", "symbol": "600000.SH", "detail": "oscillating closes produce deterministic MACD crosses"},
+    {"kind": "traceable_analysis_evidence", "symbol": "600000.SH", "detail": "synthetic sections carry fixed cutoff and source records"},
+    {"kind": "suspended", "symbol": "000001.SZ", "detail": "one declared execution day is suspended"},
+    {"kind": "limit_up", "symbol": "300001.SZ", "detail": "one declared bar is limit-up"},
+    {"kind": "limit_down", "symbol": "300001.SZ", "detail": "one declared bar is limit-down"},
+    {"kind": "missing_data", "symbol": "600036.SH", "detail": "instrument and pool membership exist while bars are explicitly absent"}
+  ],
+  "category_outcomes": {
+    "bars_adjustment": {"status": "actual", "source": "synthetic_fixture", "data_cutoff": "2025-10-27T08:00:00Z", "missing_reason": null, "substitute": null},
+    "instrument_calendar_trading_status": {"status": "actual", "source": "synthetic_fixture", "data_cutoff": "2025-10-27T08:00:00Z", "missing_reason": null, "substitute": null},
+    "fundamentals": {"status": "actual", "source": "synthetic_fixture", "data_cutoff": "2025-10-27T08:00:00Z", "missing_reason": null, "substitute": null},
+    "announcements": {"status": "missing", "source": "synthetic_fixture", "data_cutoff": "2025-10-27T08:00:00Z", "missing_reason": "no_data", "substitute": null},
+    "news": {"status": "actual", "source": "synthetic_fixture", "data_cutoff": "2025-10-27T08:00:00Z", "missing_reason": null, "substitute": null},
+    "index_membership": {"status": "actual", "source": "synthetic_fixture", "data_cutoff": "2025-10-27T08:00:00Z", "missing_reason": null, "substitute": null},
+    "industry": {"status": "actual", "source": "synthetic_fixture", "data_cutoff": "2025-10-27T08:00:00Z", "missing_reason": null, "substitute": null}
+  },
+  "research": {
+    "market": {"source_record": "synthetic:market:600000.SH:v1", "content": {"observation": "synthetic price series oscillates; no recommendation"}},
+    "fundamentals": {"source_record": "synthetic:fundamentals:600000.SH:v1", "content": {"observation": "synthetic revenue and cash flow are stable; no recommendation"}},
+    "news": {"source_record": "synthetic:news:600000.SH:v1", "content": {"observation": "synthetic issuer published a neutral operations note; no recommendation"}}
+  }
+}

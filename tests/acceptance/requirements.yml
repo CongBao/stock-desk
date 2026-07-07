@@ -7,10 +7,10 @@ requirements:
     acceptance: The unified data layer supplies adjusted bars, instruments, calendars, trading status, fundamentals, announcements, news, index membership, and industry classification, and reports an explicit missing category instead of substituting unlike data.
     source_refs: [{capability: market-data-charting, requirement: base-a-share-data-scope, scenario: load-stock-analysis-data}, {capability: market-data-charting, requirement: base-a-share-data-scope, scenario: report-missing-category}]
     owning_stage: 1
-    status: mapped
+    status: verified
     evidence:
       - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_market_flow.py, selector: "tests/acceptance/test_market_flow.py::test_settings_route_worker_cache_api_and_schedule_flow_without_network", assertion: "The accepted market flow exercises the unified cached data categories and explicit source diagnostics."}
-      - {state: planned, runner: pytest, kind: acceptance, path: tests/acceptance/test_full_user_journey.py, selector: "tests/acceptance/test_full_user_journey.py::test_demo_data_categories_and_missing_category_are_visible", assertion: "The integrated journey will prove every declared analysis category and the visible missing-data state."}
+      - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_full_user_journey.py, selector: "tests/acceptance/test_full_user_journey.py::test_demo_data_categories_and_missing_category_are_visible", assertion: "The integrated journey will prove every declared analysis category and the visible missing-data state."}
   - id: R-002
     category: market
     kind: user_visible
@@ -410,10 +410,10 @@ requirements:
     acceptance: For the same immutable formula version, parameters, stock, period, adjustment, date range, and data snapshot, preview, chart markers, and historical execution use the same engine output and identical signal positions.
     source_refs: [{capability: formula-system, requirement: single-formula-calculation-source, scenario: preview-to-backtest}]
     owning_stage: 2
-    status: mapped
+    status: verified
     evidence:
       - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_formula_consistency.py, selector: "tests/acceptance/test_formula_consistency.py::test_preview_and_chart_signal_payload_match", assertion: "Preview and chart payloads contain identical outputs and BUY/SELL signal positions."}
-      - {state: planned, runner: pytest, kind: acceptance, path: tests/acceptance/test_full_user_journey.py, selector: "tests/acceptance/test_full_user_journey.py::test_formula_signal_matches_backtest_entry", assertion: "The full journey will prove that the first backtest entry is caused by the same previewed signal timestamp."}
+      - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_full_user_journey.py, selector: "tests/acceptance/test_full_user_journey.py::test_formula_signal_matches_backtest_entry", assertion: "The full journey will prove that the first backtest entry is caused by the same previewed signal timestamp."}
   - id: R-038
     category: platform
     kind: user_visible
