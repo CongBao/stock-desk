@@ -393,11 +393,14 @@ def test_akshare_fundamentals_passes_the_canonical_exchange_to_the_sdk(
 
     client = CapturingClient()
 
-    AkShareResearchSource(client=client, clock=lambda: NOW).fetch(
+    result = AkShareResearchSource(client=client, clock=lambda: NOW).fetch(
         symbol, ResearchSectionKind.FUNDAMENTALS
     )
 
     assert client.calls == [{"symbol": symbol, "indicator": "按报告期"}]
+    assert result.source_url == (
+        "https://emweb.securities.eastmoney.com/pc_hsf10/pages/index.html"
+    )
 
 
 def test_router_skips_unsupported_sources_and_never_calls_them() -> None:
@@ -802,6 +805,40 @@ def test_every_configured_identity_field_is_required_on_every_row() -> None:
             expected_identity=SYMBOL,
             cutoff_fields=("REPORT_DATE",),
         )
+
+
+def test_sdk_source_url_is_canonicalized_before_persistence() -> None:
+    secret = "TOP-SECRET-access-token"
+
+    section = research_section_from_table(
+        source=ProviderId.AKSHARE,
+        kind=ResearchSectionKind.ANNOUNCEMENTS,
+        symbol=SYMBOL,
+        table=[
+            {
+                "代码": "600000",
+                "公告日期": "2025-07-04",
+                "公告链接": (
+                    "https://user:password@feed.example.com/item/1"
+                    f"?access_token={secret}#private-fragment"
+                ),
+            }
+        ],
+        fetched_at=NOW,
+        identity_fields=("代码",),
+        expected_identity="600000",
+        cutoff_fields=("公告日期",),
+        published_fields=("公告日期",),
+        url_fields=("公告链接",),
+        default_source_url="https://fallback.example.com/announcements?symbol=600000",
+    )
+
+    assert section.source_url == "https://feed.example.com/item/1"
+    serialized = section.model_dump_json()
+    assert secret not in serialized
+    assert "password" not in serialized
+    assert "access_token" not in serialized
+    assert "private-fragment" not in serialized
 
 
 def test_akshare_isolated_facade_kills_and_reaps_timed_out_process() -> None:

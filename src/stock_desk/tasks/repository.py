@@ -57,6 +57,8 @@ class TaskValidationError(TaskRepositoryError, ValueError):
 
 _MAX_JSON_DEPTH = 128
 _BACKTEST_TASK_KIND = "backtest.run"
+_ANALYSIS_TASK_KIND = "analysis.run"
+_LEASED_TASK_KINDS = frozenset({_BACKTEST_TASK_KIND, _ANALYSIS_TASK_KIND})
 _DEFAULT_LEASE_DURATION = timedelta(minutes=2)
 _MAX_LEASE_DURATION = timedelta(hours=1)
 
@@ -552,7 +554,7 @@ class TaskRepository:
         claimable = or_(
             TaskRun.status == "queued",
             (
-                (TaskRun.kind == _BACKTEST_TASK_KIND)
+                (TaskRun.kind.in_(_LEASED_TASK_KINDS))
                 & (TaskRun.status == "running")
                 & (TaskRun.lease_expires_at.is_not(None))
                 & (TaskRun.lease_expires_at <= sampled_at)
@@ -581,20 +583,20 @@ class TaskRepository:
                 ),
                 updated_at=transition_time,
                 claim_token=case(
-                    (TaskRun.kind == _BACKTEST_TASK_KIND, claim_token),
+                    (TaskRun.kind.in_(_LEASED_TASK_KINDS), claim_token),
                     else_=null(),
                 ),
                 lease_expires_at=case(
-                    (TaskRun.kind == _BACKTEST_TASK_KIND, lease_expires_at),
+                    (TaskRun.kind.in_(_LEASED_TASK_KINDS), lease_expires_at),
                     else_=null(),
                 ),
                 heartbeat_at=case(
-                    (TaskRun.kind == _BACKTEST_TASK_KIND, sampled_at),
+                    (TaskRun.kind.in_(_LEASED_TASK_KINDS), sampled_at),
                     else_=null(),
                 ),
                 attempt_count=case(
                     (
-                        TaskRun.kind == _BACKTEST_TASK_KIND,
+                        TaskRun.kind.in_(_LEASED_TASK_KINDS),
                         TaskRun.attempt_count + 1,
                     ),
                     else_=TaskRun.attempt_count,
@@ -605,7 +607,7 @@ class TaskRepository:
         expired_cancellations = (
             update(TaskRun)
             .where(
-                TaskRun.kind == _BACKTEST_TASK_KIND,
+                TaskRun.kind.in_(_LEASED_TASK_KINDS),
                 TaskRun.status == "running",
                 TaskRun.cancel_requested.is_(True),
                 TaskRun.lease_expires_at.is_not(None),
@@ -627,13 +629,18 @@ class TaskRepository:
             cancelled_rows = connection.execute(expired_cancellations).mappings().all()
             if cancelled_rows:
                 from stock_desk.backtest.models import BacktestRunRow
+                from stock_desk.analysis.models import (
+                    AnalysisAttemptRow,
+                    AnalysisRunRow,
+                    AnalysisStageRow,
+                )
+
+                cancelled_task_ids = tuple(row["id"] for row in cancelled_rows)
 
                 connection.execute(
                     update(BacktestRunRow)
                     .where(
-                        BacktestRunRow.task_id.in_(
-                            tuple(row["id"] for row in cancelled_rows)
-                        ),
+                        BacktestRunRow.task_id.in_(cancelled_task_ids),
                         BacktestRunRow.status.in_(("queued", "running")),
                     )
                     .values(
@@ -643,6 +650,56 @@ class TaskRepository:
                         finished_at=sampled_at,
                     )
                 )
+                analysis_run_ids = tuple(
+                    connection.execute(
+                        select(AnalysisRunRow.id).where(
+                            AnalysisRunRow.task_id.in_(cancelled_task_ids),
+                            AnalysisRunRow.status.in_(("queued", "running")),
+                        )
+                    ).scalars()
+                )
+                if analysis_run_ids:
+                    connection.execute(
+                        update(AnalysisAttemptRow)
+                        .where(
+                            AnalysisAttemptRow.run_id.in_(analysis_run_ids),
+                            AnalysisAttemptRow.status == "running",
+                        )
+                        .values(
+                            status="cancelled",
+                            error_json=None,
+                            retryable=None,
+                            backoff_seconds=None,
+                            finished_at=sampled_at,
+                        )
+                    )
+                    connection.execute(
+                        update(AnalysisStageRow)
+                        .where(
+                            AnalysisStageRow.run_id.in_(analysis_run_ids),
+                            AnalysisStageRow.status.in_(("pending", "running")),
+                        )
+                        .values(
+                            status="cancelled",
+                            failure_code=None,
+                            retryable=None,
+                            updated_at=sampled_at,
+                            finished_at=sampled_at,
+                        )
+                    )
+                    connection.execute(
+                        update(AnalysisRunRow)
+                        .where(
+                            AnalysisRunRow.id.in_(analysis_run_ids),
+                            AnalysisRunRow.status.in_(("queued", "running")),
+                        )
+                        .values(
+                            status="cancelled",
+                            current_stage=None,
+                            updated_at=sampled_at,
+                            finished_at=sampled_at,
+                        )
+                    )
             for cancelled_row in cancelled_rows:
                 cancelled = _snapshot(cancelled_row)
                 _append_event(
@@ -667,7 +724,7 @@ class TaskRepository:
                 detail={"worker_id": worker_id},
                 occurred_at=task.updated_at,
             )
-        if task.kind != _BACKTEST_TASK_KIND:
+        if task.kind not in _LEASED_TASK_KINDS:
             return task
         stored_token = row["claim_token"]
         stored_expiry = _aware_utc(cast(datetime | None, row["lease_expires_at"]))
@@ -679,7 +736,7 @@ class TaskRepository:
             or type(attempts) is not int
             or attempts < 1
         ):
-            raise RuntimeError("Backtest task claim is invalid")
+            raise RuntimeError("Leased task claim is invalid")
         return TaskClaim(
             snapshot=task,
             claim_token=stored_token,
@@ -707,7 +764,7 @@ class TaskRepository:
             update(TaskRun)
             .where(
                 TaskRun.id == task_id,
-                TaskRun.kind == _BACKTEST_TASK_KIND,
+                TaskRun.kind.in_(_LEASED_TASK_KINDS),
                 TaskRun.status == "running",
                 TaskRun.claim_token == validated_token,
                 TaskRun.lease_expires_at.is_not(None),
@@ -727,7 +784,7 @@ class TaskRepository:
                 expires_at = _aware_utc(cast(datetime | None, row["lease_expires_at"]))
                 attempt_count = row["attempt_count"]
                 if expires_at is None or type(attempt_count) is not int:
-                    raise RuntimeError("Backtest heartbeat result is invalid")
+                    raise RuntimeError("Leased task heartbeat result is invalid")
                 return TaskClaim(
                     snapshot=snapshot,
                     claim_token=validated_token,
@@ -1129,10 +1186,10 @@ class TaskRepository:
         operation_time: datetime,
     ) -> ColumnElement[bool]:
         if claim_token is None:
-            return TaskRun.kind != _BACKTEST_TASK_KIND
+            return TaskRun.kind.not_in(_LEASED_TASK_KINDS)
         validated_token = _validated_uuid(claim_token, field_name="claim token")
         return (
-            (TaskRun.kind == _BACKTEST_TASK_KIND)
+            (TaskRun.kind.in_(_LEASED_TASK_KINDS))
             & (TaskRun.claim_token == validated_token)
             & (TaskRun.lease_expires_at.is_not(None))
             & (TaskRun.lease_expires_at > operation_time)
@@ -1181,6 +1238,44 @@ class TaskRepository:
                             finished_at=task.finished_at,
                         )
                     )
+                if queued_cancelled and task.kind == _ANALYSIS_TASK_KIND:
+                    from stock_desk.analysis.models import (
+                        AnalysisRunRow,
+                        AnalysisStageRow,
+                    )
+
+                    analysis_run_id = connection.execute(
+                        select(AnalysisRunRow.id).where(
+                            AnalysisRunRow.task_id == task.id,
+                            AnalysisRunRow.status == "queued",
+                        )
+                    ).scalar_one_or_none()
+                    if analysis_run_id is not None:
+                        connection.execute(
+                            update(AnalysisStageRow)
+                            .where(
+                                AnalysisStageRow.run_id == analysis_run_id,
+                                AnalysisStageRow.status == "pending",
+                            )
+                            .values(
+                                status="cancelled",
+                                updated_at=task.updated_at,
+                                finished_at=task.finished_at,
+                            )
+                        )
+                        connection.execute(
+                            update(AnalysisRunRow)
+                            .where(
+                                AnalysisRunRow.id == analysis_run_id,
+                                AnalysisRunRow.status == "queued",
+                            )
+                            .values(
+                                status="cancelled",
+                                current_stage=None,
+                                updated_at=task.updated_at,
+                                finished_at=task.finished_at,
+                            )
+                        )
                 _append_event(
                     connection,
                     task_id=task.id,

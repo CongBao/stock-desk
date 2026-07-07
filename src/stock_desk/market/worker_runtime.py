@@ -48,7 +48,7 @@ from stock_desk.security.redaction import scoped_log_redaction
 from stock_desk.storage.database import create_engine_for_url, migrate
 from stock_desk.tasks.models import TaskSnapshot
 from stock_desk.tasks.repository import TaskRepository
-from stock_desk.tasks.worker import TaskWorker, demo_double
+from stock_desk.tasks.worker import ClaimedTaskHandler, TaskWorker, demo_double
 
 
 def _utc_now() -> datetime:
@@ -254,6 +254,7 @@ class ProductionMarketWorker:
         worker_id: str | None = None,
         provider_factory: RuntimeProviderFactory | None = None,
         composition_factory: Callable[[], CompositionProvider] | None = None,
+        analysis_handler: ClaimedTaskHandler | None = None,
     ) -> ProductionMarketWorker:
         migrate(settings.database_url)
         engine = create_engine_for_url(settings.database_url)
@@ -310,6 +311,8 @@ class ProductionMarketWorker:
                     formulas=formula_service,
                 ),
             )
+            if analysis_handler is not None:
+                task_worker.register_claimed("analysis.run", analysis_handler)
             scheduler = MarketUpdateScheduler(schedules, tasks, clock=_utc_now)
             return cls(
                 engine=engine,

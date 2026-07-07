@@ -16,5 +16,6 @@ def test_production_worker_registers_recoverable_backtest_handler(
     )
     try:
         assert "backtest.run" in runtime.worker.registered_claimed_kinds
+        assert "analysis.run" not in runtime.worker.registered_claimed_kinds
     finally:
         runtime.close()

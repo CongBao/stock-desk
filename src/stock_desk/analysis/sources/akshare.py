@@ -385,7 +385,7 @@ class AkShareResearchSource:
                     cutoff_fields=("发布时间",),
                     published_fields=("发布时间",),
                     url_fields=("新闻链接",),
-                    default_source_url=f"https://so.eastmoney.com/news/s?keyword={code}",
+                    default_source_url="https://so.eastmoney.com/news/s",
                 )
             raise ProviderUnsupported()
         except ProviderClientError as error:

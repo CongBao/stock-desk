@@ -19,7 +19,7 @@ from stock_desk.storage.metadata import Base
 from stock_desk.tasks.repository import TaskRepository
 
 
-HEAD_REVISION = "0007_backtest_runs"
+HEAD_REVISION = "0008_analysis_runs"
 INSTRUMENT_TABLES = {
     "instrument_dataset",
     "instrument_dataset_item",
@@ -58,6 +58,12 @@ BACKTEST_TABLES = {
     "backtest_aggregate_metric",
     "backtest_group_metric",
 }
+ANALYSIS_TABLES = {
+    "analysis_run",
+    "analysis_stage",
+    "analysis_attempt",
+    "analysis_report",
+}
 CORE_TABLES = {
     "app_setting",
     "task_event",
@@ -66,6 +72,7 @@ CORE_TABLES = {
     *FORMULA_TABLES,
     *EXECUTION_STATUS_TABLES,
     *BACKTEST_TABLES,
+    *ANALYSIS_TABLES,
 }
 BACKTEST_TABLE_COLUMNS = {
     "backtest_run": {
@@ -373,6 +380,27 @@ BACKTEST_TRIGGER_NAMES = {
     for table in BACKTEST_TABLES
     for operation in ("insert", "update", "delete")
 }
+ANALYSIS_TRIGGER_NAMES = {
+    *{
+        f"trg_{table}_immutable_{operation}"
+        for table in ANALYSIS_TABLES
+        for operation in ("insert", "update", "delete")
+    },
+    *{
+        f"trg_{table}_owner_terminal_{operation}"
+        for table in {"analysis_stage", "analysis_attempt", "analysis_report"}
+        for operation in ("insert", "update", "delete")
+    },
+    "trg_analysis_run_bind_once",
+    "trg_analysis_run_terminal_guard",
+    "trg_analysis_report_identity_guard",
+    "trg_analysis_run_config_immutable",
+    "trg_analysis_stage_reuse_identity",
+    "trg_analysis_stage_reuse_identity_insert",
+    "trg_analysis_stage_identity_immutable",
+    "trg_analysis_attempt_identity_immutable",
+    "trg_analysis_report_identity_immutable",
+}
 MARKET_TIMESTAMP_TRIGGER_NAMES = {
     f"trg_market_dataset_timestamp_immutable_{operation}"
     for operation in ("insert", "update", "delete")
@@ -394,6 +422,7 @@ ALL_TRIGGER_NAMES = {
     *FORMULA_TRIGGER_NAMES,
     *EXECUTION_STATUS_TRIGGER_NAMES,
     *BACKTEST_TRIGGER_NAMES,
+    *ANALYSIS_TRIGGER_NAMES,
     *MARKET_TIMESTAMP_TRIGGER_NAMES,
 }
 

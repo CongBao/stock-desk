@@ -465,12 +465,38 @@ def test_snapshot_rejects_section_or_missing_check_after_freeze() -> None:
         "javascript:alert(1)",
         "file:///tmp/source",
         "https://user:password@example.com/source",
+        "https://example.com/source?api_key=snapshot-secret",
+        "https://example.com/source#snapshot-secret",
         "https://example.com/source\nheader: injected",
     ],
 )
 def test_source_url_rejects_unsafe_values(url: str) -> None:
     with pytest.raises(ValidationError, match="URL"):
         _section(ResearchSectionKind.MARKET, source_url=url)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://user:snapshot-secret@example.com/source",
+        "https://example.com/source?api_key=snapshot-secret",
+        "https://example.com/source#snapshot-secret",
+    ],
+)
+def test_source_url_secret_is_rejected_without_entering_snapshot_serialization(
+    url: str,
+) -> None:
+    safe_snapshot = _snapshot()
+    with pytest.raises(ValidationError):
+        section = _section(ResearchSectionKind.MARKET, source_url=url)
+        ResearchSnapshot.create(
+            symbol=SYMBOL,
+            frozen_at=FROZEN_AT,
+            sections=(section, *tuple(_section(kind) for kind in SECTION_ORDER[1:])),
+            missing_sections=(),
+        ).model_dump_json()
+
+    assert "snapshot-secret" not in safe_snapshot.model_dump_json(by_alias=True)
 
 
 def test_section_content_enforces_byte_depth_node_and_finite_budgets() -> None:

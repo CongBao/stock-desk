@@ -199,6 +199,8 @@ def _validate_source_url(value: str | None) -> str | None:
         or not parsed.hostname
         or parsed.username is not None
         or parsed.password is not None
+        or bool(parsed.query)
+        or bool(parsed.fragment)
         or port == 0
     ):
         raise ValueError("source URL is unsafe")

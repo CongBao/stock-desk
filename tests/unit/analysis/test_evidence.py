@@ -193,6 +193,8 @@ def test_evidence_rejects_forged_content_address() -> None:
         "javascript:alert(1)",
         "file:///tmp/source",
         "https://user:password@example.com/report",
+        "https://example.com/report?api_key=evidence-secret",
+        "https://example.com/report#evidence-secret",
     ],
 )
 def test_direct_evidence_validation_rejects_unsafe_source_url(url: str) -> None:
@@ -202,6 +204,27 @@ def test_direct_evidence_validation_rejects_unsafe_source_url(url: str) -> None:
 
     with pytest.raises(ValidationError, match="URL"):
         EvidenceItem.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://user:evidence-secret@example.com/report",
+        "https://example.com/report?api_key=evidence-secret",
+        "https://example.com/report#evidence-secret",
+    ],
+)
+def test_source_url_secret_is_rejected_without_entering_evidence_serialization(
+    url: str,
+) -> None:
+    safe_evidence = _evidence()
+    payload = safe_evidence.model_dump(mode="python")
+    payload["source_url"] = url
+
+    with pytest.raises(ValidationError):
+        EvidenceItem.model_validate(payload).model_dump_json()
+
+    assert "evidence-secret" not in safe_evidence.model_dump_json()
 
 
 def test_direct_evidence_validation_rejects_invalid_time_order() -> None:

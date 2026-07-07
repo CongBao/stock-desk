@@ -154,7 +154,7 @@ class TushareResearchSource:
                     identity_fields=("ts_code",),
                     expected_identity=symbol,
                     cutoff_fields=("ann_date", "f_ann_date", "end_date"),
-                    default_source_url="https://tushare.pro/document/2?doc_id=33",
+                    default_source_url="https://tushare.pro/document/2",
                 )
             if kind is ResearchSectionKind.ANNOUNCEMENTS:
                 table = self._client.anns_d(ts_code=symbol)
@@ -169,7 +169,7 @@ class TushareResearchSource:
                     cutoff_fields=("ann_date",),
                     published_fields=("ann_date",),
                     url_fields=("url",),
-                    default_source_url="https://tushare.pro/document/2?doc_id=176",
+                    default_source_url="https://tushare.pro/document/2",
                 )
             raise ProviderUnsupported()
         except ProviderClientError as error:

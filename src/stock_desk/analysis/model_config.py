@@ -5,10 +5,11 @@ from collections.abc import Awaitable, Callable, Sequence
 from enum import StrEnum
 import ipaddress
 import math
+import re
 import socket
 from threading import RLock
-from typing import Protocol, Self, TypeAlias
-from urllib.parse import urlsplit
+from typing import Literal, Protocol, Self, TypeAlias
+from urllib.parse import SplitResult, urlsplit
 
 from pydantic import (
     BaseModel,
@@ -25,6 +26,7 @@ OLLAMA_BASE_URL = "http://127.0.0.1:11434"
 MODEL_API_KEY_SECRET_NAME = "analysis_model_api_key"
 HostResolver: TypeAlias = Callable[[str, int], Awaitable[Sequence[str]]]
 _MASK_SEPARATOR = "•••••••"
+_PROVIDER_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 
 _DANGEROUS_PORTS = frozenset(
     {
@@ -105,6 +107,35 @@ class ModelIdentity(_FrozenModel):
     provider: ModelProviderKind
     base_url: str
     model: str
+
+
+class AnalysisModelPublicConfig(_FrozenModel):
+    """Secret-free immutable model execution snapshot stored with one run."""
+
+    schema_version: Literal["analysis-model-public-v1"] = "analysis-model-public-v1"
+    provider: ModelProviderKind
+    base_url: str = Field(min_length=1, max_length=2_048)
+    model: str = Field(min_length=1, max_length=256)
+    temperature: StrictFloat = Field(ge=0.0, le=2.0)
+    timeout_seconds: StrictFloat = Field(ge=1.0, le=300.0)
+    max_output_tokens: int = Field(ge=1, le=65_536)
+    secret_reference_id: str | None = Field(default=None, max_length=128)
+    api_key_configured: bool = False
+
+    @model_validator(mode="after")
+    def validate_secret_reference(self) -> Self:
+        validate_provider_url(self.provider, self.base_url)
+        _validate_model(self.model)
+        if self.api_key_configured != (self.secret_reference_id is not None):
+            raise ValueError("model secret reference is inconsistent")
+        if (
+            self.secret_reference_id is not None
+            and self.secret_reference_id != MODEL_API_KEY_SECRET_NAME
+        ):
+            raise ValueError("model secret reference is invalid")
+        if self.provider is ModelProviderKind.OLLAMA and self.api_key_configured:
+            raise ValueError("Ollama cannot have an API key")
+        return self
 
 
 class ModelConfig(_FrozenModel):
@@ -313,12 +344,17 @@ def _validate_model(model: str) -> None:
         raise ValueError("model name is invalid")
 
 
+def _validate_provider_name(provider: str) -> None:
+    if _PROVIDER_NAME.fullmatch(provider) is None:
+        raise ValueError("model provider name is invalid")
+
+
 def _validate_finite(value: float) -> None:
     if not math.isfinite(value):
         raise ValueError("model runtime value must be finite")
 
 
-def validate_provider_url(provider: ModelProviderKind, value: str) -> str:
+def _parse_safe_provider_url(value: str) -> tuple[SplitResult, int | None]:
     if (
         not value
         or len(value) > 2_048
@@ -346,7 +382,19 @@ def validate_provider_url(provider: ModelProviderKind, value: str) -> str:
         or _is_dangerous_port(effective_port)
     ):
         raise ValueError("model provider URL is unsafe")
-    hostname = parsed.hostname.lower().rstrip(".")
+    return parsed, effective_port
+
+
+def validate_provider_url(provider: ModelProviderKind, value: str) -> str:
+    parsed, _effective_port = _parse_safe_provider_url(value)
+    parsed_hostname = parsed.hostname
+    if parsed_hostname is None:
+        raise ValueError("model provider URL is unsafe")
+    hostname = parsed_hostname.lower().rstrip(".")
+    if provider is ModelProviderKind.DEEPSEEK:
+        if value != DEEPSEEK_BASE_URL:
+            raise ValueError("DeepSeek URL must use the fixed service endpoint")
+        return value
     if provider is ModelProviderKind.OLLAMA:
         if parsed.scheme not in {"http", "https"} or not _is_loopback(hostname):
             raise ValueError("Ollama URL must use a local HTTP endpoint")
@@ -373,7 +421,7 @@ async def system_host_resolver(hostname: str, port: int) -> tuple[str, ...]:
 async def validate_resolved_remote_url(
     value: str,
     resolver: HostResolver,
-) -> None:
+) -> tuple[str, ...]:
     parsed = urlsplit(value)
     hostname = parsed.hostname
     if hostname is None:
@@ -400,6 +448,7 @@ async def validate_resolved_remote_url(
             raise ModelHostResolutionError() from None
         if not address.is_global:
             raise ModelResolvedEndpointError()
+    return tuple(resolved)
 
 
 def _is_loopback(hostname: str) -> bool:

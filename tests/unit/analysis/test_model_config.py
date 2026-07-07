@@ -8,7 +8,9 @@ import pytest
 from pydantic import SecretStr, ValidationError
 
 from stock_desk.analysis.model_config import (
+    AnalysisModelPublicConfig,
     InMemoryModelConfigRepository,
+    MODEL_API_KEY_SECRET_NAME,
     ModelConfig,
     ModelConfigStorageError,
     ModelConfigService,
@@ -18,6 +20,20 @@ from stock_desk.analysis.model_config import (
 
 
 API_KEY = "sk-config-plaintext-never-leak"
+
+
+def public_analysis_config(**overrides: Any) -> AnalysisModelPublicConfig:
+    values: dict[str, Any] = {
+        "provider": ModelProviderKind.OPENAI_COMPATIBLE,
+        "base_url": "https://models.example.com/v1",
+        "model": "vendor-chat",
+        "temperature": 0.1,
+        "timeout_seconds": 90.0,
+        "max_output_tokens": 4096,
+        "api_key_configured": False,
+    }
+    values.update(overrides)
+    return AnalysisModelPublicConfig(**values)
 
 
 class StubSecretStore:
@@ -89,6 +105,119 @@ def test_public_config_rejects_unmasked_key_without_echoing_input() -> None:
 
     assert API_KEY not in str(captured.value)
     assert API_KEY not in repr(captured.value)
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "https://user:password@models.example.com/v1",
+        "https://models.example.com/v1?api_key=secret",
+        "https://models.example.com/v1#secret",
+    ],
+)
+def test_analysis_public_config_rejects_secret_bearing_urls(
+    base_url: str,
+) -> None:
+    with pytest.raises(ValidationError) as captured:
+        public_analysis_config(base_url=base_url)
+
+    assert base_url not in str(captured.value)
+
+
+@pytest.mark.parametrize(
+    "secret_reference_id",
+    [
+        "https://vault.example.com/secrets/analysis",
+        "../secrets/analysis",
+        "sk-literal-secret-value",
+    ],
+)
+def test_analysis_public_config_accepts_only_opaque_secret_reference_ids(
+    secret_reference_id: str,
+) -> None:
+    with pytest.raises(ValidationError) as captured:
+        public_analysis_config(
+            secret_reference_id=secret_reference_id,
+            api_key_configured=True,
+        )
+
+    assert secret_reference_id not in str(captured.value)
+
+
+def test_analysis_public_config_accepts_named_secret_reference() -> None:
+    config = public_analysis_config(
+        secret_reference_id="analysis_model_api_key",
+        api_key_configured=True,
+    )
+
+    assert config.secret_reference_id == "analysis_model_api_key"
+
+
+def test_analysis_public_config_rejects_unsupported_provider() -> None:
+    with pytest.raises(ValidationError):
+        public_analysis_config(provider="stub-provider")
+
+
+@pytest.mark.parametrize(
+    ("provider", "base_url"),
+    [
+        (ModelProviderKind.DEEPSEEK, "https://deepseek-proxy.example.com"),
+        (ModelProviderKind.OLLAMA, "https://ollama.example.com:11434"),
+        (ModelProviderKind.OPENAI_COMPATIBLE, "http://models.example.com/v1"),
+    ],
+)
+def test_analysis_public_config_reuses_provider_endpoint_policy(
+    provider: ModelProviderKind,
+    base_url: str,
+) -> None:
+    with pytest.raises(ValidationError):
+        public_analysis_config(provider=provider, base_url=base_url)
+
+
+def test_analysis_public_config_allows_only_the_model_api_key_reference() -> None:
+    with pytest.raises(ValidationError):
+        public_analysis_config(
+            secret_reference_id="another_safe_looking_name",
+            api_key_configured=True,
+        )
+
+    assert MODEL_API_KEY_SECRET_NAME == "analysis_model_api_key"
+
+
+def test_analysis_public_config_serialization_never_contains_secret_material() -> None:
+    plaintext = "model-plaintext-secret"
+    with pytest.raises(ValidationError):
+        AnalysisModelPublicConfig.model_validate(
+            {
+                **public_analysis_config().model_dump(),
+                "api_key": plaintext,
+            }
+        )
+
+    serialized = public_analysis_config(
+        secret_reference_id=MODEL_API_KEY_SECRET_NAME,
+        api_key_configured=True,
+    ).model_dump_json()
+    assert plaintext not in serialized
+    assert MODEL_API_KEY_SECRET_NAME in serialized
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("provider", " provider"),
+        ("provider", "provider/name"),
+        ("provider", "provider\nname"),
+        ("model", " model"),
+        ("model", "model\nname"),
+    ],
+)
+def test_analysis_public_config_strongly_validates_model_identity(
+    field: str,
+    value: str,
+) -> None:
+    with pytest.raises(ValidationError):
+        public_analysis_config(**{field: value})
 
 
 @pytest.mark.parametrize(

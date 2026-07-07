@@ -68,6 +68,7 @@ _INELIGIBLE_CRITICAL_FLAGS: Final = frozenset(
 
 class ReportStatus(StrEnum):
     COMPLETE = "complete"
+    PARTIAL = "partial"
     INSUFFICIENT_EVIDENCE = "insufficient_evidence"
 
 
@@ -79,6 +80,17 @@ class _FrozenReportModel(BaseModel):
         hide_input_in_errors=True,
         strict=True,
     )
+
+
+class StageRetryAction(_FrozenReportModel):
+    stage: RoleName
+    action: Literal["retry_stage"] = "retry_stage"
+
+
+class StageFailure(_FrozenReportModel):
+    stage: RoleName
+    code: str = Field(pattern=r"^[a-z][a-z0-9_]{0,63}$")
+    attempt_count: int = Field(ge=1, le=6)
 
 
 class ResearchReport(_FrozenReportModel):
@@ -103,6 +115,10 @@ class ResearchReport(_FrozenReportModel):
     recovery_actions: tuple[str, ...] = Field(max_length=8)
     generated_at: UtcDatetime
     disclaimer: str = Field(min_length=1, max_length=512)
+    retry_actions: tuple[StageRetryAction, ...] = ()
+    failed_modules: tuple[RoleName, ...] = ()
+    blocked_modules: tuple[RoleName, ...] = ()
+    stage_failures: tuple[StageFailure, ...] = ()
 
     @classmethod
     def create(
@@ -127,6 +143,10 @@ class ResearchReport(_FrozenReportModel):
         recovery_actions: tuple[str, ...],
         generated_at: datetime,
         disclaimer: str,
+        retry_actions: tuple[StageRetryAction, ...] = (),
+        failed_modules: tuple[RoleName, ...] = (),
+        blocked_modules: tuple[RoleName, ...] = (),
+        stage_failures: tuple[StageFailure, ...] = (),
     ) -> ResearchReport:
         draft = cls.model_construct(
             report_id="sha256:" + "0" * 64,
@@ -150,6 +170,10 @@ class ResearchReport(_FrozenReportModel):
             recovery_actions=recovery_actions,
             generated_at=generated_at,
             disclaimer=disclaimer,
+            retry_actions=retry_actions,
+            failed_modules=failed_modules,
+            blocked_modules=blocked_modules,
+            stage_failures=stage_failures,
         )
         report_id = _content_id(draft._identity_payload())
         return cls(
@@ -174,6 +198,10 @@ class ResearchReport(_FrozenReportModel):
             recovery_actions=recovery_actions,
             generated_at=generated_at,
             disclaimer=disclaimer,
+            retry_actions=retry_actions,
+            failed_modules=failed_modules,
+            blocked_modules=blocked_modules,
+            stage_failures=stage_failures,
         )
 
     @property
@@ -200,20 +228,35 @@ class ResearchReport(_FrozenReportModel):
                 or not self.model_metadata
             ):
                 raise ValueError("complete report state is inconsistent")
+            if self.retry_actions:
+                raise ValueError("complete report cannot contain retry actions")
+            if self.failed_modules or self.blocked_modules or self.stage_failures:
+                raise ValueError("complete report cannot contain stage failures")
+        elif self.status is ReportStatus.PARTIAL:
+            if (
+                self.rating is not None
+                or self.confidence != 0.0
+                or not self.missing_modules
+                or not self.retry_actions
+            ):
+                raise ValueError("partial report state is inconsistent")
         elif self.rating is not None or self.confidence != 0.0:
             raise ValueError("insufficient report cannot contain a rating")
+        elif self.retry_actions:
+            raise ValueError("insufficient report cannot contain stage retries")
+        elif self.failed_modules or self.blocked_modules or self.stage_failures:
+            raise ValueError("insufficient report cannot contain stage failures")
         if self.disclaimer != REPORT_DISCLAIMER:
             raise ValueError("research report disclaimer is invalid")
-        if (
-            self.role_outputs
-            and tuple(item.role for item in self.role_outputs) != ROLE_ORDER
-        ):
+        output_roles = tuple(item.role for item in self.role_outputs)
+        canonical_output_roles = tuple(
+            role for role in ROLE_ORDER if role in frozenset(output_roles)
+        )
+        if output_roles != canonical_output_roles:
             raise ValueError("report role outputs must use canonical order")
-        if (
-            self.model_metadata
-            and tuple(item.role for item in self.model_metadata) != ROLE_ORDER
-        ):
-            raise ValueError("report model metadata must use canonical order")
+        trace_roles = tuple(item.role for item in self.model_metadata)
+        if trace_roles != output_roles:
+            raise ValueError("report model metadata must align with role outputs")
         if bool(self.role_outputs) != bool(self.model_metadata):
             raise ValueError("report role outputs and model metadata must align")
         for item in self.evidence_items:
@@ -243,7 +286,7 @@ class ResearchReport(_FrozenReportModel):
             for evidence_id in claim.evidence_ids
         ):
             raise ValueError("report role output must reference registered evidence")
-        if self.role_outputs:
+        if self.role_outputs and self.status is not ReportStatus.PARTIAL:
             _validate_role_evidence_closure(
                 self.evidence_items,
                 self.role_outputs,
@@ -267,6 +310,20 @@ class ResearchReport(_FrozenReportModel):
                 raise ValueError(
                     "report claims must derive from canonical role outputs"
                 )
+        elif self.status is ReportStatus.PARTIAL:
+            _validate_partial_role_evidence(self.evidence_items, self.role_outputs)
+            outputs = {item.role: item for item in self.role_outputs}
+            if (
+                self.core_judgments
+                or self.bull_claims
+                != (outputs[RoleName.BULL].claims if RoleName.BULL in outputs else ())
+                or self.bear_claims
+                != (outputs[RoleName.BEAR].claims if RoleName.BEAR in outputs else ())
+                or self.risks
+            ):
+                raise ValueError(
+                    "partial report claims must derive from completed roles"
+                )
         elif self.all_claims:
             raise ValueError("preflight report cannot contain role claims")
         canonical_missing = tuple(
@@ -284,22 +341,55 @@ class ResearchReport(_FrozenReportModel):
             item.ended_at for item in self.model_metadata
         ):
             raise ValueError("report generation time must match completed workflow")
-        policy = _evaluate_report_policy(
-            evidence=self.evidence_items,
-            outputs=self.role_outputs,
-            missing_sections=self.missing_sections,
-        )
-        if (
-            self.status is not policy.status
-            or self.rating is not policy.rating
-            or self.confidence != policy.confidence
-            or self.confidence_explanation != policy.confidence_explanation
-            or self.quality_flags != policy.quality_flags
-            or self.quality_notes != policy.quality_notes
-            or self.missing_modules != policy.missing_modules
-            or any(gap[1] not in self.missing_sections for gap in policy.gaps)
-        ):
-            raise ValueError("research report does not match deterministic policy")
+        if self.status is ReportStatus.PARTIAL:
+            expected_missing = tuple(
+                role for role in ROLE_ORDER if role not in frozenset(output_roles)
+            )
+            retry_stages = tuple(item.stage for item in self.retry_actions)
+            failure_stages = tuple(item.stage for item in self.stage_failures)
+            if (
+                self.missing_modules != expected_missing
+                or self.failed_modules != failure_stages
+                or tuple(
+                    role
+                    for role in ROLE_ORDER
+                    if role in frozenset(self.failed_modules)
+                )
+                != self.failed_modules
+                or tuple(
+                    role
+                    for role in ROLE_ORDER
+                    if role in frozenset(self.blocked_modules)
+                )
+                != self.blocked_modules
+                or frozenset((*self.failed_modules, *self.blocked_modules))
+                != frozenset(expected_missing)
+                or frozenset(self.failed_modules).intersection(self.blocked_modules)
+                or retry_stages
+                != tuple(role for role in ROLE_ORDER if role in frozenset(retry_stages))
+                or len(retry_stages) != len(frozenset(retry_stages))
+                or retry_stages != self.failed_modules
+                or self.confidence_explanation
+                != "Partial analysis: one or more model stages did not complete."
+            ):
+                raise ValueError("partial report does not match deterministic policy")
+        else:
+            policy = _evaluate_report_policy(
+                evidence=self.evidence_items,
+                outputs=self.role_outputs,
+                missing_sections=self.missing_sections,
+            )
+            if (
+                self.status is not policy.status
+                or self.rating is not policy.rating
+                or self.confidence != policy.confidence
+                or self.confidence_explanation != policy.confidence_explanation
+                or self.quality_flags != policy.quality_flags
+                or self.quality_notes != policy.quality_notes
+                or self.missing_modules != policy.missing_modules
+                or any(gap[1] not in self.missing_sections for gap in policy.gaps)
+            ):
+                raise ValueError("research report does not match deterministic policy")
         _validate_safe_report_text(self)
         _validate_report_budget(self._identity_payload())
         if self.report_id != _content_id(self._identity_payload()):
@@ -425,6 +515,151 @@ class ResearchReportBuilder:
                 recovery_actions=recovery_actions,
                 generated_at=frozen_snapshot.frozen_at,
                 disclaimer=REPORT_DISCLAIMER,
+            )
+        except ReportInputValidationError:
+            raise
+        except (TypeError, ValueError, ValidationError, RecursionError):
+            raise ReportInputValidationError() from None
+
+    def build_partial(
+        self,
+        *,
+        snapshot: ResearchSnapshot,
+        evidence_graph: EvidenceGraph,
+        outputs: tuple[RoleOutput, ...],
+        trace: tuple[WorkflowStageTrace, ...],
+        failures: tuple[StageFailure, ...],
+    ) -> ResearchReport:
+        try:
+            frozen_snapshot = ResearchSnapshot.model_validate_json(
+                snapshot.model_dump_json(by_alias=True)
+            )
+            frozen_graph = EvidenceGraph.model_validate_json(
+                evidence_graph.model_dump_json(by_alias=True)
+            )
+            frozen_outputs = tuple(
+                RoleOutput.model_validate_json(item.model_dump_json())
+                for item in outputs
+            )
+            frozen_trace = tuple(
+                WorkflowStageTrace.model_validate_json(item.model_dump_json())
+                for item in trace
+            )
+            frozen_failures = tuple(
+                StageFailure.model_validate_json(item.model_dump_json())
+                for item in failures
+            )
+            if (
+                frozen_graph.snapshot.canonical_json_bytes()
+                != frozen_snapshot.canonical_json_bytes()
+            ):
+                raise ValueError
+            output_roles = tuple(item.role for item in frozen_outputs)
+            if (
+                output_roles
+                != tuple(role for role in ROLE_ORDER if role in frozenset(output_roles))
+                or tuple(item.role for item in frozen_trace) != output_roles
+                or any(
+                    item.status is not WorkflowStageStatus.SUCCEEDED
+                    for item in frozen_trace
+                )
+                or any(
+                    item.snapshot_id != frozen_snapshot.snapshot_id
+                    for item in frozen_outputs
+                )
+            ):
+                raise ValueError
+            failure_roles = tuple(item.stage for item in frozen_failures)
+            if (
+                not failure_roles
+                or failure_roles
+                != tuple(
+                    role for role in ROLE_ORDER if role in frozenset(failure_roles)
+                )
+                or len(failure_roles) != len(frozenset(failure_roles))
+                or frozenset(failure_roles).intersection(output_roles)
+            ):
+                raise ValueError
+            _validate_partial_role_evidence(
+                frozen_graph.evidence_items,
+                frozen_outputs,
+            )
+            referenced = frozenset(
+                evidence_id
+                for output in frozen_outputs
+                for claim in output.claims
+                for evidence_id in claim.evidence_ids
+            )
+            evidence_items = tuple(
+                item
+                for item in frozen_graph.evidence_items
+                if item.evidence_id in referenced
+            )
+            if frozenset(item.evidence_id for item in evidence_items) != referenced:
+                raise ValueError
+            missing_modules = tuple(
+                role for role in ROLE_ORDER if role not in frozenset(output_roles)
+            )
+            if any(role not in missing_modules for role in failure_roles):
+                raise ValueError
+            blocked_modules = tuple(
+                role for role in missing_modules if role not in frozenset(failure_roles)
+            )
+            by_role = {item.role: item for item in frozen_outputs}
+            bull_claims = (
+                by_role[RoleName.BULL].claims if RoleName.BULL in by_role else ()
+            )
+            bear_claims = (
+                by_role[RoleName.BEAR].claims if RoleName.BEAR in by_role else ()
+            )
+            missing_sections = tuple(
+                item.kind for item in frozen_snapshot.missing_sections
+            )
+            quality_flags = tuple(
+                sorted(
+                    {flag for item in evidence_items for flag in item.quality_flags},
+                    key=lambda flag: flag.value,
+                )
+            )
+            quality_notes = tuple(
+                (
+                    *(f"{role.value} stage failed" for role in failure_roles),
+                    *(f"{role.value} stage blocked" for role in blocked_modules),
+                    *_missing_section_notes(missing_sections),
+                )
+            )
+            return ResearchReport.create(
+                snapshot_id=frozen_snapshot.snapshot_id,
+                status=ReportStatus.PARTIAL,
+                rating=None,
+                confidence=0.0,
+                confidence_explanation=(
+                    "Partial analysis: one or more model stages did not complete."
+                ),
+                core_judgments=(),
+                bull_claims=bull_claims,
+                bear_claims=bear_claims,
+                risks=(),
+                evidence_items=evidence_items,
+                role_outputs=frozen_outputs,
+                model_metadata=frozen_trace,
+                quality_flags=quality_flags,
+                quality_notes=quality_notes,
+                missing_modules=missing_modules,
+                missing_sections=missing_sections,
+                recovery_actions=_canonical_recovery_actions(missing_sections),
+                generated_at=(
+                    max(item.ended_at for item in frozen_trace)
+                    if frozen_trace
+                    else frozen_snapshot.frozen_at
+                ),
+                disclaimer=REPORT_DISCLAIMER,
+                retry_actions=tuple(
+                    StageRetryAction(stage=role) for role in failure_roles
+                ),
+                failed_modules=failure_roles,
+                blocked_modules=blocked_modules,
+                stage_failures=frozen_failures,
             )
         except ReportInputValidationError:
             raise
@@ -604,6 +839,61 @@ def _validate_role_evidence_closure(
         )
         if referenced != frozenset(by_id):
             raise ValueError("report evidence must equal the role reference union")
+
+
+def _validate_partial_role_evidence(
+    evidence: tuple[EvidenceItem, ...],
+    outputs: tuple[RoleOutput, ...],
+) -> None:
+    by_id = {item.evidence_id: item for item in evidence}
+    by_role = {item.role: item for item in outputs}
+    for role in ANALYST_ROLES:
+        output = by_role.get(role)
+        if output is None:
+            continue
+        allowed_kinds = ROLE_SECTION_KINDS[role]
+        if any(
+            evidence_id not in by_id
+            or by_id[evidence_id].section_kind not in allowed_kinds
+            for claim in output.claims
+            for evidence_id in claim.evidence_ids
+        ):
+            raise ValueError("partial analyst evidence is outside its allowlist")
+    analyst_ids = frozenset(
+        evidence_id
+        for role in ANALYST_ROLES
+        if role in by_role
+        for claim in by_role[role].claims
+        for evidence_id in claim.evidence_ids
+    )
+    for role in REVIEW_ROLES:
+        output = by_role.get(role)
+        if output is None:
+            continue
+        if not all(analyst in by_role for analyst in ANALYST_ROLES) or any(
+            evidence_id not in analyst_ids
+            for claim in output.claims
+            for evidence_id in claim.evidence_ids
+        ):
+            raise ValueError(
+                "partial review evidence is outside its dependency closure"
+            )
+    risk = by_role.get(RoleName.RISK_DECISION)
+    if risk is not None:
+        if not all(review in by_role for review in REVIEW_ROLES):
+            raise ValueError("partial risk output is missing review dependencies")
+        review_ids = frozenset(
+            evidence_id
+            for role in REVIEW_ROLES
+            for claim in by_role[role].claims
+            for evidence_id in claim.evidence_ids
+        )
+        if any(
+            evidence_id not in review_ids
+            for claim in risk.claims
+            for evidence_id in claim.evidence_ids
+        ):
+            raise ValueError("partial risk evidence is outside its dependency closure")
 
 
 def _evaluate_report_policy(

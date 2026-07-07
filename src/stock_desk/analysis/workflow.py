@@ -110,10 +110,36 @@ class AnalysisWorkflow:
         provider: ModelProvider,
         clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
         monotonic: Callable[[], float] = time.monotonic,
+        temperature: float = DEFAULT_TEMPERATURE,
+        timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+        max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
     ) -> None:
         self._provider = provider
         self._clock = clock
         self._monotonic = monotonic
+        self._temperature = temperature
+        self._timeout_seconds = timeout_seconds
+        self._max_output_tokens = max_output_tokens
+
+    def prepare_stage(
+        self,
+        *,
+        role: RoleName,
+        snapshot: ResearchSnapshot,
+        graph: EvidenceGraph,
+        dependencies: tuple[RoleOutput, ...],
+    ) -> _PreparedRole:
+        """Prepare one validated role request for resilient orchestration."""
+        return self._prepare_role(
+            role=role,
+            snapshot=snapshot,
+            graph=graph,
+            dependencies=dependencies,
+        )
+
+    async def execute_stage(self, prepared: _PreparedRole) -> _CompletedRole:
+        """Execute one prepared role through the same Task 4/5 boundary."""
+        return await self._execute_role(prepared)
 
     async def run(
         self,
@@ -189,9 +215,9 @@ class AnalysisWorkflow:
                 snapshot=snapshot,
                 evidence=allowed_evidence,
                 dependencies=dependencies,
-                temperature=DEFAULT_TEMPERATURE,
-                timeout_seconds=DEFAULT_TIMEOUT_SECONDS,
-                max_output_tokens=DEFAULT_MAX_OUTPUT_TOKENS,
+                temperature=self._temperature,
+                timeout_seconds=self._timeout_seconds,
+                max_output_tokens=self._max_output_tokens,
             )
         except (
             ContentPolicyError,

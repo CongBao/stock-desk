@@ -7,6 +7,7 @@ import hashlib
 import json
 import math
 from typing import cast, Final, Protocol, runtime_checkable
+from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import BaseModel, ConfigDict, field_serializer, field_validator
 
@@ -278,16 +279,59 @@ def _latest_timestamp(
     return max(parsed, default=None)
 
 
+def _canonical_source_url(value: object) -> str | None:
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > 2_048
+        or value != value.strip()
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
+        return None
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except ValueError:
+        return None
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname or port == 0:
+        return None
+    hostname = parsed.hostname.lower().rstrip(".")
+    if not hostname:
+        return None
+    authority = f"[{hostname}]" if ":" in hostname else hostname
+    if port is not None:
+        authority = f"{authority}:{port}"
+    canonical = urlunsplit(
+        (parsed.scheme.lower(), authority, parsed.path or "", "", "")
+    )
+    return canonical if len(canonical) <= 2_048 else None
+
+
 def _first_url(
     rows: tuple[dict[str, object], ...],
     field_names: tuple[str, ...],
 ) -> str | None:
     for row in rows:
         for field in field_names:
-            value = row.get(field)
-            if isinstance(value, str) and value.startswith(("https://", "http://")):
-                return value
+            if (canonical := _canonical_source_url(row.get(field))) is not None:
+                return canonical
     return None
+
+
+def _canonicalize_row_urls(
+    rows: tuple[dict[str, object], ...],
+    field_names: tuple[str, ...],
+) -> tuple[dict[str, object], ...]:
+    if not field_names:
+        return rows
+    canonical_rows: list[dict[str, object]] = []
+    for row in rows:
+        canonical_row = dict(row)
+        for field in field_names:
+            if field in canonical_row:
+                canonical_row[field] = _canonical_source_url(canonical_row[field])
+        canonical_rows.append(canonical_row)
+    return tuple(canonical_rows)
 
 
 def _content_digest(
@@ -332,6 +376,7 @@ def _research_section_from_table(
         raise ProviderInvalidResponse()
     canonical_fetched_at = fetched_at.astimezone(timezone.utc)
     rows = normalize_research_table(table)
+    rows = _canonicalize_row_urls(rows, url_fields)
     if not identity_fields or not expected_identity:
         raise ProviderInvalidResponse()
     for row in rows:
@@ -369,7 +414,8 @@ def _research_section_from_table(
                 "kind": kind,
                 "canonical_source": source.value,
                 "source_record": f"{source.value}:{kind.value}:{digest}",
-                "source_url": _first_url(rows, url_fields) or default_source_url,
+                "source_url": _first_url(rows, url_fields)
+                or _canonical_source_url(default_source_url),
                 "published_at": published_at,
                 "data_cutoff": cutoff,
                 "fetched_at": canonical_fetched_at,

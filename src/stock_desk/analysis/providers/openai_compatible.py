@@ -31,6 +31,7 @@ from stock_desk.analysis.providers.base import (
     ModelSecretReader,
     ModelServerError,
     ModelTimeoutError,
+    ModelTransportError,
     ModelUnsafeEndpointError,
     ModelUsage,
     raise_for_status,
@@ -211,9 +212,11 @@ class OpenAICompatibleProvider:
         request_error: ModelProviderError | None = None
         try:
             async with asyncio.timeout(timeout_seconds):
-                # This preflight rejects current unsafe DNS answers, but httpx2
-                # resolves again while connecting; it does not eliminate rebinding.
-                await _validate_remote_endpoint(url, self._resolver)
+                (
+                    pinned_url,
+                    original_authority,
+                    sni_hostname,
+                ) = await _validate_remote_endpoint(url, self._resolver)
                 remaining = deadline - loop.time()
                 if remaining <= 0:
                     raise TimeoutError
@@ -225,15 +228,16 @@ class OpenAICompatibleProvider:
                     ) as client:
                         response = await client.request(
                             method,
-                            url,
-                            headers=headers,
+                            pinned_url,
+                            headers={**headers, "Host": original_authority},
                             json=body,
                             timeout=remaining,
+                            extensions={"sni_hostname": sni_hostname},
                         )
         except (TimeoutError, httpx2.TimeoutException):
             request_error = ModelTimeoutError()
         except httpx2.RequestError:
-            request_error = ModelServerError()
+            request_error = ModelTransportError()
         if request_error is not None:
             raise request_error from None
         if response is None:
@@ -274,13 +278,24 @@ def _validate_timeout(value: float) -> float:
     return value
 
 
-async def _validate_remote_endpoint(url: str, resolver: HostResolver) -> None:
+async def _validate_remote_endpoint(
+    url: str, resolver: HostResolver
+) -> tuple[httpx2.URL, str, str]:
     resolution_error: ModelProviderError | None = None
+    addresses: tuple[str, ...] = ()
     try:
-        await validate_resolved_remote_url(url, resolver)
+        addresses = await validate_resolved_remote_url(url, resolver)
     except ModelHostResolutionError:
         resolution_error = ModelDNSResolutionError()
     except ModelResolvedEndpointError:
         resolution_error = ModelUnsafeEndpointError()
     if resolution_error is not None:
         raise resolution_error from None
+    original = httpx2.URL(url)
+    if not addresses or not original.host or not original.netloc:
+        raise ModelDNSResolutionError()
+    return (
+        original.copy_with(host=addresses[0]),
+        original.netloc.decode("ascii"),
+        original.host,
+    )

@@ -46,6 +46,7 @@ class ModelErrorCode(StrEnum):
     AUTHENTICATION = "authentication"
     RATE_LIMIT = "rate_limit"
     SERVER = "server"
+    TRANSPORT = "transport"
     DNS = "dns"
     UNSAFE_ENDPOINT = "unsafe_endpoint"
     INVALID_RESPONSE = "invalid_response"
@@ -218,6 +219,11 @@ class ModelRateLimitError(ModelProviderError):
 class ModelServerError(ModelProviderError):
     code = ModelErrorCode.SERVER
     safe_message = "model provider is unavailable"
+
+
+class ModelTransportError(ModelProviderError):
+    code = ModelErrorCode.TRANSPORT
+    safe_message = "model provider transport failed"
 
 
 class ModelDNSResolutionError(ModelProviderError):

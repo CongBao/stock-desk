@@ -22,6 +22,7 @@ from stock_desk.analysis.providers.base import (
     ModelDNSResolutionError,
     ModelInvalidResponseError,
     ModelProvider,
+    ModelProviderError,
     ModelRateLimitError,
     ModelRequest,
     ModelServerError,
@@ -46,6 +47,21 @@ class StubSecretStore:
 
 async def resolve_public(_hostname: str, _port: int) -> tuple[str, ...]:
     return ("93.184.216.34",)
+
+
+def assert_pinned_endpoint(
+    captured: httpx2.Request,
+    original_endpoint: str,
+    *,
+    remote: bool,
+) -> None:
+    original = httpx2.URL(original_endpoint)
+    if not remote:
+        assert captured.url == original
+        return
+    assert captured.url == original.copy_with(host="93.184.216.34")
+    assert captured.headers["host"] == original.netloc.decode("ascii")
+    assert captured.extensions["sni_hostname"] == original.host
 
 
 def request() -> ModelRequest:
@@ -209,7 +225,7 @@ def test_all_adapters_share_async_contract_and_parse_structured_responses(
     assert response.usage.input_tokens == expected_usage[0]
     assert response.usage.output_tokens == expected_usage[1]
     assert response.usage.total_tokens == expected_usage[2]
-    assert str(captured[0].url) == expected_endpoint
+    assert_pinned_endpoint(captured[0], expected_endpoint, remote=kind != "ollama")
     observed_timeouts = captured[0].extensions["timeout"]
     if kind == "ollama":
         assert observed_timeouts == {
@@ -281,7 +297,7 @@ def test_connection_uses_provider_endpoint_and_returns_typed_result(kind: str) -
     assert result.model == provider.model
     assert result.error_code is None
     assert captured[0].method == "GET"
-    assert str(captured[0].url) == endpoint
+    assert_pinned_endpoint(captured[0], endpoint, remote=kind != "ollama")
     observed_read_timeout = captured[0].extensions["timeout"]["read"]
     if kind == "ollama":
         assert observed_read_timeout == 4.0
@@ -350,6 +366,47 @@ def test_timeout_and_malformed_json_are_typed_and_secret_safe() -> None:
     )
     with pytest.raises(ModelInvalidResponseError):
         run(invalid_provider.complete(request()))
+
+
+@pytest.mark.parametrize("kind", ["openai", "deepseek", "ollama"])
+def test_transport_failures_are_typed_separately_from_http_server_failures(
+    kind: str,
+) -> None:
+    transport_secret = "transport-diagnostic-secret-never-leak"
+
+    def disconnected(http_request: httpx2.Request) -> httpx2.Response:
+        raise httpx2.ConnectError(transport_secret, request=http_request)
+
+    transport = httpx2.MockTransport(disconnected)
+    if kind == "deepseek":
+        provider: ModelProvider = DeepSeekProvider(
+            model="deepseek-v4",
+            secret_store=StubSecretStore(),
+            transport=transport,
+            resolver=resolve_public,
+        )
+    elif kind == "openai":
+        provider = OpenAICompatibleProvider(
+            base_url="https://models.example.com/v1",
+            model="vendor-chat",
+            secret_store=StubSecretStore(),
+            transport=transport,
+            resolver=resolve_public,
+        )
+    else:
+        provider = OllamaProvider(
+            base_url="http://localhost:11434",
+            model="qwen3:8b",
+            transport=transport,
+        )
+
+    with pytest.raises(ModelProviderError) as captured:
+        run(provider.complete(request()))
+
+    assert captured.value.code.value == "transport"
+    rendered = f"{captured.value!r} {captured.value}"
+    assert transport_secret not in rendered
+    assert API_KEY not in rendered
 
 
 def test_connection_failure_is_a_safe_result_instead_of_an_exception() -> None:
@@ -429,6 +486,36 @@ def test_remote_request_rejects_any_resolved_non_global_address(
 
     with pytest.raises(ModelUnsafeEndpointError):
         run(provider.complete(request()))
+
+
+def test_remote_request_pins_validated_ip_and_preserves_host_and_sni() -> None:
+    resolver_calls: list[tuple[str, int]] = []
+    captured: list[httpx2.Request] = []
+
+    async def resolver(hostname: str, port: int) -> tuple[str, ...]:
+        resolver_calls.append((hostname, port))
+        return ("93.184.216.34",)
+
+    def handler(value: httpx2.Request) -> httpx2.Response:
+        captured.append(value)
+        return httpx2.Response(200, json=openai_response("vendor-chat"))
+
+    provider = OpenAICompatibleProvider(
+        base_url="https://models.example.com/v1",
+        model="vendor-chat",
+        secret_store=StubSecretStore(),
+        transport=httpx2.MockTransport(handler),
+        resolver=resolver,
+    )
+
+    run(provider.complete(request()))
+
+    assert resolver_calls == [("models.example.com", 443)]
+    assert_pinned_endpoint(
+        captured[0],
+        "https://models.example.com/v1/chat/completions",
+        remote=True,
+    )
 
 
 def test_dns_failure_is_typed_safe_and_happens_before_transport() -> None:

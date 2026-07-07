@@ -20,8 +20,8 @@ from stock_desk.analysis.providers.base import (
     ModelProviderError,
     ModelRequest,
     ModelResponse,
-    ModelServerError,
     ModelTimeoutError,
+    ModelTransportError,
     ModelUsage,
     raise_for_status,
     validate_model_name,
@@ -177,7 +177,7 @@ class OllamaProvider:
         except httpx2.TimeoutException:
             raise ModelTimeoutError() from None
         except httpx2.RequestError:
-            raise ModelServerError() from None
+            raise ModelTransportError() from None
         raise_for_status(response.status_code)
         return decode_provider_response_json(response.content)
 

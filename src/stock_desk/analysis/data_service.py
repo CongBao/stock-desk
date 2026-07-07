@@ -124,6 +124,33 @@ class ResearchDataService:
             outcomes.append(section)
         return tuple(outcomes)
 
+    def load_kind(
+        self,
+        symbol: CanonicalSymbol,
+        kind: ResearchSectionKind,
+    ) -> ResearchSection:
+        canonical_symbol = _SYMBOL_ADAPTER.validate_python(symbol, strict=True)
+        loader = self._loaders.get(kind)
+        if loader is None:
+            raise ResearchDataUnavailable(
+                kind=kind,
+                reason=ResearchMissingReason.NO_PROVIDER,
+                attempted_sources=(),
+            )
+        section = loader.load(canonical_symbol)
+        if section.kind is not kind:
+            raise ValueError("research loader kind does not match section kind")
+        return section
+
+    def missing_from_error(
+        self, error: ResearchDataUnavailable
+    ) -> MissingResearchSection:
+        return self._missing(
+            kind=error.kind,
+            reason=error.reason,
+            attempted_sources=error.attempted_sources,
+        )
+
     def _missing(
         self,
         *,
