@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 
 import { formulaApi, type FormulaApi } from '../formulas/formulaApi';
 import {
@@ -12,7 +12,13 @@ import {
   type BacktestApi,
   type BacktestOverview,
 } from './backtestApi';
-import { loadBacktestDraft, type BacktestDraft } from './backtestDraft';
+import {
+  loadBacktestDraft,
+  parseBacktestPrefill,
+  resolvedBacktestPrefill,
+  type BacktestPrefillResolution,
+  type BacktestDraft,
+} from './backtestDraft';
 import { BacktestWizard } from './BacktestWizard';
 import type { FormulaChoice } from './steps/FormulaStep';
 
@@ -37,6 +43,11 @@ export function BacktestWorkspacePage({
   marketClient = marketApi,
 }: BacktestWorkspacePageProps) {
   const navigate = useNavigate();
+  const location = useLocation();
+  const parsedPrefill = useMemo(
+    () => parseBacktestPrefill(location.search),
+    [location.search],
+  );
   const [formulaChoices, setFormulaChoices] = useState<
     readonly FormulaChoice[]
   >([]);
@@ -52,6 +63,12 @@ export function BacktestWorkspacePage({
   const [verifiedStoredSingle, setVerifiedStoredSingle] = useState(false);
   const [wizardKey, setWizardKey] = useState(0);
   const [refreshGeneration, setRefreshGeneration] = useState(0);
+  const [prefillResolution, setPrefillResolution] =
+    useState<BacktestPrefillResolution>(() => ({
+      search: location.search,
+      verified: parsedPrefill.kind !== 'valid',
+      draft: null,
+    }));
 
   function refresh() {
     setFormulaError(false);
@@ -166,6 +183,58 @@ export function BacktestWorkspacePage({
     };
   }, [marketClient, refreshGeneration, storedDraft]);
 
+  useEffect(() => {
+    if (parsedPrefill.kind !== 'valid') {
+      setPrefillResolution({
+        search: location.search,
+        verified: true,
+        draft: null,
+      });
+      return undefined;
+    }
+    const controller = new AbortController();
+    let active = true;
+    const draft = parsedPrefill.draft;
+    const symbol = draft.scope.kind === 'single' ? draft.scope.symbol : '';
+    setPrefillResolution({
+      search: location.search,
+      verified: false,
+      draft: null,
+    });
+    void marketClient
+      .searchInstruments({
+        query: symbol,
+        limit: 10,
+        signal: controller.signal,
+      })
+      .then((items) => {
+        if (!active) return;
+        const listed = items.some(
+          (item) =>
+            item.symbol === symbol &&
+            item.instrumentKind === 'stock' &&
+            item.listingStatus === 'listed',
+        );
+        setPrefillResolution({
+          search: location.search,
+          verified: true,
+          draft: listed ? draft : null,
+        });
+      })
+      .catch(() => {
+        if (active && !controller.signal.aborted)
+          setPrefillResolution({
+            search: location.search,
+            verified: true,
+            draft: null,
+          });
+      });
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [location.search, marketClient, parsedPrefill]);
+
   const restorable = useMemo(() => {
     if (storedDraft === null) return null;
     const choice = formulaChoices.find(
@@ -201,6 +270,21 @@ export function BacktestWorkspacePage({
       return null;
     return storedDraft;
   }, [formulaChoices, pools, storedDraft, verifiedStoredSingle]);
+  const prefillPending =
+    parsedPrefill.kind === 'valid' &&
+    (prefillResolution.search !== location.search ||
+      !prefillResolution.verified);
+  const prefillInvalid =
+    parsedPrefill.kind === 'invalid' ||
+    (parsedPrefill.kind === 'valid' &&
+      prefillResolution.search === location.search &&
+      prefillResolution.verified &&
+      prefillResolution.draft === null);
+  const currentPrefill = resolvedBacktestPrefill(
+    parsedPrefill,
+    prefillResolution,
+    location.search,
+  );
 
   return (
     <article className="backtest-workspace-page">
@@ -240,20 +324,31 @@ export function BacktestWorkspacePage({
           股票池目录暂时不可用；仍可选择单只证券。
         </p>
       ) : null}
-      <BacktestWizard
-        key={wizardKey}
-        api={api}
-        formulaChoices={formulaChoices}
-        initialState={restoredDraft}
-        marketApiClient={marketClient}
-        pools={pools}
-        catalogRevision={refreshGeneration}
-        onSubmitted={(submission, notice) =>
-          void navigate(`/backtests/${submission.runId}`, {
-            state: { submissionNotice: notice },
-          })
-        }
-      />
+      {prefillInvalid ? (
+        <p className="workspace-notice" role="status">
+          行情预填参数无效或已失效，未应用任何预填内容。
+        </p>
+      ) : null}
+      {prefillPending ? (
+        <p className="workspace-notice" role="status">
+          正在核对行情预填…
+        </p>
+      ) : (
+        <BacktestWizard
+          key={`${String(wizardKey)}:${location.search}`}
+          api={api}
+          formulaChoices={formulaChoices}
+          initialState={restoredDraft ?? currentPrefill ?? undefined}
+          marketApiClient={marketClient}
+          pools={pools}
+          catalogRevision={refreshGeneration}
+          onSubmitted={(submission, notice) =>
+            void navigate(`/backtests/${submission.runId}`, {
+              state: { submissionNotice: notice },
+            })
+          }
+        />
+      )}
       <section
         className="backtest-history"
         aria-labelledby="backtest-history-heading"

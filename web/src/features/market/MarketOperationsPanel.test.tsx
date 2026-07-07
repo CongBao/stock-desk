@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter } from 'react-router-dom';
 
 import { MarketOperationsPanel } from './MarketOperationsPanel';
 import type { JsonValue } from '../../shared/api/client';
@@ -38,24 +39,45 @@ function renderPanel(api: MarketWorkflowApi) {
   return {
     ...render(
       <QueryClientProvider client={queryClient}>
-        <MarketOperationsPanel
-          api={api}
-          period="1d"
-          adjustment="qfq"
-          selectedInstrument={{ symbol: '600000.SH', name: '浦发银行' }}
-          selectedPool={{
-            id: 'custom-watch',
-            name: '观察池',
-            symbols: ['600000.SH'],
-            kind: 'custom',
-            revision: 1,
-          }}
-        />
+        <MemoryRouter>
+          <MarketOperationsPanel
+            api={api}
+            period="1d"
+            adjustment="qfq"
+            selectedInstrument={{ symbol: '600000.SH', name: '浦发银行' }}
+            selectedPool={{
+              id: 'custom-watch',
+              name: '观察池',
+              symbols: ['600000.SH'],
+              kind: 'custom',
+              revision: 1,
+            }}
+          />
+        </MemoryRouter>
       </QueryClientProvider>,
     ),
     queryClient,
   };
 }
+
+it('links the visible market selection and date range to a refreshable backtest prefill', async () => {
+  const user = userEvent.setup();
+  renderPanel({
+    getDailySchedule: vi.fn(() => Promise.reject(new Error('missing'))),
+  } as unknown as MarketWorkflowApi);
+
+  await user.clear(screen.getByLabelText('开始日期'));
+  await user.type(screen.getByLabelText('开始日期'), '2024-02-10');
+  await user.clear(screen.getByLabelText('结束日期'));
+  await user.type(screen.getByLabelText('结束日期'), '2024-03-15');
+
+  const link = screen.getByRole('link', { name: '回测当前股票' });
+  expect(link).toHaveAttribute(
+    'href',
+    '/backtests?symbol=600000.SH&period=1d&adjustment=qfq&start=2024-02-10&end=2024-03-15',
+  );
+  expect(link.getAttribute('href')).not.toMatch(/formula|version|source/u);
+});
 
 function terminalTask(
   value: MarketTask,

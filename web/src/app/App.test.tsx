@@ -179,6 +179,41 @@ it('shows the product identity and all primary navigation items', () => {
   }
 });
 
+it('collapses and expands the primary navigation without abbreviating link names', async () => {
+  const user = userEvent.setup();
+  renderApp();
+
+  const collapse = screen.getByRole('button', { name: '收起主导航' });
+  expect(collapse).toHaveAttribute('aria-expanded', 'true');
+  await user.click(collapse);
+  const expand = screen.getByRole('button', { name: '展开主导航' });
+  expect(expand).toHaveAttribute('aria-expanded', 'false');
+  expect(document.querySelector('.app-shell')).toHaveAttribute(
+    'data-navigation-collapsed',
+    'true',
+  );
+  for (const label of [
+    '行情',
+    '自定义公式',
+    '策略回测',
+    '智能分析',
+    '任务中心',
+    '设置',
+  ]) {
+    const link = screen.getByRole('link', { name: label });
+    expect(link).toHaveAttribute('title', label);
+    expect(link.querySelector('.nav-icon svg')).toHaveAttribute(
+      'stroke',
+      'currentColor',
+    );
+  }
+  await user.click(expand);
+  expect(screen.getByRole('button', { name: '收起主导航' })).toHaveAttribute(
+    'aria-expanded',
+    'true',
+  );
+});
+
 it('opens on the cache-only three-column market workspace', async () => {
   renderApp(['/']);
 

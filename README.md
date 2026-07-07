@@ -2,9 +2,9 @@
 
 # Stock Desk
 
-Stock Desk `v0.3.0` is a local-first A-share market and formula workspace. Stage 1 provides configurable market sources, durable updates, provenance, pools, schedules, and interactive daily, weekly, and 60-minute charts. Stage 2 adds a constrained TDX-compatible formula engine, immutable versions, and a desktop-first three-column Formula Studio with K-line, subchart, and BUY/SELL previews.
+Stock Desk `v0.4.0` is a local-first A-share market, formula, and historical-backtest workspace. Stage 1 provides configurable market sources, durable updates, provenance, pools, schedules, and interactive daily, weekly, and 60-minute charts. Stage 2 adds a constrained TDX-compatible formula engine and immutable versions. Stage 3 turns saved BUY/SELL signals into reproducible single-stock or pool backtests with explicit A-share execution rules, costs, progress, reports, and pinned replay.
 
-Backtesting and LLM-assisted analysis are planned later stages. Their navigation entries are previews, not completed capabilities. See the [roadmap](ROADMAP.md).
+LLM-assisted analysis remains a planned later stage; its navigation entry is a preview, not a completed capability. See the [roadmap](ROADMAP.md).
 
 ## Quick start
 
@@ -27,7 +27,9 @@ docker compose down --volumes --remove-orphans
 
 The API health endpoint is [http://localhost:8000/api/health](http://localhost:8000/api/health), and its interactive documentation is at [http://localhost:8000/docs](http://localhost:8000/docs). Persistent native/container data lives under `data/`; API and worker must share the same database and market-lake paths.
 
-The Stage 0 foundation remains available: the `/market`, `/formulas`, `/backtests`, `/analysis`, `/tasks`, and `/settings` workspace routes share one shell, and the `demo.double` durable task remains useful for worker diagnostics. Stage 1 completes market data and Stage 2 completes formulas; backtests and analysis remain previews.
+The Stage 0 foundation remains available: the `/market`, `/formulas`, `/backtests`, `/analysis`, `/tasks`, and `/settings` workspace routes share one shell, and the `demo.double` durable task remains useful for worker diagnostics. Stage 1 completes market data, Stage 2 completes formulas, and Stage 3 completes historical strategy backtests; intelligent analysis remains a preview.
+
+The shared shell adapts to wide desktop, narrow desktop, and tablet ratios. Its left navigation automatically condenses to labeled SVG icons on narrow screens and can always be expanded or collapsed with the pointer or keyboard; core controls reflow rather than overlapping.
 
 ## Configure data sources
 
@@ -66,9 +68,18 @@ Chart browsing is cache-only. A cache miss shows guidance and never triggers a s
 
 The supported subset and runtime semantics are published in the [formula compatibility reference](docs/formula-compatibility.md). Condition-screening formulas, color-K formulas, and AI formula generation/explanation/repair are intentionally absent.
 
+## Run historical backtests
+
+1. Save a valid trading-system formula, then open `/backtests` or use **Backtest current stock** from the market workspace. The five-step wizard selects the exact formula version, single stock or frozen pool, daily/weekly/60-minute period, half-open dates, adjustment, fixed-lot size, commissions, tax, and slippage.
+2. Review preflight coverage and the close-confirm/next-open rules before submitting. Pool jobs run asynchronously, expose durable progress/logs, support cancellation, and retain partial results.
+3. Read the conclusion-first report: realized win rate and denominator, net-return statistics, reliability, distribution, grouped samples, open positions, failures, and exact gross-to-net costs. Pool results are independent per-stock trade samples, not portfolio returns.
+4. Reopen a trade against the run-pinned market/status manifests and SignalSeries. K-line remains the main chart, formula output the subchart, and weekly fills disclose their exact daily execution evidence. JSON/CSV exports retain reproducibility metadata.
+
+Execution semantics, metric definitions, and limitations are documented in [backtesting semantics](docs/backtesting-semantics.md). Stock Desk does not place orders or connect to brokers.
+
 ## Current scope and safety
 
-Stage 2 includes the Stage 1 market workspace plus technical/trading formulas, immutable versions, validation, parameters, and consistent chart previews. It does not include real-time quotes, a dynamic screener, drawing tools, formula-driven backtests, portfolios, trading, or LLM analysis.
+Stage 3 includes the market workspace, technical/trading formulas, and reproducible historical backtests. It does not include real-time quotes, a dynamic screener, drawing tools, shared-capital portfolio simulation, broker connectivity, live/automatic trading, or LLM analysis.
 
 This is a trusted, single-user local service without authentication, authorization, or TLS. Keep it on loopback, do not commit `.env`, tokens, the master key, local TDX paths, databases, or downloaded market data, and never paste them into issues. See [data-source details](docs/data-sources.md), [security](SECURITY.md), and [architecture](docs/architecture.md).
 
@@ -78,8 +89,10 @@ This is a trusted, single-user local service without authentication, authorizati
 make test
 make acceptance
 make acceptance-formula
+make acceptance-backtest
 make benchmark
 make benchmark-formula
+make benchmark-backtest
 make lint
 make typecheck
 make build
@@ -87,4 +100,4 @@ make public-tree
 make security
 ```
 
-After installing Chromium with `pnpm exec playwright install chromium`, run `make e2e-market` and `make e2e-formula` for the real Stage 1/2 browser flows. `make security` requires network access: it checks Python dependencies with OSV and JavaScript production dependencies through the npm registry after verifying that manifests match their lockfiles. With Docker running, `make release-check` runs all browser slices, security, and an isolated container smoke gate; it starts and cleans up its own Compose stack. The project is licensed under Apache-2.0. Stock Desk is research software, not investment advice; verify data and decisions independently.
+After installing Chromium with `pnpm exec playwright install chromium`, run `make e2e-market`, `make e2e-formula`, and `make e2e-backtest` for the real Stage 1–3 browser flows. `make security` requires network access: it checks Python dependencies with OSV and JavaScript production dependencies through the npm registry after verifying that manifests match their lockfiles. With Docker running, `make release-check` runs all browser slices, security, and an isolated container smoke gate; it starts and cleans up its own Compose stack. The project is licensed under Apache-2.0. Stock Desk is research software, not investment advice; verify data and decisions independently.

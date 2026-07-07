@@ -246,3 +246,123 @@ it('does not offer a stored symbol that no longer resolves to a listed stock', a
     ).not.toBeInTheDocument(),
   );
 });
+
+it('re-resolves and applies a valid market prefill before mounting the wizard', async () => {
+  render(
+    <MemoryRouter
+      initialEntries={[
+        '/backtests?symbol=600000.SH&period=1w&adjustment=hfq&start=2024-02-10&end=2024-03-15',
+      ]}
+    >
+      <BacktestWorkspacePage
+        api={api()}
+        formulaClient={formulaClient}
+        marketClient={marketClient}
+      />
+    </MemoryRouter>,
+  );
+
+  expect(screen.getByText('正在核对行情预填…')).toBeVisible();
+  expect(await screen.findByText('600000.SH')).toBeVisible();
+  expect(screen.getByText('周线 · 后复权')).toBeVisible();
+  expect(screen.getByText('2024-02-10 → 2024-03-15')).toBeVisible();
+});
+
+it('fails closed for unknown query keys without leaking them or applying a prefill', async () => {
+  render(
+    <MemoryRouter
+      initialEntries={[
+        '/backtests?symbol=600000.SH&period=1d&adjustment=qfq&start=2024-02-10&end=2024-03-15&formula_id=private-value',
+      ]}
+    >
+      <BacktestWorkspacePage
+        api={api()}
+        formulaClient={formulaClient}
+        marketClient={marketClient}
+      />
+    </MemoryRouter>,
+  );
+
+  expect(
+    await screen.findByText('行情预填参数无效或已失效，未应用任何预填内容。'),
+  ).toBeVisible();
+  expect(screen.queryByText('private-value')).not.toBeInTheDocument();
+  expect(
+    screen.getByRole('complementary', { name: '当前配置摘要' }),
+  ).toHaveTextContent('未选择');
+});
+
+it('fails closed when a prefilled symbol no longer resolves to a listed stock', async () => {
+  const staleMarketClient = {
+    ...marketClient,
+    searchInstruments: vi.fn().mockResolvedValue([
+      {
+        symbol: '600000.SH',
+        name: '浦发银行',
+        instrumentKind: 'stock',
+        listingStatus: 'delisted',
+      },
+    ]),
+  } as unknown as MarketApi;
+  render(
+    <MemoryRouter
+      initialEntries={[
+        '/backtests?symbol=600000.SH&period=1d&adjustment=qfq&start=2024-02-10&end=2024-03-15',
+      ]}
+    >
+      <BacktestWorkspacePage
+        api={api()}
+        formulaClient={formulaClient}
+        marketClient={staleMarketClient}
+      />
+    </MemoryRouter>,
+  );
+
+  expect(
+    await screen.findByText('行情预填参数无效或已失效，未应用任何预填内容。'),
+  ).toBeVisible();
+  expect(
+    screen.getByRole('complementary', { name: '当前配置摘要' }),
+  ).toHaveTextContent('未选择');
+});
+
+it('prefill wins until the user explicitly restores a stored draft', async () => {
+  const stored: BacktestDraft = {
+    adjustment: 'qfq',
+    commissionBps: '2.5',
+    endDate: '2026-01-02',
+    formulaId: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+    formulaParameters: { FAST: 12 },
+    formulaVersionId: version.id,
+    minimumCommission: '5',
+    period: '1d',
+    quantityShares: 1000,
+    scope: { kind: 'single', symbol: '600000.SH' },
+    sellTaxBps: '5',
+    slippageBps: '1',
+    startDate: '2025-01-02',
+  };
+  localStorage.setItem(
+    BACKTEST_DRAFT_KEY,
+    JSON.stringify({ version: 1, draft: stored }),
+  );
+  const user = userEvent.setup();
+  render(
+    <MemoryRouter
+      initialEntries={[
+        '/backtests?symbol=600000.SH&period=1w&adjustment=hfq&start=2024-02-10&end=2024-03-15',
+      ]}
+    >
+      <BacktestWorkspacePage
+        api={api()}
+        formulaClient={formulaClient}
+        marketClient={marketClient}
+      />
+    </MemoryRouter>,
+  );
+
+  expect(await screen.findByText('周线 · 后复权')).toBeVisible();
+  await user.click(screen.getByRole('button', { name: '恢复上次草稿' }));
+  expect(screen.getByText('日线 · 前复权')).toBeVisible();
+  expect(screen.getByText('2025-01-02 → 2026-01-02')).toBeVisible();
+});

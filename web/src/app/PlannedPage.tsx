@@ -1,4 +1,5 @@
 import type { AppRoute } from './routes';
+import { AppIcon } from './AppIcon';
 
 type PlannedPageProps = {
   readonly route: AppRoute;
@@ -22,7 +23,9 @@ export function PlannedPage({ route }: PlannedPageProps) {
         <div className="roadmap-visual" aria-hidden="true">
           <span className="roadmap-orbit roadmap-orbit-one" />
           <span className="roadmap-orbit roadmap-orbit-two" />
-          <span className="roadmap-core">{route.icon}</span>
+          <span className="roadmap-core">
+            <AppIcon name={route.icon} />
+          </span>
         </div>
         <div className="roadmap-copy">
           <span className="roadmap-index">ROADMAP / {route.release}</span>

@@ -19,6 +19,17 @@ export type BacktestDraft = {
   readonly slippageBps: string;
 };
 
+export type BacktestPrefillParseResult =
+  | { readonly kind: 'none' }
+  | { readonly kind: 'invalid' }
+  | { readonly kind: 'valid'; readonly draft: BacktestDraft };
+
+export type BacktestPrefillResolution = {
+  readonly search: string;
+  readonly verified: boolean;
+  readonly draft: BacktestDraft | null;
+};
+
 const periods = new Set(['1d', '1w', '60m']);
 const adjustments = new Set(['none', 'qfq', 'hfq']);
 const datePattern = /^\d{4}-\d{2}-\d{2}$/u;
@@ -28,6 +39,84 @@ const uuidPattern = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/u;
 const decimalPattern = /^(?:0|[1-9][0-9]*)(?:\.[0-9]*[1-9])?$/u;
 const MAX_SAFE_PARAMETER = 2 ** 53 - 1;
 const MAX_QUANTITY_SHARES = 100_000_000;
+const prefillKeys = ['symbol', 'period', 'adjustment', 'start', 'end'] as const;
+
+export function createBacktestDraft(
+  overrides: Partial<BacktestDraft> = {},
+): BacktestDraft {
+  return {
+    formulaId: '',
+    formulaVersionId: '',
+    formulaParameters: {},
+    scope: { kind: 'single', symbol: '' },
+    period: '1d',
+    adjustment: 'qfq',
+    startDate: '',
+    endDate: '',
+    quantityShares: 1000,
+    commissionBps: '2.5',
+    minimumCommission: '5',
+    sellTaxBps: '5',
+    slippageBps: '1',
+    ...overrides,
+  };
+}
+
+export function parseBacktestPrefill(
+  search: string,
+): BacktestPrefillParseResult {
+  const params = new URLSearchParams(
+    search.startsWith('?') ? search.slice(1) : search,
+  );
+  if ([...params.keys()].length === 0) return { kind: 'none' };
+  const keys = [...params.keys()];
+  if (
+    keys.length !== prefillKeys.length ||
+    keys.some(
+      (key) => !prefillKeys.includes(key as (typeof prefillKeys)[number]),
+    ) ||
+    prefillKeys.some((key) => params.getAll(key).length !== 1)
+  )
+    return { kind: 'invalid' };
+  const symbol = params.get('symbol') ?? '';
+  const period = params.get('period') ?? '';
+  const adjustment = params.get('adjustment') ?? '';
+  const startDate = params.get('start') ?? '';
+  const endDate = params.get('end') ?? '';
+  if (
+    !symbolPattern.test(symbol) ||
+    !periods.has(period) ||
+    !adjustments.has(adjustment) ||
+    !isRealDate(startDate) ||
+    !isRealDate(endDate) ||
+    startDate >= endDate
+  )
+    return { kind: 'invalid' };
+  return {
+    kind: 'valid',
+    draft: createBacktestDraft({
+      scope: { kind: 'single', symbol },
+      period: period as MarketPeriod,
+      adjustment: adjustment as MarketAdjustment,
+      startDate,
+      endDate,
+    }),
+  };
+}
+
+export function resolvedBacktestPrefill(
+  parsed: BacktestPrefillParseResult,
+  resolution: BacktestPrefillResolution,
+  currentSearch: string,
+): BacktestDraft | null {
+  if (
+    parsed.kind !== 'valid' ||
+    !resolution.verified ||
+    resolution.search !== currentSearch
+  )
+    return null;
+  return resolution.draft;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);

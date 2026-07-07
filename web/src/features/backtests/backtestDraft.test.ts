@@ -1,6 +1,9 @@
 import {
   BACKTEST_DRAFT_KEY,
+  createBacktestDraft,
   loadBacktestDraft,
+  parseBacktestPrefill,
+  resolvedBacktestPrefill,
   saveBacktestDraft,
   type BacktestDraft,
 } from './backtestDraft';
@@ -22,6 +25,67 @@ const draft: BacktestDraft = {
 };
 
 beforeEach(() => localStorage.clear());
+
+it('parses only the exact refreshable market prefill contract', () => {
+  expect(
+    parseBacktestPrefill(
+      '?symbol=600000.SH&period=1w&adjustment=hfq&start=2024-02-10&end=2024-03-15',
+    ),
+  ).toEqual({
+    kind: 'valid',
+    draft: createBacktestDraft({
+      adjustment: 'hfq',
+      endDate: '2024-03-15',
+      period: '1w',
+      scope: { kind: 'single', symbol: '600000.SH' },
+      startDate: '2024-02-10',
+    }),
+  });
+  expect(parseBacktestPrefill('')).toEqual({ kind: 'none' });
+});
+
+it.each([
+  '?symbol=600000.SH&period=1d&adjustment=qfq&start=2024-02-10&end=2024-03-15&formula_id=secret',
+  '?symbol=600000.SH&symbol=000001.SZ&period=1d&adjustment=qfq&start=2024-02-10&end=2024-03-15',
+  '?symbol=600000.SH&period=5m&adjustment=qfq&start=2024-02-10&end=2024-03-15',
+  '?symbol=600000.SH&period=1d&adjustment=qfq&start=2024-02-30&end=2024-03-15',
+  '?symbol=600000.SH&period=1d&adjustment=qfq&start=2024-03-15&end=2024-03-15',
+  '?symbol=600000.SH&period=1d&adjustment=qfq&start=2024-02-10',
+])(
+  'rejects unknown, duplicate, incomplete, or noncanonical prefill data',
+  (search) => {
+    expect(parseBacktestPrefill(search)).toEqual({ kind: 'invalid' });
+  },
+);
+
+it.each([
+  ['', { kind: 'none' } as const],
+  [
+    '?symbol=600000.SH&period=1d&adjustment=qfq&start=2024-02-10&end=2024-03-15&extra=1',
+    { kind: 'invalid' } as const,
+  ],
+])(
+  'never reuses a resolved draft after the URL becomes %s',
+  (search, parsed) => {
+    const oldSearch =
+      '?symbol=600000.SH&period=1d&adjustment=qfq&start=2024-02-10&end=2024-03-15';
+    expect(
+      resolvedBacktestPrefill(
+        parsed,
+        {
+          search: oldSearch,
+          verified: true,
+          draft: createBacktestDraft({
+            scope: { kind: 'single', symbol: '600000.SH' },
+            startDate: '2024-02-10',
+            endDate: '2024-03-15',
+          }),
+        },
+        search,
+      ),
+    ).toBeNull();
+  },
+);
 
 it('round-trips only schema-validated non-sensitive user inputs', () => {
   saveBacktestDraft(draft);
