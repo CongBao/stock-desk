@@ -505,7 +505,9 @@ def test_worker_receive_cap_uses_configured_bound_and_recovers(
 
     monkeypatch.setattr(Connection, "recv_bytes", tracked_recv_bytes)
     executor = IsolatedFormulaExecutor(
-        timeout_seconds=3.0,
+        # This test classifies the receive bound, so use the maximum supported
+        # deadline rather than making hosted-runner spawn latency part of it.
+        timeout_seconds=30.0,
         worker_target=_echo_formula_worker,
         max_request_bytes=8,
         max_response_bytes=4,
