@@ -4,6 +4,8 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
+import pytest
+import stock_desk.backtest.execution as execution_module
 from stock_desk.backtest.execution import (
     ExecutionEngine,
     ExecutionRequest,
@@ -53,7 +55,10 @@ def test_daily_signal_executes_at_next_trade_day_open() -> None:
         ExecutionRequest(
             period=Period.DAY,
             signals=(SignalBar(timestamp=ts("2026-01-05 15:00"), buy=True),),
-            candidates=(candidate("2026-01-06 09:30", "10"),),
+            candidates=(
+                candidate("2026-01-05 16:00", "9.9"),
+                candidate("2026-01-06 09:30", "10"),
+            ),
         )
     )
 
@@ -83,6 +88,7 @@ def test_weekly_signal_uses_first_executable_daily_open() -> None:
             period=Period.WEEK,
             signals=(SignalBar(timestamp=ts("2026-01-09 15:00"), buy=True),),
             candidates=(
+                candidate("2026-01-10 09:30", "9.9"),
                 candidate("2026-01-12 09:30", "10", suspended=True),
                 candidate("2026-01-13 09:30", "10.1"),
             ),
@@ -159,3 +165,42 @@ def test_execution_end_calls_terminal_path_for_open_trade() -> None:
     )
 
     assert result.order_events[-1].__class__.__name__ == "OpenTradeMarked"
+
+
+def test_eligibility_lookup_precomputes_each_candidate_key_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    start = ts("2024-01-01 09:30")
+    candidates = tuple(
+        candidate(
+            (start + timedelta(days=index)).strftime("%Y-%m-%d %H:%M"),
+            "10",
+        )
+        for index in range(500)
+    )
+    signals = tuple(
+        SignalBar(
+            timestamp=start.replace(hour=15) + timedelta(days=index),
+            buy=True,
+        )
+        for index in range(500)
+    )
+    original = execution_module._eligibility_key
+    key_calls = 0
+
+    def counted(period: Period, value: datetime) -> datetime:
+        nonlocal key_calls
+        key_calls += 1
+        return original(period, value)
+
+    monkeypatch.setattr(execution_module, "_eligibility_key", counted)
+
+    ExecutionEngine().run(
+        ExecutionRequest(
+            period=Period.DAY,
+            signals=signals,
+            candidates=candidates,
+        )
+    )
+
+    assert key_calls == len(candidates) + len(signals)

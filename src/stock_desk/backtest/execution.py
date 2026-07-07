@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from bisect import bisect_right
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -163,30 +164,26 @@ class ExecutionResult:
     failure: ExecutionFailure | None
 
 
-def _is_candidate_after_signal(
-    period: Period,
-    candidate: datetime,
-    signal: datetime,
-) -> bool:
-    candidate_local = candidate.astimezone(SHANGHAI)
-    signal_local = signal.astimezone(SHANGHAI)
+def _eligibility_key(period: Period, value: datetime) -> datetime:
+    local = value.astimezone(SHANGHAI)
     if period is Period.DAY:
-        return candidate_local.date() > signal_local.date()
+        return local.replace(hour=0, minute=0, second=0, microsecond=0)
     if period is Period.WEEK:
-        return candidate_local.date() - timedelta(
-            days=candidate_local.weekday()
-        ) > signal_local.date() - timedelta(days=signal_local.weekday())
-    return candidate > signal
+        monday = local - timedelta(days=local.weekday())
+        return monday.replace(hour=0, minute=0, second=0, microsecond=0)
+    return value
 
 
-def _eligible_at(request: ExecutionRequest, signal_at: datetime) -> datetime:
-    return next(
-        (
-            item.timestamp
-            for item in request.candidates
-            if _is_candidate_after_signal(request.period, item.timestamp, signal_at)
-        ),
-        signal_at + timedelta(microseconds=1),
+def _eligible_at(
+    request: ExecutionRequest,
+    signal_at: datetime,
+    candidate_keys: tuple[datetime, ...],
+) -> datetime:
+    index = bisect_right(candidate_keys, _eligibility_key(request.period, signal_at))
+    return (
+        request.candidates[index].timestamp
+        if index < len(request.candidates)
+        else signal_at + timedelta(microseconds=1)
     )
 
 
@@ -206,6 +203,10 @@ class ExecutionEngine:
         machine = SymbolStateMachine()
         trades: list[ExecutionTrade] = []
         failure: ExecutionFailure | None = None
+        candidate_keys = tuple(
+            _eligibility_key(request.period, item.timestamp)
+            for item in request.candidates
+        )
 
         for at, _ordinal, item in _timeline(request):
             if isinstance(item, SignalBar):
@@ -213,7 +214,7 @@ class ExecutionEngine:
                     buy=item.buy,
                     sell=item.sell,
                     at=item.timestamp,
-                    eligible_at=_eligible_at(request, item.timestamp),
+                    eligible_at=_eligible_at(request, item.timestamp, candidate_keys),
                 )
                 continue
 
