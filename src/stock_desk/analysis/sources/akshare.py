@@ -135,23 +135,44 @@ def _launch_worker(
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-    except Exception:
-        result_path.unlink(missing_ok=True)
+    except BaseException:
+        try:
+            result_path.unlink(missing_ok=True)
+        except BaseException:
+            pass
         raise
     return _SubprocessWorker(process=process, result_path=result_path)
 
 
-def _kill_and_reap(process: _WorkerProcess) -> bool:
+def _kill_reap_and_close(
+    process: _WorkerProcess,
+) -> tuple[bool, KeyboardInterrupt | SystemExit | None]:
     cleaned = True
+    interrupt: KeyboardInterrupt | SystemExit | None = None
     try:
         process.kill()
+    except (KeyboardInterrupt, SystemExit) as error:
+        cleaned = False
+        interrupt = error
     except Exception:
         cleaned = False
     try:
         process.communicate(timeout=5.0)
+    except (KeyboardInterrupt, SystemExit) as error:
+        cleaned = False
+        if interrupt is None:
+            interrupt = error
     except Exception:
         cleaned = False
-    return cleaned
+    try:
+        process.close_result()
+    except (KeyboardInterrupt, SystemExit) as error:
+        cleaned = False
+        if interrupt is None:
+            interrupt = error
+    except Exception:
+        cleaned = False
+    return cleaned, interrupt
 
 
 class AkShareIsolatedSdkFacade:
@@ -170,6 +191,7 @@ class AkShareIsolatedSdkFacade:
 
     def _call(self, operation: str, **kwargs: object) -> object:
         safe_error: ProviderClientError | None = None
+        interrupt: KeyboardInterrupt | SystemExit | None = None
         process: _WorkerProcess | None = None
         must_cleanup = False
         try:
@@ -178,19 +200,23 @@ class AkShareIsolatedSdkFacade:
         except subprocess.TimeoutExpired:
             must_cleanup = True
             safe_error = ProviderTimeout()
+        except (KeyboardInterrupt, SystemExit) as error:
+            must_cleanup = process is not None
+            interrupt = error
         except ProviderClientError as error:
             must_cleanup = process is not None
             safe_error = clean_provider_error(error)
         except Exception:
             must_cleanup = process is not None
             safe_error = ProviderInvalidResponse()
-        if must_cleanup and process is not None and not _kill_and_reap(process):
-            safe_error = ProviderUnavailable()
-        if process is not None and safe_error is not None:
-            try:
-                process.close_result()
-            except Exception:
+        if must_cleanup and process is not None:
+            cleaned, cleanup_interrupt = _kill_reap_and_close(process)
+            if interrupt is None and cleanup_interrupt is not None:
+                interrupt = cleanup_interrupt
+            if not cleaned and interrupt is None:
                 safe_error = ProviderUnavailable()
+        if interrupt is not None:
+            raise interrupt
         if safe_error is not None:
             raise safe_error
         if process is None:
@@ -229,6 +255,10 @@ class AkShareIsolatedSdkFacade:
             raise ProviderInvalidResponse()
         if set(payload) == {"status"} and payload["status"] == "no_data":
             raise ProviderNoData()
+        if set(payload) == {"status"} and payload["status"] == "timeout":
+            raise ProviderTimeout()
+        if set(payload) == {"status"} and payload["status"] == "provider_unavailable":
+            raise ProviderUnavailable()
         if set(payload) == {"status"} and payload["status"] == "invalid_response":
             raise ProviderInvalidResponse()
         if set(payload) != {"status", "rows"} or payload["status"] != "ok":

@@ -9,8 +9,12 @@ from pathlib import Path
 import sys
 
 from stock_desk.analysis.sources.base import normalize_research_table
-from stock_desk.market.providers.base import ProviderNoData
-from stock_desk.market.providers.sdk import import_optional_sdk, required_sdk_callable
+from stock_desk.market.providers.base import ProviderNoData, ProviderUnavailable
+from stock_desk.market.providers.sdk import (
+    import_optional_sdk,
+    is_sdk_timeout,
+    required_sdk_callable,
+)
 
 
 _MAX_OUTPUT_BYTES = 262_144
@@ -63,8 +67,12 @@ def main(argv: list[str] | None = None) -> int:
     except ProviderNoData:
         _emit({"status": "no_data"}, result_path=result_path)
         return 1
-    except Exception:
-        _emit({"status": "invalid_response"}, result_path=result_path)
+    except ProviderUnavailable:
+        _emit({"status": "provider_unavailable"}, result_path=result_path)
+        return 1
+    except Exception as error:
+        status = "timeout" if is_sdk_timeout(error) else "invalid_response"
+        _emit({"status": status}, result_path=result_path)
         return 1
     _emit({"status": "ok", "rows": rows}, result_path=result_path)
     return 0

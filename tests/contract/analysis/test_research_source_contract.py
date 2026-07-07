@@ -12,6 +12,7 @@ import pytest
 from requests.exceptions import Timeout as RequestsTimeout
 
 from scripts.research_source_probe import main as live_probe_main
+import stock_desk.analysis.sources.akshare as akshare_source_module
 import stock_desk.analysis.sources.tushare as tushare_source_module
 from stock_desk.analysis.sources import _akshare_worker
 from stock_desk.analysis.data_service import ResearchDataUnavailable
@@ -984,6 +985,91 @@ def test_akshare_isolated_facade_cleans_up_non_timeout_communicate_failure() -> 
     assert "TOP-SECRET" not in exception_chain_text(captured.value)
 
 
+@pytest.mark.parametrize("interrupt", [KeyboardInterrupt(), SystemExit(130)])
+def test_akshare_isolated_facade_cleans_up_then_reraises_user_interrupt(
+    interrupt: BaseException,
+) -> None:
+    class InterruptedProcess:
+        def __init__(self) -> None:
+            self.killed = False
+            self.events: list[str] = []
+
+        def communicate(
+            self,
+            input: bytes | None = None,
+            timeout: float | None = None,
+        ) -> tuple[bytes, bytes]:
+            del input, timeout
+            self.events.append("communicate")
+            if not self.killed:
+                raise interrupt
+            return b"", b""
+
+        def kill(self) -> None:
+            self.events.append("kill")
+            self.killed = True
+
+        def read_result(self, maximum_bytes: int) -> bytes:
+            del maximum_bytes
+            pytest.fail("interrupted worker result must not be read")
+
+        def close_result(self) -> None:
+            self.events.append("close_result")
+
+    process = InterruptedProcess()
+    facade = AkShareIsolatedSdkFacade(
+        launcher=lambda _operation, _kwargs: process,
+    )
+
+    with pytest.raises(type(interrupt)) as captured:
+        facade.stock_news_em(symbol="600000")
+
+    assert captured.value is interrupt
+    assert process.events == ["communicate", "kill", "communicate", "close_result"]
+
+
+def test_akshare_isolated_facade_keeps_original_interrupt_when_cleanup_interrupts() -> (
+    None
+):
+    original = KeyboardInterrupt("original")
+
+    class DoubleInterruptedProcess:
+        def __init__(self) -> None:
+            self.events: list[str] = []
+
+        def communicate(
+            self,
+            input: bytes | None = None,
+            timeout: float | None = None,
+        ) -> tuple[bytes, bytes]:
+            del input, timeout
+            self.events.append("communicate")
+            raise original
+
+        def kill(self) -> None:
+            self.events.append("kill")
+            raise SystemExit("cleanup")
+
+        def read_result(self, maximum_bytes: int) -> bytes:
+            del maximum_bytes
+            pytest.fail("interrupted worker result must not be read")
+
+        def close_result(self) -> None:
+            self.events.append("close_result")
+            raise SystemExit("close")
+
+    process = DoubleInterruptedProcess()
+    facade = AkShareIsolatedSdkFacade(
+        launcher=lambda _operation, _kwargs: process,
+    )
+
+    with pytest.raises(KeyboardInterrupt) as captured:
+        facade.stock_news_em(symbol="600000")
+
+    assert captured.value is original
+    assert process.events == ["communicate", "kill", "communicate", "close_result"]
+
+
 def test_akshare_isolated_facade_reports_cleanup_failure_safely() -> None:
     class BrokenCleanupProcess:
         def communicate(
@@ -1039,6 +1125,128 @@ def test_akshare_worker_emits_fixed_no_data_code_without_network(
     assert result == 1
     assert capsys.readouterr().out == ""
     assert result_path.read_bytes() == b'{"status":"no_data"}'
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_status"),
+    [
+        ("typed_timeout", "timeout"),
+        ("requests_timeout", "timeout"),
+        ("unavailable", "provider_unavailable"),
+    ],
+)
+def test_akshare_worker_preserves_safe_failure_status_without_raw_text(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    failure: str,
+    expected_status: str,
+) -> None:
+    class FailingModule:
+        def stock_news_em(self, **_kwargs: object) -> object:
+            if failure == "typed_timeout":
+                raise ProviderTimeout("TOP-SECRET")
+            if failure == "unavailable":
+                raise ProviderUnavailable("TOP-SECRET")
+            try:
+                raise RuntimeError("TOP-SECRET")
+            except RuntimeError:
+                raise RequestsTimeout("TOP-SECRET")
+
+    monkeypatch.setattr(
+        _akshare_worker,
+        "import_optional_sdk",
+        lambda _name: FailingModule(),
+    )
+    result_path = tmp_path / f"{failure}.json"
+
+    result = _akshare_worker.main(
+        ["stock_news_em", '{"symbol":"600000"}', str(result_path)]
+    )
+
+    assert result == 1
+    assert result_path.read_text(encoding="utf-8") == json.dumps(
+        {"status": expected_status},
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    assert "TOP-SECRET" not in result_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("status", "expected_error"),
+    [
+        ("timeout", ProviderTimeout),
+        ("provider_unavailable", ProviderUnavailable),
+    ],
+)
+def test_akshare_isolated_facade_maps_safe_worker_failure_status(
+    status: str,
+    expected_error: type[ProviderClientError],
+) -> None:
+    class StatusProcess:
+        def communicate(
+            self,
+            input: bytes | None = None,
+            timeout: float | None = None,
+        ) -> tuple[bytes, bytes]:
+            del input, timeout
+            return b"", b""
+
+        def kill(self) -> None:
+            pytest.fail("completed worker must not be killed")
+
+        def read_result(self, maximum_bytes: int) -> bytes:
+            assert maximum_bytes == 262_145
+            return json.dumps(
+                {"status": status},
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8")
+
+        def close_result(self) -> None:
+            return None
+
+    facade = AkShareIsolatedSdkFacade(
+        launcher=lambda _operation, _kwargs: StatusProcess(),
+    )
+
+    with pytest.raises(expected_error) as captured:
+        facade.stock_news_em(symbol="600000")
+
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+
+
+@pytest.mark.parametrize("interrupt", [KeyboardInterrupt(), SystemExit(130)])
+def test_launch_worker_unlinks_temporary_result_when_popen_is_interrupted(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    interrupt: BaseException,
+) -> None:
+    result_path = tmp_path / "worker-result.json"
+
+    class Temporary:
+        name = str(result_path)
+
+        def close(self) -> None:
+            result_path.write_bytes(b"")
+
+    monkeypatch.setattr(
+        akshare_source_module.tempfile,
+        "NamedTemporaryFile",
+        lambda **_kwargs: Temporary(),
+    )
+
+    def interrupt_popen(*_args: object, **_kwargs: object) -> object:
+        raise interrupt
+
+    monkeypatch.setattr(akshare_source_module.subprocess, "Popen", interrupt_popen)
+
+    with pytest.raises(type(interrupt)) as captured:
+        akshare_source_module._launch_worker("stock_news_em", {"symbol": "600000"})
+
+    assert captured.value is interrupt
+    assert not result_path.exists()
 
 
 def test_capability_model_rejects_market_as_a_network_research_category() -> None:
