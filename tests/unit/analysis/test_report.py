@@ -136,6 +136,12 @@ P1_ADVICE_VARIANTS = (
     "Position，size: 50%.",
     "目标，价格为20元。",
     "Allocation: 50%.",
+    "Weight this stock at 20%.",
+    "Hold 20% in this stock.",
+    "Make this stock 20% of the portfolio.",
+    "该股票配比20%。",
+    "该股票权重20%。",
+    "该股票占组合20%。",
     "持仓50%。",
     "持仓比例50%。",
     "建议持仓占比50%。",
@@ -868,9 +874,13 @@ def test_report_parser_rejects_rehashed_target_and_allocation_advice(
         parse_research_report_json(json.dumps(payload, ensure_ascii=False))
 
 
+@pytest.mark.parametrize(
+    "unsafe_text", ["Allocate 50% of the portfolio.", "Weight this stock at 20%."]
+)
 @pytest.mark.parametrize("role_index", range(len(ROLE_ORDER)))
 @pytest.mark.parametrize("field", ["summary", "claim"])
 def test_report_parser_rejects_rehashed_advice_in_every_role_field(
+    unsafe_text: str,
     role_index: int,
     field: str,
 ) -> None:
@@ -878,10 +888,10 @@ def test_report_parser_rejects_rehashed_advice_in_every_role_field(
     payload = cast(dict[str, JsonValue], report.model_dump(mode="json"))
     outputs = cast(list[dict[str, JsonValue]], payload["role_outputs"])
     if field == "summary":
-        outputs[role_index]["summary"] = "Allocate 50% of the portfolio."
+        outputs[role_index]["summary"] = unsafe_text
     else:
         claims = cast(list[dict[str, JsonValue]], outputs[role_index]["claims"])
-        claims[0]["text"] = "Allocate 50% of the portfolio."
+        claims[0]["text"] = unsafe_text
         sync_role_claim_aggregates(payload, role_index)
     rehash_report_payload(payload)
 
@@ -910,7 +920,16 @@ def test_report_builder_allows_non_advisory_capital_and_cash_flow_facts() -> Non
                 "of its portfolio in bonds. The asset manager allocated 20% of "
                 "its portfolio to bonds. The fund allocated 20% of its portfolio "
                 "toward bonds. The fund allocated 20% of its portfolio across "
-                "bonds and cash. The fund's equity position is 20%."
+                "bonds and cash. The fund's equity position is 20%. The fund "
+                "maintained portfolio exposure at 20% during the quarter. The fund "
+                "kept portfolio exposure at 20% during the quarter. The fund reduced "
+                "portfolio exposure to 20% during the quarter. The fund capped "
+                "portfolio exposure at 20% during the quarter. The fund held 20% "
+                "of its portfolio in bonds during the quarter. The fund weighted "
+                "equities at 20% during the quarter. The institution maintained "
+                "its position at 20%. The fund kept portfolio exposure at 20%. The "
+                "fund reduced portfolio exposure to 20%. The fund capped portfolio "
+                "exposure at 20%."
             ),
             "claims": (
                 workflow.outputs[0]

@@ -61,8 +61,9 @@ _ALLOCATION_ASSIGNMENT: Final = re.compile(
 _CONFIGURATION_ACTION: Final = re.compile(
     r"\b(?:use|using|invest|invests|invested|investing|allocate|allocates|"
     r"allocated|allocating|allocation|set|keep|commit|committed|deploy|deployed)"
-    r"\b|\b(?:limit|cap|maintain|reduce)\b|使用|投入|配置|分配|设定|控制|"
-    r"降低|降至|保持|维持|减少",
+    r"\b|\b(?:limit|cap|maintain|reduce|weight(?:ed|ing|s)?|hold(?:s|ing)?|"
+    r"held|make|makes|made)\b|使用|投入|配置|分配|设定|控制|降低|降至|保持|"
+    r"维持|减少|配比|权重|占组合",
     re.IGNORECASE,
 )
 _STRONG_INVESTMENT_OBJECT: Final = re.compile(
@@ -76,7 +77,8 @@ _GENERIC_INVESTMENT_RESOURCE: Final = re.compile(
 )
 _IMPERATIVE_OR_FIRST_PERSON: Final = re.compile(
     r"^\s*(?:(?:only|now|please)\s+)*(?:(?:we|i)\s+)?(?:use|invest|allocate|set|keep|commit|"
-    r"deploy|limit|cap|maintain|reduce|recommend|suggest|advise|consider)\b|"
+    r"deploy|limit|cap|maintain|reduce|weight|hold|make|recommend|suggest|"
+    r"advise|consider)\b|"
     r"^\s*(?:仅|现在|请)*(?:使用|投入|配置|分配|设定|建议|推荐|考虑)",
     re.IGNORECASE,
 )
@@ -98,7 +100,8 @@ _BOARD_OR_MANAGEMENT: Final = re.compile(
     re.IGNORECASE,
 )
 _HISTORICAL_ALLOCATION: Final = re.compile(
-    r"\b(?:allocated|invested|deployed|committed|used)\b|"
+    r"\b(?:allocated|invested|deployed|committed|used|maintained|kept|reduced|"
+    r"capped|held|weighted)\b|"
     r"已[^。；;\r\n]{0,40}(?:配置|投入|分配)|"
     r"(?:配置|投入|分配)[^。；;\r\n]{0,40}(?:到|于|至)",
     re.IGNORECASE,
@@ -113,8 +116,11 @@ _CORPORATE_DESTINATION: Final = re.compile(
 _SECOND_PERSON: Final = re.compile(r"\b(?:you|your)\b|你|您的?|用户", re.IGNORECASE)
 _HISTORICAL_POSITION_FACT: Final = re.compile(
     rf"\b(?:fund|ETF|company|corporation|asset\s+manager|institution)'?s?\b"
-    rf"[^.!?。！？；;\r\n]{{0,32}}\b(?:equity\s+)?position\b\s*"
-    rf"(?:is|was|stood\s+at)\s*{_QUANTITY_PATTERN}\s*(?:%|％)?",
+    rf"(?:[^.!?。！？；;\r\n]{{0,32}}\b(?:equity\s+)?position\b\s*"
+    rf"(?:is|was|stood\s+at)\s*{_QUANTITY_PATTERN}\s*(?:%|％)?|"
+    rf"[^.!?。！？；;\r\n]{{0,24}}\b(?:maintained|kept|reduced|capped)\b"
+    rf"[^.!?。！？；;\r\n]{{0,48}}\b(?:portfolio|position|exposure)\b"
+    rf"[^.!?。！？；;\r\n]{{0,24}}{_QUANTITY_PATTERN}\s*(?:%|％)?)",
     re.IGNORECASE,
 )
 _FORBIDDEN_FINANCIAL_ACTION_PATTERNS: Final = tuple(
