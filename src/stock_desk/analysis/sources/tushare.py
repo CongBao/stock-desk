@@ -32,9 +32,7 @@ class TushareResearchClient(Protocol):
     def anns_d(self, **kwargs: object) -> object: ...
 
 
-_SENSITIVE_ASSIGNMENT = re.compile(
-    r"(?i)\b(token|api[_-]?key)\s*([:=])\s*[^\s,;]+"
-)
+_SENSITIVE_ASSIGNMENT = re.compile(r"(?i)\b(token|api[_-]?key)\s*([:=])\s*[^\s,;]+")
 _PERMISSION_MARKERS = (
     "没有访问该接口的权限",
     "无权访问该接口",
@@ -82,9 +80,7 @@ class TushareResearchSdkFacade:
             safe_error = clean_provider_error(error)
         except Exception as error:
             try:
-                permission_denied = (
-                    self._permission_classifier(error)
-                )
+                permission_denied = self._permission_classifier(error)
             except Exception:
                 permission_denied = False
             safe_error = (

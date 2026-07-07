@@ -117,7 +117,9 @@ def section(
         source_record=f"{source.value}:{kind.value}:fixture",
         source_url="https://example.com/source",
         published_at=(
-            NOW if kind in {ResearchSectionKind.ANNOUNCEMENTS, ResearchSectionKind.NEWS} else None
+            NOW
+            if kind in {ResearchSectionKind.ANNOUNCEMENTS, ResearchSectionKind.NEWS}
+            else None
         ),
         data_cutoff=NOW,
         fetched_at=NOW,
@@ -178,12 +180,16 @@ def test_sdk_facades_call_real_research_seams_with_symbol_scoped_parameters() ->
 
     assert tushare.income(ts_code=SYMBOL) == FIXTURE["tushare"]["fundamentals"]
     assert tushare.anns_d(ts_code=SYMBOL) == FIXTURE["tushare"]["announcements"]
-    assert akshare.stock_financial_analysis_indicator_em(
-        symbol=SYMBOL, indicator="按报告期"
-    ) == FIXTURE["akshare"]["fundamentals"]
-    assert akshare.stock_individual_notice_report(
-        security="600000", symbol="全部"
-    ) == FIXTURE["akshare"]["announcements"]
+    assert (
+        akshare.stock_financial_analysis_indicator_em(
+            symbol=SYMBOL, indicator="按报告期"
+        )
+        == FIXTURE["akshare"]["fundamentals"]
+    )
+    assert (
+        akshare.stock_individual_notice_report(security="600000", symbol="全部")
+        == FIXTURE["akshare"]["announcements"]
+    )
     assert akshare.stock_news_em(symbol="600000") == FIXTURE["akshare"]["news"]
     assert [name for name, _kwargs in pro.calls] == ["income", "anns_d"]
     assert [name for name, _kwargs in ak_module.calls] == [
@@ -212,21 +218,24 @@ def test_sdk_facades_call_real_research_seams_with_symbol_scoped_parameters() ->
         ),
         (
             lambda: AkShareResearchSource(
-                client=AkShareResearchSdkFacade(module=FakeAkShareModule()), clock=lambda: NOW
+                client=AkShareResearchSdkFacade(module=FakeAkShareModule()),
+                clock=lambda: NOW,
             ),
             ResearchSectionKind.FUNDAMENTALS,
             "akshare",
         ),
         (
             lambda: AkShareResearchSource(
-                client=AkShareResearchSdkFacade(module=FakeAkShareModule()), clock=lambda: NOW
+                client=AkShareResearchSdkFacade(module=FakeAkShareModule()),
+                clock=lambda: NOW,
             ),
             ResearchSectionKind.ANNOUNCEMENTS,
             "akshare",
         ),
         (
             lambda: AkShareResearchSource(
-                client=AkShareResearchSdkFacade(module=FakeAkShareModule()), clock=lambda: NOW
+                client=AkShareResearchSdkFacade(module=FakeAkShareModule()),
+                clock=lambda: NOW,
             ),
             ResearchSectionKind.NEWS,
             "akshare",
@@ -249,13 +258,9 @@ def test_fixed_sdk_fixtures_normalize_to_nonempty_traceable_sections(
     assert result.content["items"]
     assert "placeholder" not in result.content
     if expected_source == "akshare" and kind is ResearchSectionKind.FUNDAMENTALS:
-        assert result.data_cutoff == datetime(
-            2024, 12, 30, 16, tzinfo=timezone.utc
-        )
+        assert result.data_cutoff == datetime(2024, 12, 30, 16, tzinfo=timezone.utc)
     if expected_source == "akshare" and kind is ResearchSectionKind.NEWS:
-        assert result.published_at == datetime(
-            2025, 7, 5, 0, 30, tzinfo=timezone.utc
-        )
+        assert result.published_at == datetime(2025, 7, 5, 0, 30, tzinfo=timezone.utc)
 
 
 @pytest.mark.parametrize("symbol", ["600000.SH", "000001.SZ", "920001.BJ"])
@@ -266,9 +271,7 @@ def test_akshare_fundamentals_passes_the_canonical_exchange_to_the_sdk(
         def __init__(self) -> None:
             self.calls: list[dict[str, object]] = []
 
-        def stock_financial_analysis_indicator_em(
-            self, **kwargs: object
-        ) -> object:
+        def stock_financial_analysis_indicator_em(self, **kwargs: object) -> object:
             self.calls.append(kwargs)
             return [
                 {
@@ -304,7 +307,11 @@ def test_router_skips_unsupported_sources_and_never_calls_them() -> None:
     )
     akshare = StubSource(
         ProviderId.AKSHARE,
-        {ResearchSectionKind.NEWS: section(ProviderId.AKSHARE, ResearchSectionKind.NEWS)},
+        {
+            ResearchSectionKind.NEWS: section(
+                ProviderId.AKSHARE, ResearchSectionKind.NEWS
+            )
+        },
     )
     router = ResearchSourceRouter(
         kind=ResearchSectionKind.NEWS,
@@ -391,7 +398,10 @@ def test_malformed_fallback_section_cannot_escape_the_router_secret_boundary() -
 @pytest.mark.parametrize(
     ("error", "reason"),
     [
-        (ProviderPermissionDenied("token=TOP-SECRET"), ResearchMissingReason.PERMISSION_DENIED),
+        (
+            ProviderPermissionDenied("token=TOP-SECRET"),
+            ResearchMissingReason.PERMISSION_DENIED,
+        ),
         (ProviderTimeout("token=TOP-SECRET"), ResearchMissingReason.TIMEOUT),
         (ProviderNoData("token=TOP-SECRET"), ResearchMissingReason.NO_DATA),
         (RequestsTimeout("token=TOP-SECRET"), ResearchMissingReason.TIMEOUT),
@@ -537,9 +547,7 @@ def test_source_normalization_enforces_item_count_and_item_byte_budgets() -> Non
             self.fundamentals_calls = 0
             self.announcement_calls = 0
 
-        def stock_financial_analysis_indicator_em(
-            self, **_kwargs: object
-        ) -> object:
+        def stock_financial_analysis_indicator_em(self, **_kwargs: object) -> object:
             self.fundamentals_calls += 1
             return [{"value": index} for index in range(MAX_RESEARCH_ITEMS + 1)]
 
@@ -582,9 +590,7 @@ def test_source_normalization_enforces_total_depth_and_node_budgets(
 
 
 def test_source_normalization_preserves_provider_missing_cells_as_json_null() -> None:
-    assert normalize_research_table([{"metric": float("nan")}]) == (
-        {"metric": None},
-    )
+    assert normalize_research_table([{"metric": float("nan")}]) == ({"metric": None},)
 
 
 def test_capability_model_rejects_market_as_a_network_research_category() -> None:

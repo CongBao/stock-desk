@@ -23,36 +23,36 @@ from stock_desk.market.providers.sdk import is_sdk_timeout
 from stock_desk.market.types import CanonicalSymbol, FailureReason, ProviderId
 
 
-RESEARCH_SOURCE_CAPABILITIES: Mapping[
-    ProviderId, ResearchSourceCapability
-] = MappingProxyType(
-    {
-        ProviderId.TUSHARE: ResearchSourceCapability(
-            source=ProviderId.TUSHARE,
-            categories=frozenset(
-                {
-                    ResearchSectionKind.FUNDAMENTALS,
-                    ResearchSectionKind.ANNOUNCEMENTS,
-                }
+RESEARCH_SOURCE_CAPABILITIES: Mapping[ProviderId, ResearchSourceCapability] = (
+    MappingProxyType(
+        {
+            ProviderId.TUSHARE: ResearchSourceCapability(
+                source=ProviderId.TUSHARE,
+                categories=frozenset(
+                    {
+                        ResearchSectionKind.FUNDAMENTALS,
+                        ResearchSectionKind.ANNOUNCEMENTS,
+                    }
+                ),
             ),
-        ),
-        ProviderId.AKSHARE: ResearchSourceCapability(
-            source=ProviderId.AKSHARE,
-            categories=RESEARCH_SOURCE_CATEGORIES,
-        ),
-        ProviderId.BAOSTOCK: ResearchSourceCapability(
-            source=ProviderId.BAOSTOCK,
-            categories=frozenset(),
-        ),
-        ProviderId.TDX_LOCAL: ResearchSourceCapability(
-            source=ProviderId.TDX_LOCAL,
-            categories=frozenset(),
-        ),
-        ProviderId.EASTMONEY: ResearchSourceCapability(
-            source=ProviderId.EASTMONEY,
-            categories=frozenset(),
-        ),
-    }
+            ProviderId.AKSHARE: ResearchSourceCapability(
+                source=ProviderId.AKSHARE,
+                categories=RESEARCH_SOURCE_CATEGORIES,
+            ),
+            ProviderId.BAOSTOCK: ResearchSourceCapability(
+                source=ProviderId.BAOSTOCK,
+                categories=frozenset(),
+            ),
+            ProviderId.TDX_LOCAL: ResearchSourceCapability(
+                source=ProviderId.TDX_LOCAL,
+                categories=frozenset(),
+            ),
+            ProviderId.EASTMONEY: ResearchSourceCapability(
+                source=ProviderId.EASTMONEY,
+                categories=frozenset(),
+            ),
+        }
+    )
 )
 
 

@@ -136,9 +136,9 @@ def test_composed_service_builds_snapshot_from_real_or_explicit_missing_only() -
         clock=lambda: NOW,
     )
 
-    snapshot = ResearchSnapshotBuilder(
-        data_service=service, clock=lambda: NOW
-    ).build(SYMBOL)
+    snapshot = ResearchSnapshotBuilder(data_service=service, clock=lambda: NOW).build(
+        SYMBOL
+    )
 
     assert snapshot.missing_sections == ()
     assert tuple(item.kind for item in snapshot.sections) == (
@@ -148,8 +148,13 @@ def test_composed_service_builds_snapshot_from_real_or_explicit_missing_only() -
         ResearchSectionKind.NEWS,
     )
     assert snapshot.section(ResearchSectionKind.MARKET).canonical_source == "tushare"  # type: ignore[union-attr]
-    assert snapshot.section(ResearchSectionKind.FUNDAMENTALS).canonical_source == "tushare"  # type: ignore[union-attr]
-    assert snapshot.section(ResearchSectionKind.ANNOUNCEMENTS).canonical_source == "tushare"  # type: ignore[union-attr]
+    assert (
+        snapshot.section(ResearchSectionKind.FUNDAMENTALS).canonical_source == "tushare"
+    )  # type: ignore[union-attr]
+    assert (
+        snapshot.section(ResearchSectionKind.ANNOUNCEMENTS).canonical_source
+        == "tushare"
+    )  # type: ignore[union-attr]
     assert snapshot.section(ResearchSectionKind.NEWS).canonical_source == "akshare"  # type: ignore[union-attr]
     assert all(section.content.get("items") for section in snapshot.sections[1:])
     assert all("placeholder" not in section.content for section in snapshot.sections)
@@ -172,9 +177,9 @@ def test_composed_service_exposes_no_provider_instead_of_empty_success() -> None
         clock=lambda: NOW,
     )
 
-    snapshot = ResearchSnapshotBuilder(
-        data_service=service, clock=lambda: NOW
-    ).build(SYMBOL)
+    snapshot = ResearchSnapshotBuilder(data_service=service, clock=lambda: NOW).build(
+        SYMBOL
+    )
 
     assert snapshot.section(ResearchSectionKind.NEWS) is None
     news_missing = next(

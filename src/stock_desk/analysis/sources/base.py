@@ -148,8 +148,7 @@ def _normalize_value(
         return normalized
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         return [
-            _normalize_value(child, depth=depth + 1, nodes=nodes)
-            for child in value
+            _normalize_value(child, depth=depth + 1, nodes=nodes) for child in value
         ]
     if type(value).__module__.startswith("numpy"):
         item = getattr(value, "item", None)
@@ -230,9 +229,11 @@ def _parse_datetime(value: object) -> datetime | None:
         "%Y/%m/%d %H:%M:%S",
     ):
         try:
-            return datetime.strptime(value, pattern).replace(
-                tzinfo=MARKET_TIMEZONE
-            ).astimezone(timezone.utc)
+            return (
+                datetime.strptime(value, pattern)
+                .replace(tzinfo=MARKET_TIMEZONE)
+                .astimezone(timezone.utc)
+            )
         except ValueError:
             continue
     try:

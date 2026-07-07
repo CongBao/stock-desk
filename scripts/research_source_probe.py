@@ -40,6 +40,7 @@ def main(
     if environment.get(_OPT_IN) != "1":
         emit(f"live probe disabled; set {_OPT_IN}=1 to allow network access")
         return 2
+
     def clock() -> datetime:
         return datetime.now(timezone.utc)
 

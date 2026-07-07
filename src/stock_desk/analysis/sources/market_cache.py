@@ -72,9 +72,7 @@ class MarketCacheLoader:
         bars = routed.result.bars
         selected = bars[-MAX_RESEARCH_MARKET_BARS:]
         quality_flags = (
-            (ResearchQualityFlag.PARTIAL,)
-            if len(selected) != len(bars)
-            else ()
+            (ResearchQualityFlag.PARTIAL,) if len(selected) != len(bars) else ()
         )
         try:
             return ResearchSection.model_validate(
@@ -92,9 +90,7 @@ class MarketCacheLoader:
                         "symbol": symbol,
                         "period": self._period.value,
                         "adjustment": self._adjustment.value,
-                        "bars": tuple(
-                            bar.model_dump(mode="json") for bar in selected
-                        ),
+                        "bars": tuple(bar.model_dump(mode="json") for bar in selected),
                     },
                 }
             )
