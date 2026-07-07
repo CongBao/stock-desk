@@ -251,6 +251,16 @@ def _blocks_for(
     return request.data_blocks
 
 
+def _untrusted_payloads(
+    blocks: tuple[dict[str, JsonValue], ...],
+) -> tuple[dict[str, JsonValue], ...]:
+    return tuple(
+        cast(dict[str, JsonValue], block["payload"])
+        for block in blocks
+        if block.get("trust_label") == "untrusted-data"
+    )
+
+
 def test_roles_receive_only_allowed_snapshot_and_structured_dependency_blocks() -> None:
     frozen = snapshot()
     provider = RecordingProvider()
@@ -259,15 +269,17 @@ def test_roles_receive_only_allowed_snapshot_and_structured_dependency_blocks() 
 
     technical = _blocks_for(provider, RoleName.TECHNICAL)
     fundamental = _blocks_for(provider, RoleName.FUNDAMENTAL_NEWS)
+    technical_payloads = _untrusted_payloads(technical)
+    fundamental_payloads = _untrusted_payloads(fundamental)
     assert {
-        block["section_kind"]
-        for block in technical
-        if block.get("block_type") == "snapshot_section"
+        payload["section_kind"]
+        for payload in technical_payloads
+        if payload.get("data_kind") == "snapshot_section"
     } == {ResearchSectionKind.MARKET.value}
     assert {
-        block["section_kind"]
-        for block in fundamental
-        if block.get("block_type") == "snapshot_section"
+        payload["section_kind"]
+        for payload in fundamental_payloads
+        if payload.get("data_kind") == "snapshot_section"
     } == {
         ResearchSectionKind.FUNDAMENTALS.value,
         ResearchSectionKind.ANNOUNCEMENTS.value,
@@ -275,19 +287,27 @@ def test_roles_receive_only_allowed_snapshot_and_structured_dependency_blocks() 
     }
     for role in (RoleName.BULL, RoleName.BEAR):
         blocks = _blocks_for(provider, role)
+        payloads = _untrusted_payloads(blocks)
         assert not any(
-            block.get("block_type") == "snapshot_section" for block in blocks
+            payload.get("data_kind") == "snapshot_section" for payload in payloads
         )
         assert {
-            block["role"]
-            for block in blocks
-            if block.get("block_type") == "role_output"
+            payload["role"]
+            for payload in payloads
+            if payload.get("data_kind") == "role_output"
         } == {RoleName.TECHNICAL.value, RoleName.FUNDAMENTAL_NEWS.value}
-        assert any(block.get("block_type") == "evidence_reference" for block in blocks)
+        assert any(
+            payload.get("data_kind") == "evidence_reference" for payload in payloads
+        )
     decision = _blocks_for(provider, RoleName.RISK_DECISION)
-    assert not any(block.get("block_type") == "snapshot_section" for block in decision)
+    decision_payloads = _untrusted_payloads(decision)
+    assert not any(
+        payload.get("data_kind") == "snapshot_section" for payload in decision_payloads
+    )
     assert {
-        block["role"] for block in decision if block.get("block_type") == "role_output"
+        payload["role"]
+        for payload in decision_payloads
+        if payload.get("data_kind") == "role_output"
     } == {RoleName.BULL.value, RoleName.BEAR.value}
     assert any(block.get("block_type") == "quality_flags" for block in decision)
     encoded = json.dumps(
@@ -311,8 +331,11 @@ def test_snapshot_and_registered_evidence_are_defensively_copied_between_roles()
             if request_role(request) is RoleName.TECHNICAL:
                 request.data_blocks[0]["snapshot_id"] = "mutated"
                 for block in request.data_blocks:
-                    if block.get("block_type") == "snapshot_section":
-                        cast(dict[str, JsonValue], block["content"])["value"] = (
+                    if block.get("trust_label") != "untrusted-data":
+                        continue
+                    payload = cast(dict[str, JsonValue], block["payload"])
+                    if payload.get("data_kind") == "snapshot_section":
+                        cast(dict[str, JsonValue], payload["content"])["value"] = (
                             "mutated"
                         )
             return result
@@ -365,6 +388,41 @@ def test_trace_is_canonical_complete_and_deterministic_with_fixed_collaborators(
         "risk_decision-v2",
     )
     assert all(item.template_hash.startswith("sha256:") for item in first.trace)
+    assert all(item.request_hash.startswith("sha256:") for item in first.trace)
+    assert first == type(first).model_validate_json(first.model_dump_json())
+
+
+def test_prompt_is_read_once_and_trace_hash_matches_exact_system(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_read_bytes = Path.read_bytes
+    technical_reads = 0
+
+    def drifting_read_bytes(path: Path) -> bytes:
+        nonlocal technical_reads
+        raw = original_read_bytes(path)
+        if path.name != "technical.md":
+            return raw
+        technical_reads += 1
+        if technical_reads == 2:
+            return raw[:-1] + b"\nDrifted instruction.\n"
+        return raw
+
+    monkeypatch.setattr(Path, "read_bytes", drifting_read_bytes)
+    frozen = snapshot()
+    provider = RecordingProvider()
+
+    result = run(workflow(provider).run(frozen, evidence_graph(frozen)))
+
+    assert technical_reads == 1
+    request = next(
+        item for item in provider.requests if request_role(item) is RoleName.TECHNICAL
+    )
+    trace = next(item for item in result.trace if item.role is RoleName.TECHNICAL)
+    assert trace.template_hash == (
+        "sha256:" + hashlib.sha256(request.system.encode("utf-8")).hexdigest()
+    )
+    assert trace.request_hash == request.stable_hash()
 
 
 def test_graph_must_be_the_exact_registered_snapshot() -> None:

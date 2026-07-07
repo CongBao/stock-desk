@@ -6,18 +6,19 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import StrEnum
 import time
-from typing import Any, cast, Final
+from typing import Any, Final
 
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    JsonValue,
     StrictFloat,
     ValidationError,
 )
 
 from stock_desk.analysis.evidence import EvidenceGraph, EvidenceItem
+from stock_desk.analysis.content_policy import ContentPolicyError
+from stock_desk.analysis.prompt_builder import build_role_request
 from stock_desk.analysis.providers.base import (
     ModelProvider,
     ModelRequest,
@@ -31,12 +32,9 @@ from stock_desk.analysis.roles import (
     ROLE_SECTION_KINDS,
     RoleName,
     RoleOutput,
-    load_role_prompt,
-    role_output_schema,
     validate_role_output,
 )
 from stock_desk.analysis.snapshot import (
-    ResearchSection,
     ResearchSnapshot,
     Sha256Digest,
 )
@@ -72,6 +70,7 @@ class WorkflowStageTrace(_FrozenWorkflowModel):
     model: str = Field(min_length=1, max_length=256)
     template_version: str = Field(min_length=1, max_length=64)
     template_hash: Sha256Digest
+    request_hash: Sha256Digest
     usage: ModelUsage
 
 
@@ -101,6 +100,7 @@ class _PreparedRole:
     request: ModelRequest
     template_version: str
     template_hash: str
+    request_hash: str
 
 
 class AnalysisWorkflow:
@@ -183,21 +183,32 @@ class AnalysisWorkflow:
         dependencies: tuple[RoleOutput, ...],
     ) -> _PreparedRole:
         allowed_evidence = _allowed_evidence(role, graph, dependencies)
-        prompt = load_role_prompt(role)
-        request = _build_request(
-            role=role,
-            snapshot=snapshot,
-            evidence=allowed_evidence,
-            dependencies=dependencies,
-            system=prompt.content,
-        )
+        try:
+            built = build_role_request(
+                role=role,
+                snapshot=snapshot,
+                evidence=allowed_evidence,
+                dependencies=dependencies,
+                temperature=DEFAULT_TEMPERATURE,
+                timeout_seconds=DEFAULT_TIMEOUT_SECONDS,
+                max_output_tokens=DEFAULT_MAX_OUTPUT_TOKENS,
+            )
+        except (
+            ContentPolicyError,
+            TypeError,
+            ValueError,
+            ValidationError,
+            RecursionError,
+        ):
+            raise WorkflowRequestValidationError() from None
         return _PreparedRole(
             role=role,
             snapshot_id=snapshot.snapshot_id,
             allowed_evidence=allowed_evidence,
-            request=request,
-            template_version=prompt.version,
-            template_hash=prompt.content_hash,
+            request=built.request,
+            template_version=built.template_version,
+            template_hash=built.template_hash,
+            request_hash=built.request_hash,
         )
 
     async def _execute_role(self, prepared: _PreparedRole) -> _CompletedRole:
@@ -226,6 +237,7 @@ class AnalysisWorkflow:
             model=response.model,
             template_version=prepared.template_version,
             template_hash=prepared.template_hash,
+            request_hash=prepared.request_hash,
             usage=response.usage,
         )
         return _CompletedRole(output=output, trace=trace)
@@ -296,110 +308,3 @@ def _allowed_evidence(
     return tuple(
         item for item in graph.evidence_items if item.evidence_id in referenced
     )
-
-
-def _build_request(
-    *,
-    role: RoleName,
-    snapshot: ResearchSnapshot,
-    evidence: tuple[EvidenceItem, ...],
-    dependencies: tuple[RoleOutput, ...],
-    system: str,
-) -> ModelRequest:
-    blocks: list[dict[str, JsonValue]] = [
-        {
-            "block_type": "workflow_context",
-            "role": role.value,
-            "snapshot_id": snapshot.snapshot_id,
-            "symbol": snapshot.symbol,
-            "allowed_evidence_ids": [item.evidence_id for item in evidence],
-        }
-    ]
-    if role in ROLE_SECTION_KINDS:
-        allowed_kinds = ROLE_SECTION_KINDS[role]
-        blocks.extend(
-            _snapshot_section_block(section, evidence)
-            for section in snapshot.sections
-            if section.kind in allowed_kinds
-        )
-    else:
-        blocks.extend(
-            {
-                "block_type": "role_output",
-                **cast(dict[str, JsonValue], dependency.model_dump(mode="json")),
-            }
-            for dependency in dependencies
-        )
-        blocks.extend(_evidence_reference_block(item) for item in evidence)
-        if role is RoleName.RISK_DECISION:
-            blocks.append(
-                {
-                    "block_type": "quality_flags",
-                    "sections": [
-                        {
-                            "section_kind": section.kind.value,
-                            "flags": [flag.value for flag in section.quality_flags],
-                        }
-                        for section in snapshot.sections
-                    ],
-                }
-            )
-    try:
-        request = ModelRequest(
-            system=system,
-            data_blocks=tuple(blocks),
-            output_schema=role_output_schema(),
-            temperature=DEFAULT_TEMPERATURE,
-            timeout_seconds=DEFAULT_TIMEOUT_SECONDS,
-            max_output_tokens=DEFAULT_MAX_OUTPUT_TOKENS,
-        )
-        return ModelRequest.model_validate_json(request.model_dump_json())
-    except (TypeError, ValueError, ValidationError, RecursionError):
-        raise WorkflowRequestValidationError() from None
-
-
-def _snapshot_section_block(
-    section: ResearchSection,
-    evidence: tuple[EvidenceItem, ...],
-) -> dict[str, JsonValue]:
-    return {
-        "block_type": "snapshot_section",
-        "section_kind": section.kind.value,
-        "section_id": section.section_id,
-        "content": section.content,
-        "evidence_ids": [
-            item.evidence_id for item in evidence if item.section_kind is section.kind
-        ],
-        "provenance": {
-            "canonical_source": section.canonical_source,
-            "source_record": section.source_record,
-            "source_url": section.source_url,
-            "published_at": (
-                section.published_at.isoformat()
-                if section.published_at is not None
-                else None
-            ),
-            "data_cutoff": section.data_cutoff.isoformat(),
-            "fetched_at": section.fetched_at.isoformat(),
-            "dataset_version": section.dataset_version,
-            "quality_flags": [flag.value for flag in section.quality_flags],
-        },
-    }
-
-
-def _evidence_reference_block(item: EvidenceItem) -> dict[str, JsonValue]:
-    return {
-        "block_type": "evidence_reference",
-        "evidence_id": item.evidence_id,
-        "section_kind": item.section_kind.value,
-        "excerpt": item.excerpt,
-        "canonical_source": item.canonical_source,
-        "source_record": item.source_record,
-        "source_url": item.source_url,
-        "published_at": (
-            item.published_at.isoformat() if item.published_at is not None else None
-        ),
-        "data_cutoff": item.data_cutoff.isoformat(),
-        "fetched_at": item.fetched_at.isoformat(),
-        "quality_flags": [flag.value for flag in item.quality_flags],
-    }

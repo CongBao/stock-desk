@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+import hashlib
 import json
 import math
 from typing import cast, Final, Protocol, runtime_checkable
@@ -115,6 +116,25 @@ class ModelRequest(_FrozenModel):
             timeout_seconds=self.timeout_seconds,
             max_output_tokens=self.max_output_tokens,
         )
+
+    def stable_hash(self) -> str:
+        snapshot = self.stable_snapshot()
+        data_blocks, output_schema = snapshot.structured_parts()
+        encoded = json.dumps(
+            {
+                "system": snapshot.system,
+                "data_blocks": data_blocks,
+                "output_schema": output_schema,
+                "temperature": snapshot.temperature,
+                "timeout_seconds": snapshot.timeout_seconds,
+                "max_output_tokens": snapshot.max_output_tokens,
+            },
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
 class ModelResponse(_FrozenModel):

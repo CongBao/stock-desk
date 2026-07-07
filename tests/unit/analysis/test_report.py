@@ -354,6 +354,7 @@ def workflow_result(
                 risk_template if role is RoleName.RISK_DECISION else f"{role.value}-v1"
             ),
             template_hash="sha256:" + f"{index + 1:x}".zfill(64),
+            request_hash="sha256:" + f"{index + 101:x}".zfill(64),
             usage=ModelUsage(input_tokens=10, output_tokens=5, total_tokens=15),
         )
         for index, role in enumerate(ROLE_ORDER)
