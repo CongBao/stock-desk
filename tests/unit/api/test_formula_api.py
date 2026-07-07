@@ -413,8 +413,10 @@ def test_executor_globally_bounds_distinct_concurrent_workers() -> None:
     active = context.Value("i", 0)
     maximum = context.Value("i", 0)
     lock = context.Lock()
+    # This test classifies the global concurrency bound, not queued spawn latency.
+    # Eight spawn-mode requests can exceed 10s on a loaded hosted runner.
     executor = IsolatedFormulaExecutor(
-        timeout_seconds=10.0,
+        timeout_seconds=30.0,
         max_workers=2,
         worker_target=partial(_tracked_formula_worker, active, maximum, lock),
     )
