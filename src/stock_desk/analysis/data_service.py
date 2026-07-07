@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from datetime import datetime
-from typing import Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable, TYPE_CHECKING
 
 from pydantic import TypeAdapter
 
@@ -14,6 +14,11 @@ from stock_desk.analysis.snapshot import (
     ResearchSectionKind,
 )
 from stock_desk.market.types import CanonicalSymbol
+
+if TYPE_CHECKING:
+    from stock_desk.analysis.sources.base import ResearchSourceAdapter
+    from stock_desk.analysis.sources.market_cache import MarketSeriesCache
+    from stock_desk.market.types import ProviderId
 
 
 _SYMBOL_ADAPTER = TypeAdapter(CanonicalSymbol)
@@ -52,6 +57,12 @@ class ResearchSectionLoader(Protocol):
     kind: ResearchSectionKind
 
     def load(self, symbol: CanonicalSymbol) -> ResearchSection: ...
+
+
+class ResearchPrioritySettings(Protocol):
+    fundamentals: tuple[ProviderId, ...]
+    announcements: tuple[ProviderId, ...]
+    news: tuple[ProviderId, ...]
 
 
 class ResearchDataService:
@@ -127,3 +138,37 @@ class ResearchDataService:
             attempted_sources=attempted_sources,
             recovery_code=_RECOVERY_CODES[reason],
         )
+
+
+def compose_research_data_service(
+    *,
+    market_lake: MarketSeriesCache,
+    sources: Sequence[ResearchSourceAdapter],
+    priorities: ResearchPrioritySettings,
+    clock: Callable[[], datetime],
+) -> ResearchDataService:
+    """Compose cache-only market data and capability-aware research routes."""
+    from stock_desk.analysis.sources.market_cache import MarketCacheLoader
+    from stock_desk.analysis.sources.routing import ResearchSourceRouter
+
+    return ResearchDataService(
+        loaders=(
+            MarketCacheLoader(lake=market_lake),
+            ResearchSourceRouter(
+                kind=ResearchSectionKind.FUNDAMENTALS,
+                priority=priorities.fundamentals,
+                sources=sources,
+            ),
+            ResearchSourceRouter(
+                kind=ResearchSectionKind.ANNOUNCEMENTS,
+                priority=priorities.announcements,
+                sources=sources,
+            ),
+            ResearchSourceRouter(
+                kind=ResearchSectionKind.NEWS,
+                priority=priorities.news,
+                sources=sources,
+            ),
+        ),
+        clock=clock,
+    )

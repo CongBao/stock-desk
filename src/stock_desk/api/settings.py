@@ -101,6 +101,15 @@ class SourcePriorities(_SettingsModel):
         ProviderId.EASTMONEY,
     )
     execution_status: tuple[ProviderId, ...] = (ProviderId.TUSHARE,)
+    fundamentals: tuple[ProviderId, ...] = (
+        ProviderId.TUSHARE,
+        ProviderId.AKSHARE,
+    )
+    announcements: tuple[ProviderId, ...] = (
+        ProviderId.TUSHARE,
+        ProviderId.AKSHARE,
+    )
+    news: tuple[ProviderId, ...] = (ProviderId.AKSHARE,)
 
     @field_validator("*", mode="before")
     @classmethod
@@ -130,6 +139,64 @@ class SourcePriorities(_SettingsModel):
 
     @model_validator(mode="after")
     def validate_usable_sources(self) -> SourcePriorities:
+        from stock_desk.analysis.snapshot import ResearchSectionKind
+        from stock_desk.analysis.sources.routing import supported_research_sources
+
+        usable = {
+            "daily_bars": frozenset(
+                {
+                    ProviderId.TUSHARE,
+                    ProviderId.AKSHARE,
+                    ProviderId.BAOSTOCK,
+                    ProviderId.TDX_LOCAL,
+                }
+            ),
+            "weekly_bars": frozenset(
+                {ProviderId.TUSHARE, ProviderId.AKSHARE, ProviderId.BAOSTOCK}
+            ),
+            "minute_bars": frozenset({ProviderId.TUSHARE, ProviderId.BAOSTOCK}),
+            "instruments": frozenset(
+                {ProviderId.TUSHARE, ProviderId.AKSHARE, ProviderId.BAOSTOCK}
+            ),
+            "trading_calendar": frozenset({ProviderId.TUSHARE, ProviderId.BAOSTOCK}),
+            "execution_status": frozenset({ProviderId.TUSHARE}),
+            "fundamentals": supported_research_sources(
+                ResearchSectionKind.FUNDAMENTALS
+            ),
+            "announcements": supported_research_sources(
+                ResearchSectionKind.ANNOUNCEMENTS
+            ),
+            "news": supported_research_sources(ResearchSectionKind.NEWS),
+        }
+        for field_name, usable_sources in usable.items():
+            configured = cast(tuple[ProviderId, ...], getattr(self, field_name))
+            if not usable_sources.intersection(configured):
+                raise ValueError(f"{field_name} priority has no usable source")
+        return self
+
+
+class _LegacyV1SourcePriorities(_SettingsModel):
+    """Exact six-category shape persisted before research source routing."""
+
+    daily_bars: tuple[ProviderId, ...]
+    weekly_bars: tuple[ProviderId, ...]
+    minute_bars: tuple[ProviderId, ...]
+    instruments: tuple[ProviderId, ...]
+    trading_calendar: tuple[ProviderId, ...]
+    execution_status: tuple[ProviderId, ...]
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def decode_json_order(cls, value: object) -> tuple[ProviderId, ...]:
+        return SourcePriorities.decode_json_order(value)
+
+    @field_validator("*")
+    @classmethod
+    def validate_order(cls, value: tuple[ProviderId, ...]) -> tuple[ProviderId, ...]:
+        return SourcePriorities.validate_order(value)
+
+    @model_validator(mode="after")
+    def validate_usable_sources(self) -> _LegacyV1SourcePriorities:
         usable = {
             "daily_bars": frozenset(
                 {
@@ -154,6 +221,16 @@ class SourcePriorities(_SettingsModel):
             if not usable_sources.intersection(configured):
                 raise ValueError(f"{field_name} priority has no usable source")
         return self
+
+
+class _LegacyV1PublicSourceSettings(_SettingsModel):
+    priorities: _LegacyV1SourcePriorities
+    tdx_path: str | None
+
+    @field_validator("tdx_path")
+    @classmethod
+    def validate_tdx_path(cls, value: str | None) -> str | None:
+        return PublicSourceSettings.validate_tdx_path(value)
 
 
 class PublicSourceSettings(_SettingsModel):
@@ -242,6 +319,19 @@ class RuntimeSourceSettings:
 
 
 def _canonical_public(settings: PublicSourceSettings) -> str:
+    encoded = json.dumps(
+        settings.model_dump(mode="json"),
+        allow_nan=False,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    if len(encoded.encode("utf-8")) > _PUBLIC_SETTINGS_MAX_BYTES:
+        raise ValueError("public source settings exceed the storage limit")
+    return encoded
+
+
+def _canonical_legacy_public(settings: _LegacyV1PublicSourceSettings) -> str:
     encoded = json.dumps(
         settings.model_dump(mode="json"),
         allow_nan=False,
@@ -385,10 +475,26 @@ class SourceSettingsServices:
         try:
             decoded = PublicSourceSettings.model_validate_json(stored)
         except Exception:
+            decoded = None
+        if decoded is not None and _canonical_public(decoded) == stored:
+            return decoded
+
+        try:
+            legacy = _LegacyV1PublicSourceSettings.model_validate_json(stored)
+        except Exception:
             raise PublicSettingsCorrupt("Stored source settings are invalid") from None
-        if _canonical_public(decoded) != stored:
+        if _canonical_legacy_public(legacy) != stored:
             raise PublicSettingsCorrupt("Stored source settings are invalid")
-        return decoded
+        try:
+            priorities = SourcePriorities.model_validate(
+                legacy.priorities.model_dump(mode="json")
+            )
+            return PublicSourceSettings(
+                priorities=priorities,
+                tdx_path=legacy.tdx_path,
+            )
+        except Exception:
+            raise PublicSettingsCorrupt("Stored source settings are invalid") from None
 
     def save_public(
         self, value: PublicSourceSettings | Mapping[str, Any]

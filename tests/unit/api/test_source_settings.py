@@ -82,6 +82,15 @@ DEFAULT_PRIORITIES = {
     "instruments": ["tushare", "akshare", "baostock", "eastmoney"],
     "trading_calendar": ["tushare", "baostock", "eastmoney"],
     "execution_status": ["tushare"],
+    "fundamentals": ["tushare", "akshare"],
+    "announcements": ["tushare", "akshare"],
+    "news": ["akshare"],
+}
+
+LEGACY_V1_PRIORITIES = {
+    key: value
+    for key, value in DEFAULT_PRIORITIES.items()
+    if key not in {"fundamentals", "announcements", "news"}
 }
 
 
@@ -439,6 +448,120 @@ def test_public_priorities_and_tdx_path_use_bounded_canonical_json(
         sort_keys=True,
     )
     assert len(stored.encode("utf-8")) < 16_384
+
+
+def test_legacy_v1_public_settings_are_read_with_research_defaults(
+    tmp_path: Path,
+) -> None:
+    legacy = json.dumps(
+        {"priorities": LEGACY_V1_PRIORITIES, "tdx_path": None},
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    with settings_api(tmp_path, master_key=None) as context:
+        with context.engine.begin() as connection:
+            connection.execute(
+                insert(AppSetting).values(
+                    key=PUBLIC_SOURCE_SETTINGS_KEY,
+                    encrypted_value=legacy,
+                    updated_at=FIXED_NOW,
+                )
+            )
+
+        response = context.client.get("/api/settings/sources")
+        with context.engine.connect() as connection:
+            stored = connection.execute(
+                select(AppSetting.encrypted_value).where(
+                    AppSetting.key == PUBLIC_SOURCE_SETTINGS_KEY
+                )
+            ).scalar_one()
+
+    assert response.status_code == 200
+    assert response.json()["priorities"] == DEFAULT_PRIORITIES
+    assert stored == legacy
+
+
+@pytest.mark.parametrize(
+    "legacy",
+    [
+        json.dumps(
+            {
+                "priorities": {
+                    key: value
+                    for key, value in LEGACY_V1_PRIORITIES.items()
+                    if key != "execution_status"
+                },
+                "tdx_path": None,
+            },
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ),
+        json.dumps(
+            {
+                "priorities": {
+                    **LEGACY_V1_PRIORITIES,
+                    "unexpected": ["tushare"],
+                },
+                "tdx_path": None,
+            },
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ),
+        json.dumps(
+            {"priorities": LEGACY_V1_PRIORITIES, "tdx_path": None},
+            ensure_ascii=True,
+            indent=2,
+            sort_keys=False,
+        ),
+    ],
+)
+def test_legacy_v1_public_settings_remain_strict_and_canonical(
+    tmp_path: Path,
+    legacy: str,
+) -> None:
+    with settings_api(tmp_path, master_key=None) as context:
+        with context.engine.begin() as connection:
+            connection.execute(
+                insert(AppSetting).values(
+                    key=PUBLIC_SOURCE_SETTINGS_KEY,
+                    encrypted_value=legacy,
+                    updated_at=FIXED_NOW,
+                )
+            )
+
+        response = context.client.get("/api/settings/sources")
+
+    assert response.status_code == 500
+    assert response.json() == {"code": "settings_corrupt"}
+
+
+@pytest.mark.parametrize(
+    ("category", "priority"),
+    [
+        ("fundamentals", ["baostock"]),
+        ("announcements", ["tdx_local"]),
+        ("news", ["tushare"]),
+    ],
+)
+def test_research_priorities_reject_sources_without_declared_capability(
+    tmp_path: Path,
+    category: str,
+    priority: list[str],
+) -> None:
+    priorities = json.loads(json.dumps(DEFAULT_PRIORITIES))
+    priorities[category] = priority
+
+    with settings_api(tmp_path, master_key=None) as context:
+        response = context.client.put(
+            "/api/settings/sources",
+            json={"priorities": priorities, "tdx_path": None},
+        )
+
+    assert response.status_code == 422
+    assert response.json() == {"code": "invalid_request", "issues": []}
 
 
 @pytest.mark.parametrize(
