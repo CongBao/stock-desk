@@ -20,6 +20,7 @@ from pydantic import (
 )
 
 from stock_desk.analysis.evidence import Claim, EvidenceItem
+from stock_desk.analysis.rating import RatingProposal
 from stock_desk.analysis.snapshot import ResearchSectionKind, Sha256Digest
 
 
@@ -76,6 +77,7 @@ class RoleOutput(_FrozenRoleModel):
     snapshot_id: Sha256Digest
     summary: str = Field(min_length=1, max_length=8_192)
     claims: tuple[Claim, ...] = Field(min_length=1, max_length=MAX_ROLE_CLAIMS)
+    proposal: RatingProposal | None = None
 
     @field_validator("summary")
     @classmethod
@@ -101,6 +103,8 @@ class RoleOutput(_FrozenRoleModel):
         reference_count = sum(len(claim.evidence_ids) for claim in self.claims)
         if reference_count > MAX_ROLE_EVIDENCE_REFERENCES:
             raise ValueError("role output exceeds the evidence reference limit")
+        if (self.role is RoleName.RISK_DECISION) != (self.proposal is not None):
+            raise ValueError("only risk decision output requires a rating proposal")
         return self
 
     @property
@@ -146,7 +150,7 @@ def load_role_prompt(role: RoleName) -> RolePrompt:
     version = first_line.removeprefix("version: ")
     if (
         _PROMPT_VERSION_PATTERN.fullmatch(version) is None
-        or version != f"{role.value}-v1"
+        or not version.startswith(f"{role.value}-v")
         or not content
         or content != content.strip() + "\n"
     ):

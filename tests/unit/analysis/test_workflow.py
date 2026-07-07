@@ -140,7 +140,7 @@ def valid_content(request: ModelRequest) -> dict[str, JsonValue]:
     role = request_role(request)
     evidence_ids = allowed_evidence_ids(request)
     assert evidence_ids
-    return {
+    content: dict[str, JsonValue] = {
         "role": role.value,
         "snapshot_id": cast(str, request.data_blocks[0]["snapshot_id"]),
         "summary": f"{role.value} summary",
@@ -152,6 +152,13 @@ def valid_content(request: ModelRequest) -> dict[str, JsonValue]:
             }
         ],
     }
+    if role is RoleName.RISK_DECISION:
+        content["proposal"] = {
+            "rating": "bullish",
+            "confidence": 0.9,
+            "confidence_explanation": "Registered evidence supports this confidence.",
+        }
+    return content
 
 
 def response(
@@ -350,7 +357,13 @@ def test_trace_is_canonical_complete_and_deterministic_with_fixed_collaborators(
     assert all(item.duration_seconds == 0.0 for item in first.trace)
     assert all(item.provider == "stub-provider" for item in first.trace)
     assert all(item.model == "stub-model-v1" for item in first.trace)
-    assert all(item.template_version.endswith("-v1") for item in first.trace)
+    assert tuple(item.template_version for item in first.trace) == (
+        "technical-v1",
+        "fundamental_news-v1",
+        "bull-v1",
+        "bear-v1",
+        "risk_decision-v2",
+    )
     assert all(item.template_hash.startswith("sha256:") for item in first.trace)
 
 
@@ -577,7 +590,10 @@ def test_prompt_templates_have_stable_versions_hashes_and_safety_rules() -> None
         normalized = first.content.lower()
         assert first == second
         assert first.role is role
-        assert first.version == f"{role.value}-v1"
+        expected_version = (
+            "risk_decision-v2" if role is RoleName.RISK_DECISION else f"{role.value}-v1"
+        )
+        assert first.version == expected_version
         assert first.content_hash == (
             "sha256:" + hashlib.sha256(first.content.encode("utf-8")).hexdigest()
         )
