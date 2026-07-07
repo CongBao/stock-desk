@@ -20,6 +20,8 @@ from stock_desk.market.types import (
     TradingDay,
     UtcDatetime,
 )
+from stock_desk.market.execution_status import ExecutionStatusQuery
+from stock_desk.market.providers.execution_status import ExecutionStatusFetchOutcome
 
 
 Clock: TypeAlias = Callable[[], datetime]
@@ -174,3 +176,12 @@ class MarketDataProvider(Protocol):
         start: date,
         end: date,
     ) -> CalendarFetchOutcome: ...
+
+
+@runtime_checkable
+class ExecutionStatusProvider(Protocol):
+    name: ProviderId
+
+    def fetch_execution_status(
+        self, query: ExecutionStatusQuery
+    ) -> ExecutionStatusFetchOutcome: ...

@@ -35,6 +35,13 @@ from stock_desk.market.providers.base import (
     ProviderBatchFailure,
     ProviderOperation,
 )
+from stock_desk.market.execution_status import (
+    ExecutionStatusDay,
+    ExecutionStatusQuery,
+    RawExecutionOpen,
+    SuspensionState,
+    materialize_execution_status,
+)
 from stock_desk.market.types import (
     Adjustment,
     Bar,
@@ -74,6 +81,7 @@ DEFAULT_PRIORITIES = {
     "minute_bars": ["tushare", "baostock", "eastmoney"],
     "instruments": ["tushare", "akshare", "baostock", "eastmoney"],
     "trading_calendar": ["tushare", "baostock", "eastmoney"],
+    "execution_status": ["tushare"],
 }
 
 
@@ -209,6 +217,31 @@ class PartialTushareProvider(AvailableProvider):
             ),
         )
 
+    def fetch_execution_status(self, query: ExecutionStatusQuery):
+        return materialize_execution_status(
+            query=query,
+            days=(
+                ExecutionStatusDay(
+                    day=query.start,
+                    exchange=query.exchange,
+                    is_exchange_open=True,
+                    suspension_state=SuspensionState.NORMAL,
+                    raw_upper_limit=Decimal("11"),
+                    raw_lower_limit=Decimal("9"),
+                ),
+            ),
+            raw_opens=(
+                RawExecutionOpen(
+                    timestamp=datetime(2024, 1, 2, 1, 30, tzinfo=timezone.utc),
+                    trading_day=query.start,
+                    raw_open=Decimal("10"),
+                ),
+            ),
+            source=ProviderId.TUSHARE,
+            fetched_at=FIXED_NOW,
+            data_cutoff=datetime(2024, 1, 2, 7, tzinfo=timezone.utc),
+        )
+
 
 class ProbedTushareProvider(PartialTushareProvider):
     def fetch_bars(self, query: BarQuery) -> BarResult:
@@ -226,6 +259,9 @@ class DeniedProvider:
         raise ProviderPermissionDenied(TOKEN)
 
     def fetch_calendar(self, _exchange: Exchange, _start: date, _end: date) -> object:
+        raise ProviderPermissionDenied(TOKEN)
+
+    def fetch_execution_status(self, _query: ExecutionStatusQuery) -> object:
         raise ProviderPermissionDenied(TOKEN)
 
     def capabilities(self) -> CapabilityReport:
@@ -1148,7 +1184,12 @@ def test_tushare_probes_every_category_and_preserves_partial_permission_evidence
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "permission_denied"
-    assert body["capabilities"] == ["bars", "instruments", "trading_calendar"]
+    assert body["capabilities"] == [
+        "bars",
+        "execution_status",
+        "instruments",
+        "trading_calendar",
+    ]
     assert body["available_periods"] == ["1d", "1w"]
     assert body["permissions"] == [
         {"category": "minute_bars", "state": "permission_denied"},
@@ -1156,6 +1197,7 @@ def test_tushare_probes_every_category_and_preserves_partial_permission_evidence
         {"category": "weekly_bars", "state": "available"},
         {"category": "instruments", "state": "available"},
         {"category": "trading_calendar", "state": "available"},
+        {"category": "execution_status", "state": "available"},
     ]
     assert body["gaps"] == [
         {

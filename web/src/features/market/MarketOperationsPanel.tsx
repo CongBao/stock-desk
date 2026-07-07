@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 
 import { ApiError, type JsonValue } from '../../shared/api/client';
 import { marketApi, type MarketApi } from './marketApi';
@@ -356,6 +357,16 @@ export function MarketOperationsPanel({
     Date.parse(start) >= Date.parse(end);
   const activeNonterminal =
     visibleTask !== null && !terminal.has(visibleTask.status);
+  const backtestHref =
+    selectedInstrument === null || rangeInvalid
+      ? null
+      : `/backtests?${new URLSearchParams({
+          symbol: selectedInstrument.symbol,
+          period,
+          adjustment,
+          start,
+          end,
+        }).toString()}`;
   const latestProgress = events.data?.find(
     (event) => event.eventName === 'task.progressed',
   );
@@ -710,6 +721,11 @@ export function MarketOperationsPanel({
       >
         启动更新
       </button>
+      {backtestHref === null ? null : (
+        <Link className="secondary-action" to={backtestHref}>
+          回测当前股票
+        </Link>
+      )}
       {rangeInvalid ? (
         <p role="note">请选择有效范围，并确保结束日期晚于开始日期。</p>
       ) : null}

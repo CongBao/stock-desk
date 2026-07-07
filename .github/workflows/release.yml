@@ -62,8 +62,10 @@ jobs:
           make test
           make acceptance
           make acceptance-formula
+          make acceptance-backtest
           make benchmark
           make benchmark-formula
+          make benchmark-backtest
           make lint
           make typecheck
           make public-tree
@@ -71,6 +73,7 @@ jobs:
           make e2e-foundation
           make e2e-market
           make e2e-formula
+          make e2e-backtest
       - name: Build final release assets
         run: make build
       - name: Verify built release artifacts

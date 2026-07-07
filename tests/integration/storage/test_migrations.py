@@ -19,7 +19,7 @@ from stock_desk.storage.metadata import Base
 from stock_desk.tasks.repository import TaskRepository
 
 
-HEAD_REVISION = "0005_formula_catalog"
+HEAD_REVISION = "0007_backtest_runs"
 INSTRUMENT_TABLES = {
     "instrument_dataset",
     "instrument_dataset_item",
@@ -33,6 +33,8 @@ POOL_TABLES = {
 }
 CATALOG_TABLES = {
     "market_dataset",
+    "market_dataset_timestamp",
+    "market_dataset_timestamp_seal",
     "market_dataset_partition",
     "market_routing_manifest",
     "market_update_item",
@@ -42,12 +44,72 @@ CATALOG_TABLES = {
     *POOL_TABLES,
 }
 FORMULA_TABLES = {"formula", "formula_draft", "formula_version"}
+EXECUTION_STATUS_TABLES = {
+    "execution_status_dataset",
+    "execution_status_routing_manifest",
+}
+BACKTEST_TABLES = {
+    "backtest_run",
+    "backtest_symbol",
+    "backtest_trade",
+    "backtest_order_event",
+    "backtest_failure",
+    "backtest_log",
+    "backtest_aggregate_metric",
+    "backtest_group_metric",
+}
 CORE_TABLES = {
     "app_setting",
     "task_event",
     "task_run",
     *CATALOG_TABLES,
     *FORMULA_TABLES,
+    *EXECUTION_STATUS_TABLES,
+    *BACKTEST_TABLES,
+}
+BACKTEST_TABLE_COLUMNS = {
+    "backtest_run": {
+        "id",
+        "task_id",
+        "snapshot_id",
+        "snapshot_json",
+        "status",
+        "stage",
+        "total",
+        "processed",
+        "failed_count",
+        "result_hash",
+        "actual_warmup_start",
+        "created_at",
+        "updated_at",
+        "started_at",
+        "finished_at",
+    },
+    "backtest_symbol": {
+        "run_id",
+        "ordinal",
+        "symbol",
+        "input_kind",
+        "reference_json",
+        "status",
+        "signal_series_id",
+        "warmup_start",
+        "failure_reason",
+        "created_at",
+        "updated_at",
+    },
+    "backtest_trade": {"run_id", "symbol", "ordinal", "realized", "payload_json"},
+    "backtest_order_event": {
+        "run_id",
+        "symbol",
+        "ordinal",
+        "event_type",
+        "payload_json",
+    },
+    "backtest_failure": {"run_id", "symbol", "ordinal", "reason", "detail_json"},
+    "backtest_log": {"run_id", "ordinal", "level", "message", "detail_json"},
+    "backtest_aggregate_metric": {"run_id", "metric_key", "payload_json"},
+    "backtest_group_metric": {"run_id", "dimension", "group_key", "payload_json"},
 }
 LEGACY_CORE_TABLES = {"app_setting", "task_run"}
 APP_SETTING_COLUMNS = {"key", "encrypted_value", "updated_at"}
@@ -61,6 +123,10 @@ TASK_RUN_COLUMNS = {
     "error_json",
     "cancel_requested",
     "worker_id",
+    "claim_token",
+    "lease_expires_at",
+    "heartbeat_at",
+    "attempt_count",
     "created_at",
     "updated_at",
     "started_at",
@@ -76,6 +142,28 @@ TASK_EVENT_COLUMNS = {
     "occurred_at",
 }
 MARKET_TABLE_COLUMNS = {
+    "execution_status_dataset": {
+        "dataset_version",
+        "source",
+        "symbol",
+        "exchange",
+        "query_start",
+        "query_end",
+        "period",
+        "fetched_at",
+        "data_cutoff",
+        "row_count",
+        "snapshot_json",
+        "created_at",
+    },
+    "execution_status_routing_manifest": {
+        "manifest_record_id",
+        "dataset_version",
+        "route_version",
+        "manifest_json",
+        "fetched_at",
+        "created_at",
+    },
     "instrument_dataset": {
         "dataset_version",
         "source",
@@ -169,6 +257,17 @@ MARKET_TABLE_COLUMNS = {
         "physical_sha256",
         "created_at",
     },
+    "market_dataset_timestamp": {
+        "dataset_version",
+        "ordinal",
+        "timestamp",
+    },
+    "market_dataset_timestamp_seal": {
+        "dataset_version",
+        "index_version",
+        "row_count",
+        "timestamp_digest",
+    },
     "market_routing_manifest": {
         "manifest_record_id",
         "dataset_version",
@@ -261,6 +360,27 @@ IMMUTABLE_TRIGGER_NAMES = {
 UPDATE_ITEM_OWNER_TRIGGER = "trg_market_update_item_owner_running"
 UPDATE_ITEM_DUPLICATE_TRIGGER = "trg_market_update_item_immutable_insert"
 MARKET_TRIGGER_NAMES = {*IMMUTABLE_TRIGGER_NAMES, UPDATE_ITEM_OWNER_TRIGGER}
+EXECUTION_STATUS_TRIGGER_NAMES = {
+    f"trg_{table}_immutable_{operation}"
+    for table in (
+        "execution_status_dataset",
+        "execution_status_routing_manifest",
+    )
+    for operation in ("insert", "update", "delete")
+}
+BACKTEST_TRIGGER_NAMES = {
+    f"trg_{table}_terminal_{operation}"
+    for table in BACKTEST_TABLES
+    for operation in ("insert", "update", "delete")
+}
+MARKET_TIMESTAMP_TRIGGER_NAMES = {
+    f"trg_market_dataset_timestamp_immutable_{operation}"
+    for operation in ("insert", "update", "delete")
+}
+MARKET_TIMESTAMP_TRIGGER_NAMES |= {
+    f"trg_market_dataset_timestamp_seal_immutable_{operation}"
+    for operation in ("insert", "update", "delete")
+}
 FORMULA_TRIGGER_NAMES = {
     "trg_formula_version_immutable_insert",
     "trg_formula_version_immutable_update",
@@ -269,7 +389,13 @@ FORMULA_TRIGGER_NAMES = {
     "trg_formula_draft_executable_insert",
     "trg_formula_draft_executable_update",
 }
-ALL_TRIGGER_NAMES = {*MARKET_TRIGGER_NAMES, *FORMULA_TRIGGER_NAMES}
+ALL_TRIGGER_NAMES = {
+    *MARKET_TRIGGER_NAMES,
+    *FORMULA_TRIGGER_NAMES,
+    *EXECUTION_STATUS_TRIGGER_NAMES,
+    *BACKTEST_TRIGGER_NAMES,
+    *MARKET_TIMESTAMP_TRIGGER_NAMES,
+}
 
 
 def _dispose(engine: Engine) -> None:
@@ -397,6 +523,10 @@ def test_upgrade_creates_core_tables(tmp_path: Path) -> None:
             assert expected_columns == {
                 column["name"] for column in inspector.get_columns(table)
             }
+        for table, expected_columns in BACKTEST_TABLE_COLUMNS.items():
+            assert expected_columns == {
+                column["name"] for column in inspector.get_columns(table)
+            }
         assert inspector.get_pk_constraint("app_setting")["constrained_columns"] == [
             "key"
         ]
@@ -440,6 +570,12 @@ def test_market_catalog_has_exact_keys_constraints_and_indexes(tmp_path: Path) -
         assert inspector.get_pk_constraint("market_dataset_partition")[
             "constrained_columns"
         ] == ["dataset_version", "partition_manifest_id"]
+        assert inspector.get_pk_constraint("market_dataset_timestamp")[
+            "constrained_columns"
+        ] == ["dataset_version", "ordinal"]
+        assert inspector.get_pk_constraint("market_dataset_timestamp_seal")[
+            "constrained_columns"
+        ] == ["dataset_version"]
         assert inspector.get_pk_constraint("market_routing_manifest")[
             "constrained_columns"
         ] == ["manifest_record_id"]
@@ -452,6 +588,12 @@ def test_market_catalog_has_exact_keys_constraints_and_indexes(tmp_path: Path) -
         assert inspector.get_pk_constraint("market_update_occurrence")[
             "constrained_columns"
         ] == ["schedule_id", "local_date"]
+        assert inspector.get_pk_constraint("execution_status_dataset")[
+            "constrained_columns"
+        ] == ["dataset_version"]
+        assert inspector.get_pk_constraint("execution_status_routing_manifest")[
+            "constrained_columns"
+        ] == ["manifest_record_id"]
 
         assert _unique_signatures(engine, "market_dataset_partition") == {
             ("dataset_version", "partition_year"),
@@ -459,6 +601,9 @@ def test_market_catalog_has_exact_keys_constraints_and_indexes(tmp_path: Path) -
         }
         assert _unique_signatures(engine, "market_dataset") == {
             ("dataset_version", "symbol"),
+        }
+        assert _unique_signatures(engine, "market_dataset_timestamp") == {
+            ("dataset_version", "timestamp"),
         }
         assert _unique_signatures(engine, "market_update_item") == {
             ("task_id", "symbol"),
@@ -485,10 +630,24 @@ def test_market_catalog_has_exact_keys_constraints_and_indexes(tmp_path: Path) -
             ),
             ("ix_market_routing_manifest_route_version", ("route_version",), False),
         }
+        assert _index_signatures(engine, "market_dataset_timestamp") == {
+            (
+                "ix_market_dataset_timestamp_lookup",
+                ("dataset_version", "timestamp"),
+                False,
+            )
+        }
         assert _index_signatures(engine, "market_update_schedule") == {
             (
                 "ix_market_update_schedule_due",
                 ("enabled", "local_time", "last_enqueued_local_date"),
+                False,
+            )
+        }
+        assert _index_signatures(engine, "execution_status_dataset") == {
+            (
+                "ix_execution_status_dataset_exact_query",
+                ("symbol", "exchange", "period", "query_start", "query_end"),
                 False,
             )
         }
@@ -501,6 +660,12 @@ def test_market_catalog_has_exact_keys_constraints_and_indexes(tmp_path: Path) -
             "ck_market_dataset_partition_row_count_positive",
             "ck_market_dataset_partition_year",
         }
+        assert _check_names(engine, "market_dataset_timestamp") == {
+            "ck_market_dataset_timestamp_ordinal"
+        }
+        assert _check_names(engine, "market_dataset_timestamp_seal") == {
+            "ck_market_dataset_timestamp_seal_row_count"
+        }
         assert _check_names(engine, "market_update_item") == {
             "ck_market_update_item_ordinal",
             "ck_market_update_item_outcome",
@@ -508,6 +673,10 @@ def test_market_catalog_has_exact_keys_constraints_and_indexes(tmp_path: Path) -
         }
         assert _check_names(engine, "market_update_schedule") == {
             "ck_market_update_schedule_timezone"
+        }
+        assert _check_names(engine, "execution_status_dataset") == {
+            "ck_execution_status_dataset_period",
+            "ck_execution_status_dataset_row_count_positive",
         }
 
         partition_fks = inspector.get_foreign_keys("market_dataset_partition")
@@ -518,6 +687,26 @@ def test_market_catalog_has_exact_keys_constraints_and_indexes(tmp_path: Path) -
                 tuple(fk["referred_columns"]),
             )
             for fk in partition_fks
+        ] == [(("dataset_version",), "market_dataset", ("dataset_version",))]
+
+        timestamp_fks = inspector.get_foreign_keys("market_dataset_timestamp")
+        assert [
+            (
+                tuple(fk["constrained_columns"]),
+                fk["referred_table"],
+                tuple(fk["referred_columns"]),
+            )
+            for fk in timestamp_fks
+        ] == [(("dataset_version",), "market_dataset", ("dataset_version",))]
+
+        timestamp_seal_fks = inspector.get_foreign_keys("market_dataset_timestamp_seal")
+        assert [
+            (
+                tuple(fk["constrained_columns"]),
+                fk["referred_table"],
+                tuple(fk["referred_columns"]),
+            )
+            for fk in timestamp_seal_fks
         ] == [(("dataset_version",), "market_dataset", ("dataset_version",))]
 
         routing_fks = inspector.get_foreign_keys("market_routing_manifest")
@@ -564,6 +753,67 @@ def test_market_catalog_has_exact_keys_constraints_and_indexes(tmp_path: Path) -
             "deferrable": True,
             "initially": "DEFERRED",
         }
+    finally:
+        _dispose(engine)
+
+
+def test_backtest_tables_have_keys_checks_indexes_and_foreign_keys(
+    tmp_path: Path,
+) -> None:
+    url = f"sqlite:///{tmp_path / 'backtest-shape.db'}"
+    migrate(url)
+    engine = create_engine_for_url(url)
+    try:
+        inspector = inspect(engine)
+        expected_primary_keys = {
+            "backtest_run": ["id"],
+            "backtest_symbol": ["run_id", "ordinal"],
+            "backtest_trade": ["run_id", "symbol", "ordinal"],
+            "backtest_order_event": ["run_id", "symbol", "ordinal"],
+            "backtest_failure": ["run_id", "symbol", "ordinal"],
+            "backtest_log": ["run_id", "ordinal"],
+            "backtest_aggregate_metric": ["run_id", "metric_key"],
+            "backtest_group_metric": ["run_id", "dimension", "group_key"],
+        }
+        for table, columns in expected_primary_keys.items():
+            assert inspector.get_pk_constraint(table)["constrained_columns"] == columns
+
+        assert _check_names(engine, "backtest_run") == {
+            "ck_backtest_run_status",
+            "ck_backtest_run_stage",
+            "ck_backtest_run_total",
+            "ck_backtest_run_counts",
+        }
+        assert _check_names(engine, "backtest_symbol") == {
+            "ck_backtest_symbol_ordinal",
+            "ck_backtest_symbol_input_kind",
+            "ck_backtest_symbol_status",
+        }
+        assert _check_names(engine, "backtest_trade") == {"ck_backtest_trade_ordinal"}
+        assert _check_names(engine, "backtest_order_event") == {
+            "ck_backtest_order_event_ordinal"
+        }
+        assert _check_names(engine, "backtest_failure") == {
+            "ck_backtest_failure_ordinal"
+        }
+        assert _check_names(engine, "backtest_log") == {
+            "ck_backtest_log_ordinal",
+            "ck_backtest_log_level",
+        }
+        assert _check_names(engine, "backtest_group_metric") == {
+            "ck_backtest_group_dimension"
+        }
+
+        assert _index_signatures(engine, "backtest_run") == {
+            ("ix_backtest_run_created", ("created_at", "id"), False),
+            ("ix_backtest_run_status", ("status", "updated_at"), False),
+        }
+        assert _index_signatures(engine, "backtest_symbol") == {
+            ("ix_backtest_symbol_status", ("run_id", "status", "ordinal"), False)
+        }
+        for table in BACKTEST_TABLES - {"backtest_run"}:
+            foreign_keys = inspector.get_foreign_keys(table)
+            assert foreign_keys, f"{table} must be owned by a backtest parent"
     finally:
         _dispose(engine)
 

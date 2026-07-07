@@ -9,6 +9,7 @@ export type SourceProvider =
 
 export type SourceCategory =
   | 'daily_bars'
+  | 'execution_status'
   | 'instruments'
   | 'minute_bars'
   | 'trading_calendar'
@@ -53,7 +54,7 @@ export type SourceDiagnostic = {
   readonly source: SourceProvider;
   readonly status: DiagnosticState;
   readonly capabilities: readonly (
-    'bars' | 'instruments' | 'trading_calendar'
+    'bars' | 'execution_status' | 'instruments' | 'trading_calendar'
   )[];
   readonly permissions: readonly {
     readonly category: SourceCategory;
@@ -109,6 +110,7 @@ const categories = [
   'minute_bars',
   'instruments',
   'trading_calendar',
+  'execution_status',
 ] as const satisfies readonly SourceCategory[];
 const diagnosticCategories = [
   'minute_bars',
@@ -116,6 +118,7 @@ const diagnosticCategories = [
   'weekly_bars',
   'instruments',
   'trading_calendar',
+  'execution_status',
 ] as const satisfies readonly SourceCategory[];
 const states = new Set<DiagnosticState>([
   'available',
@@ -150,6 +153,7 @@ const reasonStates: Readonly<
 };
 const capabilities = new Set([
   'bars',
+  'execution_status',
   'instruments',
   'trading_calendar',
 ] as const);
@@ -162,6 +166,7 @@ const usableProviders: Readonly<
   minute_bars: new Set(['tushare', 'baostock']),
   instruments: new Set(['tushare', 'akshare', 'baostock']),
   trading_calendar: new Set(['tushare', 'baostock']),
+  execution_status: new Set(['tushare']),
 };
 
 export class SourceSettingsProtocolError extends Error {
@@ -383,7 +388,7 @@ function decodeDiagnostic(
   const rawPermissions = arrayValue(
     item['permissions'],
     'diagnostic.permissions',
-    5,
+    6,
   );
   protocolAssert(
     rawPermissions.length === diagnosticCategories.length,
@@ -411,7 +416,7 @@ function decodeDiagnostic(
       permissions.length,
     'diagnostic.permissions',
   );
-  const rawGaps = arrayValue(item['gaps'], 'diagnostic.gaps', 5);
+  const rawGaps = arrayValue(item['gaps'], 'diagnostic.gaps', 6);
   const gaps = rawGaps.map((value, index) => {
     const path = `diagnostic.gaps[${String(index)}]`;
     const gap = exactRecord(value, path, [
@@ -477,7 +482,7 @@ function decodeDiagnostic(
     item['capabilities'],
     capabilities,
     'diagnostic.capabilities',
-    3,
+    4,
   );
   const decodedPeriods = enumArray(
     item['available_periods'],
@@ -501,6 +506,8 @@ function decodeDiagnostic(
     expectedCapabilities.push('instruments');
   if (availableCategories.has('trading_calendar'))
     expectedCapabilities.push('trading_calendar');
+  if (availableCategories.has('execution_status'))
+    expectedCapabilities.push('execution_status');
   const expectedPeriods: SourceDiagnostic['available_periods'][number][] = [];
   if (availableCategories.has('daily_bars')) expectedPeriods.push('1d');
   if (availableCategories.has('weekly_bars')) expectedPeriods.push('1w');

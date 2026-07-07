@@ -8,11 +8,16 @@ import threading
 from typing import Any, TypeAlias
 
 from stock_desk.config import get_settings
-from stock_desk.tasks.models import TaskSnapshot
-from stock_desk.tasks.repository import TaskRepository, TaskValidationError
+from stock_desk.tasks.models import TaskClaim, TaskSnapshot
+from stock_desk.tasks.repository import (
+    TaskConflict,
+    TaskRepository,
+    TaskValidationError,
+)
 
 
 TaskHandler: TypeAlias = Callable[[TaskSnapshot], Mapping[str, Any]]
+ClaimedTaskHandler: TypeAlias = Callable[[TaskClaim], Mapping[str, Any]]
 
 _UNKNOWN_KIND_ERROR = {"code": "unknown_task_kind"}
 _HANDLER_FAILURE_ERROR = {"code": "task_handler_failed"}
@@ -38,31 +43,76 @@ class TaskWorker:
         self._worker_id = worker_id
         self._poll_interval = poll_interval
         self._handlers: dict[str, TaskHandler] = {}
+        self._claimed_handlers: dict[str, ClaimedTaskHandler] = {}
 
     def register(self, kind: str, handler: TaskHandler) -> None:
         if not kind or kind != kind.strip() or len(kind) > 64:
             raise ValueError("Task kind must contain 1 to 64 characters")
         self._handlers[kind] = handler
 
-    def run_once(self) -> TaskSnapshot | None:
-        task = self._repository.claim_next(self._worker_id)
-        if task is None:
-            return None
+    def register_claimed(self, kind: str, handler: ClaimedTaskHandler) -> None:
+        if not kind or kind != kind.strip() or len(kind) > 64:
+            raise ValueError("Task kind must contain 1 to 64 characters")
+        self._claimed_handlers[kind] = handler
 
-        handler = self._handlers.get(task.kind)
-        if handler is None:
-            return self._repository.fail(task.id, _UNKNOWN_KIND_ERROR)
+    @property
+    def registered_claimed_kinds(self) -> tuple[str, ...]:
+        return tuple(sorted(self._claimed_handlers))
+
+    def run_once(self) -> TaskSnapshot | None:
+        claimed = self._repository.claim_next(self._worker_id)
+        if claimed is None:
+            return None
+        if isinstance(claimed, TaskClaim):
+            claim: TaskClaim | None = claimed
+            task = claimed.snapshot
+            claimed_handler = self._claimed_handlers.get(task.kind)
+            if claimed_handler is None:
+                return self._fail_current(task, claim, _UNKNOWN_KIND_ERROR)
+            invoke_claimed = claimed_handler
+        else:
+            claim = None
+            task = claimed
+            handler = self._handlers.get(task.kind)
+            if handler is None:
+                return self._fail_current(task, claim, _UNKNOWN_KIND_ERROR)
+            invoke_legacy = handler
 
         try:
-            result = dict(handler(task))
+            result = dict(
+                invoke_claimed(claimed)
+                if isinstance(claimed, TaskClaim)
+                else invoke_legacy(task)
+            )
         except Exception as error:
             self._log_handler_failure(task, error)
-            return self._repository.fail(task.id, _HANDLER_FAILURE_ERROR)
+            return self._fail_current(task, claim, _HANDLER_FAILURE_ERROR)
         try:
-            return self._repository.complete(task.id, result)
+            return self._repository.complete(
+                task.id,
+                result,
+                claim_token=claim.claim_token if claim is not None else None,
+            )
         except TaskValidationError as error:
             self._log_handler_failure(task, error)
-            return self._repository.fail(task.id, _HANDLER_FAILURE_ERROR)
+            return self._fail_current(task, claim, _HANDLER_FAILURE_ERROR)
+        except TaskConflict:
+            return self._repository.get(task.id)
+
+    def _fail_current(
+        self,
+        task: TaskSnapshot,
+        claim: TaskClaim | None,
+        error: Mapping[str, Any],
+    ) -> TaskSnapshot:
+        try:
+            return self._repository.fail(
+                task.id,
+                error,
+                claim_token=claim.claim_token if claim is not None else None,
+            )
+        except TaskConflict:
+            return self._repository.get(task.id)
 
     @staticmethod
     def _log_handler_failure(task: TaskSnapshot, error: Exception) -> None:

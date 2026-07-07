@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-07
+
+Stage 3 reproducible A-share backtesting release.
+
+### Added
+
+- Five-step low-code backtest configuration for saved MACD/custom trading formulas, single stocks or frozen pools, daily/weekly/60-minute periods, adjustment, sizing, commissions, tax, and slippage.
+- Durable asynchronous pool execution with A-share next-open, T+1, suspension, historical side-specific price-limit, pending/cancellation, partial-failure, and expired-lease recovery semantics.
+- Conclusion-first reports with exact realized win-rate definitions, reliability, return distribution, grouped samples, open positions, gross-to-net cost disclosure, failures, logs, deterministic exports, and run-pinned K-line/formula replay.
+- Responsive application navigation that automatically condenses to an accessible SVG icon rail on narrow screens, remains manually expandable, and keeps core workspaces free of accidental overlap across desktop and tablet ratios.
+- Dedicated semantic acceptance, ten-year single-stock performance, real browser, and packaged API/Worker release gates.
+
+### Security
+
+- Backtest requests, cursors, stored results, exports, and replay responses use bounded strict contracts; run/symbol/trade, formula/SignalSeries, and signal/execution/status manifest identities are cross-checked and fail closed without latest-data fallback.
+
 ## [0.3.0] - 2026-07-07
 
 Stage 2 formula-system and Formula Studio release.

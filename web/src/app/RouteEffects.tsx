@@ -8,6 +8,18 @@ function getPageTitle(pathname: string): string {
     return appRoutes[0].title;
   }
 
+  if (
+    matchPath(
+      { caseSensitive: false, end: true, path: '/backtests/:runId' },
+      pathname,
+    )
+  ) {
+    return (
+      appRoutes.find((route) => route.path === '/backtests')?.title ??
+      '策略回测'
+    );
+  }
+
   const matchedRoute = appRoutes.find((route) =>
     matchPath({ caseSensitive: false, end: true, path: route.path }, pathname),
   );

@@ -152,6 +152,7 @@ class TradingStatus(StrEnum):
 
 class MarketCapability(StrEnum):
     BARS = "bars"
+    EXECUTION_STATUS = "execution_status"
     INSTRUMENTS = "instruments"
     TRADING_CALENDAR = "trading_calendar"
 

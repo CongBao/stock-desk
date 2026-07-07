@@ -611,6 +611,40 @@ class PoolRepository:
                 raise PoolNotFound("Preset pool was not found")
             return self._load_preset(connection, snapshot_id)
 
+    def get_preset_snapshot(
+        self,
+        snapshot_id: str,
+        *,
+        connection: Connection,
+    ) -> PresetPool:
+        """Resolve one immutable preset inside a caller-owned transaction."""
+
+        self._validate_connection(connection)
+        if type(snapshot_id) is not str or not snapshot_id:
+            raise PoolValidationError("Preset snapshot ID is invalid")
+        return self._load_preset(connection, snapshot_id)
+
+    def get_current_preset(self, pool_id: str, *, connection: Connection) -> PresetPool:
+        """Resolve the latest immutable composition for a logical preset pool."""
+
+        self._validate_connection(connection)
+        if type(pool_id) is not str or not pool_id.startswith("preset:"):
+            raise PoolValidationError("Preset pool ID is invalid")
+        preset_key = _validated_preset_key(pool_id.removeprefix("preset:"))
+        snapshot_id = connection.execute(
+            select(PresetPoolSnapshot.snapshot_id)
+            .where(PresetPoolSnapshot.preset_key == preset_key)
+            .order_by(
+                PresetPoolSnapshot.data_cutoff.desc(),
+                PresetPoolSnapshot.fetched_at.desc(),
+                PresetPoolSnapshot.snapshot_id.desc(),
+            )
+            .limit(1)
+        ).scalar_one_or_none()
+        if snapshot_id is None:
+            raise PoolNotFound("Preset pool was not found")
+        return self._load_preset(connection, snapshot_id)
+
     def list_presets(self) -> tuple[PresetPool, ...]:
         with self._checked_read_connection() as connection:
             rows = connection.execute(
@@ -1127,6 +1161,31 @@ class PoolRepository:
         validated_id = _validated_pool_id(pool_id)
         with self._checked_read_connection() as connection:
             return self._load_custom(connection, validated_id)
+
+    def get_custom_revision(
+        self,
+        pool_id: str,
+        revision: int,
+        *,
+        connection: Connection,
+    ) -> CustomPoolState:
+        """Resolve the requested mutable-pool revision in the submit transaction."""
+
+        self._validate_connection(connection)
+        validated_id = _validated_pool_id(pool_id)
+        validated_revision = _validated_revision(revision)
+        state = self._load_custom(connection, validated_id)
+        if state.revision != validated_revision:
+            raise PoolRevisionConflict("Custom pool revision is stale")
+        return state
+
+    def get_current_custom(
+        self, pool_id: str, *, connection: Connection
+    ) -> CustomPoolState:
+        """Resolve the current mutable-pool revision in the submit transaction."""
+
+        self._validate_connection(connection)
+        return self._load_custom(connection, _validated_pool_id(pool_id))
 
     def list_customs(self) -> tuple[CustomPoolState, ...]:
         with self._checked_read_connection() as connection:

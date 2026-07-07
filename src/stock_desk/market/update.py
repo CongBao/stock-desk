@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 import json
 from typing import Annotated, Any, Final, Literal, Self, TypeAlias, cast
 
@@ -18,12 +18,17 @@ from stock_desk.storage.database import (
 )
 
 from stock_desk.market.lake import MarketLake, StoredRoutingManifest
+from stock_desk.market.execution_status import ExecutionStatusQuery
+from stock_desk.market.execution_status_lake import ExecutionStatusLake
+from stock_desk.market.providers.normalization import MARKET_TIMEZONE
 from stock_desk.market.provenance import RoutedBarFailure, RoutedBarSuccess
+from stock_desk.market.provenance import RoutedExecutionStatusSuccess
 from stock_desk.market.routing import SourceRouter
 from stock_desk.market.types import (
     Adjustment,
     BarQuery,
     CanonicalSymbol,
+    Exchange,
     FailureReason,
     MAX_MARKET_UPDATE_PERIOD_BUCKETS,
     Period,
@@ -44,6 +49,36 @@ _SYMBOL_ADAPTER = TypeAdapter(CanonicalSymbol)
 _ROUTING_REASONS = frozenset(f"routing:{reason.value}" for reason in FailureReason)
 
 MarketUpdateItemStatus: TypeAlias = Literal["succeeded", "failed", "cancelled"]
+
+
+def execution_status_date_range(
+    start: datetime,
+    end: datetime,
+) -> tuple[date, date]:
+    """Return a natural-date half-open range containing every requested instant."""
+    if (
+        start.tzinfo is None
+        or start.utcoffset() is None
+        or end.tzinfo is None
+        or end.utcoffset() is None
+        or start >= end
+    ):
+        raise ValueError("execution-status source range must be aware and nonempty")
+    local_start = start.astimezone(MARKET_TIMEZONE)
+    local_end = end.astimezone(MARKET_TIMEZONE)
+    exclusive_end = local_end.date()
+    if any(
+        (
+            local_end.hour,
+            local_end.minute,
+            local_end.second,
+            local_end.microsecond,
+        )
+    ):
+        exclusive_end += timedelta(days=1)
+    if exclusive_end <= local_start.date():
+        exclusive_end = local_start.date() + timedelta(days=1)
+    return local_start.date(), exclusive_end
 
 
 class MarketUpdateItemError(RuntimeError):
@@ -344,11 +379,13 @@ class UpdateService:
         lake: MarketLake,
         tasks: TaskRepository,
         engine: Engine,
+        execution_status_lake: ExecutionStatusLake | None = None,
     ) -> None:
         self._router = router
         self._lake = lake
         self._tasks = tasks
         self._items = MarketUpdateItemRepository(engine)
+        self._execution_status_lake = execution_status_lake
         identities = (
             lake.database_identity,
             tasks.database_identity,
@@ -416,6 +453,31 @@ class UpdateService:
                 start=request.start,
                 end=request.end,
             )
+            if self._execution_status_lake is not None:
+                local_start, local_end = execution_status_date_range(
+                    request.start, request.end
+                )
+                status_query = ExecutionStatusQuery(
+                    symbol=symbol,
+                    exchange=Exchange(symbol.rsplit(".", maxsplit=1)[1]),
+                    start=local_start,
+                    end=local_end,
+                    period=request.period,
+                )
+                latest_status = self._execution_status_lake.latest_exact(status_query)
+                previous_status_manifest = (
+                    self._execution_status_lake.read(
+                        latest_status.manifest_record_id
+                    ).manifest
+                    if latest_status is not None
+                    else None
+                )
+                routed_status = self._router.fetch_execution_status(
+                    status_query,
+                    previous_manifest=previous_status_manifest,
+                )
+                if isinstance(routed_status, RoutedExecutionStatusSuccess):
+                    self._execution_status_lake.write(routed_status)
             self._tasks.set_progress(
                 task.id,
                 self._progress(processed, total, persisting=False),

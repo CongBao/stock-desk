@@ -38,6 +38,11 @@ from stock_desk.market.providers.sdk import (
     required_sdk_callable,
     validate_sdk_chunk_rows,
 )
+from stock_desk.market.execution_status import ExecutionStatusQuery
+from stock_desk.market.providers.execution_status import (
+    ExecutionStatusFailure,
+    ExecutionStatusFetchOutcome,
+)
 from stock_desk.market.types import (
     Adjustment,
     Bar,
@@ -172,12 +177,28 @@ class AkShareProvider:
             data_cutoff=None,
             gaps=(
                 CapabilityGap(
+                    capability=MarketCapability.EXECUTION_STATUS,
+                    state=CapabilityState.UNSUPPORTED,
+                    reason=FailureReason.UNSUPPORTED,
+                    detail="AKShare does not prove historical suspension and limits",
+                ),
+                CapabilityGap(
                     capability=MarketCapability.TRADING_CALENDAR,
                     state=CapabilityState.UNSUPPORTED,
                     reason=FailureReason.UNSUPPORTED,
                     detail="AKShare open dates lack explicit closed-day coverage",
                 ),
             ),
+        )
+
+    def fetch_execution_status(
+        self, query: ExecutionStatusQuery
+    ) -> ExecutionStatusFetchOutcome:
+        return ExecutionStatusFailure(
+            query=query,
+            source=self.name,
+            reason=FailureReason.UNSUPPORTED,
+            detail="provider does not support authoritative execution status",
         )
 
     def fetch_bars(self, query: BarQuery) -> BarFetchOutcome:

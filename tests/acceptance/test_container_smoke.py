@@ -24,6 +24,66 @@ REQUIRED_DEPLOYMENT_FILES = {
     "scripts/dev.py",
 }
 
+BACKTEST_SEED_SCRIPT = r"""
+from datetime import date, datetime, time, timedelta, timezone
+from decimal import Decimal
+import json
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+from stock_desk.config import Settings
+from stock_desk.formula.repository import FormulaRepository
+from stock_desk.market.execution_status import ExecutionStatusDay, ExecutionStatusQuery, RawExecutionOpen, SuspensionState, materialize_execution_status
+from stock_desk.market.execution_status_lake import ExecutionStatusLake
+from stock_desk.market.instruments import InstrumentRepository
+from stock_desk.market.lake import MarketLake
+from stock_desk.market.provenance import BarRoutingRequest, ExecutionStatusRoutingRequest, InstrumentRoutingRequest, RoutedBarSuccess, RoutedExecutionStatusSuccess, RoutedInstrumentSuccess, make_routing_manifest
+from stock_desk.market.providers.base import DatasetProvenance, ProviderBatch
+from stock_desk.market.providers.normalization import dataset_version
+from stock_desk.market.types import Adjustment, Bar, BarQuery, BarResult, Exchange, Instrument, InstrumentKind, ListingStatus, MarketCapability, Period, Provenance, ProviderId, TradingStatus
+from stock_desk.storage.database import create_engine_for_url
+
+settings = Settings()
+engine = create_engine_for_url(settings.database_url)
+root = Path(settings.data_dir).resolve()
+shanghai = ZoneInfo("Asia/Shanghai")
+symbol = "600000.SH"
+source = ProviderId.TUSHARE
+fetched = datetime(2024, 2, 1, 16, tzinfo=shanghai)
+instrument = Instrument(symbol=symbol, exchange=Exchange.SH, name="浦发银行", instrument_kind=InstrumentKind.STOCK, listing_status=ListingStatus.LISTED, listed_on=date(1999, 11, 10), delisted_on=None)
+instrument_version = dataset_version(source=source, operation="instruments", request={}, data_cutoff=fetched, items=(instrument,))
+instrument_provenance = DatasetProvenance(source=source, fetched_at=fetched, data_cutoff=fetched, dataset_version=instrument_version)
+instrument_manifest = make_routing_manifest(category=MarketCapability.INSTRUMENTS, request=InstrumentRoutingRequest(), priority=(source,), attempts=(), selected_source=source, upstream_dataset_version=instrument_version, upstream_fetched_at=fetched, upstream_data_cutoff=fetched, upstream_adjustment=None)
+InstrumentRepository(engine).ingest(RoutedInstrumentSuccess(batch=ProviderBatch[Instrument](items=(instrument,), provenance=instrument_provenance), manifest=instrument_manifest))
+
+start_day = date(2024, 1, 2)
+days = []
+cursor = start_day
+while len(days) < 16:
+    if cursor.weekday() < 5:
+        days.append(cursor)
+    cursor += timedelta(days=1)
+timestamps = tuple(datetime.combine(day, time(), tzinfo=shanghai) for day in days)
+query = BarQuery(symbol=symbol, period=Period.DAY, adjustment=Adjustment.NONE, start=timestamps[0], end=timestamps[-1] + timedelta(days=1))
+closes = tuple(Decimal("10") + (Decimal("1") if index % 4 in {1, 2} else Decimal("0")) for index in range(len(timestamps)))
+bars = tuple(Bar(symbol=symbol, timestamp=timestamp, period=Period.DAY, adjustment=Adjustment.NONE, open=closes[index - 1] if index else closes[0], high=max(closes[index - 1] if index else closes[0], closes[index]) + Decimal("0.2"), low=min(closes[index - 1] if index else closes[0], closes[index]) - Decimal("0.2"), close=closes[index], volume=100000 + index, status=TradingStatus.NORMAL) for index, timestamp in enumerate(timestamps))
+bar_version = dataset_version(source=source, operation="bars", request={"query": query}, data_cutoff=fetched, items=bars)
+bar_result = BarResult(query=query, bars=bars, coverage_start=query.start, coverage_end=query.end, provenance=Provenance(source=source, fetched_at=fetched, data_cutoff=fetched, adjustment=Adjustment.NONE, dataset_version=bar_version))
+bar_manifest = make_routing_manifest(category=MarketCapability.BARS, request=BarRoutingRequest(query=query), priority=(source,), attempts=(), selected_source=source, upstream_dataset_version=bar_version, upstream_fetched_at=fetched, upstream_data_cutoff=fetched, upstream_adjustment=Adjustment.NONE)
+MarketLake(engine=engine, root=root / "market").write(RoutedBarSuccess(result=bar_result, manifest=bar_manifest))
+
+status_query = ExecutionStatusQuery(symbol=symbol, exchange=Exchange.SH, start=days[0], end=days[-1] + timedelta(days=1), period=Period.DAY)
+status_days = tuple(ExecutionStatusDay(day=days[0] + timedelta(days=offset), exchange=Exchange.SH, is_exchange_open=(days[0] + timedelta(days=offset)).weekday() < 5, suspension_state=SuspensionState.NORMAL if (days[0] + timedelta(days=offset)).weekday() < 5 else SuspensionState.NOT_APPLICABLE, raw_upper_limit=Decimal("20") if (days[0] + timedelta(days=offset)).weekday() < 5 else None, raw_lower_limit=Decimal("1") if (days[0] + timedelta(days=offset)).weekday() < 5 else None) for offset in range((status_query.end - status_query.start).days))
+raw_opens = tuple(RawExecutionOpen(timestamp=datetime.combine(bar.timestamp.astimezone(shanghai).date(), time(9, 30), tzinfo=shanghai), trading_day=bar.timestamp.astimezone(shanghai).date(), raw_open=bar.open) for bar in bars)
+status_result = materialize_execution_status(query=status_query, days=status_days, raw_opens=raw_opens, source=source, fetched_at=fetched, data_cutoff=fetched)
+status_manifest = make_routing_manifest(category=MarketCapability.EXECUTION_STATUS, request=ExecutionStatusRoutingRequest(query=status_query), priority=(source,), attempts=(), selected_source=source, upstream_dataset_version=status_result.dataset_version, upstream_fetched_at=status_result.fetched_at, upstream_data_cutoff=status_result.data_cutoff, upstream_adjustment=None)
+ExecutionStatusLake(engine).write(RoutedExecutionStatusSuccess(result=status_result, manifest=status_manifest))
+
+formula = FormulaRepository(engine).create("Container smoke strategy", "trading", "BUY:C>REF(C,1);SELL:C<REF(C,1);", {}, placement="subchart")
+print(json.dumps({"formula_version_id": formula.id, "start": days[1].isoformat(), "end": (days[-1] + timedelta(days=1)).isoformat()}))
+engine.dispose()
+"""
+
 
 def _read(relative_path: str) -> str:
     return (REPO_ROOT / relative_path).read_text(encoding="utf-8")
@@ -103,14 +163,17 @@ def test_deployment_contract_is_complete_and_public_only() -> None:
         "bootstrap",
         "acceptance",
         "acceptance-formula",
+        "acceptance-backtest",
         "benchmark",
         "benchmark-formula",
+        "benchmark-backtest",
         "build",
         "dev",
         "e2e",
         "e2e-foundation",
         "e2e-market",
         "e2e-formula",
+        "e2e-backtest",
         "lint",
         "check-public-tree",
         "container-smoke",
@@ -125,7 +188,14 @@ def test_deployment_contract_is_complete_and_public_only() -> None:
     assert release_check is not None
     release_targets = release_check.group(1).split()
     assert "container-smoke" in release_targets
-    assert {"acceptance", "benchmark", "e2e-market"} <= set(release_targets)
+    assert {
+        "acceptance",
+        "acceptance-backtest",
+        "benchmark",
+        "benchmark-backtest",
+        "e2e-market",
+        "e2e-backtest",
+    } <= set(release_targets)
 
     dev_script = _read("scripts/dev.py")
     assert "stock_desk.tasks.worker" in dev_script
@@ -581,6 +651,71 @@ def test_compose_worker_completes_demo_task_through_shared_sqlite(
         assert task["status"] in {"queued", "running"}
         time.sleep(0.2)
     pytest.fail(f"worker did not complete demo task within 20 seconds: {task!r}")
+
+
+@pytest.mark.container
+def test_compose_worker_completes_seeded_backtest_through_packaged_api(
+    running_compose_stack: ComposeStack,
+) -> None:
+    seeded = _docker_exec(
+        running_compose_stack.api_id,
+        "python",
+        "-c",
+        BACKTEST_SEED_SCRIPT,
+        user=_pid_one_identity(running_compose_stack.api_id),
+    )
+    seed = json.loads(seeded.stdout.strip())
+    formula_version_id = seed["formula_version_id"]
+    assert isinstance(formula_version_id, str)
+
+    created = _request(
+        "/api/backtests",
+        method="POST",
+        payload={
+            "scope": {"kind": "single", "symbol": "600000.SH"},
+            "formula_version_id": formula_version_id,
+            "formula_parameters": {},
+            "period": "1d",
+            "adjustment": "none",
+            "scoring_start": f"{seed['start']}T00:00:00+08:00",
+            "scoring_end": f"{seed['end']}T00:00:00+08:00",
+            "quantity_shares": 1000,
+            "commission_bps": "2.5",
+            "minimum_commission": "5",
+            "sell_tax_bps": "5",
+            "slippage_bps": "1",
+        },
+    )
+    assert created.status == 202, created.body
+    submission = json.loads(created.body)
+    run_id = submission["run_id"]
+    assert isinstance(run_id, str)
+
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        response = _request(f"/api/backtests/{run_id}")
+        assert response.status == 200
+        run = json.loads(response.body)
+        if run["status"] in {"succeeded", "partial_failed"}:
+            assert run["processed"] == run["total"] == 1
+            assert run["failed"] == 0
+            report_response = _request(f"/api/backtests/{run_id}/report")
+            assert report_response.status == 200
+            report = json.loads(report_response.body)
+            assert report["overview"]["run_id"] == run_id
+            assert report["metrics"]["realized_count"] > 0
+            assert report["outcomes"] == {
+                "total": 1,
+                "succeeded": 1,
+                "failed": 0,
+                "data_insufficient": 0,
+                "unprocessed": 0,
+            }
+            _current_stack(running_compose_stack)
+            return
+        assert run["status"] in {"queued", "running"}, run
+        time.sleep(0.2)
+    pytest.fail(f"worker did not complete seeded backtest within 30 seconds: {run!r}")
 
 
 @pytest.mark.container

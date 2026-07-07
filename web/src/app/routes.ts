@@ -1,6 +1,8 @@
+import type { AppIconName } from './AppIcon';
+
 export type AppRoute = {
   readonly description: string;
-  readonly icon: string;
+  readonly icon: AppIconName;
   readonly label: string;
   readonly path: string;
   readonly release: `v${number}.${number}.${number}`;
@@ -12,7 +14,7 @@ export const appRoutes = [
   {
     label: '行情',
     path: '/market',
-    icon: '市',
+    icon: 'market',
     title: '行情工作区',
     release: 'v0.2.0',
     summary: '搜索证券或选择股票池，查看本地缓存 K 线、成交量与来源证据。',
@@ -22,7 +24,7 @@ export const appRoutes = [
   {
     label: '自定义公式',
     path: '/formulas',
-    icon: '式',
+    icon: 'formulas',
     title: '自定义公式',
     release: 'v0.3.0',
     summary: '以表单和可视化反馈为主的通达信兼容公式工作台。',
@@ -32,16 +34,16 @@ export const appRoutes = [
   {
     label: '策略回测',
     path: '/backtests',
-    icon: '测',
+    icon: 'backtests',
     title: '策略回测',
     release: 'v0.4.0',
     summary: '从指标买卖点直接发起的可复现历史回测。',
-    description: '日线、周线和 60 分钟回测将在回测阶段交付。',
+    description: '五步配置日线、周线和 60 分钟回测，并持续查看运行进度。',
   },
   {
     label: '智能分析',
     path: '/analysis',
-    icon: '析',
+    icon: 'analysis',
     title: '智能分析',
     release: 'v0.5.0',
     summary: '面向国内 LLM 服务商的可审计分析工作流。',
@@ -50,7 +52,7 @@ export const appRoutes = [
   {
     label: '任务中心',
     path: '/tasks',
-    icon: '任',
+    icon: 'tasks',
     title: '任务中心',
     release: 'v0.1.0',
     summary: '查看本地长任务的生命周期与执行状态。',
@@ -59,7 +61,7 @@ export const appRoutes = [
   {
     label: '设置',
     path: '/settings',
-    icon: '设',
+    icon: 'settings',
     title: '数据源设置',
     release: 'v0.2.0',
     summary: '配置市场数据源优先级、Tushare 凭证与本地通达信目录。',

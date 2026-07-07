@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 import pytest
@@ -11,7 +11,7 @@ from stock_desk.market.types import (
     MAX_MARKET_UPDATE_PERIOD_BUCKETS,
     Period,
 )
-from stock_desk.market.update import MarketUpdateRequest
+from stock_desk.market.update import MarketUpdateRequest, execution_status_date_range
 
 
 def _payload(**updates: object) -> dict[str, Any]:
@@ -128,3 +128,14 @@ def test_request_aggregate_work_has_two_million_bucket_boundary() -> None:
 def test_request_boundary_rejects_python_only_values(python_only: object) -> None:
     with pytest.raises((TypeError, ValidationError)):
         MarketUpdateRequest.from_payload(_payload(start=python_only))
+
+
+def test_execution_status_range_contains_intraday_end_date_exclusively() -> None:
+    assert execution_status_date_range(
+        datetime(2024, 7, 1, 1, 30, tzinfo=timezone.utc),
+        datetime(2024, 7, 3, 6, 30, tzinfo=timezone.utc),
+    ) == (date(2024, 7, 1), date(2024, 7, 4))
+    assert execution_status_date_range(
+        datetime(2024, 7, 1, 1, 30, tzinfo=timezone.utc),
+        datetime(2024, 7, 2, 16, 0, tzinfo=timezone.utc),
+    ) == (date(2024, 7, 1), date(2024, 7, 3))

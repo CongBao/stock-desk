@@ -12,14 +12,19 @@ from typing import Any
 
 from sqlalchemy import Engine
 
+from stock_desk.backtest.pool_runner import PoolBacktestRunner
+from stock_desk.backtest.repository import BacktestRepository
 from stock_desk.api.settings import SourceSettingsServices
 from stock_desk.config import Settings
+from stock_desk.formula.repository import FormulaRepository
+from stock_desk.formula.service import FormulaService
 from stock_desk.market.compositions import (
     AkShareCompositionProvider,
     CompositionProvider,
 )
 from stock_desk.market.instruments import InstrumentNotFound, InstrumentRepository
 from stock_desk.market.lake import MarketLake
+from stock_desk.market.execution_status_lake import ExecutionStatusLake
 from stock_desk.market.pools import PoolCategory, PoolRepository, PoolRepositoryError
 from stock_desk.market.provenance import (
     RoutedInstrumentFailure,
@@ -61,6 +66,7 @@ class SettingsBackedMarketUpdateHandler:
         tasks: TaskRepository,
         engine: Engine,
         provider_factory: RuntimeProviderFactory,
+        execution_status_lake: ExecutionStatusLake | None = None,
     ) -> None:
         identities = (
             source_settings.database_identity,
@@ -74,6 +80,7 @@ class SettingsBackedMarketUpdateHandler:
         self._tasks = tasks
         self._engine = engine
         self._provider_factory = provider_factory
+        self._execution_status_lake = execution_status_lake
 
     def __call__(self, task: TaskSnapshot) -> Mapping[str, Any]:
         snapshot = self._source_settings.runtime_snapshot()
@@ -89,6 +96,7 @@ class SettingsBackedMarketUpdateHandler:
                         lake=self._lake,
                         tasks=self._tasks,
                         engine=self._engine,
+                        execution_status_lake=self._execution_status_lake,
                     ).handle(task)
                 )
                 result["configuration_fingerprint"] = snapshot.configuration_fingerprint
@@ -255,6 +263,7 @@ class ProductionMarketWorker:
             source_settings = SourceSettingsServices(engine=engine, settings=settings)
             data_dir = Path(os.path.abspath(os.fspath(settings.data_dir.expanduser())))
             lake = MarketLake(engine=engine, root=data_dir / "market")
+            execution_status_lake = ExecutionStatusLake(engine)
             instruments = InstrumentRepository(engine)
             pools = PoolRepository(engine)
             schedules = MarketUpdateScheduleRepository(engine)
@@ -272,6 +281,7 @@ class ProductionMarketWorker:
                     tasks=tasks,
                     engine=engine,
                     provider_factory=resolved_factory,
+                    execution_status_lake=execution_status_lake,
                 ),
             )
             task_worker.register(
@@ -282,6 +292,22 @@ class ProductionMarketWorker:
                     pools=pools,
                     provider_factory=resolved_factory,
                     composition_factory=composition_factory,
+                ),
+            )
+            formula_service = FormulaService(
+                repository=FormulaRepository(engine),
+                lake=lake,
+            )
+            backtests = BacktestRepository(engine)
+            task_worker.register_claimed(
+                "backtest.run",
+                PoolBacktestRunner(
+                    engine=engine,
+                    tasks=tasks,
+                    repository=backtests,
+                    market_lake=lake,
+                    status_lake=execution_status_lake,
+                    formulas=formula_service,
                 ),
             )
             scheduler = MarketUpdateScheduler(schedules, tasks, clock=_utc_now)

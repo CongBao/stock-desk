@@ -44,7 +44,16 @@ class AppSetting(Base):
 
 class TaskRun(Base):
     __tablename__ = "task_run"
-    __table_args__ = (Index("ix_task_run_status_created_at", "status", "created_at"),)
+    __table_args__ = (
+        Index("ix_task_run_status_created_at", "status", "created_at"),
+        Index(
+            "ix_task_run_backtest_lease",
+            "kind",
+            "status",
+            "lease_expires_at",
+            "created_at",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_task_id)
     kind: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -59,6 +68,14 @@ class TaskRun(Base):
         Boolean, default=False, nullable=False
     )
     worker_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    claim_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    heartbeat_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utc_now, nullable=False
     )
@@ -178,6 +195,45 @@ class MarketDatasetPartition(Base):
     )
 
 
+class MarketDatasetTimestamp(Base):
+    __tablename__ = "market_dataset_timestamp"
+    __table_args__ = (
+        CheckConstraint("ordinal >= 0", name="ck_market_dataset_timestamp_ordinal"),
+        UniqueConstraint(
+            "dataset_version",
+            "timestamp",
+            name="uq_market_dataset_timestamp_value",
+        ),
+        Index(
+            "ix_market_dataset_timestamp_lookup",
+            "dataset_version",
+            "timestamp",
+        ),
+        {"sqlite_with_rowid": False},
+    )
+
+    dataset_version: Mapped[str] = mapped_column(
+        String(71),
+        ForeignKey("market_dataset.dataset_version", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    ordinal: Mapped[int] = mapped_column(Integer, primary_key=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class MarketDatasetTimestampSeal(Base):
+    __tablename__ = "market_dataset_timestamp_seal"
+
+    dataset_version: Mapped[str] = mapped_column(
+        String(71),
+        ForeignKey("market_dataset.dataset_version", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    index_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    row_count: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    timestamp_digest: Mapped[str] = mapped_column(String(71), nullable=False)
+
+
 class MarketRoutingManifest(Base):
     __tablename__ = "market_routing_manifest"
     __table_args__ = (
@@ -269,6 +325,75 @@ class MarketUpdateItem(Base):
         nullable=True,
     )
     reason: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utc_now, nullable=False
+    )
+
+
+class ExecutionStatusDataset(Base):
+    __tablename__ = "execution_status_dataset"
+    __table_args__ = (
+        CheckConstraint(
+            "row_count > 0",
+            name="ck_execution_status_dataset_row_count_positive",
+        ),
+        CheckConstraint(
+            "period IN ('1d', '1w', '60m')",
+            name="ck_execution_status_dataset_period",
+        ),
+        Index(
+            "ix_execution_status_dataset_exact_query",
+            "symbol",
+            "exchange",
+            "period",
+            "query_start",
+            "query_end",
+        ),
+        {"sqlite_with_rowid": False},
+    )
+
+    dataset_version: Mapped[str] = mapped_column(String(71), primary_key=True)
+    source: Mapped[str] = mapped_column(String(32), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(9), nullable=False)
+    exchange: Mapped[str] = mapped_column(String(2), nullable=False)
+    period: Mapped[str] = mapped_column(String(8), nullable=False)
+    query_start: Mapped[date] = mapped_column(Date, nullable=False)
+    query_end: Mapped[date] = mapped_column(Date, nullable=False)
+    fetched_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    data_cutoff: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    row_count: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    snapshot_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utc_now, nullable=False
+    )
+
+
+class ExecutionStatusRoutingManifest(Base):
+    __tablename__ = "execution_status_routing_manifest"
+    __table_args__ = (
+        Index(
+            "ix_execution_status_manifest_latest",
+            "dataset_version",
+            "fetched_at",
+        ),
+        {"sqlite_with_rowid": False},
+    )
+
+    manifest_record_id: Mapped[str] = mapped_column(String(71), primary_key=True)
+    dataset_version: Mapped[str] = mapped_column(
+        String(71),
+        ForeignKey("execution_status_dataset.dataset_version", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    route_version: Mapped[str] = mapped_column(String(71), nullable=False)
+    manifest_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    fetched_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utc_now, nullable=False
     )

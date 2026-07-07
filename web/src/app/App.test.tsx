@@ -179,6 +179,41 @@ it('shows the product identity and all primary navigation items', () => {
   }
 });
 
+it('collapses and expands the primary navigation without abbreviating link names', async () => {
+  const user = userEvent.setup();
+  renderApp();
+
+  const collapse = screen.getByRole('button', { name: '收起主导航' });
+  expect(collapse).toHaveAttribute('aria-expanded', 'true');
+  await user.click(collapse);
+  const expand = screen.getByRole('button', { name: '展开主导航' });
+  expect(expand).toHaveAttribute('aria-expanded', 'false');
+  expect(document.querySelector('.app-shell')).toHaveAttribute(
+    'data-navigation-collapsed',
+    'true',
+  );
+  for (const label of [
+    '行情',
+    '自定义公式',
+    '策略回测',
+    '智能分析',
+    '任务中心',
+    '设置',
+  ]) {
+    const link = screen.getByRole('link', { name: label });
+    expect(link).toHaveAttribute('title', label);
+    expect(link.querySelector('.nav-icon svg')).toHaveAttribute(
+      'stroke',
+      'currentColor',
+    );
+  }
+  await user.click(expand);
+  expect(screen.getByRole('button', { name: '收起主导航' })).toHaveAttribute(
+    'aria-expanded',
+    'true',
+  );
+});
+
 it('opens on the cache-only three-column market workspace', async () => {
   renderApp(['/']);
 
@@ -218,6 +253,22 @@ it('routes settings to the real data-source workspace', async () => {
   ).toBeInTheDocument();
   expect(screen.queryByText(/能力按阶段交付/u)).not.toBeInTheDocument();
   await waitFor(() => expect(document.title).toBe('数据源设置 · stock-desk'));
+});
+
+it('supports direct refresh of a dynamic backtest run route', async () => {
+  renderApp(['/backtests/11111111-1111-1111-1111-111111111111']);
+
+  const heading = screen.getByRole('heading', { level: 2, name: '回测运行' });
+  await waitFor(() => expect(heading).toHaveFocus());
+  expect(document.title).toBe('策略回测 · stock-desk');
+  expect(document.querySelector('.app-shell')).toHaveAttribute(
+    'data-workspace',
+    'backtests',
+  );
+  expect(screen.getByRole('link', { name: '策略回测' })).toHaveAttribute(
+    'aria-current',
+    'page',
+  );
 });
 
 it.each(['/market/', '/MARKET'])(

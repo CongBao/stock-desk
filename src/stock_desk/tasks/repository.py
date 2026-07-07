@@ -6,7 +6,18 @@ from types import MappingProxyType
 from typing import Any, cast
 from uuid import UUID, uuid4
 
-from sqlalchemy import JSON, Engine, bindparam, case, func, insert, null, select, update
+from sqlalchemy import (
+    JSON,
+    Engine,
+    bindparam,
+    case,
+    func,
+    insert,
+    null,
+    or_,
+    select,
+    update,
+)
 from sqlalchemy.engine import Connection, RowMapping
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -19,6 +30,7 @@ from stock_desk.storage.database import (
 )
 from stock_desk.storage.models import TaskEvent, TaskRun
 from stock_desk.tasks.models import (
+    TaskClaim,
     TaskEventLevel,
     TaskEventSnapshot,
     TaskMetricsSnapshot,
@@ -44,6 +56,9 @@ class TaskValidationError(TaskRepositoryError, ValueError):
 
 
 _MAX_JSON_DEPTH = 128
+_BACKTEST_TASK_KIND = "backtest.run"
+_DEFAULT_LEASE_DURATION = timedelta(minutes=2)
+_MAX_LEASE_DURATION = timedelta(hours=1)
 
 
 def _utc_now() -> datetime:
@@ -84,6 +99,18 @@ def _validated_uuid(value: object, *, field_name: str) -> str:
         ) from error
     if str(parsed) != value:
         raise TaskValidationError(f"Task {field_name} must be a canonical UUID")
+    return value
+
+
+def validate_lease_duration(value: object) -> timedelta:
+    if (
+        not isinstance(value, timedelta)
+        or value <= timedelta(0)
+        or value > _MAX_LEASE_DURATION
+    ):
+        raise TaskValidationError(
+            "Task lease duration must be positive and at most one hour"
+        )
     return value
 
 
@@ -504,14 +531,36 @@ class TaskRepository:
             max_duration_ms=optional_float(duration_row["max_duration_ms"]),
         )
 
-    def claim_next(self, worker_id: str) -> TaskSnapshot | None:
+    def claim_next(
+        self,
+        worker_id: str,
+        *,
+        now: datetime | None = None,
+        lease_duration: timedelta = _DEFAULT_LEASE_DURATION,
+    ) -> TaskSnapshot | TaskClaim | None:
         if not worker_id or worker_id != worker_id.strip() or len(worker_id) > 255:
             raise TaskValidationError("Worker id must contain 1 to 255 characters")
-        now = _utc_now()
-        transition_time = _transition_time(now)
+        sampled_at = (
+            _utc_now()
+            if now is None
+            else _validated_aware_utc(now, field_name="claim time")
+        )
+        duration = validate_lease_duration(lease_duration)
+        lease_expires_at = sampled_at + duration
+        transition_time = _transition_time(sampled_at)
+        claim_token = str(uuid4())
+        claimable = or_(
+            TaskRun.status == "queued",
+            (
+                (TaskRun.kind == _BACKTEST_TASK_KIND)
+                & (TaskRun.status == "running")
+                & (TaskRun.lease_expires_at.is_not(None))
+                & (TaskRun.lease_expires_at <= sampled_at)
+            ),
+        )
         candidate = (
             select(TaskRun.id)
-            .where(TaskRun.status == "queued", TaskRun.cancel_requested.is_(False))
+            .where(claimable, TaskRun.cancel_requested.is_(False))
             .order_by(TaskRun.created_at, TaskRun.id)
             .limit(1)
             .scalar_subquery()
@@ -520,18 +569,91 @@ class TaskRepository:
             update(TaskRun)
             .where(
                 TaskRun.id == candidate,
-                TaskRun.status == "queued",
+                claimable,
                 TaskRun.cancel_requested.is_(False),
             )
             .values(
                 status="running",
                 worker_id=worker_id,
-                started_at=transition_time,
+                started_at=case(
+                    (TaskRun.started_at.is_(None), transition_time),
+                    else_=TaskRun.started_at,
+                ),
                 updated_at=transition_time,
+                claim_token=case(
+                    (TaskRun.kind == _BACKTEST_TASK_KIND, claim_token),
+                    else_=null(),
+                ),
+                lease_expires_at=case(
+                    (TaskRun.kind == _BACKTEST_TASK_KIND, lease_expires_at),
+                    else_=null(),
+                ),
+                heartbeat_at=case(
+                    (TaskRun.kind == _BACKTEST_TASK_KIND, sampled_at),
+                    else_=null(),
+                ),
+                attempt_count=case(
+                    (
+                        TaskRun.kind == _BACKTEST_TASK_KIND,
+                        TaskRun.attempt_count + 1,
+                    ),
+                    else_=TaskRun.attempt_count,
+                ),
+            )
+            .returning(TaskRun)
+        )
+        expired_cancellations = (
+            update(TaskRun)
+            .where(
+                TaskRun.kind == _BACKTEST_TASK_KIND,
+                TaskRun.status == "running",
+                TaskRun.cancel_requested.is_(True),
+                TaskRun.lease_expires_at.is_not(None),
+                TaskRun.lease_expires_at <= sampled_at,
+            )
+            .values(
+                status="cancelled",
+                result_json=None,
+                error_json=None,
+                updated_at=transition_time,
+                finished_at=transition_time,
+                claim_token=None,
+                lease_expires_at=None,
+                heartbeat_at=None,
             )
             .returning(TaskRun)
         )
         with self._engine.begin() as connection:
+            cancelled_rows = connection.execute(expired_cancellations).mappings().all()
+            if cancelled_rows:
+                from stock_desk.backtest.models import BacktestRunRow
+
+                connection.execute(
+                    update(BacktestRunRow)
+                    .where(
+                        BacktestRunRow.task_id.in_(
+                            tuple(row["id"] for row in cancelled_rows)
+                        ),
+                        BacktestRunRow.status.in_(("queued", "running")),
+                    )
+                    .values(
+                        status="cancelled",
+                        stage="cancelled",
+                        updated_at=sampled_at,
+                        finished_at=sampled_at,
+                    )
+                )
+            for cancelled_row in cancelled_rows:
+                cancelled = _snapshot(cancelled_row)
+                _append_event(
+                    connection,
+                    task_id=cancelled.id,
+                    event_name="task.cancelled",
+                    level="info",
+                    progress=cancelled.progress,
+                    detail={},
+                    occurred_at=cancelled.updated_at,
+                )
             row = connection.execute(statement).mappings().one_or_none()
             if row is None:
                 return None
@@ -545,6 +667,274 @@ class TaskRepository:
                 detail={"worker_id": worker_id},
                 occurred_at=task.updated_at,
             )
+        if task.kind != _BACKTEST_TASK_KIND:
+            return task
+        stored_token = row["claim_token"]
+        stored_expiry = _aware_utc(cast(datetime | None, row["lease_expires_at"]))
+        attempts = row["attempt_count"]
+        if (
+            type(stored_token) is not str
+            or stored_token != claim_token
+            or stored_expiry is None
+            or type(attempts) is not int
+            or attempts < 1
+        ):
+            raise RuntimeError("Backtest task claim is invalid")
+        return TaskClaim(
+            snapshot=task,
+            claim_token=stored_token,
+            lease_expires_at=stored_expiry,
+            attempt_count=attempts,
+        )
+
+    def heartbeat(
+        self,
+        task_id: str,
+        claim_token: str,
+        *,
+        now: datetime | None = None,
+        lease_duration: timedelta = _DEFAULT_LEASE_DURATION,
+    ) -> TaskClaim:
+        validated_token = _validated_uuid(claim_token, field_name="claim token")
+        sampled_at = (
+            _utc_now()
+            if now is None
+            else _validated_aware_utc(now, field_name="heartbeat time")
+        )
+        duration = validate_lease_duration(lease_duration)
+        transition_time = _transition_time(sampled_at)
+        statement = (
+            update(TaskRun)
+            .where(
+                TaskRun.id == task_id,
+                TaskRun.kind == _BACKTEST_TASK_KIND,
+                TaskRun.status == "running",
+                TaskRun.claim_token == validated_token,
+                TaskRun.lease_expires_at.is_not(None),
+                TaskRun.lease_expires_at > sampled_at,
+            )
+            .values(
+                heartbeat_at=sampled_at,
+                lease_expires_at=sampled_at + duration,
+                updated_at=transition_time,
+            )
+            .returning(TaskRun)
+        )
+        with self._engine.begin() as connection:
+            row = connection.execute(statement).mappings().one_or_none()
+            if row is not None:
+                snapshot = _snapshot(row)
+                expires_at = _aware_utc(cast(datetime | None, row["lease_expires_at"]))
+                attempt_count = row["attempt_count"]
+                if expires_at is None or type(attempt_count) is not int:
+                    raise RuntimeError("Backtest heartbeat result is invalid")
+                return TaskClaim(
+                    snapshot=snapshot,
+                    claim_token=validated_token,
+                    lease_expires_at=expires_at,
+                    attempt_count=attempt_count,
+                )
+        current = self.get(task_id)
+        raise TaskConflict(f"Task {current.id} claim is not current")
+
+    def guard_claim_in_transaction(
+        self,
+        connection: Connection,
+        task_id: str,
+        claim_token: str,
+        *,
+        progress: float,
+        now: datetime,
+    ) -> TaskSnapshot:
+        """Fence one caller-owned checkpoint transaction with the live lease."""
+
+        if connection.closed or not connection.in_transaction():
+            raise TaskValidationError(
+                "Task checkpoint guard requires an active transaction"
+            )
+        try:
+            identity = connection_database_identity(connection)
+        except DatabaseIdentityError as error:
+            raise TaskValidationError(
+                "Task database identity could not be determined"
+            ) from error
+        if identity != self._database_identity:
+            raise TaskValidationError(
+                "Task transaction connection targets a different database"
+            )
+        if (
+            isinstance(progress, bool)
+            or not isinstance(progress, (int, float))
+            or not math.isfinite(progress)
+            or not 0.0 <= progress <= 1.0
+        ):
+            raise TaskValidationError(
+                "Task progress must be a finite number from 0 to 1"
+            )
+        sampled_at = _validated_aware_utc(now, field_name="checkpoint time")
+        statement = (
+            update(TaskRun)
+            .where(
+                TaskRun.id == task_id,
+                TaskRun.status == "running",
+                TaskRun.progress <= float(progress),
+                self._ownership_condition(claim_token, sampled_at),
+            )
+            .values(
+                progress=float(progress),
+                updated_at=_transition_time(sampled_at),
+            )
+            .returning(TaskRun)
+        )
+        row = connection.execute(statement).mappings().one_or_none()
+        if row is None:
+            raise TaskConflict(f"Task {task_id} claim is not current")
+        return _snapshot(row)
+
+    def complete_claim_in_transaction(
+        self,
+        connection: Connection,
+        task_id: str,
+        claim_token: str,
+        result: Mapping[str, Any],
+        *,
+        now: datetime,
+    ) -> TaskSnapshot:
+        """Atomically terminalize a leased task in its domain transaction."""
+
+        if connection.closed or not connection.in_transaction():
+            raise TaskValidationError(
+                "Task completion requires an active transaction connection"
+            )
+        try:
+            identity = connection_database_identity(connection)
+        except DatabaseIdentityError as error:
+            raise TaskValidationError(
+                "Task database identity could not be determined"
+            ) from error
+        if identity != self._database_identity:
+            raise TaskValidationError(
+                "Task transaction connection targets a different database"
+            )
+        validated_result = _validated_json_object(result, field_name="result")
+        sampled_at = _validated_aware_utc(now, field_name="completion time")
+        cancelling = TaskRun.cancel_requested.is_(True)
+        statement = (
+            update(TaskRun)
+            .where(
+                TaskRun.id == task_id,
+                TaskRun.status == "running",
+                self._ownership_condition(claim_token, sampled_at),
+            )
+            .values(
+                status=case((cancelling, "cancelled"), else_="succeeded"),
+                progress=case((cancelling, TaskRun.progress), else_=1.0),
+                result_json=case(
+                    (cancelling, null()),
+                    else_=bindparam(
+                        "_transaction_completed_result",
+                        validated_result,
+                        type_=JSON(),
+                    ),
+                ),
+                error_json=None,
+                updated_at=_transition_time(sampled_at),
+                finished_at=_transition_time(sampled_at),
+                claim_token=None,
+                lease_expires_at=None,
+                heartbeat_at=None,
+            )
+            .returning(TaskRun)
+        )
+        row = connection.execute(statement).mappings().one_or_none()
+        if row is None:
+            raise TaskConflict(f"Task {task_id} claim is not current")
+        task = _snapshot(row)
+        _append_event(
+            connection,
+            task_id=task.id,
+            event_name=(
+                "task.cancelled" if task.status == "cancelled" else "task.succeeded"
+            ),
+            level="info",
+            progress=task.progress,
+            detail={},
+            occurred_at=task.updated_at,
+        )
+        return task
+
+    def fail_claim_in_transaction(
+        self,
+        connection: Connection,
+        task_id: str,
+        claim_token: str,
+        error: Mapping[str, Any],
+        *,
+        now: datetime,
+    ) -> TaskSnapshot:
+        """Atomically fail a leased task in its domain transaction."""
+
+        if connection.closed or not connection.in_transaction():
+            raise TaskValidationError(
+                "Task failure requires an active transaction connection"
+            )
+        try:
+            identity = connection_database_identity(connection)
+        except DatabaseIdentityError as error_identity:
+            raise TaskValidationError(
+                "Task database identity could not be determined"
+            ) from error_identity
+        if identity != self._database_identity:
+            raise TaskValidationError(
+                "Task transaction connection targets a different database"
+            )
+        validated_error = _validated_json_object(error, field_name="error")
+        sampled_at = _validated_aware_utc(now, field_name="failure time")
+        cancelling = TaskRun.cancel_requested.is_(True)
+        row = (
+            connection.execute(
+                update(TaskRun)
+                .where(
+                    TaskRun.id == task_id,
+                    TaskRun.status == "running",
+                    self._ownership_condition(claim_token, sampled_at),
+                )
+                .values(
+                    status=case((cancelling, "cancelled"), else_="failed"),
+                    result_json=None,
+                    error_json=case(
+                        (cancelling, null()),
+                        else_=bindparam(
+                            "_transaction_failure_error",
+                            validated_error,
+                            type_=JSON(),
+                        ),
+                    ),
+                    updated_at=_transition_time(sampled_at),
+                    finished_at=_transition_time(sampled_at),
+                    claim_token=None,
+                    lease_expires_at=None,
+                    heartbeat_at=None,
+                )
+                .returning(TaskRun)
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if row is None:
+            raise TaskConflict(f"Task {task_id} claim is not current")
+        task = _snapshot(row)
+        _append_event(
+            connection,
+            task_id=task.id,
+            event_name="task.cancelled"
+            if task.status == "cancelled"
+            else "task.failed",
+            level="info" if task.status == "cancelled" else "error",
+            progress=task.progress,
+            detail={} if task.status == "cancelled" else {"code": "task_failed"},
+            occurred_at=task.updated_at,
+        )
         return task
 
     def set_progress(
@@ -552,6 +942,9 @@ class TaskRepository:
         task_id: str,
         progress: float,
         detail: Mapping[str, Any] | None = None,
+        *,
+        claim_token: str | None = None,
+        now: datetime | None = None,
     ) -> TaskSnapshot:
         if (
             isinstance(progress, bool)
@@ -566,14 +959,20 @@ class TaskRepository:
             detail if detail is not None else {},
             field_name="progress detail",
         )
-        now = _utc_now()
-        transition_time = _transition_time(now)
+        sampled_at = (
+            _utc_now()
+            if now is None
+            else _validated_aware_utc(now, field_name="progress time")
+        )
+        transition_time = _transition_time(sampled_at)
+        ownership = self._ownership_condition(claim_token, sampled_at)
         statement = (
             update(TaskRun)
             .where(
                 TaskRun.id == task_id,
                 TaskRun.status == "running",
                 TaskRun.progress <= float(progress),
+                ownership,
             )
             .values(progress=float(progress), updated_at=transition_time)
             .returning(TaskRun)
@@ -595,14 +994,30 @@ class TaskRepository:
         current = self.get(task_id)
         raise TaskConflict(f"Task {current.id} is not running")
 
-    def complete(self, task_id: str, result: Mapping[str, Any]) -> TaskSnapshot:
+    def complete(
+        self,
+        task_id: str,
+        result: Mapping[str, Any],
+        *,
+        claim_token: str | None = None,
+        now: datetime | None = None,
+    ) -> TaskSnapshot:
         validated_result = _validated_json_object(result, field_name="result")
-        now = _utc_now()
-        transition_time = _transition_time(now)
+        sampled_at = (
+            _utc_now()
+            if now is None
+            else _validated_aware_utc(now, field_name="completion time")
+        )
+        transition_time = _transition_time(sampled_at)
         cancelling = TaskRun.cancel_requested.is_(True)
+        ownership = self._ownership_condition(claim_token, sampled_at)
         statement = (
             update(TaskRun)
-            .where(TaskRun.id == task_id, TaskRun.status == "running")
+            .where(
+                TaskRun.id == task_id,
+                TaskRun.status == "running",
+                ownership,
+            )
             .values(
                 status=case((cancelling, "cancelled"), else_="succeeded"),
                 progress=case((cancelling, TaskRun.progress), else_=1.0),
@@ -615,6 +1030,9 @@ class TaskRepository:
                 error_json=None,
                 updated_at=transition_time,
                 finished_at=transition_time,
+                claim_token=None,
+                lease_expires_at=None,
+                heartbeat_at=None,
             )
             .returning(TaskRun)
         )
@@ -641,14 +1059,30 @@ class TaskRepository:
             return current
         raise TaskConflict(f"Task {current.id} cannot be completed")
 
-    def fail(self, task_id: str, error: Mapping[str, Any]) -> TaskSnapshot:
+    def fail(
+        self,
+        task_id: str,
+        error: Mapping[str, Any],
+        *,
+        claim_token: str | None = None,
+        now: datetime | None = None,
+    ) -> TaskSnapshot:
         validated_error = _validated_json_object(error, field_name="error")
-        now = _utc_now()
-        transition_time = _transition_time(now)
+        sampled_at = (
+            _utc_now()
+            if now is None
+            else _validated_aware_utc(now, field_name="failure time")
+        )
+        transition_time = _transition_time(sampled_at)
         cancelling = TaskRun.cancel_requested.is_(True)
+        ownership = self._ownership_condition(claim_token, sampled_at)
         statement = (
             update(TaskRun)
-            .where(TaskRun.id == task_id, TaskRun.status == "running")
+            .where(
+                TaskRun.id == task_id,
+                TaskRun.status == "running",
+                ownership,
+            )
             .values(
                 status=case((cancelling, "cancelled"), else_="failed"),
                 result_json=None,
@@ -658,6 +1092,9 @@ class TaskRepository:
                 ),
                 updated_at=transition_time,
                 finished_at=transition_time,
+                claim_token=None,
+                lease_expires_at=None,
+                heartbeat_at=None,
             )
             .returning(TaskRun)
         )
@@ -686,6 +1123,21 @@ class TaskRepository:
             return current
         raise TaskConflict(f"Task {current.id} cannot be failed")
 
+    @staticmethod
+    def _ownership_condition(
+        claim_token: str | None,
+        operation_time: datetime,
+    ) -> ColumnElement[bool]:
+        if claim_token is None:
+            return TaskRun.kind != _BACKTEST_TASK_KIND
+        validated_token = _validated_uuid(claim_token, field_name="claim token")
+        return (
+            (TaskRun.kind == _BACKTEST_TASK_KIND)
+            & (TaskRun.claim_token == validated_token)
+            & (TaskRun.lease_expires_at.is_not(None))
+            & (TaskRun.lease_expires_at > operation_time)
+        )
+
     def request_cancel(self, task_id: str) -> TaskSnapshot:
         now = _utc_now()
         transition_time = _transition_time(now)
@@ -708,10 +1160,27 @@ class TaskRepository:
         )
         with self._engine.begin() as connection:
             row = connection.execute(queued_statement).mappings().one_or_none()
+            queued_cancelled = row is not None
             if row is None:
                 row = connection.execute(running_statement).mappings().one_or_none()
             if row is not None:
                 task = _snapshot(row)
+                if queued_cancelled and task.kind == _BACKTEST_TASK_KIND:
+                    from stock_desk.backtest.models import BacktestRunRow
+
+                    connection.execute(
+                        update(BacktestRunRow)
+                        .where(
+                            BacktestRunRow.task_id == task.id,
+                            BacktestRunRow.status == "queued",
+                        )
+                        .values(
+                            status="cancelled",
+                            stage="cancelled",
+                            updated_at=task.updated_at,
+                            finished_at=task.finished_at,
+                        )
+                    )
                 _append_event(
                     connection,
                     task_id=task.id,

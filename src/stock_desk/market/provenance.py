@@ -9,6 +9,10 @@ from typing import Annotated, Any, Literal, Self, TypeAlias
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 from stock_desk.market.providers.base import ProviderBatch
+from stock_desk.market.execution_status import (
+    ExecutionStatusQuery,
+    ExecutionStatusSnapshot,
+)
 from stock_desk.market.types import (
     Adjustment,
     BarFailure,
@@ -71,14 +75,22 @@ class CalendarRoutingRequest(_FrozenRoutingModel):
         return self
 
 
+class ExecutionStatusRoutingRequest(_FrozenRoutingModel):
+    query: ExecutionStatusQuery
+
+
 RoutingRequest: TypeAlias = (
-    BarRoutingRequest | InstrumentRoutingRequest | CalendarRoutingRequest
+    BarRoutingRequest
+    | InstrumentRoutingRequest
+    | CalendarRoutingRequest
+    | ExecutionStatusRoutingRequest
 )
 
 
 def _request_type(category: MarketCapability) -> type[BaseModel]:
     request_types: dict[MarketCapability, type[BaseModel]] = {
         MarketCapability.BARS: BarRoutingRequest,
+        MarketCapability.EXECUTION_STATUS: ExecutionStatusRoutingRequest,
         MarketCapability.INSTRUMENTS: InstrumentRoutingRequest,
         MarketCapability.TRADING_CALENDAR: CalendarRoutingRequest,
     }
@@ -179,7 +191,10 @@ class SourceTransition(_FrozenRoutingModel):
             raise ValueError("source transition must change source")
         if self.from_dataset_version == self.to_dataset_version:
             raise ValueError("source transition must change dataset version")
-        if self.category is MarketCapability.TRADING_CALENDAR:
+        if self.category in {
+            MarketCapability.TRADING_CALENDAR,
+            MarketCapability.EXECUTION_STATUS,
+        }:
             if (
                 self.effective_at is not None
                 or self.calendar_start is None
@@ -239,10 +254,14 @@ def derive_source_transition(
         effective_at = observed_at
         calendar_start = None
         calendar_end = None
-    else:
+    elif isinstance(request, CalendarRoutingRequest):
         effective_at = None
         calendar_start = request.start
         calendar_end = request.end
+    else:
+        effective_at = None
+        calendar_start = request.query.start
+        calendar_end = request.query.end
 
     return SourceTransition(
         category=category,
@@ -318,10 +337,15 @@ class RoutingManifest(_FrozenRoutingModel):
                 boundary_matches = (
                     self.transition.effective_at == self.upstream_fetched_at
                 )
-            else:
+            elif isinstance(self.request, CalendarRoutingRequest):
                 boundary_matches = (
                     self.transition.calendar_start == self.request.start
                     and self.transition.calendar_end == self.request.end
+                )
+            else:
+                boundary_matches = (
+                    self.transition.calendar_start == self.request.query.start
+                    and self.transition.calendar_end == self.request.query.end
                 )
             if not boundary_matches:
                 raise ValueError(
@@ -675,6 +699,48 @@ class RoutedCalendarSuccess(_FrozenRoutingModel):
             raise ValueError("routed calendar fetched time must match manifest")
         if self.manifest.upstream_data_cutoff != self.batch.provenance.data_cutoff:
             raise ValueError("routed calendar cutoff must match manifest")
+        return self
+
+
+class RoutedExecutionStatusSuccess(_FrozenRoutingModel):
+    result: ExecutionStatusSnapshot
+    manifest: RoutingManifest
+
+    @model_validator(mode="after")
+    def validate_envelope(self) -> Self:
+        if (
+            self.manifest.category is not MarketCapability.EXECUTION_STATUS
+            or not isinstance(self.manifest.request, ExecutionStatusRoutingRequest)
+            or self.manifest.request.query != self.result.query
+        ):
+            raise ValueError("routed execution status must retain its request")
+        if self.manifest.selected_source is not self.result.source:
+            raise ValueError("routed execution-status source must match manifest")
+        if self.manifest.upstream_dataset_version != self.result.dataset_version:
+            raise ValueError("routed execution-status version must match manifest")
+        if self.manifest.upstream_fetched_at != self.result.fetched_at:
+            raise ValueError("routed execution-status fetched time must match manifest")
+        if self.manifest.upstream_data_cutoff != self.result.data_cutoff:
+            raise ValueError("routed execution-status cutoff must match manifest")
+        return self
+
+
+class RoutedExecutionStatusFailure(_FrozenRoutingModel):
+    query: ExecutionStatusQuery
+    reason: FailureReason
+    detail: FailureDetail
+    audit: RoutingFailureAudit
+
+    @model_validator(mode="after")
+    def validate_envelope(self) -> Self:
+        if (
+            self.reason is not FailureReason.NO_PROVIDER
+            or self.detail != _BATCH_TERMINAL_DETAIL
+            or self.audit.category is not MarketCapability.EXECUTION_STATUS
+            or not isinstance(self.audit.request, ExecutionStatusRoutingRequest)
+            or self.audit.request.query != self.query
+        ):
+            raise ValueError("execution-status failure must retain its full request")
         return self
 
 

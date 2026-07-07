@@ -24,6 +24,18 @@ from stock_desk.api.settings import (
     SourceSettingsServices,
 )
 from stock_desk.config import Settings
+from stock_desk.backtest.repository import BacktestRepository
+from stock_desk.backtest.service import BacktestIntent, BacktestService
+from stock_desk.formula.repository import FormulaRepository
+from stock_desk.formula.service import FormulaService
+from stock_desk.market.execution_status import (
+    ExecutionStatusDay,
+    ExecutionStatusQuery,
+    RawExecutionOpen,
+    SuspensionState,
+    materialize_execution_status,
+)
+from stock_desk.market.execution_status_lake import ExecutionStatusLake
 from stock_desk.market.lake import MarketLake
 from stock_desk.market.pools import PoolCategory, PoolComposition, PoolRepository
 from stock_desk.market.provenance import (
@@ -37,6 +49,7 @@ from stock_desk.market.types import (
     Bar,
     BarQuery,
     BarResult,
+    Exchange,
     MarketCapability,
     Period,
     Provenance,
@@ -44,34 +57,53 @@ from stock_desk.market.types import (
     TradingStatus,
 )
 from stock_desk.market.instruments import InstrumentRepository
+from stock_desk.market.provenance import (
+    ExecutionStatusRoutingRequest,
+    RoutedExecutionStatusSuccess,
+)
 from stock_desk.storage.database import create_engine_for_url, migrate
+from stock_desk.tasks.models import TaskClaim
+from stock_desk.tasks.repository import TaskRepository
 from scripts.dev import supervise
 
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
+MACD_SOURCE = (
+    "DIF:EMA(C,12)-EMA(C,26);DEA:EMA(DIF,9);MACD:(DIF-DEA)*2;"
+    "BUY:CROSS(DIF,DEA);SELL:CROSS(DEA,DIF);"
+)
+CUSTOM_SOURCE = (
+    "FAST:EMA(C,3);SLOW:EMA(C,7);BUY:CROSS(FAST,SLOW);SELL:CROSS(SLOW,FAST);"
+)
 
 
 def _local(day: date, clock: time = time()) -> datetime:
     return datetime.combine(day, clock, tzinfo=SHANGHAI)
 
 
-def _routed(period: Period, adjustment: Adjustment) -> RoutedBarSuccess:
+def _routed(
+    period: Period,
+    adjustment: Adjustment,
+    *,
+    symbol: str = "600000.SH",
+) -> RoutedBarSuccess:
     start_day = date(2024, 1, 1)
     if period is Period.DAY:
         timestamps = tuple(
-            _local(start_day + timedelta(days=index)) for index in range(80)
+            _local(start_day + timedelta(days=index)) for index in range(650)
         )
     elif period is Period.WEEK:
         timestamps = tuple(
-            _local(start_day + timedelta(days=7 * index)) for index in range(80)
+            _local(start_day + timedelta(days=7 * index)) for index in range(100)
         )
     else:
         timestamps = tuple(
-            _local(start_day + timedelta(days=index), time(9, 30))
-            for index in range(80)
+            _local(start_day + timedelta(days=day_index), clock)
+            for day_index in range(160)
+            for clock in (time(9, 30), time(10, 30), time(13), time(14))
         )
     query = BarQuery(
-        symbol="600000.SH",
+        symbol=symbol,
         period=period,
         adjustment=adjustment,
         start=timestamps[0],
@@ -135,6 +167,68 @@ def _routed(period: Period, adjustment: Adjustment) -> RoutedBarSuccess:
     return RoutedBarSuccess(result=result, manifest=manifest)
 
 
+def _execution_status(
+    *,
+    symbol: str,
+    period: Period,
+    start: date,
+    end: date,
+    timestamps: tuple[datetime, ...],
+) -> RoutedExecutionStatusSuccess:
+    exchange = Exchange(symbol.rsplit(".", maxsplit=1)[1])
+    query = ExecutionStatusQuery(
+        symbol=symbol,
+        exchange=exchange,
+        start=start,
+        end=end,
+        period=period,
+    )
+    days = tuple(
+        ExecutionStatusDay(
+            day=start + timedelta(days=index),
+            exchange=exchange,
+            is_exchange_open=True,
+            suspension_state=SuspensionState.NORMAL,
+            raw_upper_limit=Decimal("20"),
+            raw_lower_limit=Decimal("1"),
+        )
+        for index in range((end - start).days)
+    )
+    if period is Period.MIN60:
+        raw_timestamps = timestamps
+    else:
+        raw_timestamps = tuple(_local(item.day, time(9, 30)) for item in days)
+    raw_opens = tuple(
+        RawExecutionOpen(
+            timestamp=timestamp,
+            trading_day=timestamp.astimezone(SHANGHAI).date(),
+            raw_open=Decimal("10"),
+        )
+        for timestamp in raw_timestamps
+    )
+    observed = _local(end, time(16))
+    result = materialize_execution_status(
+        query=query,
+        days=days,
+        raw_opens=raw_opens,
+        source=ProviderId.TUSHARE,
+        fetched_at=observed,
+        data_cutoff=observed,
+    )
+    manifest = make_routing_manifest(
+        category=MarketCapability.EXECUTION_STATUS,
+        request=ExecutionStatusRoutingRequest(query=query),
+        priority=(ProviderId.TUSHARE,),
+        attempts=(),
+        selected_source=ProviderId.TUSHARE,
+        upstream_dataset_version=result.dataset_version,
+        upstream_fetched_at=observed,
+        upstream_data_cutoff=observed,
+        upstream_adjustment=None,
+    )
+    return RoutedExecutionStatusSuccess(result=result, manifest=manifest)
+
+
 def _seed(data_dir: Path) -> None:
     database_url = f"sqlite:///{data_dir / 'stock-desk.db'}"
     migrate(database_url)
@@ -160,6 +254,7 @@ def _seed(data_dir: Path) -> None:
         pools = PoolRepository(engine)
         pools.publish_full_a()
         catalog = instruments.current_manifest()
+        partial_pool = None
         for key, category, name, symbols, digest_character in (
             (
                 "index-e2e",
@@ -175,9 +270,16 @@ def _seed(data_dir: Path) -> None:
                 ("600000.SH", "600036.SH"),
                 "b",
             ),
+            (
+                "partial-e2e",
+                PoolCategory.INDEX,
+                "E2E 部分池",
+                ("600000.SH", "000001.SZ"),
+                "c",
+            ),
         ):
             digest = f"sha256:{digest_character * 64}"
-            pools.publish_preset(
+            published = pools.publish_preset(
                 PoolComposition(
                     preset_key=key,
                     category=category,
@@ -191,10 +293,88 @@ def _seed(data_dir: Path) -> None:
                     complete=True,
                 )
             )
+            if key == "partial-e2e":
+                partial_pool = published
         lake = MarketLake(engine=engine, root=data_dir / "market")
+        status_lake = ExecutionStatusLake(engine)
+        status_inputs: dict[Period, RoutedBarSuccess] = {}
         for period in Period:
             for adjustment in Adjustment:
-                lake.write(_routed(period, adjustment))
+                routed = _routed(period, adjustment)
+                lake.write(routed)
+                if adjustment is Adjustment.QFQ:
+                    status_inputs[period] = routed
+        for period, routed in status_inputs.items():
+            query = routed.result.query
+            local_end = query.end.astimezone(SHANGHAI)
+            status_end = local_end.date()
+            if local_end.timetz().replace(tzinfo=None) != time():
+                status_end += timedelta(days=1)
+            status_lake.write(
+                _execution_status(
+                    symbol=query.symbol,
+                    period=period,
+                    start=query.start.astimezone(SHANGHAI).date(),
+                    end=status_end,
+                    timestamps=tuple(item.timestamp for item in routed.result.bars),
+                )
+            )
+        formulas = FormulaRepository(engine)
+        macd = formulas.create(
+            "E2E MACD 金叉死叉",
+            "trading",
+            MACD_SOURCE,
+            {},
+            placement="subchart",
+        )
+        formulas.create(
+            "E2E 自定义波段",
+            "trading",
+            CUSTOM_SOURCE,
+            {},
+            placement="subchart",
+        )
+        if partial_pool is None:
+            raise RuntimeError("E2E partial pool was not published")
+        tasks = TaskRepository(engine)
+        backtests = BacktestRepository(engine)
+        service = BacktestService(
+            engine=engine,
+            tasks=tasks,
+            repository=backtests,
+            market_lake=lake,
+            status_lake=status_lake,
+            instruments=instruments,
+            pools=pools,
+            formulas=FormulaService(repository=formulas, lake=lake),
+        )
+        held = service.submit(
+            BacktestIntent(
+                scope_kind="preset",
+                symbol=None,
+                scope_id=partial_pool.pool_id,
+                scope_revision_or_snapshot_id=partial_pool.snapshot_id,
+                formula_version_id=macd.id,
+                formula_parameters={},
+                period=Period.DAY,
+                adjustment=Adjustment.QFQ,
+                scoring_start=_local(date(2024, 2, 10)),
+                scoring_end=_local(date(2024, 3, 15)),
+                quantity_shares=1_000,
+                commission_bps=Decimal("2.5"),
+                minimum_commission=Decimal("5"),
+                sell_tax_bps=Decimal("5"),
+                slippage_bps=Decimal("1"),
+            )
+        )
+        claim = tasks.claim_next("e2e-held", lease_duration=timedelta(seconds=15))
+        if not isinstance(claim, TaskClaim) or claim.snapshot.id != held.task_id:
+            raise RuntimeError("E2E held cancellation run was not claimed")
+        backtests.start_claim(claim, tasks=tasks, now=claim.snapshot.updated_at)
+        # Persist the intent before starting the worker so recovery is independent
+        # of browser startup timing. Repeating the request in the UI remains safe;
+        # only the real worker's expired-lease sweep terminalizes this running run.
+        tasks.request_cancel(held.task_id)
         source_settings = SourceSettingsServices(engine=engine, settings=settings)
         try:
             source_settings.save_public(

@@ -36,6 +36,20 @@ class TaskSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class TaskClaim:
+    """Internal leased ownership for a recoverable task.
+
+    The token deliberately remains outside :class:`TaskSnapshot`, which is the
+    only task object exposed by the HTTP API.
+    """
+
+    snapshot: TaskSnapshot
+    claim_token: str
+    lease_expires_at: datetime
+    attempt_count: int
+
+
+@dataclass(frozen=True, slots=True)
 class TaskEventSnapshot:
     id: str
     task_id: str
