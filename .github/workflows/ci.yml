@@ -104,6 +104,58 @@ jobs:
           --cov=src/stock_desk --cov=scripts --cov=migrations --cov-branch
           --cov-report=term-missing --cov-report=xml:coverage.xml
           --cov-fail-under=85
+      - name: Publish Python test failure notice
+        if: failure()
+        shell: bash
+        run: |
+          set -euo pipefail
+          report=python-test-results.xml
+          diagnostic=python-test-failures.json
+          [[ -f "$report" ]] || exit 0
+          uv run --frozen python - "$report" "$diagnostic" <<'PY'
+          import json
+          import sys
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          root = ET.parse(sys.argv[1]).getroot()
+          failures = []
+          for testcase in root.findall(".//testcase"):
+              for kind in ("failure", "error"):
+                  node = testcase.find(kind)
+                  if node is None:
+                      continue
+                  text = node.text or ""
+                  failures.append(
+                      {
+                          "class": testcase.get("classname", ""),
+                          "name": testcase.get("name", ""),
+                          "kind": kind,
+                          "message": node.get("message", ""),
+                          "trace_tail": text[-12_000:],
+                      }
+                  )
+                  break
+          payload = {
+              "schema": "stock-desk-junit-failure-summary-v1",
+              "reported_failure_count": len(failures),
+              "failures": failures[:10],
+          }
+          Path(sys.argv[2]).write_text(
+              json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          digest=$(sha256sum "$diagnostic" | cut -d' ' -f1)
+          payload=$(gzip -n -c "$diagnostic" | base64 -w0)
+          chunk_size=2800
+          part_count=$(((${#payload} + chunk_size - 1) / chunk_size))
+          for ((part_index = 0; part_index < part_count; part_index++)); do
+            chunk=${payload:part_index*chunk_size:chunk_size}
+            part=$((part_index + 1))
+            printf '::notice file=%s,title=Python test failure evidence::kind=junit_failure_summary;sha256=%s;part=%s/%s;gzip_base64=%s\n' \
+              "$diagnostic" "$digest" "$part" "$part_count" "$chunk"
+          done
       - name: Test Stage 1 market acceptance
         run: make acceptance
       - name: Verify legacy cached chart correctness

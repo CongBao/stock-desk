@@ -1758,6 +1758,38 @@ def test_performance_target_ci_is_explicit_and_requirements_remain_mapped() -> N
         )
 
 
+def test_python_ci_publishes_bounded_junit_failure_diagnostics() -> None:
+    workflow = _load_github_actions_yaml(_read(".github/workflows/ci.yml"))
+    steps = workflow["jobs"]["python"]["steps"]
+    test_index = next(
+        index for index, step in enumerate(steps) if step.get("name") == "Test Python"
+    )
+    notice_index = next(
+        index
+        for index, step in enumerate(steps)
+        if step.get("name") == "Publish Python test failure notice"
+    )
+    notice = steps[notice_index]
+
+    assert notice_index == test_index + 1
+    assert notice["if"] == "failure()"
+    command = notice["run"]
+    for required in (
+        "python-test-results.xml",
+        "python-test-failures.json",
+        "failures[:10]",
+        "text[-12_000:]",
+        "sha256sum",
+        "gzip -n -c",
+        "base64 -w0",
+        "chunk_size=2800",
+        "title=Python test failure evidence",
+        "kind=junit_failure_summary",
+        "part=%s/%s",
+    ):
+        assert required in command
+
+
 def test_accessibility_and_responsive_suite_is_a_release_gate() -> None:
     workflow = _load_github_actions_yaml(_read(".github/workflows/ci.yml"))
     e2e_steps = workflow["jobs"]["e2e"]["steps"]
