@@ -32,7 +32,9 @@ records the selected random port, opens the browser, and coordinates shutdown.
 
 Native state lives at `%LOCALAPPDATA%\stock-desk` on Windows and
 `~/Library/Application Support/stock-desk` on macOS. It does not use the source
-development `.env` contract.
+development `.env` contract. The native packaged runtime does not self-mutate,
+but its user-writable install location can be replaced or altered by the
+operating user; it is not a read-only container filesystem.
 
 ### Source development topology
 
@@ -82,8 +84,10 @@ silently fetch or splice providers.
 
 API and worker must resolve one database and data directory. The writable
 boundary contains SQLite, encrypted provider credentials, immutable market
-objects, routing manifests, task history, reports, and exports. Code,
-dependencies, and compiled assets remain read-only in packaged deployments.
+objects, routing manifests, task history, reports, and exports. In the container
+profile, code, dependencies, and compiled assets remain read-only in the runtime
+image. Native installation files are user-writable even though the application
+does not modify its own packaged code.
 
 Each backtest freezes its formula version, parameters, scope, period, adjustment,
 dates, costs, and signal/execution/status manifests. Each analysis freezes

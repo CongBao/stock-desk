@@ -127,19 +127,55 @@ Preserve both and investigate the filesystem state if automatic recovery refuses
 
 ## Upgrade and rollback procedure
 
-Before an upgrade:
+An upgrade record must bind data to the exact executable identity for its
+deployment. Do not treat a version label alone as a rollback artifact.
 
-1. record the exact current container image digest or immutable package artifact;
-2. create and verify an untouched portable backup;
-3. keep both in read-only storage independent of the live data directory; and
-4. deploy the new image, which migrates supported tagged release databases
-   forward.
+### Compose
 
-Rollback means stopping the new version, restoring that untouched pre-upgrade
-archive with the restore tool, and starting the **exact previous image digest**.
+1. Record the exact Compose image digest (`repository@sha256:...`), Compose file,
+   environment excluding secrets, and bind-mounted data identity. A mutable tag
+   is not sufficient.
+2. From the matching release checkout on the POSIX host, create and verify an
+   untouched portable backup of the bind-mounted data.
+3. Pin the new image by digest and run the coordinated Compose upgrade.
+4. To roll back, stop the complete stack, restore the untouched backup with the
+   matching source tool, pin the previous image digest, and start API and worker
+   together. Never start the old image against data already migrated by the new
+   image.
+
+### Source checkout or package
+
+1. Record the immutable source commit, a clean-worktree assertion, lockfile
+   hashes, and—when installing a built package—the exact wheel/sdist filename and
+   SHA-256 digest.
+2. Create and verify the backup with that same checkout and locked environment.
+3. Upgrade to a separately verified immutable commit or package identity and
+   recreate the locked environment before coordinated startup.
+4. To roll back, stop every source process, restore the untouched backup with the
+   previous matching checkout, restore that exact commit/package and lockfiles,
+   then restart API and worker together.
+
+### Native macOS installer
+
+1. Record the exact macOS installer artifact: DMG filename, architecture,
+   SHA-256, release manifest, GitHub attestations, and the installed application
+   identity. Keep the verified prior DMG or an exact verified copy of the prior
+   `.app` outside the live Applications location.
+2. The app has no frozen backup command. Before replacement, create a compatible
+   portable backup only through a matching source checkout on POSIX, and protect
+   `~/Library/Application Support/stock-desk/config/master.key` separately.
+3. Quit Stock Desk, verify the new DMG and attestations, then replace the app and
+   launch it. Do not run old and new app copies against the same data.
+4. To roll back, quit the app, restore the untouched data backup with the matching
+   source tool, and reinstall the exact prior verified DMG/`.app` artifact. If no
+   compatible pre-upgrade backup exists, replacing the app does not safely roll
+   back migrated data.
+
+Native Windows has no complete supported backup/restore/rollback workflow in
+this release.
+
 Never use Alembic downgrade as an operational rollback. Newer code may have
-changed data outside a reversible schema operation, and an older image must not be
-started against a database already migrated by newer code.
+changed data outside a reversible schema operation.
 
 The automatically created `.stock-desk-recovery/` archive protects the immediate
 pre-restore destination. It is not a substitute for the independently stored
