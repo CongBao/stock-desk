@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import base64
 from pathlib import Path
+
+import pytest
 
 from scripts.verify_docs import (
     REQUIRED_WIKI_PAGES,
+    main,
     verify_repository,
     verify_wiki,
 )
@@ -19,6 +23,10 @@ REPOSITORY_DOCUMENTS = {
 Prefer the source-free `stock-desk-<version>-windows-x86_64.exe`,
 `stock-desk-<version>-macos-x86_64.dmg`, or
 `stock-desk-<version>-macos-arm64.dmg` installer.
+
+```bash
+gh attestation verify INSTALLER --repo CongBao/stock-desk --signer-workflow CongBao/stock-desk/.github/workflows/release.yml
+```
 
 ```bash
 make bootstrap
@@ -50,6 +58,10 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 优先使用无需源码的 `stock-desk-<version>-windows-x86_64.exe`、
 `stock-desk-<version>-macos-x86_64.dmg` 或
 `stock-desk-<version>-macos-arm64.dmg` 安装包。
+
+```bash
+gh attestation verify INSTALLER --repo CongBao/stock-desk --signer-workflow CongBao/stock-desk/.github/workflows/release.yml
+```
 
 ```bash
 make bootstrap
@@ -130,6 +142,18 @@ Release readiness.
 
 Local API and worker.
 
+### Native installer topology
+
+The parent launcher creates API and worker children on a random 127.0.0.1 port.
+
+### Source development topology
+
+Supervised source processes.
+
+### Container topology
+
+Separate API and worker containers.
+
 ## Modules and boundaries
 
 Ports and adapters.
@@ -143,6 +167,15 @@ Local data directory.
 Localhost by default.
 """,
     "docs/configuration.md": """# Configuration
+
+## Native installers
+
+Windows uses `%LOCALAPPDATA%\\stock-desk`; macOS uses
+`~/Library/Application Support/stock-desk`; the key is `config/master.key`.
+
+## Source development
+
+Use a local `.env` and explicit master key.
 
 ## Native development
 
@@ -297,6 +330,28 @@ Return to the task center and retry.
         (root / f"{stem}.zh-CN.md").write_text(chinese, encoding="utf-8")
 
 
+def _finalize_wiki(root: Path) -> None:
+    image_dir = root / "images"
+    image_dir.mkdir()
+    png = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    )
+    for stem in REQUIRED_WIKI_PAGES:
+        if stem == "Home":
+            continue
+        for suffix in ("", ".zh-CN"):
+            page = root / f"{stem}{suffix}.md"
+            image_name = f"{stem}{suffix}.png"
+            page.write_text(
+                page.read_text(encoding="utf-8").replace(
+                    "<!-- SCREENSHOT_PLACEHOLDER: replace after integrated release-candidate capture -->",
+                    f"![Verified release-candidate screenshot](images/{image_name})",
+                ),
+                encoding="utf-8",
+            )
+            (image_dir / image_name).write_bytes(png)
+
+
 def test_repository_documentation_contract_passes_for_complete_tree(
     tmp_path: Path,
 ) -> None:
@@ -392,6 +447,41 @@ def test_repository_contract_requires_source_free_installers_before_source_setup
     assert any("source-free installer" in failure for failure in failures)
 
 
+def test_repository_contract_requires_native_topology_and_attestation_guidance(
+    tmp_path: Path,
+) -> None:
+    _write_repository(tmp_path)
+    removals = {
+        "README.md": ("gh attestation verify", "--signer-workflow"),
+        "README.zh-CN.md": ("gh attestation verify", "--signer-workflow"),
+        "docs/architecture.md": ("Native installer topology",),
+        "docs/configuration.md": (
+            "Native installers",
+            "%LOCALAPPDATA%\\stock-desk",
+            "~/Library/Application Support/stock-desk",
+            "config/master.key",
+        ),
+    }
+    for relative_path, snippets in removals.items():
+        path = tmp_path / relative_path
+        document = path.read_text(encoding="utf-8")
+        for snippet in snippets:
+            document = document.replace(snippet, "removed")
+        path.write_text(document, encoding="utf-8")
+
+    failures = verify_repository(tmp_path)
+
+    for expected in (
+        "Native installers",
+        "%LOCALAPPDATA%\\stock-desk",
+        "~/Library/Application Support/stock-desk",
+        "config/master.key",
+        "gh attestation verify",
+        "--signer-workflow",
+    ):
+        assert any(expected in failure for failure in failures), expected
+
+
 def test_wiki_staging_requires_complete_pairs_and_procedural_sections(
     tmp_path: Path,
 ) -> None:
@@ -422,3 +512,99 @@ def test_wiki_cannot_be_marked_final_with_screenshot_placeholders(
     failures = verify_wiki(tmp_path, final=True)
 
     assert any("SCREENSHOT_PLACEHOLDER" in failure for failure in failures)
+
+
+def test_final_wiki_cli_requires_an_explicit_wiki_root(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _write_repository(tmp_path)
+
+    with pytest.raises(SystemExit, match="2"):
+        main(["--repo-root", str(tmp_path), "--final-wiki"])
+
+    assert "--final-wiki requires --wiki-root" in capsys.readouterr().err
+
+
+def test_final_wiki_recursively_scans_checklist_and_nested_markdown(
+    tmp_path: Path,
+) -> None:
+    _write_wiki(tmp_path)
+    _finalize_wiki(tmp_path)
+    (tmp_path / "PUBLISHING-CHECKLIST.md").write_text(
+        "# Publishing checklist\n\nStatus: staging\n\nSCREENSHOT_PLACEHOLDER\n",
+        encoding="utf-8",
+    )
+    nested = tmp_path / "guides" / "advanced.md"
+    nested.parent.mkdir()
+    nested.write_text(
+        "# Advanced\n\n[Missing](missing.md)\n\nopenspec/private.md\n",
+        encoding="utf-8",
+    )
+
+    failures = verify_wiki(tmp_path, final=True)
+
+    assert any(
+        "PUBLISHING-CHECKLIST.md" in failure and "placeholder" in failure.lower()
+        for failure in failures
+    )
+    assert any(
+        "PUBLISHING-CHECKLIST.md" in failure and "finalized" in failure
+        for failure in failures
+    )
+    assert any(
+        "guides/advanced.md" in failure and "missing.md" in failure
+        for failure in failures
+    )
+    assert any(
+        "guides/advanced.md" in failure and "openspec/" in failure
+        for failure in failures
+    )
+
+
+def test_final_wiki_rejects_symlinks_path_escapes_and_invalid_images(
+    tmp_path: Path,
+) -> None:
+    wiki = tmp_path / "wiki"
+    wiki.mkdir()
+    _write_wiki(wiki)
+    _finalize_wiki(wiki)
+    outside = tmp_path / "outside.png"
+    outside.write_bytes(b"not an image")
+    (wiki / "images" / "linked.png").symlink_to(outside)
+    nested = wiki / "guides.md"
+    nested.write_text(
+        "# Unsafe\n\n![Escape](../outside.png)\n\n![Symlink](images/linked.png)\n",
+        encoding="utf-8",
+    )
+    (wiki / "images" / "invalid.png").write_bytes(b"not a real screenshot")
+
+    failures = verify_wiki(wiki, final=True)
+
+    assert any("guides.md" in failure and "escapes" in failure for failure in failures)
+    assert any(
+        "images/linked.png" in failure and "symlink" in failure for failure in failures
+    )
+    assert any(
+        "images/invalid.png" in failure and "invalid image" in failure
+        for failure in failures
+    )
+
+
+def test_wiki_backup_commands_require_posix_source_or_container_scope(
+    tmp_path: Path,
+) -> None:
+    _write_wiki(tmp_path)
+    backup = tmp_path / "Backup-and-Restore.md"
+    backup.write_text(
+        backup.read_text(encoding="utf-8")
+        + "\n`uv run python scripts/backup.py backup.stockdesk-backup`\n",
+        encoding="utf-8",
+    )
+
+    failures = verify_wiki(tmp_path, final=False)
+
+    assert any(
+        "Backup-and-Restore.md" in failure and "source/container POSIX" in failure
+        for failure in failures
+    )
