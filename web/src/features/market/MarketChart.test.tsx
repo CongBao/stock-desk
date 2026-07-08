@@ -127,11 +127,14 @@ it('builds synchronized candlestick and volume grids with explicit rise/fall enc
         },
       },
       { type: 'bar', xAxisIndex: 1, yAxisIndex: 1 },
+      { type: 'bar', xAxisIndex: 1, yAxisIndex: 1 },
+      { type: 'bar', xAxisIndex: 1, yAxisIndex: 1 },
     ],
   });
-  expect(option.series[1]?.data).toMatchObject([
-    { itemStyle: { color: '#ef4444', decal: { symbol: 'rect' } } },
-    { itemStyle: { color: '#22c55e', decal: { symbol: 'triangle' } } },
+  expect(option.series.slice(1).map((series) => series.itemStyle)).toEqual([
+    { color: '#ef4444', decal: { symbol: 'rect' } },
+    { color: '#22c55e', decal: { symbol: 'triangle' } },
+    { color: '#94a3b8', decal: { symbol: 'circle' } },
   ]);
   expect(formatMarketTooltip(bars[0])).toContain('上涨');
   expect(formatMarketTooltip(bars[0])).toContain('开 10');
@@ -145,10 +148,7 @@ it('keeps full market bars out of the ECharts series graph while preserving inde
     [10, 10.8, 9.8, 11],
     [10.8, 10.2, 10.1, 11],
   ]);
-  expect(option.series[1].data[0]).toEqual({
-    value: 1_000,
-    itemStyle: { color: '#ef4444', decal: { symbol: 'rect' } },
-  });
+  expect(option.series[1].data[0]).toBe(1_000);
   expect(JSON.stringify(option.series)).not.toContain('rawBar');
 
   const formatter = (
@@ -157,6 +157,51 @@ it('keeps full market bars out of the ECharts series graph while preserving inde
   expect(formatter([{ dataIndex: 0 }])).toContain('上涨');
   expect(formatter([{ dataIndex: 1 }])).toContain('开 10.8');
   expect(formatter([{ dataIndex: 99 }])).toBe('');
+});
+
+it('batches direction-specific volume bars into overlapping large series', () => {
+  const flatBar = {
+    ...bars[0],
+    timestamp: '2024-01-03T16:00:00Z',
+    direction: 'flat' as const,
+    volume: 900,
+  };
+  const option = buildMarketChartOption([...bars, flatBar]);
+  const volumeSeries = option.series.slice(1);
+
+  expect(volumeSeries).toHaveLength(3);
+  expect(volumeSeries).toMatchObject([
+    {
+      name: '成交量·上涨',
+      type: 'bar',
+      large: true,
+      largeThreshold: 400,
+      silent: true,
+      barGap: '-100%',
+      itemStyle: { color: '#ef4444', decal: { symbol: 'rect' } },
+      data: [1_000, '-', '-'],
+    },
+    {
+      name: '成交量·下跌',
+      type: 'bar',
+      large: true,
+      largeThreshold: 400,
+      silent: true,
+      barGap: '-100%',
+      itemStyle: { color: '#22c55e', decal: { symbol: 'triangle' } },
+      data: ['-', 1_200, '-'],
+    },
+    {
+      name: '成交量·平盘',
+      type: 'bar',
+      large: true,
+      largeThreshold: 400,
+      silent: true,
+      barGap: '-100%',
+      itemStyle: { color: '#94a3b8', decal: { symbol: 'circle' } },
+      data: ['-', '-', 900],
+    },
+  ]);
 });
 
 it('aligns formula subchart outputs and BUY/SELL markers by timestamp', () => {

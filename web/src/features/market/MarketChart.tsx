@@ -52,9 +52,17 @@ const timeFormatter = new Intl.DateTimeFormat('zh-CN', {
   timeZone: 'Asia/Shanghai',
 });
 
-type VolumeSeriesDataItem = {
-  readonly value: readonly number[] | number;
-  readonly itemStyle?: {
+type VolumeSeries = {
+  readonly name: string;
+  readonly type: 'bar';
+  readonly xAxisIndex: 1;
+  readonly yAxisIndex: 1;
+  readonly data: readonly (number | '-')[];
+  readonly large: true;
+  readonly largeThreshold: 400;
+  readonly silent: true;
+  readonly barGap: '-100%';
+  readonly itemStyle: {
     readonly color: string;
     readonly decal: { readonly symbol: 'rect' | 'triangle' | 'circle' };
   };
@@ -101,13 +109,9 @@ export type MarketChartOption = {
         readonly borderColor0: string;
       };
     },
-    {
-      readonly name: string;
-      readonly type: 'bar';
-      readonly xAxisIndex: 1;
-      readonly yAxisIndex: 1;
-      readonly data: readonly VolumeSeriesDataItem[];
-    },
+    VolumeSeries,
+    VolumeSeries,
+    VolumeSeries,
   ];
 };
 
@@ -203,10 +207,30 @@ const FLAT_VOLUME_STYLE = {
   decal: { symbol: 'circle' as const },
 } as const;
 
-function volumeStyle(bar: MarketBar) {
-  if (bar.direction === 'rise') return RISE_VOLUME_STYLE;
-  if (bar.direction === 'fall') return FALL_VOLUME_STYLE;
+function volumeStyle(direction: MarketBar['direction']) {
+  if (direction === 'rise') return RISE_VOLUME_STYLE;
+  if (direction === 'fall') return FALL_VOLUME_STYLE;
   return FLAT_VOLUME_STYLE;
+}
+
+function buildVolumeSeries(
+  bars: readonly MarketBar[],
+  direction: MarketBar['direction'],
+  label: string,
+): VolumeSeries {
+  const style = volumeStyle(direction);
+  return {
+    name: `成交量·${label}`,
+    type: 'bar',
+    xAxisIndex: 1,
+    yAxisIndex: 1,
+    data: bars.map((bar) => (bar.direction === direction ? bar.volume : '-')),
+    large: true,
+    largeThreshold: 400,
+    silent: true,
+    barGap: '-100%',
+    itemStyle: style,
+  };
 }
 
 function axisPointerIndex(
@@ -386,16 +410,9 @@ export function buildMarketChartOption(
           borderColor0: FALL_COLOR,
         },
       },
-      {
-        name: '成交量',
-        type: 'bar',
-        xAxisIndex: 1,
-        yAxisIndex: 1,
-        data: bars.map((bar) => ({
-          value: bar.volume,
-          itemStyle: volumeStyle(bar),
-        })),
-      },
+      buildVolumeSeries(bars, 'rise', '上涨'),
+      buildVolumeSeries(bars, 'fall', '下跌'),
+      buildVolumeSeries(bars, 'flat', '平盘'),
     ],
   };
 }
