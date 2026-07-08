@@ -123,7 +123,7 @@ requirements:
     evidence:
       - {state: existing, runner: pytest, kind: security, path: tests/unit/api/test_source_settings.py, selector: "tests/unit/api/test_source_settings.py::test_tushare_token_is_write_only_masked_and_omission_keeps_ciphertext", assertion: "The Tushare token is write-only, encrypted in storage, and represented publicly only by masked state."}
       - {state: existing, runner: pytest, kind: security, path: tests/unit/api/test_source_settings.py, selector: "tests/unit/api/test_source_settings.py::test_provider_factory_dynamic_nonpropagating_handler_and_close_are_redacted", assertion: "Dynamic provider failures and handler cleanup redact active token values from diagnostic logging."}
-      - {state: planned, runner: pytest, kind: security, path: tests/acceptance/test_market_secret_surfaces.py, selector: "tests/acceptance/test_market_secret_surfaces.py::test_market_token_never_leaves_masked_state_across_responses_logs_errors_diagnostics_and_exports", assertion: "The planned surface matrix will prove ciphertext and plaintext tokens never escape through any declared market-data output."}
+      - {state: existing, runner: pytest, kind: security, path: tests/security/test_secret_surfaces.py, selector: "tests/security/test_secret_surfaces.py::test_market_token_never_leaves_masked_state_across_legacy_and_new_tasks", assertion: "Configured and rotated market tokens redact an already-persisted legacy task at the response boundary and are removed before every new task persistence write while ordinary values remain intact."}
   - id: R-012
     category: formula
     kind: user_visible
@@ -504,7 +504,7 @@ requirements:
     status: mapped
     evidence:
       - {state: existing, runner: pytest, kind: security, path: tests/unit/formula/test_parser.py, selector: "tests/unit/formula/test_parser.py::test_parser_rejects_executable_or_dynamic_python_shapes", assertion: "The formula parser rejects arbitrary language and host-access constructs before evaluation."}
-      - {state: planned, runner: pytest, kind: security, path: tests/acceptance/test_formula_execution_boundary.py, selector: "tests/acceptance/test_formula_execution_boundary.py::test_registered_functions_are_the_only_executable_operations_and_host_access_is_blocked", assertion: "The planned execution matrix will prove only registered AST calls execute and every file, process, network, import, and host-access path is blocked."}
+      - {state: existing, runner: pytest, kind: security, path: tests/security/test_formula_sandbox.py, selector: "tests/security/test_formula_sandbox.py::test_formula_host_access_is_rejected_without_file_process_or_network_side_effects", assertion: "The hostile formula matrix rejects import, file, process, network, eval, and host-object shapes with zero side effects, then proves a registered formula remains executable."}
   - id: R-045
     category: backtest
     kind: architecture
@@ -587,7 +587,8 @@ requirements:
       - {state: existing, runner: pytest, kind: security, path: tests/security/test_analysis_boundaries.py, selector: "tests/security/test_analysis_boundaries.py::test_real_worker_error_redacts_logs_task_http_and_report", assertion: "A real failed model worker redacts secret material across logs, task HTTP state, and persisted reports."}
       - {state: existing, runner: pytest, kind: security, path: tests/integration/analysis/test_model_settings_service.py, selector: "tests/integration/analysis/test_model_settings_service.py::test_create_remote_writes_encrypted_secret_and_catalog_in_one_transaction", assertion: "Creating a remote model configuration atomically writes an encrypted secret reference and safe catalog record."}
       - {state: existing, runner: pytest, kind: security, path: tests/unit/api/test_model_settings.py, selector: "tests/unit/api/test_model_settings.py::test_remote_create_passes_secret_without_exposing_it_in_response_or_repr", assertion: "The model settings API accepts a key without exposing it in the response or representation."}
-      - {state: planned, runner: pytest, kind: security, path: tests/acceptance/test_model_secret_surfaces.py, selector: "tests/acceptance/test_model_secret_surfaces.py::test_model_key_is_masked_and_redacted_across_requests_logs_errors_reports_diagnostics_and_exports", assertion: "The planned surface matrix will prove encryption/masking and redaction across every named model-key output and artifact."}
+      - {state: existing, runner: pytest, kind: security, path: tests/security/test_secret_surfaces.py, selector: "tests/security/test_secret_surfaces.py::test_configured_and_rotated_model_keys_register_for_all_process_boundaries", assertion: "Configured and rotated model keys remain registered together, redact an already-persisted legacy task at the response boundary, and are removed before new task persistence."}
+      - {state: existing, runner: pytest, kind: security, path: tests/security/test_secret_surfaces.py, selector: "tests/security/test_secret_surfaces.py::test_active_secret_is_redacted_from_every_backtest_export_format", assertion: "Model keys configured only after legacy backtest rows were written are removed from every CSV and JSON export section while ordinary allowlisted text remains."}
   - id: R-052
     category: formula
     kind: security
