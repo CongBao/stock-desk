@@ -72,7 +72,7 @@ export function selectProcessTree(
 export class ProcessIdentityTracker {
   private anchors:
     ReadonlyMap<number, { startedAt: string; command: string }> | undefined;
-  private readonly incarnations = new Map<string, string>();
+  private readonly incarnations = new Map<string, Set<string>>();
 
   constructor(
     private readonly expectedRoots: ReadonlyMap<number, RootExpectation>,
@@ -86,13 +86,9 @@ export class ProcessIdentityTracker {
     const byPid = new Map(rows.map((row) => [row.pid, row]));
     for (const row of rows) {
       const identity = `${row.pid}\u0000${row.startedAt}`;
-      const command = this.incarnations.get(identity);
-      if (command !== undefined && command !== row.command) {
-        throw new Error(
-          `PID command identity changed for ${row.pid} with parent ${row.parent} at ${row.startedAt}: ${JSON.stringify(command)} -> ${JSON.stringify(row.command)}`,
-        );
-      }
-      this.incarnations.set(identity, row.command);
+      const commands = this.incarnations.get(identity) ?? new Set<string>();
+      commands.add(row.command);
+      this.incarnations.set(identity, commands);
     }
     if (this.anchors === undefined) {
       const anchors = new Map<number, { startedAt: string; command: string }>();
@@ -133,7 +129,9 @@ export class ProcessIdentityTracker {
         row.startedAt !== anchor.startedAt ||
         row.command !== anchor.command
       ) {
-        throw new Error(`PID command identity changed for ${pid}`);
+        throw new Error(
+          `PID command identity changed for ${pid} with parent ${row.parent} at ${row.startedAt}: ${JSON.stringify(anchor.command)} -> ${JSON.stringify(row.command)}`,
+        );
       }
     }
   }

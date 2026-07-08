@@ -108,12 +108,14 @@ nonzero provider-duration claim.
 RSS is sampled through asynchronous `ps` calls on Linux/macOS. The timed Node
 loop never blocks on `execFileSync` and excludes the `ps` helper. Every observed
 root or late child is identified by PID plus portable process start time; a
-command change within one process incarnation is rejected, while a reused PID
-with a new start time is tracked as a new process and remains in RSS. Service
-roots must match the exact launch-manifest command-token sequence before their
-full observed command/start identity is frozen. The bounded role set and digest
-are persisted once. Windows performance measurement fails before browser
-startup; Windows product packaging remains a separate release concern.
+late descendant's legal `exec`/process-title command evolution is retained in
+its incarnation history, while a reused PID with a new start time is tracked as
+a new process and remains in RSS. Declared roots must match the exact
+launch-manifest command-token sequence before their full observed command/start
+identity is frozen; root changes or disappearance fail the sample. The bounded
+role set and digest are persisted once. Windows performance measurement fails
+before browser startup; Windows product packaging remains a separate release
+concern.
 
 The strict validator requires exact keys and primitive types, a real UTC
 datetime, clean 40-hex Git commit provenance, expected-source equality and a

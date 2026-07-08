@@ -147,7 +147,7 @@ describe('process-tree evidence', () => {
     expect(() => tracker.observe([])).toThrow(/declared root disappeared/u);
   });
 
-  it('tracks late children and permits PID reuse only with a new start identity', () => {
+  it('tracks legal late-child command evolution and PID reuse by start identity', () => {
     const tracker = new ProcessIdentityTracker(
       new Map([[10, { role: 'playwright' }]]),
     );
@@ -181,7 +181,7 @@ describe('process-tree evidence', () => {
           command: 'transient child B',
         },
       ]),
-    ).toThrow(/PID command identity changed/u);
+    ).not.toThrow();
     expect(() =>
       tracker.observe([
         root,
