@@ -45,6 +45,11 @@ from stock_desk.storage.database import (
     migrate,
     migration_lock,
 )
+from stock_desk.storage.lifecycle import (
+    LifecycleBusyError,
+    LifecycleCorruptionError,
+    restore_lifecycle,
+)
 from stock_desk.tasks.repository import TaskRepository
 
 
@@ -366,7 +371,7 @@ def _logical_inventory(
         raise BackupValidationError("backup inventory schema is incompatible")
     quoted_columns = ", ".join(f'"{item}"' for item in selected_columns)
     quoted_order = ", ".join(f'"{item}"' for item in selected_primary_key)
-    query = f'SELECT {quoted_columns} FROM "{table}" ORDER BY {quoted_order}'
+    query = f'SELECT {quoted_columns} FROM "{table}" ORDER BY {quoted_order}'  # nosec
     rows = [
         [
             _canonical_inventory_value(column, value)
@@ -608,93 +613,108 @@ def create_backup(
     destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     data_dir = Path(data_dir).resolve(strict=True)
     source_database = _sqlite_path(database_url)
-    temporary_archive = destination.parent / (f".{destination.name}.{uuid4().hex}.tmp")
-    held_files: list[_HeldFile] = []
     engine = None
     try:
         with migration_lock(database_url, timeout_seconds=drain_timeout_seconds):
             engine = create_engine_for_url(database_url)
             tasks = TaskRepository(engine)
             with tasks.hold_claim_gate(timeout_seconds=drain_timeout_seconds):
-                deadline = time.monotonic() + drain_timeout_seconds
-                while tasks.running_task_count() != 0:
-                    if time.monotonic() >= deadline:
-                        raise BackupBusyError(
-                            "backup timed out waiting for running tasks"
-                        )
-                    time.sleep(drain_poll_seconds)
-                with tempfile.TemporaryDirectory(
-                    prefix=".stock-desk-backup-work-",
-                    dir=destination.parent,
-                ) as raw_work:
-                    work = Path(raw_work)
-                    work.chmod(0o700)
-                    clone = work / "stock-desk.db"
-                    _copy_database(source_database, clone)
-                    _validate_clone(
-                        clone,
-                        include_encrypted_secrets=include_encrypted_secrets,
-                    )
-                    (
-                        schema_revision,
-                        partitions,
-                        inventories,
-                        queued_count,
-                        tdx_path,
-                    ) = _database_rows(clone)
-                    database_descriptor = _open_regular(clone)
-                    database_metadata = os.fstat(database_descriptor)
-                    held_files.append(
-                        _HeldFile(
-                            entry=BackupFile(
-                                archive_path="database/stock-desk.db",
-                                kind="database",
-                                size=database_metadata.st_size,
-                                sha256=_descriptor_sha256(database_descriptor),
-                            ),
-                            descriptor=database_descriptor,
-                        )
-                    )
-                    held_files.extend(_held_market_files(data_dir, partitions))
-                    files = tuple(item.entry for item in held_files)
-                    manifest = BackupManifest(
-                        created_at=datetime.now(timezone.utc),
-                        app_version=package_version("stock-desk"),
-                        schema_revision=schema_revision,
-                        secret_policy=(
-                            "encrypted_included"
-                            if include_encrypted_secrets
-                            else "omitted"
-                        ),
-                        task_barrier=BackupTaskBarrier(queued_count=queued_count),
-                        files=files,
-                        dataset_partitions=partitions,
-                        logical_inventory=inventories,
-                        external_tdx_path=tdx_path,
-                    )
-                    descriptor = os.open(
-                        temporary_archive,
-                        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-                        0o600,
-                    )
-                    os.close(descriptor)
-                    _write_archive(temporary_archive, manifest, tuple(held_files))
-                    verified = inspect_backup(temporary_archive)
-                    if verified != manifest:
-                        raise BackupValidationError(
-                            "published backup manifest changed during verification"
-                        )
-                    os.replace(temporary_archive, destination)
-                    return BackupResult(archive=destination, manifest=manifest)
+                return _create_backup_under_locks(
+                    tasks=tasks,
+                    source_database=source_database,
+                    data_dir=data_dir,
+                    destination=destination,
+                    include_encrypted_secrets=include_encrypted_secrets,
+                    drain_timeout_seconds=drain_timeout_seconds,
+                    drain_poll_seconds=drain_poll_seconds,
+                )
     except FileLockTimeout as error:
         raise BackupBusyError(
             "backup could not acquire its consistency locks"
         ) from error
     finally:
-        for held in held_files:
-            held.close()
         if engine is not None:
             engine.dispose()
+
+
+def _create_backup_under_locks(
+    *,
+    tasks: TaskRepository,
+    source_database: Path,
+    data_dir: Path,
+    destination: Path,
+    include_encrypted_secrets: bool,
+    drain_timeout_seconds: float,
+    drain_poll_seconds: float,
+) -> BackupResult:
+    temporary_archive = destination.parent / (f".{destination.name}.{uuid4().hex}.tmp")
+    held_files: list[_HeldFile] = []
+    try:
+        deadline = time.monotonic() + drain_timeout_seconds
+        while tasks.running_task_count() != 0:
+            if time.monotonic() >= deadline:
+                raise BackupBusyError("backup timed out waiting for running tasks")
+            time.sleep(drain_poll_seconds)
+        with tempfile.TemporaryDirectory(
+            prefix=".stock-desk-backup-work-",
+            dir=destination.parent,
+        ) as raw_work:
+            work = Path(raw_work)
+            work.chmod(0o700)
+            clone = work / "stock-desk.db"
+            _copy_database(source_database, clone)
+            _validate_clone(
+                clone,
+                include_encrypted_secrets=include_encrypted_secrets,
+            )
+            schema_revision, partitions, inventories, queued_count, tdx_path = (
+                _database_rows(clone)
+            )
+            database_descriptor = _open_regular(clone)
+            database_metadata = os.fstat(database_descriptor)
+            held_files.append(
+                _HeldFile(
+                    entry=BackupFile(
+                        archive_path="database/stock-desk.db",
+                        kind="database",
+                        size=database_metadata.st_size,
+                        sha256=_descriptor_sha256(database_descriptor),
+                    ),
+                    descriptor=database_descriptor,
+                )
+            )
+            held_files.extend(_held_market_files(data_dir, partitions))
+            files = tuple(item.entry for item in held_files)
+            manifest = BackupManifest(
+                created_at=datetime.now(timezone.utc),
+                app_version=package_version("stock-desk"),
+                schema_revision=schema_revision,
+                secret_policy=(
+                    "encrypted_included" if include_encrypted_secrets else "omitted"
+                ),
+                task_barrier=BackupTaskBarrier(queued_count=queued_count),
+                files=files,
+                dataset_partitions=partitions,
+                logical_inventory=inventories,
+                external_tdx_path=tdx_path,
+            )
+            descriptor = os.open(
+                temporary_archive,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o600,
+            )
+            os.close(descriptor)
+            _write_archive(temporary_archive, manifest, tuple(held_files))
+            verified = inspect_backup(temporary_archive)
+            if verified != manifest:
+                raise BackupValidationError(
+                    "published backup manifest changed during verification"
+                )
+            os.replace(temporary_archive, destination)
+            return BackupResult(archive=destination, manifest=manifest)
+    finally:
+        for held in held_files:
+            held.close()
         try:
             temporary_archive.unlink()
         except FileNotFoundError:
@@ -1136,6 +1156,31 @@ def restore_backup(
     data_dir = Path(data_dir)
     data_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     data_dir = data_dir.resolve(strict=True)
+    try:
+        with restore_lifecycle(data_dir):
+            return _restore_backup_locked(
+                archive=archive,
+                manifest=manifest,
+                database_url=database_url,
+                data_dir=data_dir,
+                offline=offline,
+                phase_hook=_phase_hook,
+            )
+    except LifecycleBusyError as error:
+        raise BackupBusyError(str(error)) from error
+    except LifecycleCorruptionError as error:
+        raise BackupValidationError(str(error)) from error
+
+
+def _restore_backup_locked(
+    *,
+    archive: Path,
+    manifest: BackupManifest,
+    database_url: str,
+    data_dir: Path,
+    offline: bool,
+    phase_hook: Callable[[str], None] | None,
+) -> RestoreResult:
     if _read_restore_journal(data_dir) is not None:
         raise RestoreRecoveryRequired(
             "an unfinished restore journal must be recovered before restoring"
@@ -1161,6 +1206,67 @@ def restore_backup(
             ) from error
     if had_market and not had_database:
         raise BackupValidationError("existing owned components are incomplete")
+    if not had_database:
+        return _restore_owned_components(
+            archive=archive,
+            manifest=manifest,
+            database_url=database_url,
+            data_dir=data_dir,
+            database=database,
+            market=market,
+            had_database=False,
+            had_market=False,
+            tasks=None,
+            phase_hook=phase_hook,
+        )
+    engine = create_engine_for_url(database_url)
+    try:
+        with migration_lock(database_url):
+            tasks = TaskRepository(engine)
+            with tasks.hold_claim_gate(timeout_seconds=30):
+                if _supports_task_leases(database):
+                    tasks.requeue_expired_leases_for_offline_snapshot()
+                return _restore_owned_components(
+                    archive=archive,
+                    manifest=manifest,
+                    database_url=database_url,
+                    data_dir=data_dir,
+                    database=database,
+                    market=market,
+                    had_database=True,
+                    had_market=had_market,
+                    tasks=tasks,
+                    phase_hook=phase_hook,
+                )
+    except FileLockTimeout as error:
+        raise BackupBusyError("restore could not acquire its offline locks") from error
+    finally:
+        engine.dispose()
+
+
+def _supports_task_leases(database: Path) -> bool:
+    with sqlite3.connect(database) as connection:
+        columns = {
+            str(row[1]) for row in connection.execute("PRAGMA table_info(task_run)")
+        }
+    return {"claim_token", "lease_expires_at", "heartbeat_at"} <= columns
+
+
+def _restore_owned_components(
+    *,
+    archive: Path,
+    manifest: BackupManifest,
+    database_url: str,
+    data_dir: Path,
+    database: Path,
+    market: Path,
+    had_database: bool,
+    had_market: bool,
+    tasks: TaskRepository | None,
+    phase_hook: Callable[[str], None] | None,
+) -> RestoreResult:
+    if phase_hook is not None:
+        phase_hook("offline_locked")
     _quiesce_offline_database(database)
 
     token = uuid4().hex
@@ -1169,13 +1275,19 @@ def restore_backup(
         recovery_dir = data_dir / _RECOVERY_DIRECTORY
         _private_existing_or_create(recovery_dir)
         recovery_archive = recovery_dir / f"pre-restore-{token}{BACKUP_SUFFIX}"
-        create_backup(
-            database_url=database_url,
+        if tasks is None:
+            raise BackupValidationError("restore recovery backup has no task barrier")
+        _create_backup_under_locks(
+            tasks=tasks,
+            source_database=_sqlite_path(database_url),
             data_dir=data_dir,
             destination=recovery_archive,
             include_encrypted_secrets=True,
+            drain_timeout_seconds=30,
+            drain_poll_seconds=0.05,
         )
         _quiesce_offline_database(database)
+        tasks.engine.dispose()
 
     stage = data_dir / f".stock-desk-restore-{token}"
     new_root = stage / "new"
@@ -1208,8 +1320,8 @@ def restore_backup(
         )
         _write_restore_journal(data_dir, journal)
         journal_written = True
-        if _phase_hook is not None:
-            _phase_hook("prepared")
+        if phase_hook is not None:
+            phase_hook("prepared")
 
         if had_database:
             _replace_durably(database, rollback_root / database.name)
@@ -1217,7 +1329,7 @@ def restore_backup(
                 data_dir,
                 journal,
                 "database_old_moved",
-                _phase_hook,
+                phase_hook,
                 database_old_moved=True,
             )
         _replace_durably(staged_database, database)
@@ -1225,7 +1337,7 @@ def restore_backup(
             data_dir,
             journal,
             "database_installed",
-            _phase_hook,
+            phase_hook,
             database_installed=True,
         )
         if had_market:
@@ -1234,7 +1346,7 @@ def restore_backup(
                 data_dir,
                 journal,
                 "market_old_moved",
-                _phase_hook,
+                phase_hook,
                 market_old_moved=True,
             )
         if staged_market is not None:
@@ -1243,14 +1355,14 @@ def restore_backup(
                 data_dir,
                 journal,
                 "market_installed",
-                _phase_hook,
+                phase_hook,
                 market_installed=True,
             )
         journal = _advance_journal(
             data_dir,
             journal,
             "committed",
-            _phase_hook,
+            phase_hook,
         )
         _finish_restore_cleanup(data_dir, journal)
         return RestoreResult(
@@ -1285,12 +1397,26 @@ def _recovery_paths(
     )
 
 
-def recover_interrupted_restore(*, data_dir: Path) -> bool:
+def recover_interrupted_restore(
+    *,
+    data_dir: Path,
+    _lifecycle_held: bool = False,
+) -> bool:
     """Roll back an unfinished restore, or finish cleanup after commit."""
     data_dir = Path(data_dir)
     if not data_dir.exists():
         return False
     data_dir = data_dir.resolve(strict=True)
+    if _lifecycle_held:
+        return _recover_interrupted_restore_locked(data_dir)
+    try:
+        with restore_lifecycle(data_dir):
+            return _recover_interrupted_restore_locked(data_dir)
+    except (LifecycleBusyError, LifecycleCorruptionError) as error:
+        raise RestoreRecoveryRequired(str(error)) from error
+
+
+def _recover_interrupted_restore_locked(data_dir: Path) -> bool:
     journal = _read_restore_journal(data_dir)
     if journal is None:
         return False

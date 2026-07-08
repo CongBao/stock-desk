@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from contextlib import AbstractContextManager
 from datetime import datetime, timezone
 import os
 from pathlib import Path
@@ -59,7 +60,9 @@ from stock_desk.market.update import (
 )
 from stock_desk.security.redaction import scoped_log_redaction
 from stock_desk.security.secrets import SecretConfigurationError, SecretStore
+from stock_desk.storage.backup import recover_interrupted_restore
 from stock_desk.storage.database import create_engine_for_url, migrate
+from stock_desk.storage.lifecycle import service_lifecycle
 from stock_desk.tasks.models import TaskSnapshot
 from stock_desk.tasks.repository import TaskRepository
 from stock_desk.tasks.worker import ClaimedTaskHandler, TaskWorker, demo_double
@@ -269,6 +272,7 @@ class ProductionMarketWorker:
         scheduler: MarketUpdateScheduler,
         analysis_repository: AnalysisRepository,
         model_catalog: AnalysisModelCatalog,
+        lifecycle_guard: AbstractContextManager[None],
         model_provider_factory: ModelProviderFactory | None = None,
         model_settings_service: ModelSettingsService | None = None,
     ) -> None:
@@ -279,6 +283,7 @@ class ProductionMarketWorker:
         self.scheduler = scheduler
         self.analysis_repository = analysis_repository
         self.model_catalog = model_catalog
+        self._lifecycle_guard = lifecycle_guard
         self._model_provider_factory = model_provider_factory
         self._model_settings_service = model_settings_service
         self._close_lock = Lock()
@@ -297,8 +302,22 @@ class ProductionMarketWorker:
         | None = None,
         analysis_data_service_factory: Callable[[], ResearchDataService] | None = None,
     ) -> ProductionMarketWorker:
-        migrate(settings.database_url)
-        engine = create_engine_for_url(settings.database_url)
+        data_dir = Path(os.path.abspath(os.fspath(settings.data_dir.expanduser())))
+        lifecycle_guard = service_lifecycle(
+            data_dir,
+            role="worker",
+            preflight=lambda: recover_interrupted_restore(
+                data_dir=data_dir,
+                _lifecycle_held=True,
+            ),
+        )
+        lifecycle_guard.__enter__()
+        try:
+            migrate(settings.database_url)
+            engine = create_engine_for_url(settings.database_url)
+        except BaseException as error:
+            lifecycle_guard.__exit__(type(error), error, error.__traceback__)
+            raise
         source_settings: SourceSettingsServices | None = None
         model_catalog: AnalysisModelCatalog | None = None
         model_provider_factory: ModelProviderFactory | None = None
@@ -306,7 +325,6 @@ class ProductionMarketWorker:
         try:
             tasks = TaskRepository(engine)
             source_settings = SourceSettingsServices(engine=engine, settings=settings)
-            data_dir = Path(os.path.abspath(os.fspath(settings.data_dir.expanduser())))
             lake = MarketLake(engine=engine, root=data_dir / "market")
             execution_status_lake = ExecutionStatusLake(engine)
             instruments = InstrumentRepository(engine)
@@ -418,10 +436,11 @@ class ProductionMarketWorker:
                 scheduler=scheduler,
                 analysis_repository=analysis_repository,
                 model_catalog=model_catalog,
+                lifecycle_guard=lifecycle_guard,
                 model_provider_factory=model_provider_factory,
                 model_settings_service=model_settings_service,
             )
-        except BaseException:
+        except BaseException as error:
             _best_effort_cleanup(
                 tuple(
                     action
@@ -439,6 +458,7 @@ class ProductionMarketWorker:
                 ),
                 raise_first=False,
             )
+            lifecycle_guard.__exit__(type(error), error, error.__traceback__)
             raise
 
     def run_once(self) -> TaskSnapshot | None:
@@ -456,6 +476,10 @@ class ProductionMarketWorker:
             if self._closed:
                 return
             self._closed = True
+
+        def close_lifecycle() -> None:
+            self._lifecycle_guard.__exit__(None, None, None)
+
         _best_effort_cleanup(
             tuple(
                 action
@@ -468,6 +492,7 @@ class ProductionMarketWorker:
                     if self._model_provider_factory is not None
                     else None,
                     self._engine.dispose,
+                    close_lifecycle,
                 )
                 if action is not None
             ),

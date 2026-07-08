@@ -5,7 +5,7 @@ import hashlib
 import json
 from pathlib import Path
 import sqlite3
-from threading import Lock
+from threading import RLock
 from typing import Any, Final, TypeAlias, cast
 from urllib.parse import unquote
 
@@ -24,7 +24,7 @@ _PACKAGED_CONFIG_PATH = _PACKAGE_ROOT / "alembic.ini"
 _SQLITE_BUSY_TIMEOUT_MS = 5_000
 _SQLITE_DATABASE_IDENTITY_INFO_KEY = "stock_desk.sqlite_database_identity"
 _MIGRATION_LOCK_TIMEOUT_SECONDS = 30
-_MIGRATION_THREAD_LOCK = Lock()
+_MIGRATION_THREAD_LOCK = RLock()
 _TIMESTAMP_DIGEST_AGGREGATE: Final = "stock_desk_timestamp_digest"
 DatabaseIdentity: TypeAlias = tuple[object, ...]
 

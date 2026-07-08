@@ -1,5 +1,5 @@
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import AbstractContextManager, asynccontextmanager
 import os
 from pathlib import Path
 import secrets
@@ -65,6 +65,8 @@ from stock_desk.security.secrets import (
     SecretStoreError,
 )
 from stock_desk.security.persistence import StartupSecretHydrator
+from stock_desk.storage.backup import recover_interrupted_restore
+from stock_desk.storage.lifecycle import service_lifecycle
 from stock_desk.tasks.repository import TaskRepository, TaskRepositoryError
 from stock_desk.web import install_web_routes
 
@@ -172,6 +174,7 @@ def create_app(
     owned_startup_secret_hydrator: StartupSecretHydrator | None = None
     shutdown_lock = Lock()
     active_lifespans = 0
+    service_guard: AbstractContextManager[None] | None = None
 
     def bind_dependency(dependency: object) -> None:
         database_identity.bind(getattr(dependency, "database_identity", None))
@@ -430,6 +433,7 @@ def create_app(
     @asynccontextmanager
     async def lifespan(_application: FastAPI) -> AsyncIterator[None]:
         nonlocal active_lifespans
+        nonlocal service_guard
         nonlocal owned_repository
         nonlocal owned_market_services
         nonlocal owned_source_settings_services
@@ -444,6 +448,17 @@ def create_app(
         nonlocal owned_analysis_preflight
         nonlocal owned_startup_secret_hydrator
         with shutdown_lock:
+            if active_lifespans == 0:
+                candidate = service_lifecycle(
+                    resolved_settings.data_dir,
+                    role="api",
+                    preflight=lambda: recover_interrupted_restore(
+                        data_dir=resolved_settings.data_dir,
+                        _lifecycle_held=True,
+                    ),
+                )
+                candidate.__enter__()
+                service_guard = candidate
             active_lifespans += 1
         try:
             with shutdown_lock:
@@ -478,6 +493,8 @@ def create_app(
                 owned_analysis_service = None
                 owned_analysis_preflight = None
                 owned_startup_secret_hydrator = None
+                closing_service_guard = service_guard
+                service_guard = None
             for resource in resources:
                 if resource is None:
                     continue
@@ -485,6 +502,8 @@ def create_app(
                     resource.close()
                 except Exception:
                     continue
+            if closing_service_guard is not None:
+                closing_service_guard.__exit__(None, None, None)
 
     application = FastAPI(
         title=resolved_settings.app_name,

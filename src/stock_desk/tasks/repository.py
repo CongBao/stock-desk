@@ -817,6 +817,52 @@ class TaskRepository:
             )
         return int(value or 0)
 
+    def requeue_expired_leases_for_offline_snapshot(
+        self,
+        *,
+        now: datetime | None = None,
+    ) -> int:
+        """Requeue abandoned leased tasks while the offline claim gate is held."""
+        sampled_at = (
+            _utc_now()
+            if now is None
+            else _validated_aware_utc(now, field_name="offline snapshot time")
+        )
+        transition_time = _transition_time(sampled_at)
+        statement = (
+            update(TaskRun)
+            .where(
+                TaskRun.kind.in_(_LEASED_TASK_KINDS),
+                TaskRun.status == "running",
+                TaskRun.cancel_requested.is_(False),
+                TaskRun.lease_expires_at.is_not(None),
+                TaskRun.lease_expires_at <= sampled_at,
+            )
+            .values(
+                status="queued",
+                worker_id=None,
+                updated_at=transition_time,
+                claim_token=None,
+                lease_expires_at=None,
+                heartbeat_at=None,
+            )
+            .returning(TaskRun)
+        )
+        with self._engine.begin() as connection:
+            rows = connection.execute(statement).mappings().all()
+            for row in rows:
+                task = _snapshot(row)
+                _append_event(
+                    connection,
+                    task_id=task.id,
+                    event_name="task.lease_requeued",
+                    level="warning",
+                    progress=task.progress,
+                    detail={"code": "offline_restore_expired_lease"},
+                    occurred_at=task.updated_at,
+                )
+        return len(rows)
+
     def claim_next(
         self,
         worker_id: str,
