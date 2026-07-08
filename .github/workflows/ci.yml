@@ -248,8 +248,14 @@ jobs:
           fi
           digest=$(sha256sum "$evidence" | cut -d' ' -f1)
           payload=$(gzip -n -c "$evidence" | base64 -w0)
-          printf '::notice file=%s,title=Target performance evidence payload::kind=%s;sha256=%s;gzip_base64=%s\n' \
-            "$evidence" "$kind" "$digest" "$payload"
+          chunk_size=2800
+          part_count=$(((${#payload} + chunk_size - 1) / chunk_size))
+          for ((part_index = 0; part_index < part_count; part_index++)); do
+            chunk=${payload:part_index*chunk_size:chunk_size}
+            part=$((part_index + 1))
+            printf '::notice file=%s,title=Target performance evidence payload::kind=%s;sha256=%s;part=%s/%s;gzip_base64=%s\n' \
+              "$evidence" "$kind" "$digest" "$part" "$part_count" "$chunk"
+          done
       - name: Upload Playwright and performance evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

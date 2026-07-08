@@ -83,6 +83,24 @@ function aggregate(samples: readonly TimedSample[], budget: number) {
   };
 }
 
+function reportChartMilestones(
+  metric: 'chart_cold' | 'chart_warm',
+  started: number,
+  milestones: Readonly<Record<string, number>>,
+) {
+  console.log(
+    `[performance-chart-milestones] ${JSON.stringify({
+      metric,
+      ...Object.fromEntries(
+        Object.entries(milestones).map(([name, timestamp]) => [
+          `${name}_seconds`,
+          (timestamp - started) / 1000,
+        ]),
+      ),
+    })}`,
+  );
+}
+
 function processList(): Promise<string> {
   return new Promise((resolve, reject) => {
     execFile(
@@ -259,17 +277,29 @@ async function chartAction(
       exact: true,
     })
     .click();
+  const selectedAt = performance.now();
   const response = await responsePromise;
+  const responseAt = performance.now();
   const body = (await response.json()) as {
     bars: readonly unknown[];
     dataset_version: string;
     route_version: string;
     routing_manifest: RoutingManifest;
   };
+  const decodedAt = performance.now();
   const chart = page.locator('[data-chart-ready="true"]');
   await expect(chart).toBeVisible();
+  const renderedAt = performance.now();
   await proveChartInteractionHandshake(page, chart);
-  const wall = (performance.now() - started) / 1000;
+  const interactedAt = performance.now();
+  const wall = (interactedAt - started) / 1000;
+  reportChartMilestones('chart_cold', started, {
+    selected: selectedAt,
+    response: responseAt,
+    decoded: decodedAt,
+    rendered: renderedAt,
+    interacted: interactedAt,
+  });
   const rss = await sampler.finish();
   const blockedDuringMeasurement =
     network.blockedExternalRequests - blockedBefore;
@@ -361,20 +391,32 @@ async function warmChartAction(
     );
   });
   await adjustment.selectOption('qfq');
+  const selectedAt = performance.now();
   const response = await responsePromise;
+  const responseAt = performance.now();
   const qfqFinishedGeneration = await observeNextChartGeneration(
     chart,
     noneGeneration,
   );
+  const renderedAt = performance.now();
   const body = (await response.json()) as {
     bars: readonly unknown[];
     dataset_version: string;
     route_version: string;
     routing_manifest: RoutingManifest;
   };
+  const decodedAt = performance.now();
   expect(qfqFinishedGeneration).toBeGreaterThan(noneGeneration);
   await proveChartInteractionHandshake(page, chart);
-  const wall = (performance.now() - started) / 1000;
+  const interactedAt = performance.now();
+  const wall = (interactedAt - started) / 1000;
+  reportChartMilestones('chart_warm', started, {
+    selected: selectedAt,
+    response: responseAt,
+    rendered: renderedAt,
+    decoded: decodedAt,
+    interacted: interactedAt,
+  });
   const rss = await sampler.finish();
   const blockedDuringMeasurement =
     network.blockedExternalRequests - blockedBefore;

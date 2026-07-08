@@ -1698,7 +1698,9 @@ def test_performance_target_ci_is_explicit_and_requirements_remain_mapped() -> N
         "gzip -n -c",
         "base64 -w0",
         "::notice",
+        "chunk_size=2800",
         "kind=",
+        "part=%s/%s",
         "gzip_base64=",
     ):
         assert required in import_command
