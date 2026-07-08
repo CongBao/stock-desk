@@ -51,9 +51,9 @@ the measured environment reports all of the following:
 - the exact byte counts, hosted-image identifiers, repository, run ID, and run
   attempt in the artifact.
 
-The workflow uploads `target-baseline-ubuntu-x64-4c16g`. R-054, R-055, and
-R-060 remain `mapped` until a passing artifact is reviewed and imported; merely
-adding the workflow or passing on a faster host does not verify them.
+The workflow uploads `target-baseline-ubuntu-x64-4c16g`. R-053 remains `mapped`
+until a passing artifact is reviewed and imported; merely adding the workflow
+or passing on a faster host does not verify it.
 
 ## Fixed workload and raw windows
 

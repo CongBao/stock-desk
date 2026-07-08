@@ -4,12 +4,14 @@ from copy import deepcopy
 import hashlib
 import json
 import math
+from pathlib import Path
 
 import pytest
 
 from tests.performance.ten_year_a_share import (
     MINIMUM_SAMPLE_COUNT,
     PerformanceGateError,
+    load_fixture_metadata,
     nearest_rank_p95,
     validate_performance_result,
 )
@@ -26,6 +28,19 @@ def _digest(value: object) -> str:
 
 
 ROLES = ["api", "browser", "playwright", "web", "worker"]
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_committed_baseline_matches_the_current_strict_schema() -> None:
+    fixture = load_fixture_metadata()
+    baseline = json.loads(
+        (ROOT / "tests/performance/baseline.json").read_text(encoding="utf-8")
+    )
+
+    validate_performance_result(
+        baseline,
+        expected_fixture_digest=fixture.content_digest,
+    )
 
 
 def _sample(index: int) -> dict[str, object]:
