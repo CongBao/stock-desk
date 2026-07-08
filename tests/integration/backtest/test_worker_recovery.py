@@ -478,8 +478,8 @@ def test_recovery_with_all_symbols_terminal_keeps_lease_during_slow_finalization
             market_lake=market,
             status_lake=status,
             formulas=formula_service,
-            heartbeat_interval_seconds=0.01,
-            heartbeat_lease_duration=timedelta(milliseconds=60),
+            heartbeat_interval_seconds=0.05,
+            heartbeat_lease_duration=timedelta(seconds=1),
         )
         original_load = repository.list_trade_payloads
 
@@ -493,7 +493,7 @@ def test_recovery_with_all_symbols_terminal_keeps_lease_during_slow_finalization
         )
         first = tasks.claim_next(
             "worker-before-final-crash",
-            lease_duration=timedelta(milliseconds=60),
+            lease_duration=timedelta(seconds=1),
         )
         assert isinstance(first, TaskClaim)
         with pytest.raises(SimulatedProcessCrash):
@@ -510,18 +510,35 @@ def test_recovery_with_all_symbols_terminal_keeps_lease_during_slow_finalization
         reclaimed = tasks.claim_next(
             "worker-slow-finalization",
             now=renewed_expiry.replace(tzinfo=UTC) + timedelta(microseconds=1),
-            lease_duration=timedelta(milliseconds=60),
+            lease_duration=timedelta(seconds=1),
         )
         assert isinstance(reclaimed, TaskClaim)
 
-        def slow_load(run_id: str):
-            stdlib_time.sleep(0.18)
-            return original_load(run_id)
+        finalization_active = threading.Event()
+        finalization_heartbeat_seen = threading.Event()
+        original_heartbeat = tasks.heartbeat
 
+        def observe_finalization_heartbeat(*args, **kwargs):
+            result = original_heartbeat(*args, **kwargs)
+            if finalization_active.is_set():
+                finalization_heartbeat_seen.set()
+            return result
+
+        def slow_load(run_id: str):
+            finalization_active.set()
+            try:
+                assert finalization_heartbeat_seen.wait(timeout=5)
+                stdlib_time.sleep(1.1)
+                return original_load(run_id)
+            finally:
+                finalization_active.clear()
+
+        monkeypatch.setattr(tasks, "heartbeat", observe_finalization_heartbeat)
         monkeypatch.setattr(repository, "list_trade_payloads", slow_load)
         result = runner(reclaimed)
 
         assert result["run_id"] == submitted.run_id
+        assert finalization_heartbeat_seen.is_set()
         assert tasks.get(submitted.task_id).status == "succeeded"
         assert repository.get_run(submitted.run_id).status == "succeeded"
     finally:
