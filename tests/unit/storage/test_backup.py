@@ -3,13 +3,21 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
 import sqlite3
+import stat
+import warnings
 import zipfile
 
+import pytest
 from sqlalchemy import insert
 
-from stock_desk.storage.backup import create_backup, inspect_backup
+from stock_desk.storage.backup import (
+    BackupValidationError,
+    create_backup,
+    inspect_backup,
+)
 from stock_desk.storage.database import create_engine_for_url, migrate
 from stock_desk.storage.models import AppSetting
 from stock_desk.market.lake import MarketLake
@@ -171,3 +179,112 @@ def test_recovery_backup_can_retain_encrypted_secrets(tmp_path: Path) -> None:
         assert connection.execute(
             "SELECT encrypted_value FROM app_setting WHERE key = 'secret.provider'"
         ).fetchone() == (encrypted_value,)
+
+
+def _copy_archive(
+    source: Path,
+    destination: Path,
+    *,
+    rename: dict[str, str] | None = None,
+    mutate: dict[str, bytes] | None = None,
+    file_types: dict[str, int] | None = None,
+) -> None:
+    with zipfile.ZipFile(source) as original, zipfile.ZipFile(destination, "w") as output:
+        for source_info in original.infolist():
+            name = (rename or {}).get(source_info.filename, source_info.filename)
+            info = zipfile.ZipInfo(name, date_time=source_info.date_time)
+            info.compress_type = source_info.compress_type
+            info.create_system = source_info.create_system
+            info.external_attr = (
+                ((file_types or {}).get(source_info.filename, stat.S_IFREG) | 0o600)
+                << 16
+            )
+            payload = (mutate or {}).get(
+                source_info.filename,
+                original.read(source_info),
+            )
+            output.writestr(info, payload)
+
+
+def _minimal_backup(tmp_path: Path) -> Path:
+    data_dir = tmp_path / "minimal-data"
+    database_url = f"sqlite:///{data_dir / 'stock-desk.db'}"
+    migrate(database_url)
+    archive = tmp_path / "minimal.stockdesk-backup"
+    create_backup(
+        database_url=database_url,
+        data_dir=data_dir,
+        destination=archive,
+    )
+    return archive
+
+
+@pytest.mark.parametrize(
+    ("variant", "expected"),
+    (
+        ("tamper", "hash"),
+        ("traversal", "unsafe path"),
+        ("symlink", "encoding"),
+        ("duplicate", "duplicate"),
+        ("bomb", "encoding"),
+    ),
+)
+def test_archive_structure_attacks_are_rejected(
+    tmp_path: Path, variant: str, expected: str
+) -> None:
+    source = _minimal_backup(tmp_path)
+    attacked = tmp_path / f"{variant}.stockdesk-backup"
+    database_name = "database/stock-desk.db"
+    if variant == "tamper":
+        with zipfile.ZipFile(source) as bundle:
+            payload = bytearray(bundle.read(database_name))
+        payload[len(payload) // 2] ^= 0x01
+        _copy_archive(source, attacked, mutate={database_name: bytes(payload)})
+    elif variant == "traversal":
+        _copy_archive(source, attacked, rename={database_name: "../stock-desk.db"})
+    elif variant == "symlink":
+        _copy_archive(source, attacked, file_types={database_name: stat.S_IFLNK})
+    elif variant == "duplicate":
+        _copy_archive(source, attacked)
+        with zipfile.ZipFile(attacked, "a") as bundle:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", UserWarning)
+                bundle.writestr("manifest.json", b"duplicate")
+    else:
+        with zipfile.ZipFile(
+            attacked,
+            "w",
+            compression=zipfile.ZIP_DEFLATED,
+        ) as bundle:
+            for name, payload in (
+                ("manifest.json", b"{}"),
+                ("manifest.sha256", b"invalid"),
+                (database_name, b"\0" * (2 * 1024 * 1024)),
+            ):
+                info = zipfile.ZipInfo(name)
+                info.compress_type = zipfile.ZIP_DEFLATED
+                info.create_system = 3
+                info.external_attr = (stat.S_IFREG | 0o600) << 16
+                bundle.writestr(info, payload)
+
+    with pytest.raises(BackupValidationError, match=expected):
+        inspect_backup(attacked)
+
+
+def test_backup_rejects_hard_linked_catalog_object(tmp_path: Path) -> None:
+    data_dir = tmp_path / "data"
+    database_url = f"sqlite:///{data_dir / 'stock-desk.db'}"
+    migrate(database_url)
+    engine = create_engine_for_url(database_url)
+    lake = MarketLake(engine=engine, root=(data_dir / "market").resolve())
+    stored = lake.write(routed_daily_bars((date(2024, 8, 1),)))
+    partition = data_dir / "market" / stored.partitions[0].relative_path
+    os.link(partition, partition.with_name("second-link.parquet"))
+
+    with pytest.raises((BackupValidationError, ValueError), match="link"):
+        create_backup(
+            database_url=database_url,
+            data_dir=data_dir,
+            destination=tmp_path / "linked.stockdesk-backup",
+        )
+    engine.dispose()

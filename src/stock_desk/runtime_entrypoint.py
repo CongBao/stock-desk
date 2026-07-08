@@ -7,6 +7,8 @@ import stat
 import sys
 from typing import NoReturn
 
+from stock_desk.storage.backup import recover_interrupted_restore
+
 
 _FALLBACK_UID = 10001
 _FALLBACK_GID = 10001
@@ -132,7 +134,9 @@ def main() -> NoReturn:
         current_gid=os.getegid(),
         environment=os.environ,
     )
-    os.execvp(command[0], command)
+    recover_interrupted_restore(data_dir=configured_data_dir)
+    # The validated command is the explicit container entrypoint contract.
+    os.execvp(command[0], command)  # nosec B606
 
 
 if __name__ == "__main__":
