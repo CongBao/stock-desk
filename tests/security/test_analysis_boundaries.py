@@ -10,19 +10,28 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 import httpx2
 import pytest
+from sqlalchemy import Engine, select
 
 from stock_desk.analysis.content_policy import ContentPolicyError
 from stock_desk.analysis.model_settings import ModelProviderFactory
-from stock_desk.analysis.providers.base import ModelProvider
+from stock_desk.analysis.models import AnalysisReportRow, AnalysisStageRow
+from stock_desk.analysis.providers.base import (
+    ModelProvider,
+    ModelRequest,
+    ModelResponse,
+    ModelUsage,
+)
 from stock_desk.analysis.repository import AnalysisExecutionConfig
 from stock_desk.api.analysis import router as analysis_router
 from stock_desk.api.models import router as models_router
 from stock_desk.api.tasks import router as tasks_router
 from stock_desk.security.secrets import SecretStore
 from tests.acceptance.test_analysis_flow import (
+    DeterministicProvider,
     _configure_verified_model,
     _harness,
     _submit,
+    _valid_content,
 )
 from tests.security.test_prompt_injection import snapshot_data_block, technical_request
 
@@ -30,6 +39,25 @@ from tests.security.test_prompt_injection import snapshot_data_block, technical_
 SECRET = "sk-security-boundary-plaintext"
 PROVIDER_RESPONSE_SECRET = "provider-response-secret-must-not-escape"
 MODEL_ID = "sha256:" + "a" * 64
+
+
+class _SecretEchoProvider(DeterministicProvider):
+    async def complete(self, request: ModelRequest) -> ModelResponse:
+        content = _valid_content(request)
+        content["summary"] = (
+            f"ordinary summary; Authorization: Bearer {SECRET}; ordinary suffix"
+        )
+        claims = content["claims"]
+        assert isinstance(claims, list)
+        first_claim = claims[0]
+        assert isinstance(first_claim, dict)
+        first_claim["text"] = f"ordinary claim with key={SECRET}; evidence remains"
+        return ModelResponse(
+            provider=self.provider,
+            model=self.model,
+            content=content,
+            usage=ModelUsage(input_tokens=2, output_tokens=1, total_tokens=3),
+        )
 
 
 class _NeverCalled:
@@ -220,6 +248,54 @@ def test_real_worker_error_redacts_logs_task_http_and_report(
     assert SECRET not in serialized_boundary
     assert f"Bearer {SECRET}" not in serialized_boundary
     assert PROVIDER_RESPONSE_SECRET not in serialized_boundary
+
+
+def test_successful_model_secret_echo_is_redacted_before_analysis_persistence_and_api(
+    tmp_path: Path,
+) -> None:
+    def provider_builder(execution: AnalysisExecutionConfig) -> ModelProvider:
+        return _SecretEchoProvider(
+            provider=execution.provider,
+            model=execution.model,
+        )
+
+    with _harness(tmp_path, provider_builder=provider_builder) as harness:
+        model = _configure_verified_model(
+            harness.client,
+            provider="openai_compatible",
+            base_url="https://models.example.com/v1",
+            model_name="vendor-chat",
+            api_key=SECRET,
+        )
+        submission = _submit(harness.client, cast(str, model["id"]), retries=0)
+        completed = harness.run_worker()
+        report_response = harness.client.get(
+            f"/api/analysis/{submission['run_id']}/report"
+        )
+        with cast(Engine, harness.engine).connect() as connection:
+            stage_payloads = tuple(
+                connection.execute(
+                    select(AnalysisStageRow.output_json).where(
+                        AnalysisStageRow.run_id == submission["run_id"],
+                        AnalysisStageRow.output_json.is_not(None),
+                    )
+                ).scalars()
+            )
+            report_payload = connection.execute(
+                select(AnalysisReportRow.report_json).where(
+                    AnalysisReportRow.run_id == submission["run_id"]
+                )
+            ).scalar_one()
+
+    assert getattr(completed, "status") == "succeeded"
+    assert report_response.status_code == 200
+    serialized = "\n".join((*stage_payloads, report_payload, report_response.text))
+    assert SECRET not in serialized
+    assert f"Bearer {SECRET}" not in serialized
+    assert "ordinary summary" in serialized
+    assert "ordinary suffix" in serialized
+    assert "ordinary claim" in serialized
+    assert "evidence remains" in serialized
 
 
 def test_model_endpoint_rejects_unsafe_urls_provider_mismatch_and_oversize_body() -> (
