@@ -17,6 +17,8 @@ Backup temporarily blocks new task claims, but scheduler enqueue remains availab
 It waits for running tasks to finish, obtains the migration lock, requires a
 non-busy WAL checkpoint, and clones SQLite through its backup API. A timeout fails
 without publishing a partial archive; adjust it with `--drain-timeout`.
+Enqueues committed before the SQLite clone begins are present in that consistent
+snapshot; enqueues committed after it begins belong to the next backup.
 
 The ZIP64 archive has a canonical manifest and digest. It contains:
 
@@ -48,7 +50,8 @@ uv run python scripts/restore.py /safe/path/desk.stockdesk-backup \
 
 `--offline` is mandatory for a non-empty destination and is an operator assertion;
 the tool cannot prove that a remote supervisor will not restart another process.
-An empty destination can be restored without it.
+An empty destination can be restored without it. After a successful restore,
+restart the API, workers, and scheduler as one coordinated service restart.
 
 Before changing an owned destination component, restore performs all of these
 steps:
@@ -105,9 +108,11 @@ pre-upgrade archive because it shares the destination's failure domain.
 
 - A backup cannot complete while running tasks fail to drain, the migration lock
   is held, the WAL checkpoint is busy, or a referenced catalog object changes.
-- Disk space is required for the archive, the full staging tree, the local recovery
-  archive, and temporarily both old and new owned components. Staging failure is
-  detected before component replacement.
+- Plan for free space of roughly three times the owned database and MarketLake
+  payload, in addition to the source archive. Restore needs the full staging tree,
+  a local recovery archive, and temporarily both old and new owned components.
+  Exact compression and filesystem overhead vary; staging failure is detected
+  before component replacement.
 - Filesystem atomic rename and directory `fsync` semantics are required. Keep the
   destination on one local filesystem; do not place the database and `market/` on
   separate mounts.
