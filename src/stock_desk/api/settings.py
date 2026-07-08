@@ -38,6 +38,7 @@ from stock_desk.market.diagnostics import (
     unavailable_diagnostic,
 )
 from stock_desk.market.types import (
+    CapabilityState,
     CONFIGURABLE_SOURCE_PROVIDER_IDS,
     FailureReason,
     ProviderId,
@@ -298,6 +299,10 @@ class SecureStorageUnavailable(RuntimeError):
 
 class SourceSettingsStorageError(RuntimeError):
     """The settings database no longer matches its frozen identity."""
+
+
+class SourceSettingsPreflightError(ValueError):
+    """A candidate source configuration failed its provider preflight."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -566,6 +571,19 @@ class SourceSettingsServices:
             )
         except Exception as error:
             raise ValueError("Public source settings are invalid") from error
+        if validated.tdx_path is not None:
+            with scoped_log_redaction(validated.tdx_path):
+                diagnostic = diagnose_source(
+                    ProviderId.TDX_LOCAL,
+                    token=None,
+                    tdx_path=Path(validated.tdx_path),
+                    factory=default_diagnostic_provider_factory,
+                    clock=self._clock,
+                )
+            if diagnostic.status is not CapabilityState.AVAILABLE:
+                raise SourceSettingsPreflightError(
+                    "TDX source configuration failed preflight"
+                )
         encoded = _canonical_public(validated)
         now = self._clock()
         statement = sqlite_insert(AppSetting).values(
@@ -1160,8 +1178,11 @@ def get_sources(
 def put_sources(
     request: PublicSourceSettings,
     services: SourceSettingsDependency,
-) -> SourceSettingsResponse:
-    services.save_public(request)
+) -> SourceSettingsResponse | JSONResponse:
+    try:
+        services.save_public(request)
+    except SourceSettingsPreflightError:
+        return _error("tdx_preflight_failed", status.HTTP_422_UNPROCESSABLE_CONTENT)
     return services.response()
 
 

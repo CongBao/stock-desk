@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import date
 from pathlib import Path
 from typing import cast
 
@@ -10,14 +11,11 @@ import stock_desk.formula.repository as repository_module
 from stock_desk.formula.functions import V1_REGISTRY
 from stock_desk.formula.functions.base import FutureBehavior
 from stock_desk.formula.functions.registry import CompatibilityRegistry
-from stock_desk.formula.repository import (
-    FormulaNotFound,
-    FormulaRepository,
-    FormulaValidationError,
-)
+from stock_desk.formula.repository import FormulaRepository, FormulaValidationError
 from stock_desk.formula.service import FormulaService
 from stock_desk.formula.validator import FormulaValidator
 from tests.unit.api.test_market_api import market_api
+from tests.integration.market.lake_test_helpers import routed_daily_bars
 
 
 def _repainting_registry() -> CompatibilityRegistry:
@@ -44,7 +42,9 @@ def test_future_or_repainting_formula_cannot_be_saved_or_backtested(
         ("future_data", "BUY:REF(C,-1)>0;SELL:C<0;", None),
         ("repainting", "BUY:ABS(C)>0;SELL:C<0;", _repainting_registry()),
     )
+    routed = routed_daily_bars((date(2024, 1, 2), date(2024, 1, 3)))
     with market_api(tmp_path) as context:
+        context.services.lake.write(routed)
         for expected_code, source, registry in cases:
             if registry is None:
                 monkeypatch.setattr(
@@ -64,6 +64,14 @@ def test_future_or_repainting_formula_cannot_be_saved_or_backtested(
                 {},
                 placement="subchart",
             )
+            service = FormulaService(
+                repository=repository,
+                lake=context.services.lake,
+            )
+            control_preview = service.preview_routed(published.id, routed, {})
+            control_backtest = service.preflight_backtest(published.id, {})
+            assert control_preview.formula_version_id == published.id
+            assert control_backtest.formula_version_id == published.id
             original = repository.get_draft(published.formula_id)
             draft = repository.update_draft(
                 published.formula_id,
@@ -92,9 +100,7 @@ def test_future_or_repainting_formula_cannot_be_saved_or_backtested(
             assert [
                 item.version for item in repository.list_versions(published.formula_id)
             ] == [1]
-            service = FormulaService(
-                repository=repository,
-                lake=context.services.lake,
-            )
-            with pytest.raises(FormulaNotFound):
-                service.preflight_backtest(published.formula_id, {})
+            # Preview and backtest accept immutable version IDs. The invalid draft
+            # has deliberately lost that capability, so no draft request can be
+            # formed; the prior valid version remains an explicit legal control.
+            assert persisted.executable_version_id is None

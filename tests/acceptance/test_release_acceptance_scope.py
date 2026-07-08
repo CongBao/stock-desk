@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import scripts.verify_release as verify_release_module
+
 
 DOMAIN_SELECTORS = (
     "tests/acceptance/test_market_period_adjustment_contract.py::test_period_and_adjustment_switches_recalculate_visible_market_and_indicator_values",
@@ -25,6 +27,7 @@ def _target_block(makefile: str, target: str) -> str:
 def test_all_first_release_acceptance_domains_and_full_journey_are_gated() -> None:
     root = Path(__file__).resolve().parents[2]
     makefile = (root / "Makefile").read_text(encoding="utf-8")
+    workflow = (root / ".github/workflows/release.yml").read_text(encoding="utf-8")
     domain_gate = _target_block(makefile, "acceptance-domain-contracts")
     journey_gate = _target_block(makefile, "acceptance-full-journey")
     release_line = next(
@@ -37,6 +40,17 @@ def test_all_first_release_acceptance_domains_and_full_journey_are_gated() -> No
     )
     assert "tests/acceptance/test_full_user_journey.py" in journey_gate
     assert "::" not in journey_gate
+    candidate_targets = {
+        gate.command[1]
+        for gate in verify_release_module._candidate_gates(target_performance=True)
+        if gate.command[:1] == ("make",)
+    }
+    assert {
+        "acceptance-domain-contracts",
+        "acceptance-full-journey",
+    } <= candidate_targets
+    assert "make acceptance-domain-contracts" in workflow
+    assert "make acceptance-full-journey" in workflow
     assert set(release_line.removeprefix("release-check:").split()) == {
         "test",
         "acceptance",

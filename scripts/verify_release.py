@@ -92,6 +92,8 @@ def _candidate_gates(*, target_performance: bool) -> tuple[GateCommand, ...]:
             "acceptance-formula",
             "acceptance-backtest",
             "acceptance-analysis",
+            "acceptance-domain-contracts",
+            "acceptance-full-journey",
             "performance-regressions",
             performance,
             "e2e-foundation",

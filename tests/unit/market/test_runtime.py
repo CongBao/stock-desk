@@ -26,6 +26,11 @@ from tests.unit.market.routing_test_helpers import (
     full_report,
     instrument_batch,
 )
+from tests.unit.market.providers.tdx_test_helpers import (
+    make_vipdoc_root,
+    raw_record,
+    write_tdx_file,
+)
 
 
 class _Provider:
@@ -81,7 +86,8 @@ def test_runtime_snapshot_routes_each_period_and_closes_partial_builds(
     )
     services = SourceSettingsServices(engine=engine, settings=settings)
     token = "runtime-token-must-stay-private"
-    tdx_path = (tmp_path / "vipdoc").resolve()
+    tdx_path = make_vipdoc_root(tmp_path).resolve()
+    write_tdx_file(tdx_path, "600000.SH", raw_record())
     services.update_tushare(TushareSourceUpdateRequest(token=SecretStr(token)))
     services.save_public(
         PublicSourceSettings(

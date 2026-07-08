@@ -1531,6 +1531,8 @@ def test_candidate_success_report_is_deterministic_and_uses_target_performance(
         ("make", "acceptance-formula"),
         ("make", "acceptance-backtest"),
         ("make", "acceptance-analysis"),
+        ("make", "acceptance-domain-contracts"),
+        ("make", "acceptance-full-journey"),
         ("make", "performance-regressions"),
         ("make", "performance-target"),
         ("make", "e2e-foundation"),
