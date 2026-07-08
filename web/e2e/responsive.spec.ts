@@ -134,6 +134,12 @@ async function expectNavigationIsOperable(page: Page) {
   }
 }
 
+async function emulateClassicScrollbar(page: Page) {
+  await page.addStyleTag({
+    content: '.primary-navigation::-webkit-scrollbar { width: 15px; }',
+  });
+}
+
 for (const viewport of viewports) {
   test.describe(viewport.name, () => {
     test.use({ viewport: { width: viewport.width, height: viewport.height } });
@@ -141,6 +147,7 @@ for (const viewport of viewports) {
     for (const route of routes) {
       test(`${route} has bounded non-overlapping layout`, async ({ page }) => {
         await page.goto(route);
+        await emulateClassicScrollbar(page);
         await expect(page.locator('#main-content')).toBeVisible();
         await expect(page.locator('.app-shell')).toHaveAttribute(
           'data-navigation-collapsed',

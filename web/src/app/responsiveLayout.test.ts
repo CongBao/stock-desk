@@ -36,9 +36,13 @@ it('uses the global context drawer only at the 1200px tablet breakpoint', () => 
 });
 
 it('uses a compact vertical rail instead of horizontally clipped navigation', () => {
+  expect(theme).toContain('--collapsed-rail-width: 80px');
   expect(theme).toContain(".app-shell[data-navigation-collapsed='true'] {");
   expect(theme).toMatch(
-    /\.app-shell\[data-navigation-collapsed='true'\]\s*\{[^}]*grid-template-columns:\s*72px minmax\(0, 1fr\)/su,
+    /\.app-shell\[data-navigation-collapsed='true'\]\s*\{[^}]*grid-template-columns:\s*var\(--collapsed-rail-width\) minmax\(0, 1fr\)/su,
+  );
+  expect(theme).not.toMatch(
+    /data-navigation-collapsed='true'[^}]*grid-template-columns:\s*72px/su,
   );
   expect(theme).toContain("[data-navigation-collapsed='true'] .nav-label");
   const mobile = theme.slice(theme.indexOf('@media (max-width: 760px)'));

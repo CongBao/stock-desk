@@ -28,6 +28,7 @@
   --fall: #22c55e;
   --warning: #f59e0b;
   --rail-width: 232px;
+  --collapsed-rail-width: 80px;
   --panel-width: 300px;
 }
 
@@ -109,7 +110,9 @@ a {
 }
 
 .app-shell[data-navigation-collapsed='true'] {
-  grid-template-columns: 72px minmax(0, 1fr) var(--panel-width);
+  grid-template-columns:
+    var(--collapsed-rail-width) minmax(0, 1fr)
+    var(--panel-width);
 }
 
 /* Application navigation rail */
@@ -4877,7 +4880,7 @@ a {
   }
 
   .app-shell[data-workspace='tasks'][data-navigation-collapsed='true'] {
-    grid-template-columns: 72px minmax(0, 1fr);
+    grid-template-columns: var(--collapsed-rail-width) minmax(0, 1fr);
   }
 
   .app-shell[data-workspace='tasks'] .context-toggle,
@@ -4920,7 +4923,7 @@ a {
   }
 
   .app-shell[data-workspace='formulas'][data-navigation-collapsed='true'] {
-    grid-template-columns: 72px minmax(0, 1fr);
+    grid-template-columns: var(--collapsed-rail-width) minmax(0, 1fr);
   }
 
   .app-shell[data-workspace='formulas'] .context-toggle,
@@ -4963,7 +4966,7 @@ a {
   }
 
   .app-shell[data-workspace='analysis'][data-navigation-collapsed='true'] {
-    grid-template-columns: 72px minmax(0, 1fr);
+    grid-template-columns: var(--collapsed-rail-width) minmax(0, 1fr);
   }
 
   .app-shell[data-workspace='analysis'] .context-toggle,
@@ -5008,7 +5011,7 @@ a {
   }
 
   .app-shell[data-navigation-collapsed='true'] {
-    grid-template-columns: 72px minmax(0, 1fr);
+    grid-template-columns: var(--collapsed-rail-width) minmax(0, 1fr);
   }
 
   .context-toggle,
@@ -5154,7 +5157,7 @@ a {
   }
 
   .app-shell {
-    grid-template-columns: 72px minmax(0, 1fr);
+    grid-template-columns: var(--collapsed-rail-width) minmax(0, 1fr);
   }
 
   .navigation-rail {
