@@ -1,15 +1,12 @@
 from __future__ import annotations
 
 import hashlib
-import io
 import json
 import os
-from pathlib import Path, PurePosixPath
-import re
+from pathlib import Path
 import subprocess
-import tarfile
 import tomllib
-import zipfile
+import tracemalloc
 
 import pytest
 import yaml
@@ -17,7 +14,11 @@ import yaml
 from scripts import build_installer
 from scripts.check_public_tree import forbidden_paths
 from scripts.source_fingerprint import compute_source_fingerprint
-from scripts.verify_release import check_build_artifacts, check_public_history
+from scripts.verify_release import (
+    ReleaseLeakScanner,
+    check_build_artifacts,
+    check_public_history,
+)
 from tests.acceptance.clean_install_harness import (
     CleanInstallResult,
     build_clean_install,
@@ -41,37 +42,6 @@ GENERATED_OR_PRIVATE_PREFIXES = (
     "test-results/",
     "web/dist/",
     "work/",
-)
-GENERATED_OR_PRIVATE_COMPONENTS = frozenset(
-    {
-        ".agents",
-        ".codex",
-        ".git",
-        ".mypy_cache",
-        ".pytest_cache",
-        ".ruff_cache",
-        ".superpowers",
-        ".venv",
-        "__pycache__",
-        "coverage",
-        "dist",
-        "htmlcov",
-        "node_modules",
-        "openspec",
-        "outputs",
-        "test-results",
-        "work",
-    }
-)
-PRIVATE_KEY_MARKERS = (
-    b"-----BEGIN " + b"OPENSSH PRIVATE KEY-----",
-    b"-----BEGIN " + b"RSA PRIVATE KEY-----",
-    b"-----BEGIN " + b"EC PRIVATE KEY-----",
-    b"-----BEGIN " + b"PRIVATE KEY-----",
-)
-HIGH_CONFIDENCE_SECRET_PATTERNS = (
-    re.compile(rb"gh[pousr]_[A-Za-z0-9]{36,}"),
-    re.compile(rb"AKIA[0-9A-Z]{16}"),
 )
 
 
@@ -99,109 +69,6 @@ def _history_paths() -> tuple[str, ...]:
     return tuple(os.fsdecode(item) for item in output.split(b"\0") if item)
 
 
-def _reachable_blob_payloads() -> tuple[bytes, ...]:
-    object_lines = _git_bytes("rev-list", "--objects", "HEAD").splitlines()
-    object_ids = tuple(
-        dict.fromkeys(line.split(maxsplit=1)[0] for line in object_lines)
-    )
-    query = b"\n".join(object_ids) + b"\n"
-    metadata = _git_bytes(
-        "cat-file",
-        "--batch-check=%(objectname) %(objecttype) %(objectsize)",
-        input_bytes=query,
-    )
-    blob_ids: list[bytes] = []
-    for line in metadata.splitlines():
-        object_id, object_type, raw_size = line.split()
-        if object_type == b"blob":
-            blob_ids.append(object_id)
-    if not blob_ids:
-        pytest.fail("reachable Git history has no public blobs to audit")
-
-    batch = _git_bytes(
-        "cat-file",
-        "--batch",
-        input_bytes=b"\n".join(blob_ids) + b"\n",
-    )
-    payloads: list[bytes] = []
-    cursor = 0
-    for expected_id in blob_ids:
-        header_end = batch.find(b"\n", cursor)
-        if header_end < 0:
-            pytest.fail("Git blob batch ended before its header")
-        object_id, object_type, raw_size = batch[cursor:header_end].split()
-        size = int(raw_size)
-        payload_start = header_end + 1
-        payload_end = payload_start + size
-        if object_id != expected_id or object_type != b"blob":
-            pytest.fail("Git blob batch returned an unexpected object")
-        payloads.append(batch[payload_start:payload_end])
-        if batch[payload_end : payload_end + 1] != b"\n":
-            pytest.fail("Git blob batch framing is invalid")
-        cursor = payload_end + 1
-    if cursor != len(batch):
-        pytest.fail("Git blob batch contains trailing data")
-    return tuple(payloads)
-
-
-def _assert_public_payload(payload: bytes, *, label: str) -> None:
-    local_checkout = os.fsencode(PROJECT_ROOT.resolve())
-    local_home = os.fsencode(Path.home().resolve()) + b"/"
-    assert local_checkout not in payload, f"{label} leaks the release checkout path"
-    assert local_home not in payload, f"{label} leaks the release operator home path"
-    for marker in PRIVATE_KEY_MARKERS:
-        assert marker not in payload, f"{label} contains private-key material"
-    for pattern in HIGH_CONFIDENCE_SECRET_PATTERNS:
-        assert pattern.search(payload) is None, (
-            f"{label} contains a credential-shaped token"
-        )
-
-
-def _assert_public_member_path(name: str, *, label: str) -> None:
-    path = PurePosixPath(name)
-    assert name and "\\" not in name and "\x00" not in name, label
-    assert not path.is_absolute() and ".." not in path.parts, label
-    assert path.as_posix() == name, label
-    assert GENERATED_OR_PRIVATE_COMPONENTS.isdisjoint(path.parts), label
-
-
-def _git_archive_payloads() -> tuple[tuple[str, bytes], ...]:
-    archive = _git_bytes("archive", "--format=tar", "HEAD")
-    payloads: list[tuple[str, bytes]] = []
-    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as source:
-        for member in source.getmembers():
-            _assert_public_member_path(member.name, label=member.name)
-            assert member.isfile() or member.isdir(), member.name
-            if member.isfile():
-                extracted = source.extractfile(member)
-                assert extracted is not None
-                payloads.append((member.name, extracted.read()))
-    return tuple(payloads)
-
-
-def _artifact_payloads(result: CleanInstallResult) -> tuple[tuple[str, bytes], ...]:
-    payloads: list[tuple[str, bytes]] = []
-    with tarfile.open(result.source_archive, "r:gz") as source:
-        for member in source.getmembers():
-            _assert_public_member_path(member.name, label=member.name)
-            if member.isfile():
-                extracted = source.extractfile(member)
-                assert extracted is not None
-                payloads.append((f"sdist:{member.name}", extracted.read()))
-    with zipfile.ZipFile(result.wheel) as wheel:
-        for member in wheel.infolist():
-            _assert_public_member_path(member.filename, label=member.filename)
-            assert not member.is_dir(), member.filename
-            payloads.append((f"wheel:{member.filename}", wheel.read(member)))
-    for path in sorted(result.web_entrypoint.parent.rglob("*")):
-        relative = path.relative_to(result.web_entrypoint.parent).as_posix()
-        _assert_public_member_path(relative, label=relative)
-        assert not path.is_symlink(), relative
-        if path.is_file():
-            payloads.append((f"web:{relative}", path.read_bytes()))
-    return tuple(payloads)
-
-
 def _workflow() -> dict[str, object]:
     loaded = yaml.safe_load(RELEASE_WORKFLOW.read_text(encoding="utf-8"))
     assert isinstance(loaded, dict)
@@ -216,7 +83,13 @@ def _project_version() -> str:
 
 
 def test_release_history_contains_only_public_artifacts() -> None:
-    check_public_history(PROJECT_ROOT)
+    tracemalloc.start()
+    try:
+        check_public_history(PROJECT_ROOT)
+        _, peak_bytes = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak_bytes < 8 * 1024 * 1024
 
     historical_paths = _history_paths()
     assert forbidden_paths(historical_paths) == []
@@ -227,13 +100,6 @@ def test_release_history_contains_only_public_artifacts() -> None:
         or path in {"coverage.xml", ".coverage"}
     )
     assert leaked_generated_paths == []
-
-    archived = _git_archive_payloads()
-    assert archived
-    for name, payload in archived:
-        _assert_public_payload(payload, label=f"source archive member {name}")
-    for index, payload in enumerate(_reachable_blob_payloads()):
-        _assert_public_payload(payload, label=f"reachable Git blob {index}")
 
 
 def test_source_wheel_and_web_artifacts_match_the_bound_public_revision(
@@ -247,8 +113,6 @@ def test_source_wheel_and_web_artifacts_match_the_bound_public_revision(
         == _git_bytes("rev-parse", "HEAD").decode().strip()
     )
     assert release_build.source_fingerprint == compute_source_fingerprint(PROJECT_ROOT)
-    for name, payload in _artifact_payloads(release_build):
-        _assert_public_payload(payload, label=name)
 
 
 @pytest.mark.parametrize(
@@ -306,6 +170,12 @@ def test_native_manifest_checksum_sbom_and_attestation_chain_is_revision_bound(
         **source_identity,
         "version": version,
     }
+    for path in (artifact, checksum, manifest):
+        scanner = ReleaseLeakScanner(label=path.name)
+        with path.open("rb") as payload:
+            for chunk in iter(lambda: payload.read(8192), b""):
+                scanner.feed(chunk)
+        scanner.finish()
 
     workflow = _workflow()
     jobs = workflow["jobs"]

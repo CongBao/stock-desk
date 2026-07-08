@@ -69,6 +69,46 @@ def test_mapping_cli_collects_every_existing_selector() -> None:
     assert "planned/manual evidence explicitly enumerated" in result.stdout
 
 
+def test_pre_publish_gate_rejects_planned_and_release_acceptance_evidence(
+    checker: ModuleType,
+) -> None:
+    items = [
+        {
+            "id": "R-001",
+            "evidence": [{"state": "planned"}],
+        },
+        {
+            "id": "R-002",
+            "evidence": [
+                {
+                    "state": "manual",
+                    "completed": False,
+                    "required_by_gate": "release-acceptance",
+                }
+            ],
+        },
+        {
+            "id": "R-003",
+            "evidence": [
+                {
+                    "state": "manual",
+                    "completed": False,
+                    "required_by_gate": "final-release-audit",
+                }
+            ],
+        },
+    ]
+
+    assert checker._evidence_gate_errors(items, mode="pre-publish") == [
+        "planned evidence: R-001",
+        "incomplete release-acceptance manual evidence: R-002",
+    ]
+    assert checker._evidence_gate_errors(items, mode="release") == [
+        "planned evidence: R-001",
+        "incomplete manual evidence: R-002, R-003",
+    ]
+
+
 def test_manifest_has_exact_ids_and_unique_semantics(matrix: dict[str, object]) -> None:
     requirements = matrix["requirements"]
     non_goals = matrix["non_goals"]

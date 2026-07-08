@@ -10,6 +10,7 @@ from pathlib import Path
 import subprocess
 import tarfile
 import tomllib
+import tracemalloc
 import zipfile
 
 import pytest
@@ -18,6 +19,7 @@ import scripts.verify_release as verify_release_module
 from scripts.verify_release import (
     GateCommand,
     ReleaseVerificationError,
+    ReleaseLeakScanner,
     SubprocessGateRunner,
     check_build_artifacts,
     check_changelog,
@@ -668,7 +670,10 @@ def test_reports_a_failed_canonical_gate(release_repo: Path) -> None:
     with pytest.raises(ReleaseVerificationError, match="release gate failed"):
         run_verifier(release_repo, runner)
 
-    assert [call.command for call in runner.calls] == [("make", "release-check")]
+    assert [call.command for call in runner.calls] == [
+        verify_release_module.PRE_PUBLISH_EVIDENCE_GATE.command,
+        ("make", "release-check"),
+    ]
 
 
 def test_accepts_a_future_release_with_a_different_valid_date(
@@ -1241,6 +1246,7 @@ def test_success_runs_timed_gates_and_rechecks_clean_sources(
     run_verifier(release_repo, runner)
 
     assert runner.calls == [
+        verify_release_module.PRE_PUBLISH_EVIDENCE_GATE,
         GateCommand(("make", "release-check"), timeout_seconds=1800),
         GateCommand(
             ("pnpm", "e2e"),
@@ -1248,6 +1254,103 @@ def test_success_runs_timed_gates_and_rechecks_clean_sources(
             environment=(("STOCK_DESK_E2E_BASE_URL", E2E_BASE_URL),),
         ),
     ]
+
+
+def test_candidate_and_final_release_require_complete_requirement_evidence(
+    release_repo: Path,
+) -> None:
+    evidence_gate = GateCommand(
+        (
+            "uv",
+            "run",
+            "--frozen",
+            "python",
+            "scripts/check_requirement_coverage.py",
+            "--mode",
+            "pre-publish",
+        ),
+        timeout_seconds=300,
+    )
+    assert evidence_gate in verify_release_module._candidate_gates(
+        target_performance=False
+    )
+
+    runner = FakeGateRunner(release_repo)
+    run_verifier(release_repo, runner)
+    assert evidence_gate in runner.calls
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"/home/" + b"real-operator" + b"/stock-desk/data.db",
+        b"/Users/" + b"release-user" + b"/Workspace/stock-desk",
+        b"C:\\Users\\" + b"release-user" + b"\\stock-desk\\data.db",
+        b"OPENAI_API_" + b"KEY=sk-" + b"A7" * 24,
+        b"DEEPSEEK_API_" + b"KEY=sk-" + b"B8" * 24,
+        b"DASHSCOPE_API_" + b"KEY=sk-" + b"C9" * 24,
+        b"TUSHARE_" + b"TOKEN=" + b"d4" * 24,
+    ],
+)
+def test_release_leak_scanner_rejects_cross_platform_paths_and_provider_tokens(
+    payload: bytes,
+) -> None:
+    scanner = ReleaseLeakScanner(label="fixture")
+
+    with pytest.raises(ReleaseVerificationError, match="release payload"):
+        scanner.feed(payload)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"Use OPENAI_API_KEY as the environment variable name.",
+        b"TUSHARE_TOKEN=secret",
+        b"/home/example/private/session",
+        b"/Users/operator/worktree",
+        b"C:\\Users\\owner\\AppData\\Local",
+        b"masked key: sk-a" + "\u2022".encode() * 8 + b"tail",
+    ],
+)
+def test_release_leak_scanner_allows_documentation_and_synthetic_placeholders(
+    payload: bytes,
+) -> None:
+    scanner = ReleaseLeakScanner(label="fixture")
+    scanner.feed(payload)
+    scanner.finish()
+
+
+def test_release_leak_scanner_detects_tokens_split_across_chunks() -> None:
+    token = b"OPENAI_API_" + b"KEY=sk-" + b"Q7" * 24
+    token_value_start = token.index(b"sk-") + len(b"sk-")
+    for split in range(token_value_start + 1, token_value_start + 24):
+        scanner = ReleaseLeakScanner(label="split fixture")
+        scanner.feed(token[:split])
+        with pytest.raises(ReleaseVerificationError, match="release payload"):
+            scanner.feed(token[split:])
+
+
+def test_release_leak_scanner_has_bounded_rss_and_consumes_chunks_once() -> None:
+    chunk = b"ordinary public release bytes\n" * 2048
+    iterations = 0
+
+    def chunks() -> object:
+        nonlocal iterations
+        for _ in range(512):
+            iterations += 1
+            yield chunk
+
+    tracemalloc.start()
+    scanner = ReleaseLeakScanner(label="large stream")
+    for payload in chunks():
+        assert isinstance(payload, bytes)
+        scanner.feed(payload)
+    scanner.finish()
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+
+    assert iterations == 512
+    assert peak < 2 * 1024 * 1024
 
 
 def test_final_verifier_reports_initial_and_final_fingerprint_failures(
@@ -1547,6 +1650,7 @@ def test_candidate_success_report_is_deterministic_and_uses_target_performance(
         ("make", "security"),
         ("uv", "run", "--frozen", "python", "scripts/verify_docs.py"),
         ("make", "public-tree"),
+        verify_release_module.PRE_PUBLISH_EVIDENCE_GATE.command,
     ]
 
 

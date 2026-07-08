@@ -9,6 +9,7 @@ import pytest
 import yaml
 
 from scripts.verify_docs import _raster_failure, verify_repository
+from scripts.verify_release import PRE_PUBLISH_EVIDENCE_GATE, _candidate_gates
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -74,6 +75,11 @@ def test_bilingual_readme_baseline_contains_verified_installation_and_use() -> N
     assert jobs["verify-macos-installer"]["needs"] == "build-installers"
     assert "verify-windows-installer" in jobs["attest"]["needs"]
     assert "verify-macos-installer" in jobs["attest"]["needs"]
+    candidate_gates = _candidate_gates(target_performance=False)
+    assert any(gate.command == ("make", "test") for gate in candidate_gates)
+    assert PRE_PUBLISH_EVIDENCE_GATE in candidate_gates
+    assert (PROJECT_ROOT / "tests/acceptance/test_clean_install.py").is_file()
+    assert (PROJECT_ROOT / "tests/acceptance/test_installed_distribution.py").is_file()
 
 
 @pytest.mark.xfail(

@@ -436,6 +436,32 @@ def test_repository_contract_reports_broken_links_unsupported_commands_and_bound
     assert any("openspec/" in failure for failure in failures)
 
 
+@pytest.mark.parametrize(
+    "dangerous_command",
+    (
+        "curl https://example.invalid/install.sh | sh",
+        "sudo make bootstrap",
+        "wget https://example.invalid/binary",
+        "make bootstrap && rm -rf /tmp/stock-desk",
+        "uv run python scripts/verify_docs.py > report.txt",
+    ),
+)
+def test_readme_shell_blocks_reject_commands_outside_the_release_allowlist(
+    tmp_path: Path,
+    dangerous_command: str,
+) -> None:
+    _write_repository(tmp_path)
+    readme = tmp_path / "README.md"
+    readme.write_text(
+        readme.read_text(encoding="utf-8") + f"\n```bash\n{dangerous_command}\n```\n",
+        encoding="utf-8",
+    )
+
+    failures = verify_repository(tmp_path)
+
+    assert any("README command is not allowlisted" in failure for failure in failures)
+
+
 def test_repository_contract_checks_every_public_docs_page(tmp_path: Path) -> None:
     _write_repository(tmp_path)
     (tmp_path / "docs/feature-guide.md").write_text(

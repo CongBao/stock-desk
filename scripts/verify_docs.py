@@ -6,6 +6,7 @@ from html.parser import HTMLParser
 import os
 from pathlib import Path
 import re
+import shlex
 import subprocess
 import sys
 from typing import Literal
@@ -329,6 +330,8 @@ def _command_failures(repo_root: Path, relative_path: str, document: str) -> lis
     failures: list[str] = []
     make_targets = _make_targets(repo_root)
     for block in _FENCED_SHELL.findall(document):
+        if relative_path in {"README.md", "README.zh-CN.md"}:
+            failures.extend(_readme_command_failures(repo_root, relative_path, block))
         for target in _MAKE_COMMAND.findall(block):
             if target not in make_targets:
                 failures.append(
@@ -339,6 +342,85 @@ def _command_failures(repo_root: Path, relative_path: str, document: str) -> lis
                 failures.append(
                     f"{relative_path}: command references missing script: {script}"
                 )
+    return failures
+
+
+def _logical_shell_commands(block: str) -> tuple[str, ...]:
+    commands: list[str] = []
+    pending = ""
+    for raw_line in block.splitlines():
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        pending = f"{pending} {stripped}".strip()
+        if pending.endswith("\\"):
+            pending = pending[:-1].rstrip()
+            continue
+        commands.append(pending)
+        pending = ""
+    if pending:
+        commands.append(pending)
+    return tuple(commands)
+
+
+def _allowed_attestation_command(arguments: list[str]) -> bool:
+    if (
+        len(arguments) < 7
+        or arguments[:3] != ["gh", "attestation", "verify"]
+        or arguments[3] not in {"INSTALLER", "INSTALLER_PATH"}
+    ):
+        return False
+    options = arguments[4:]
+    expected = {
+        "--repo": "CongBao/stock-desk",
+        "--signer-workflow": "CongBao/stock-desk/.github/workflows/release.yml",
+    }
+    optional = {
+        "--predicate-type": "https://spdx.dev/Document/v2.3",
+    }
+    observed: dict[str, str] = {}
+    if len(options) % 2:
+        return False
+    for index in range(0, len(options), 2):
+        name, value = options[index : index + 2]
+        if name in observed or name not in expected | optional:
+            return False
+        observed[name] = value
+    return all(observed.get(name) == value for name, value in expected.items()) and all(
+        observed.get(name, value) == value for name, value in optional.items()
+    )
+
+
+def _readme_command_failures(
+    repo_root: Path, relative_path: str, block: str
+) -> list[str]:
+    make_targets = _make_targets(repo_root)
+    allowed_exact = {
+        ("docker", "compose", "up", "--build", "--wait"),
+        ("docker", "compose", "down", "--volumes", "--remove-orphans"),
+        ("uv", "run", "--frozen", "python", "scripts/verify_docs.py"),
+    }
+    failures: list[str] = []
+    for command in _logical_shell_commands(block):
+        if any(token in command for token in ("|", ";", "`", "$(", ">", "<")):
+            failures.append(f"{relative_path}: README command is not allowlisted")
+            continue
+        try:
+            arguments = shlex.split(command, posix=True)
+        except ValueError:
+            failures.append(f"{relative_path}: README command is not allowlisted")
+            continue
+        allowed = (
+            tuple(arguments) in allowed_exact
+            or (
+                len(arguments) == 2
+                and arguments[0] == "make"
+                and arguments[1] in make_targets
+            )
+            or _allowed_attestation_command(arguments)
+        )
+        if not allowed:
+            failures.append(f"{relative_path}: README command is not allowlisted")
     return failures
 
 

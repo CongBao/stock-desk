@@ -19,6 +19,7 @@ import re
 import subprocess
 import sys
 import tarfile
+import tempfile
 import tomllib
 from typing import Protocol
 import zipfile
@@ -55,6 +56,130 @@ class GateCommand:
     command: tuple[str, ...]
     timeout_seconds: int
     environment: tuple[tuple[str, str], ...] = ()
+
+
+PRE_PUBLISH_EVIDENCE_GATE = GateCommand(
+    (
+        "uv",
+        "run",
+        "--frozen",
+        "python",
+        "scripts/check_requirement_coverage.py",
+        "--mode",
+        "pre-publish",
+    ),
+    timeout_seconds=300,
+)
+
+_RELEASE_SCAN_CHUNK_SIZE = 64 * 1024
+_RELEASE_SCAN_OVERLAP = 4096
+_SYNTHETIC_HOME_USERS = frozenset(
+    {"bao", "example", "owner", "operator", "user", "username"}
+)
+_POSIX_HOME_PATH = re.compile(rb"/(?:home|Users)/(?P<user>[A-Za-z0-9._-]{1,64})/")
+_WINDOWS_HOME_PATH = re.compile(
+    rb"(?i)(?:[A-Z]:)?[\\/]Users[\\/](?P<user>[A-Za-z0-9._-]{1,64})[\\/]"
+)
+_PRIVATE_KEY_MARKERS = (
+    b"-----BEGIN " + b"OPENSSH PRIVATE KEY-----",
+    b"-----BEGIN " + b"RSA PRIVATE KEY-----",
+    b"-----BEGIN " + b"EC PRIVATE KEY-----",
+    b"-----BEGIN " + b"PRIVATE KEY-----",
+)
+_DIRECT_CREDENTIAL_PATTERNS = (
+    re.compile(rb"\bgh[pousr]_[A-Za-z0-9]{36,}\b"),
+    re.compile(rb"\bAKIA[0-9A-Z]{16}\b"),
+    re.compile(rb"\bsk-(?:proj-)?[A-Za-z0-9]{32,}\b"),
+    re.compile(rb"\bsk-ant-[A-Za-z0-9_-]{32,}\b"),
+)
+_PROVIDER_CREDENTIAL = re.compile(
+    rb"(?ix)\b(?:OPENAI_API_KEY|DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|"
+    rb"QWEN_API_KEY|MOONSHOT_API_KEY|ZHIPU_API_KEY|TUSHARE_TOKEN|"
+    rb"MODEL_API_KEY|STOCK_DESK_MASTER_KEY)\s*[:=]\s*[\"']?"
+    rb"(?P<value>(?:sk-[A-Za-z0-9._-]{24,}|[A-Za-z0-9][A-Za-z0-9._-]{31,}))"
+)
+_GENERATED_OR_PRIVATE_COMPONENTS = frozenset(
+    {
+        ".agents",
+        ".codex",
+        ".git",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".superpowers",
+        ".venv",
+        "__pycache__",
+        "coverage",
+        "dist",
+        "htmlcov",
+        "node_modules",
+        "openspec",
+        "outputs",
+        "test-results",
+        "work",
+    }
+)
+
+
+class ReleaseLeakScanner:
+    """Incrementally reject high-confidence private release payloads."""
+
+    def __init__(self, *, label: str) -> None:
+        self._label = label
+        self._tail = b""
+
+    def feed(self, payload: bytes) -> None:
+        if not payload:
+            return
+        window = self._tail + payload
+        self._scan(window)
+        self._tail = window[-_RELEASE_SCAN_OVERLAP:]
+
+    def finish(self) -> None:
+        self._tail = b""
+
+    def _scan(self, payload: bytes) -> None:
+        for pattern in (_POSIX_HOME_PATH, _WINDOWS_HOME_PATH):
+            for match in pattern.finditer(payload):
+                user = match.group("user").decode("ascii").casefold()
+                if user not in _SYNTHETIC_HOME_USERS:
+                    self._reject()
+        if any(marker in payload for marker in _PRIVATE_KEY_MARKERS):
+            self._reject()
+        if any(pattern.search(payload) for pattern in _DIRECT_CREDENTIAL_PATTERNS):
+            self._reject()
+        if _PROVIDER_CREDENTIAL.search(payload) is not None:
+            self._reject()
+
+    def _reject(self) -> None:
+        raise ReleaseVerificationError(
+            f"release payload contains private path or credential material: {self._label}"
+        )
+
+
+def _scan_stream(stream: object, *, label: str) -> None:
+    reader = getattr(stream, "read", None)
+    if not callable(reader):
+        raise ReleaseVerificationError("release payload stream is unreadable")
+    scanner = ReleaseLeakScanner(label=label)
+    while True:
+        chunk = reader(_RELEASE_SCAN_CHUNK_SIZE)
+        if not chunk:
+            break
+        if not isinstance(chunk, bytes):
+            raise ReleaseVerificationError("release payload stream is not binary")
+        scanner.feed(chunk)
+    scanner.finish()
+
+
+def _scan_path(path: Path, *, label: str) -> None:
+    try:
+        with path.open("rb") as payload:
+            _scan_stream(payload, label=label)
+    except ReleaseVerificationError:
+        raise
+    except OSError as error:
+        raise ReleaseVerificationError("unable to scan release payload") from error
 
 
 class GateRunner(Protocol):
@@ -113,6 +238,7 @@ def _candidate_gates(*, target_performance: bool) -> tuple[GateCommand, ...]:
             timeout_seconds=300,
         ),
         GateCommand(("make", "public-tree"), timeout_seconds=300),
+        PRE_PUBLISH_EVIDENCE_GATE,
     )
 
 
@@ -143,6 +269,160 @@ def _git_paths(repo: Path, *arguments: str) -> list[str]:
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
         raise ReleaseVerificationError("unable to inspect Git paths") from error
     return [os.fsdecode(path) for path in result.stdout.split(b"\0") if path]
+
+
+def _reachable_object_ids(repo: Path) -> tuple[bytes, ...]:
+    try:
+        result = subprocess.run(  # noqa: S603
+            ("git", "-C", os.fspath(repo), "rev-list", "--objects", "HEAD"),
+            check=True,
+            capture_output=True,
+            timeout=GIT_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+        raise ReleaseVerificationError(
+            "unable to inspect reachable Git objects"
+        ) from error
+    object_ids = tuple(
+        dict.fromkeys(line.split(maxsplit=1)[0] for line in result.stdout.splitlines())
+    )
+    if not object_ids:
+        raise ReleaseVerificationError("reachable Git history has no objects")
+    return object_ids
+
+
+def _scan_reachable_git_blobs(repo: Path) -> None:
+    object_ids = _reachable_object_ids(repo)
+    with tempfile.TemporaryFile() as query:
+        for object_id in object_ids:
+            query.write(object_id + b"\n")
+        query.seek(0)
+        try:
+            process = subprocess.Popen(  # noqa: S603
+                ("git", "-C", os.fspath(repo), "cat-file", "--batch"),
+                stdin=query,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError as error:
+            raise ReleaseVerificationError(
+                "unable to scan reachable Git blobs"
+            ) from error
+        assert process.stdout is not None
+        try:
+            for expected_id in object_ids:
+                header = process.stdout.readline()
+                fields = header.rstrip(b"\n").split()
+                if len(fields) != 3:
+                    raise ReleaseVerificationError(
+                        "reachable Git object framing is invalid"
+                    )
+                object_id, object_type, raw_size = fields
+                if object_id != expected_id or not raw_size.isdigit():
+                    raise ReleaseVerificationError(
+                        "reachable Git object framing is invalid"
+                    )
+                remaining = int(raw_size)
+                scanner = (
+                    ReleaseLeakScanner(label="reachable Git blob")
+                    if object_type == b"blob"
+                    else None
+                )
+                while remaining:
+                    chunk = process.stdout.read(
+                        min(_RELEASE_SCAN_CHUNK_SIZE, remaining)
+                    )
+                    if not chunk:
+                        raise ReleaseVerificationError(
+                            "reachable Git object ended unexpectedly"
+                        )
+                    remaining -= len(chunk)
+                    if scanner is not None:
+                        scanner.feed(chunk)
+                if scanner is not None:
+                    scanner.finish()
+                if process.stdout.read(1) != b"\n":
+                    raise ReleaseVerificationError(
+                        "reachable Git object framing is invalid"
+                    )
+            if process.stdout.read(1):
+                raise ReleaseVerificationError(
+                    "reachable Git object stream has trailing data"
+                )
+            try:
+                return_code = process.wait(timeout=GIT_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired as error:
+                process.kill()
+                process.wait()
+                raise ReleaseVerificationError(
+                    "reachable Git object scan timed out"
+                ) from error
+            if return_code != 0:
+                raise ReleaseVerificationError("unable to scan reachable Git blobs")
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+            process.stdout.close()
+
+
+def _safe_release_member_path(name: str) -> bool:
+    path = PurePosixPath(name)
+    return (
+        bool(name)
+        and "\\" not in name
+        and "\x00" not in name
+        and not path.is_absolute()
+        and ".." not in path.parts
+        and path.as_posix() == name
+        and _GENERATED_OR_PRIVATE_COMPONENTS.isdisjoint(path.parts)
+    )
+
+
+def _scan_git_archive(repo: Path) -> None:
+    try:
+        process = subprocess.Popen(  # noqa: S603
+            ("git", "-C", os.fspath(repo), "archive", "--format=tar", "HEAD"),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError as error:
+        raise ReleaseVerificationError("unable to scan the source archive") from error
+    assert process.stdout is not None
+    try:
+        with tarfile.open(fileobj=process.stdout, mode="r|") as archive:
+            for member in archive:
+                if not _safe_release_member_path(member.name):
+                    raise ReleaseVerificationError(
+                        "release source archive contains a private or generated path"
+                    )
+                if member.isdir():
+                    continue
+                if not member.isfile():
+                    raise ReleaseVerificationError(
+                        "release source archive contains an unsupported member"
+                    )
+                payload = archive.extractfile(member)
+                if payload is None:
+                    raise ReleaseVerificationError(
+                        "release source archive member is unreadable"
+                    )
+                _scan_stream(payload, label="source archive member")
+        try:
+            return_code = process.wait(timeout=GIT_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired as error:
+            process.kill()
+            process.wait()
+            raise ReleaseVerificationError("source archive scan timed out") from error
+        if return_code != 0:
+            raise ReleaseVerificationError("unable to scan the source archive")
+    except (tarfile.TarError, OSError) as error:
+        raise ReleaseVerificationError("unable to scan the source archive") from error
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+        process.stdout.close()
 
 
 def compute_fixture_hashes(repo: Path) -> dict[str, str]:
@@ -385,6 +665,8 @@ def check_public_history(repo: Path) -> None:
         raise ReleaseVerificationError(
             "reachable Git history contains forbidden internal paths"
         )
+    _scan_reachable_git_blobs(repo)
+    _scan_git_archive(repo)
 
 
 def _check_package_metadata(
@@ -555,6 +837,9 @@ def _check_wheel_artifact(repo: Path, wheel_path: Path, version: str) -> bytes:
             or any(member.is_dir() for member in wheel.infolist())
         ):
             raise _invalid_wheel()
+        for member in wheel.infolist():
+            with wheel.open(member) as payload:
+                _scan_stream(payload, label="wheel member")
         archive_payloads = {
             member.filename: wheel.read(member)
             for member in wheel.infolist()
@@ -669,6 +954,9 @@ def _check_source_artifact(repo: Path, source_path: Path, version: str) -> bytes
                 raise _invalid_source()
             payload = member_file.read()
             relative_name = relative_path.as_posix()
+            scanner = ReleaseLeakScanner(label="source distribution member")
+            scanner.feed(payload)
+            scanner.finish()
             archive_payloads[relative_name] = payload
             if relative_name != "PKG-INFO":
                 repository_payload = _read_bound_repository_file(repo, relative_path)
@@ -705,6 +993,14 @@ def check_build_artifacts(repo: Path, version: str) -> None:
     ):
         raise ReleaseVerificationError("release web build artifact is missing")
     try:
+        for web_path in sorted(web_entrypoint.parent.rglob("*")):
+            relative = web_path.relative_to(web_entrypoint.parent).as_posix()
+            if not _safe_release_member_path(relative) or web_path.is_symlink():
+                raise ReleaseVerificationError(
+                    "release web build artifact contains an unsafe path"
+                )
+            if web_path.is_file():
+                _scan_path(web_path, label="web build member")
         web_html = web_entrypoint.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as error:
         raise ReleaseVerificationError(
@@ -900,6 +1196,7 @@ def verify_release(
         ) from error
 
     gates = (
+        PRE_PUBLISH_EVIDENCE_GATE,
         GateCommand(("make", "release-check"), timeout_seconds=1800),
         GateCommand(
             ("pnpm", "e2e"),

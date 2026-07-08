@@ -834,6 +834,8 @@ def _collect_existing_selectors(
     items: Iterable[Mapping[str, Any]],
     repo_root: Path,
     tracked_paths: frozenset[str] | None = None,
+    *,
+    execute_pytest_evidence: bool = False,
 ) -> None:
     pytest_selectors: list[str] = []
     frontend: dict[tuple[str, str], list[str]] = {}
@@ -862,6 +864,17 @@ def _collect_existing_selectors(
             raise ValidationError(
                 f"pytest selectors did not collect:\n{result.stdout}{result.stderr}"
             )
+        if execute_pytest_evidence:
+            result = _run_collection_command(
+                [sys.executable, "-m", "pytest", "--runxfail", "-q", *unique],
+                repo_root=repo_root,
+                runner="pytest evidence",
+            )
+            if result.returncode != 0:
+                raise ValidationError(
+                    "pytest evidence did not pass without xfail semantics:\n"
+                    f"{result.stdout}{result.stderr}"
+                )
     for (runner, path), selectors in sorted(frontend.items()):
         command = (
             [
@@ -894,6 +907,42 @@ def _collect_existing_selectors(
         GATE_REGISTRY[gate_id](repo_root, tracked_paths)
 
 
+def _evidence_gate_errors(
+    items: Sequence[Mapping[str, Any]], *, mode: str
+) -> list[str]:
+    if mode == "mapping":
+        return []
+    planned = sorted(
+        str(item["id"])
+        for item in items
+        if any(evidence["state"] == "planned" for evidence in item["evidence"])
+    )
+    incomplete_manual = sorted(
+        str(item["id"])
+        for item in items
+        if any(
+            evidence["state"] == "manual"
+            and not evidence["completed"]
+            and (
+                mode == "release"
+                or evidence["required_by_gate"] == "release-acceptance"
+            )
+            for evidence in item["evidence"]
+        )
+    )
+    errors: list[str] = []
+    if planned:
+        errors.append("planned evidence: " + ", ".join(planned))
+    if incomplete_manual:
+        label = (
+            "incomplete manual evidence"
+            if mode == "release"
+            else "incomplete release-acceptance manual evidence"
+        )
+        errors.append(f"{label}: " + ", ".join(incomplete_manual))
+    return errors
+
+
 def validate_manifest(
     matrix: dict[str, Any],
     *,
@@ -901,8 +950,12 @@ def validate_manifest(
     mode: str,
     verify_selectors: bool = True,
 ) -> dict[str, int]:
-    if not isinstance(mode, str) or mode not in {"mapping", "release"}:
-        raise ValidationError("mode must be mapping or release")
+    if not isinstance(mode, str) or mode not in {
+        "mapping",
+        "pre-publish",
+        "release",
+    }:
+        raise ValidationError("mode must be mapping, pre-publish, or release")
     _reject_publication_boundary(matrix)
     _expect_exact_fields(matrix, ROOT_FIELDS, "manifest")
     if type(matrix["schema_version"]) is not int or matrix["schema_version"] != 1:
@@ -962,31 +1015,16 @@ def validate_manifest(
             raise ValidationError(f"{expected_id} must use non_goal kind")
         validated.append(item)
     _reject_publication_boundary(matrix)
-    if mode == "release":
-        planned = sorted(
-            item["id"]
-            for item in validated
-            if any(evidence["state"] == "planned" for evidence in item["evidence"])
-        )
-        incomplete_manual = sorted(
-            item["id"]
-            for item in validated
-            if any(
-                evidence["state"] == "manual" and not evidence["completed"]
-                for evidence in item["evidence"]
-            )
-        )
-        release_errors: list[str] = []
-        if planned:
-            release_errors.append("planned evidence: " + ", ".join(planned))
-        if incomplete_manual:
-            release_errors.append(
-                "incomplete manual evidence: " + ", ".join(incomplete_manual)
-            )
-        if release_errors:
-            raise ValidationError("; ".join(release_errors))
+    release_errors = _evidence_gate_errors(validated, mode=mode)
+    if release_errors:
+        raise ValidationError("; ".join(release_errors))
     if verify_selectors:
-        _collect_existing_selectors(validated, repo_root, tracked_paths)
+        _collect_existing_selectors(
+            validated,
+            repo_root,
+            tracked_paths,
+            execute_pytest_evidence=mode != "mapping",
+        )
     return {
         "requirements": len(requirements),
         "non_goals": len(non_goals),
@@ -1020,7 +1058,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Validate executable v1 requirement coverage"
     )
-    parser.add_argument("--mode", required=True, choices=("mapping", "release"))
+    parser.add_argument(
+        "--mode", required=True, choices=("mapping", "pre-publish", "release")
+    )
     return parser.parse_args(argv)
 
 
