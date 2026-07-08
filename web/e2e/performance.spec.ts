@@ -251,9 +251,9 @@ async function proveChartInteractionHandshake(
   const zoomedAt = performance.now();
 
   const beforeDrag = await zoomRange();
-  await page.mouse.move(box.x + box.width * 0.7, box.y + 120);
+  await page.mouse.move(box.x + box.width * 0.5, box.y + 120);
   await page.mouse.down();
-  await page.mouse.move(box.x + box.width * 0.5, box.y + 120, { steps: 2 });
+  await page.mouse.move(box.x + box.width * 0.7, box.y + 120, { steps: 2 });
   await page.mouse.up();
   await expect.poll(zoomRange, poll).not.toBe(beforeDrag);
   const draggedAt = performance.now();
