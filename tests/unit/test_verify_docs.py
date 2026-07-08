@@ -720,12 +720,18 @@ def test_final_wiki_requires_fully_decoded_useful_raster_screenshots(
     fake.write_bytes(b"\x89PNG\r\n\x1a\nnot-a-decoded-image")
     tiny = image_dir / "tiny.png"
     tiny.write_bytes(_png_bytes(1, 1, varied=False))
+    uniform = image_dir / "uniform.png"
+    uniform.write_bytes(_png_bytes(640, 360, varied=False))
     svg = image_dir / "fake.svg"
     svg.write_text("<svg xmlns='http://www.w3.org/2000/svg'></svg>", encoding="utf-8")
     page = tmp_path / "Backtesting.md"
     document = page.read_text(encoding="utf-8")
     document = document.replace("images/Backtesting.png", "images/fake.png")
-    document += "\n![Tiny](images/tiny.png)\n![Vector](images/fake.svg)\n"
+    document += (
+        "\n![Tiny](images/tiny.png)\n"
+        "![Uniform](images/uniform.png)\n"
+        "![Vector](images/fake.svg)\n"
+    )
     page.write_text(document, encoding="utf-8")
 
     failures = verify_wiki(tmp_path, final=True)
@@ -735,6 +741,10 @@ def test_final_wiki_requires_fully_decoded_useful_raster_screenshots(
     )
     assert any(
         "images/tiny.png" in failure and "dimensions" in failure for failure in failures
+    )
+    assert any(
+        "images/uniform.png" in failure and "content" in failure
+        for failure in failures
     )
     assert any(
         "images/fake.svg" in failure and "unsupported" in failure
