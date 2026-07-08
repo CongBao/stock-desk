@@ -8,6 +8,8 @@ import hashlib
 import json
 import math
 from pathlib import Path
+import re
+import subprocess
 from typing import Any, Literal, Self
 from zoneinfo import ZoneInfo
 
@@ -40,6 +42,12 @@ MINIMUM_SAMPLE_COUNT = 20
 MINIMUM_EFFECTIVE_MEMORY_BYTES = 15 * 1024**3
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 _SHA256_PREFIX = "sha256:"
+_SEMVER = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$")
+_NODE_VERSION = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+$")
+_PLAYWRIGHT_VERSION = re.compile(r"^Version [0-9]+\.[0-9]+\.[0-9]+$")
+_CHROMIUM_VERSION = re.compile(r"^Chromium [0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$")
+_UBUNTU_IMAGE_OS = re.compile(r"^ubuntu[0-9]{2}$")
+_UBUNTU_IMAGE_VERSION = re.compile(r"^[0-9]{8}\.[0-9]+(?:\.[0-9]+)?$")
 
 
 class PerformanceGateError(ValueError):
@@ -249,6 +257,30 @@ def _text(value: object, label: str) -> str:
     return value
 
 
+def _version(value: object, label: str, pattern: re.Pattern[str]) -> str:
+    checked = _text(value, label)
+    if pattern.fullmatch(checked) is None:
+        raise PerformanceGateError(f"{label} has an invalid version format")
+    return checked
+
+
+def _require_local_commit_object(sha: str) -> None:
+    try:
+        completed = subprocess.run(
+            ["git", "cat-file", "-e", f"{sha}^{{commit}}"],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise PerformanceGateError(
+            "git SHA could not be verified as a local commit object"
+        ) from error
+    if completed.returncode != 0:
+        raise PerformanceGateError("git SHA is not a local commit object")
+
+
 def _integer(value: object, label: str, *, minimum: int = 0) -> int:
     if not isinstance(value, int) or isinstance(value, bool):
         raise PerformanceGateError(f"{label} must be an integer")
@@ -385,15 +417,11 @@ def _validate_environment(value: object, evidence_kind: str) -> None:
             "runner",
         },
     )
-    for key in (
-        "os",
-        "arch",
-        "cpu_model",
-        "python_version",
-        "node_version",
-        "browser_version",
-    ):
+    for key in ("os", "arch", "cpu_model"):
         _text(environment[key], f"environment {key}")
+    _version(environment["python_version"], "Python version", _SEMVER)
+    _version(environment["node_version"], "Node version", _NODE_VERSION)
+    _version(environment["browser_version"], "browser version", _CHROMIUM_VERSION)
     logical = _integer(environment["logical_cpu_count"], "logical CPU count", minimum=1)
     effective = _finite_non_negative(
         environment["effective_cpu_count"], "effective CPU count"
@@ -413,8 +441,9 @@ def _validate_environment(value: object, evidence_kind: str) -> None:
         "tool versions",
         {"duckdb", "playwright", "pnpm"},
     )
-    for key, version in versions.items():
-        _text(version, f"tool version {key}")
+    _version(versions["duckdb"], "DuckDB tool version", _SEMVER)
+    _version(versions["playwright"], "Playwright tool version", _PLAYWRIGHT_VERSION)
+    _version(versions["pnpm"], "pnpm tool version", _SEMVER)
     runner = _exact_mapping(
         environment["runner"],
         "runner",
@@ -432,9 +461,12 @@ def _validate_environment(value: object, evidence_kind: str) -> None:
     )
     for key in ("provider", "os", "arch", "name"):
         _text(runner[key], f"runner {key}")
-    for key in ("image_os", "image_version", "repository", "run_id", "run_attempt"):
+    for key in ("image_os", "image_version", "repository"):
         if runner[key] is not None:
             _text(runner[key], f"runner {key}")
+    for key in ("run_id", "run_attempt"):
+        if runner[key] is not None:
+            _integer(runner[key], f"runner {key}", minimum=1)
     if evidence_kind == "target_baseline":
         if effective != 4 or logical != 4:
             raise PerformanceGateError("target baseline requires exactly four CPUs")
@@ -444,6 +476,17 @@ def _validate_environment(value: object, evidence_kind: str) -> None:
             runner["provider"] != "github_actions"
             or runner["os"] != "Linux"
             or runner["arch"] != "X64"
+            or runner["repository"] != "CongBao/stock-desk"
+            or not isinstance(runner["image_os"], str)
+            or _UBUNTU_IMAGE_OS.fullmatch(runner["image_os"]) is None
+            or not isinstance(runner["image_version"], str)
+            or _UBUNTU_IMAGE_VERSION.fullmatch(runner["image_version"]) is None
+            or not isinstance(runner["run_id"], int)
+            or isinstance(runner["run_id"], bool)
+            or runner["run_id"] < 1
+            or not isinstance(runner["run_attempt"], int)
+            or isinstance(runner["run_attempt"], bool)
+            or runner["run_attempt"] < 1
             or any(
                 runner[key] is None
                 for key in (
@@ -554,7 +597,10 @@ def _validate_pool(value: object) -> None:
         raise PerformanceGateError(
             "pool must contain 18 progress, navigation, and cancel windows"
         )
-    if pool["long_task_count"] != total_long_tasks:
+    aggregate_long_tasks = _integer(
+        pool["long_task_count"], "pool aggregate Long Task count"
+    )
+    if aggregate_long_tasks != total_long_tasks:
         raise PerformanceGateError("pool aggregate Long Task count is mismatched")
     final_state = _mapping(samples[-1], "pool cancellation sample")["rendered_state"]
     if _mapping(final_state, "pool final state").get("status") != "cancelled":
@@ -566,6 +612,7 @@ def validate_performance_result(
     *,
     expected_fixture_digest: str,
     baseline: object | None = None,
+    expected_source_sha: str | None = None,
 ) -> None:
     result = _exact_mapping(
         raw,
@@ -611,6 +658,12 @@ def validate_performance_result(
         )
     if git["dirty"] is not False:
         raise PerformanceGateError("baseline evidence requires a clean git checkout")
+    if expected_source_sha is not None:
+        if git["sha"] != expected_source_sha:
+            raise PerformanceGateError(
+                "git SHA does not match the expected source commit"
+            )
+        _require_local_commit_object(expected_source_sha)
     fixture = _exact_mapping(
         result["fixture"],
         "fixture",
@@ -653,21 +706,49 @@ def validate_performance_result(
     if not isinstance(roots, list) or len(roots) < 5:
         raise PerformanceGateError("process roots are incomplete")
     checked_roots = [_integer(item, "process root", minimum=1) for item in roots]
-    if len(set(checked_roots)) != len(checked_roots):
-        raise PerformanceGateError("process roots must be unique")
+    if checked_roots != sorted(set(checked_roots)):
+        raise PerformanceGateError("process roots must be sorted and unique")
     services = process_tree["declared_services"]
     if not isinstance(services, list) or len(services) != 3:
         raise PerformanceGateError("declared services are incomplete")
     service_roles: set[str] = set()
     service_pids: set[int] = set()
     for index, raw_service in enumerate(services):
-        service = _exact_mapping(raw_service, f"service {index}", {"pid", "role"})
+        service = _exact_mapping(
+            raw_service, f"service {index}", {"pid", "role", "command"}
+        )
         pid = _integer(service["pid"], "service PID", minimum=1)
         role = _text(service["role"], "service role")
+        raw_command = service["command"]
+        if not isinstance(raw_command, list) or not raw_command:
+            raise PerformanceGateError("service command tokens are invalid")
+        command = [
+            _text(token, f"service {index} command token") for token in raw_command
+        ]
+        role_matches_command = (
+            (role == "api" and len(command) >= 4 and command[1:3] == ["-m", "uvicorn"])
+            or (
+                role == "worker"
+                and command[1:] == ["-m", "scripts.e2e_dev", "--worker"]
+            )
+            or (role == "web" and command == ["pnpm", "--dir", "web", "dev"])
+        )
+        if not role_matches_command:
+            raise PerformanceGateError("service role/command relationship is invalid")
         if pid not in checked_roots:
             raise PerformanceGateError("service PID must be a declared root")
         service_pids.add(pid)
         service_roles.add(role)
+    service_order = [
+        _integer(
+            _mapping(service, "declared service")["pid"],
+            "service PID",
+            minimum=1,
+        )
+        for service in services
+    ]
+    if service_order != sorted(service_order):
+        raise PerformanceGateError("declared services must be sorted by PID")
     if len(service_pids) != 3 or service_roles != {"api", "worker", "web"}:
         raise PerformanceGateError("service PID/role relationships are invalid")
     roles = process_tree["sampled_process_roles"]

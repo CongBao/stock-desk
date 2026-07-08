@@ -106,6 +106,11 @@ def test_target_hardware_is_exact_four_cpu_nominal_sixteen_gb() -> None:
             "provider": "github_actions",
             "os": "Linux",
             "arch": "X64",
+            "repository": "CongBao/stock-desk",
+            "image_os": "ubuntu24",
+            "image_version": "20260701.1",
+            "run_id": 1234,
+            "run_attempt": 1,
         },
     }
 

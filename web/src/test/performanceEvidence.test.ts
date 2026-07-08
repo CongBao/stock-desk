@@ -71,76 +71,125 @@ describe('canonical performance evidence', () => {
 });
 
 describe('process-tree evidence', () => {
+  const rootStart = 'Wed Jul 8 12:00:00 2026';
+  const childStart = 'Wed Jul 8 12:00:01 2026';
+
   it('selects roots and descendants while excluding the ps sampling helper', () => {
     const rows = parseProcessRows(`
-      10 1 100 node playwright
-      11 10 200 /usr/bin/chromium --headless
-      12 10 50 /bin/ps -axo pid=,ppid=,rss=,command=
-      99 1 300 unrelated
+      10 1 100 Wed Jul  8 12:00:00 2026 node playwright
+      11 10 200 Wed Jul  8 12:00:01 2026 /usr/bin/chromium --headless
+      12 10 50 Wed Jul  8 12:00:02 2026 /bin/ps -axo pid=,ppid=,rss=,lstart=,command=
+      99 1 300 Wed Jul  8 12:00:03 2026 unrelated
     `);
 
     expect(selectProcessTree([10], rows)).toEqual([
-      { pid: 10, parent: 1, rssBytes: 102_400, command: 'node playwright' },
+      {
+        pid: 10,
+        parent: 1,
+        rssBytes: 102_400,
+        startedAt: rootStart,
+        command: 'node playwright',
+      },
       {
         pid: 11,
         parent: 10,
         rssBytes: 204_800,
+        startedAt: childStart,
         command: '/usr/bin/chromium --headless',
       },
     ]);
   });
 
-  it('rejects a changed command identity for a reused PID', () => {
-    const tracker = new ProcessIdentityTracker(new Map([[10, 'playwright']]));
+  it('rejects a changed command within the same process incarnation', () => {
+    const tracker = new ProcessIdentityTracker(
+      new Map([[10, { role: 'playwright' }]]),
+    );
     tracker.observe([
-      { pid: 10, parent: 1, rssBytes: 1, command: 'node playwright' },
+      {
+        pid: 10,
+        parent: 1,
+        rssBytes: 1,
+        startedAt: rootStart,
+        command: 'node playwright',
+      },
     ]);
     tracker.observe([
-      { pid: 10, parent: 1, rssBytes: 2, command: 'node playwright' },
+      {
+        pid: 10,
+        parent: 1,
+        rssBytes: 2,
+        startedAt: rootStart,
+        command: 'node playwright',
+      },
     ]);
 
     expect(() =>
       tracker.observe([
-        { pid: 10, parent: 1, rssBytes: 2, command: 'python replacement' },
+        {
+          pid: 10,
+          parent: 1,
+          rssBytes: 2,
+          startedAt: rootStart,
+          command: 'python replacement',
+        },
       ]),
     ).toThrow(/PID command identity changed/u);
     expect(() => tracker.observe([])).toThrow(/declared root disappeared/u);
   });
 
-  it('freezes identity anchors at the first snapshot and ignores later transient PID reuse', () => {
-    const tracker = new ProcessIdentityTracker(new Map([[10, 'playwright']]));
+  it('tracks late children and permits PID reuse only with a new start identity', () => {
+    const tracker = new ProcessIdentityTracker(
+      new Map([[10, { role: 'playwright' }]]),
+    );
     const root = {
       pid: 10,
       parent: 1,
       rssBytes: 1,
+      startedAt: rootStart,
       command: 'node playwright',
     };
     tracker.observe([root]);
     tracker.observe([
       root,
-      { pid: 20, parent: 10, rssBytes: 1, command: 'transient child A' },
+      {
+        pid: 20,
+        parent: 10,
+        rssBytes: 1,
+        startedAt: childStart,
+        command: 'transient child A',
+      },
     ]);
 
     expect(() =>
       tracker.observe([
         root,
-        { pid: 20, parent: 10, rssBytes: 1, command: 'transient child B' },
+        {
+          pid: 20,
+          parent: 10,
+          rssBytes: 1,
+          startedAt: childStart,
+          command: 'transient child B',
+        },
+      ]),
+    ).toThrow(/PID command identity changed/u);
+    expect(() =>
+      tracker.observe([
+        root,
+        {
+          pid: 20,
+          parent: 10,
+          rssBytes: 1,
+          startedAt: 'Wed Jul 8 12:01:00 2026',
+          command: 'transient child B',
+        },
       ]),
     ).not.toThrow();
   });
 
   it('requires every declared root to match its expected runtime role', () => {
-    const tracker = new ProcessIdentityTracker(new Map([[10, 'api']]));
-
-    expect(() =>
-      tracker.observe([
-        { pid: 10, parent: 1, rssBytes: 1, command: 'node playwright' },
-      ]),
-    ).toThrow(/expected api role/u);
-  });
-
-  it('recognizes the recorded pnpm web-dev launcher as the web service root', () => {
-    const tracker = new ProcessIdentityTracker(new Map([[10, 'web']]));
+    const tracker = new ProcessIdentityTracker(
+      new Map([[10, { role: 'api' }]]),
+    );
 
     expect(() =>
       tracker.observe([
@@ -148,20 +197,46 @@ describe('process-tree evidence', () => {
           pid: 10,
           parent: 1,
           rssBytes: 1,
-          command: 'node pnpm --dir web dev',
+          startedAt: rootStart,
+          command: 'node playwright',
+        },
+      ]),
+    ).toThrow(/expected api role/u);
+  });
+
+  it('recognizes the recorded pnpm web-dev launcher as the web service root', () => {
+    const tracker = new ProcessIdentityTracker(
+      new Map([
+        [10, { role: 'web', commandTokens: ['pnpm', '--dir', 'web', 'dev'] }],
+      ]),
+    );
+
+    expect(() =>
+      tracker.observe([
+        {
+          pid: 10,
+          parent: 1,
+          rssBytes: 1,
+          startedAt: rootStart,
+          command: 'node /opt/pnpm.cjs --dir web dev',
         },
       ]),
     ).not.toThrow();
 
     expect(() =>
-      new ProcessIdentityTracker(new Map([[11, 'web']])).observe([
+      new ProcessIdentityTracker(
+        new Map([
+          [11, { role: 'web', commandTokens: ['pnpm', '--dir', 'web', 'dev'] }],
+        ]),
+      ).observe([
         {
           pid: 11,
           parent: 1,
           rssBytes: 1,
-          command: 'node pnpm dev',
+          startedAt: rootStart,
+          command: 'node /opt/vite --host 127.0.0.1',
         },
       ]),
-    ).toThrow(/expected web role/u);
+    ).toThrow(/declared command/u);
   });
 });

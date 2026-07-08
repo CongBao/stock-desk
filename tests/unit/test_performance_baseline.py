@@ -122,7 +122,7 @@ def _valid_result() -> dict[str, object]:
             "effective_memory_bytes": 24 * 1024**3,
             "python_version": "3.12.0",
             "node_version": "v24.0.0",
-            "browser_version": "Chromium 1",
+            "browser_version": "Chromium 149.0.7827.55",
             "tool_versions": {
                 "duckdb": "1.4.5",
                 "playwright": "Version 1.61.1",
@@ -143,9 +143,26 @@ def _valid_result() -> dict[str, object]:
         "process_tree": {
             "declared_roots": [1, 2, 3, 4, 5],
             "declared_services": [
-                {"pid": 2, "role": "api"},
-                {"pid": 3, "role": "worker"},
-                {"pid": 4, "role": "web"},
+                {
+                    "pid": 2,
+                    "role": "api",
+                    "command": [
+                        "python",
+                        "-m",
+                        "uvicorn",
+                        "scripts.e2e_dev:create_e2e_app",
+                    ],
+                },
+                {
+                    "pid": 3,
+                    "role": "worker",
+                    "command": ["python", "-m", "scripts.e2e_dev", "--worker"],
+                },
+                {
+                    "pid": 4,
+                    "role": "web",
+                    "command": ["pnpm", "--dir", "web", "dev"],
+                },
             ],
             "sampled_process_roles": ROLES,
             "role_set_digest": _digest(ROLES),
@@ -272,6 +289,81 @@ def test_gate_rejects_forged_or_incomplete_evidence(
         )
 
 
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        (("environment", "python_version"), "3.12"),
+        (("environment", "node_version"), "22.0.0"),
+        (("environment", "browser_version"), "Chromium latest"),
+        (("environment", "tool_versions", "duckdb"), "latest"),
+        (("environment", "tool_versions", "playwright"), "1.61.1"),
+        (("environment", "tool_versions", "pnpm"), "v11.7.0"),
+    ],
+)
+def test_gate_rejects_nonsemantic_tool_versions(
+    path: tuple[str, ...], value: str
+) -> None:
+    result = _valid_result()
+    target = result
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = value
+
+    with pytest.raises(PerformanceGateError, match="version"):
+        validate_performance_result(
+            result, expected_fixture_digest="sha256:" + "a" * 64
+        )
+
+
+def test_gate_requires_sorted_roots_services_and_exact_aggregate_long_tasks() -> None:
+    for mutation, message in (
+        (
+            lambda value: value["process_tree"].update(declared_roots=[2, 1, 3, 4, 5]),
+            "sorted",
+        ),
+        (
+            lambda value: value["process_tree"].update(
+                declared_services=list(
+                    reversed(value["process_tree"]["declared_services"])
+                )
+            ),
+            "sorted",
+        ),
+        (
+            lambda value: value["metrics"]["pool_ui"].update(long_task_count=False),
+            "integer",
+        ),
+    ):
+        result = _valid_result()
+        mutation(result)
+        with pytest.raises(PerformanceGateError, match=message):
+            validate_performance_result(
+                result, expected_fixture_digest="sha256:" + "a" * 64
+            )
+
+
+def test_gate_rejects_a_fake_or_unexpected_source_commit() -> None:
+    result = _valid_result()
+    with pytest.raises(PerformanceGateError, match="commit object"):
+        validate_performance_result(
+            result,
+            expected_fixture_digest="sha256:" + "a" * 64,
+            expected_source_sha="a" * 40,
+        )
+
+    with pytest.raises(PerformanceGateError, match="expected source"):
+        validate_performance_result(
+            result,
+            expected_fixture_digest="sha256:" + "a" * 64,
+            expected_source_sha="b" * 40,
+        )
+
+
+def test_gate_accepts_exact_declared_service_command_tokens() -> None:
+    result = _valid_result()
+    validate_performance_result(result, expected_fixture_digest="sha256:" + "a" * 64)
+
+
 def test_target_baseline_requires_github_ubuntu_x64_exact_four_cpu() -> None:
     result = _valid_result()
     result["evidence_kind"] = "target_baseline"
@@ -288,14 +380,56 @@ def test_target_baseline_requires_github_ubuntu_x64_exact_four_cpu() -> None:
         name="GitHub Actions 1",
         image_os="ubuntu24",
         image_version="20260701.1",
-        repository="owner/repository",
-        run_id="1234",
-        run_attempt="1",
+        repository="CongBao/stock-desk",
+        run_id=1234,
+        run_attempt=1,
     )
     validate_performance_result(result, expected_fixture_digest="sha256:" + "a" * 64)
 
     result["environment"]["effective_cpu_count"] = 14.0
     with pytest.raises(PerformanceGateError, match="exactly four"):
+        validate_performance_result(
+            result, expected_fixture_digest="sha256:" + "a" * 64
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("repository", "owner/repository", "GitHub Ubuntu"),
+        ("run_id", "not-a-number", "integer"),
+        ("run_id", "1234", "integer"),
+        ("run_attempt", 0, "positive"),
+        ("run_attempt", "1", "integer"),
+        ("image_os", "macos14", "GitHub Ubuntu"),
+        ("image_version", "unknown", "GitHub Ubuntu"),
+    ],
+)
+def test_target_rejects_forged_runner_metadata(
+    field: str, value: object, message: str
+) -> None:
+    result = _valid_result()
+    result["evidence_kind"] = "target_baseline"
+    result["environment"].update(
+        logical_cpu_count=4,
+        effective_cpu_count=4.0,
+        memory_bytes=16 * 1024**3,
+        effective_memory_bytes=15 * 1024**3,
+    )
+    result["environment"]["runner"].update(
+        provider="github_actions",
+        os="Linux",
+        arch="X64",
+        name="GitHub Actions 1",
+        image_os="ubuntu24",
+        image_version="20260701.1",
+        repository="CongBao/stock-desk",
+        run_id=1234,
+        run_attempt=1,
+    )
+    result["environment"]["runner"][field] = value
+
+    with pytest.raises(PerformanceGateError, match=message):
         validate_performance_result(
             result, expected_fixture_digest="sha256:" + "a" * 64
         )
@@ -313,9 +447,7 @@ def test_gate_accepts_repeated_exact_pool_windows_after_progress_is_proven() -> 
         sample["rendered_state"] = deepcopy(state)
         sample["api_state"] = deepcopy(state)
 
-    validate_performance_result(
-        result, expected_fixture_digest="sha256:" + "a" * 64
-    )
+    validate_performance_result(result, expected_fixture_digest="sha256:" + "a" * 64)
 
 
 def test_gate_rejects_pool_windows_that_never_show_progress() -> None:

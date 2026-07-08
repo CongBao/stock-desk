@@ -182,6 +182,13 @@ def _effective_cpu_count() -> float:
     return min(affinity, int(quota) / int(period))
 
 
+def _environment_integer(name: str) -> int | str | None:
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    return int(raw) if raw.isdigit() else raw
+
+
 def collect_environment(*, browser_version: str) -> dict[str, object]:
     physical_memory = _physical_memory_bytes()
     browser = _command_output(
@@ -215,8 +222,8 @@ def collect_environment(*, browser_version: str) -> dict[str, object]:
             "image_os": os.environ.get("ImageOS"),
             "image_version": os.environ.get("ImageVersion"),
             "repository": os.environ.get("GITHUB_REPOSITORY"),
-            "run_id": os.environ.get("GITHUB_RUN_ID"),
-            "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
+            "run_id": _environment_integer("GITHUB_RUN_ID"),
+            "run_attempt": _environment_integer("GITHUB_RUN_ATTEMPT"),
         },
         "tool_versions": {
             "duckdb": _command_output(
@@ -318,6 +325,18 @@ def _qualifying_environment(environment: dict[str, Any], evidence_kind: str) -> 
         and runner.get("provider") == "github_actions"
         and runner.get("os") == "Linux"
         and runner.get("arch") == "X64"
+        and runner.get("repository") == "CongBao/stock-desk"
+        and isinstance(runner.get("image_os"), str)
+        and re.fullmatch(r"ubuntu[0-9]{2}", runner["image_os"]) is not None
+        and isinstance(runner.get("image_version"), str)
+        and re.fullmatch(r"[0-9]{8}\.[0-9]+(?:\.[0-9]+)?", runner["image_version"])
+        is not None
+        and isinstance(runner.get("run_id"), int)
+        and not isinstance(runner["run_id"], bool)
+        and runner["run_id"] > 0
+        and isinstance(runner.get("run_attempt"), int)
+        and not isinstance(runner["run_attempt"], bool)
+        and runner["run_attempt"] > 0
     )
 
 
@@ -336,11 +355,15 @@ def _require_real_tool_versions(environment: dict[str, object]) -> None:
         "pnpm",
     }:
         _fail("performance tool versions are incomplete before browser start")
+    patterns = {
+        "duckdb": r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?",
+        "playwright": r"Version [0-9]+\.[0-9]+\.[0-9]+",
+        "pnpm": r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?",
+    }
     if any(
-        not isinstance(value, str)
-        or not value.strip()
-        or value.strip().lower() == "unavailable"
-        for value in versions.values()
+        not isinstance(versions[key], str)
+        or re.fullmatch(pattern, versions[key]) is None
+        for key, pattern in patterns.items()
     ):
         _fail("performance tool version is unavailable before browser start")
 
@@ -406,6 +429,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             result,
             expected_fixture_digest=fixture.content_digest,
             baseline=baseline,
+            expected_source_sha=preflight_sha,
         )
         gate_passed = True
     finally:

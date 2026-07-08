@@ -382,9 +382,11 @@ it('serializes delayed ECharts generations so A cannot mark queued B ready', () 
 
   expect(chart).toHaveAttribute('data-chart-ready', 'false');
   expect(chart).toHaveAttribute('aria-busy', 'true');
+  expect(chart).not.toHaveAttribute('data-chart-generation');
   const nextBars = bars.map((bar) => ({ ...bar }));
   rerender(<MarketChart bars={nextBars} />);
   expect(chart).toHaveAttribute('data-chart-ready', 'false');
+  expect(chart).not.toHaveAttribute('data-chart-generation');
 
   // B is queued while A is still the active ECharts render.
   expect(chartMocks.setOption).toHaveBeenCalledTimes(1);
@@ -394,9 +396,20 @@ it('serializes delayed ECharts generations so A cannot mark queued B ready', () 
   expect(chartMocks.setOption).toHaveBeenCalledTimes(2);
   expect(chart).toHaveAttribute('data-chart-ready', 'false');
   expect(chart).toHaveAttribute('aria-busy', 'true');
+  expect(chart).toHaveAttribute('data-chart-generation', '1');
   act(() => finishedHandler?.({}));
   expect(chart).toHaveAttribute('data-chart-ready', 'true');
   expect(chart).toHaveAttribute('aria-busy', 'false');
+  expect(chart).toHaveAttribute('data-chart-generation', '2');
+
+  const thirdBars = nextBars.map((bar) => ({ ...bar }));
+  rerender(<MarketChart bars={thirdBars} />);
+  expect(chart).toHaveAttribute('data-chart-ready', 'false');
+  expect(chart).toHaveAttribute('aria-busy', 'true');
+  expect(chart).toHaveAttribute('data-chart-generation', '2');
+  act(() => finishedHandler?.({}));
+  expect(chart).toHaveAttribute('data-chart-ready', 'true');
+  expect(chart).toHaveAttribute('data-chart-generation', '3');
 
   unmount();
   expect(chartMocks.off).toHaveBeenCalledWith('finished', expect.any(Function));

@@ -72,8 +72,10 @@ Each summary uses exactly 20 raw measurements. They are not all independent:
   ECharts generation emits `finished` and a bounded real hover/crosshair,
   reset/zoom, and drag handshake succeeds.
 - Chart warm uses 20 adjustment windows on one shared warm page and the same
-  interaction-complete timing boundary. The page, React tree, ECharts instance,
-  browser cache, and local services are shared.
+  interaction-complete timing boundary. Each window captures the prior completed
+  generation, observes a pending render, and waits for a strictly newer ECharts
+  `finished` generation before interactions and timing/RSS shutdown. The page,
+  React tree, ECharts instance, browser cache, and local services are shared.
 - Formula cache-cold uses 20 distinct pre-seeded immutable formula versions.
   Each timer covers preview action through main/subchart, BUY/SELL, summary,
   and active-generation ECharts readiness.
@@ -103,15 +105,25 @@ The separate cached-loading UI contract remains covered by
 nonzero provider-duration claim.
 
 RSS is sampled through asynchronous `ps` calls on Linux/macOS. The timed Node
-loop never blocks on `execFileSync`, excludes the `ps` helper, detects PID
-command-identity changes, and persists the bounded role set and its digest only
-once. Windows performance measurement fails before browser startup; Windows
-product packaging remains a separate release concern.
+loop never blocks on `execFileSync` and excludes the `ps` helper. Every observed
+root or late child is identified by PID plus portable process start time; a
+command change within one process incarnation is rejected, while a reused PID
+with a new start time is tracked as a new process and remains in RSS. Service
+roots must match the exact launch-manifest command-token sequence before their
+full observed command/start identity is frozen. The bounded role set and digest
+are persisted once. Windows performance measurement fails before browser
+startup; Windows product packaging remains a separate release concern.
 
 The strict validator requires exact keys and primitive types, a real UTC
-datetime, clean 40-hex Git commit provenance, current-checkout object checks,
-finite CPU values, unique positive roots/PIDs, valid service-role relationships,
-real tool versions, recomputed role and semantic digests, exactly 20 raw windows,
-zero forbidden requests/Long Tasks, and stable correctness against the reference.
-The budgets remain absolute release ceilings and must never be relaxed to make a
-run pass.
+datetime, clean 40-hex Git commit provenance, expected-source equality and a
+local `git cat-file` commit-object check, finite CPU values, sorted unique
+positive roots/services, exact service-role/command relationships, semantic
+DuckDB/Playwright/pnpm/Python/Node/Chromium version formats, recomputed role and
+semantic digests, exactly 20 raw windows, exact integer zero forbidden
+requests/Long Tasks, and stable correctness against the reference. Target
+artifacts additionally require the literal `CongBao/stock-desk` repository,
+positive integer run ID/attempt, and Ubuntu image identifier/version patterns.
+These are locally verifiable artifact fields, not independent proof that GitHub
+issued the artifact; review of the uploaded workflow artifact remains required.
+The budgets remain absolute release ceilings and must never be relaxed to make
+a run pass.

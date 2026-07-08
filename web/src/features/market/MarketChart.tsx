@@ -660,7 +660,6 @@ export function MarketChart({
       option,
     };
     nextGenerationRef.current = render.generation;
-    setFinishedFor(null);
     if (activeRenderRef.current === null) issueRenderRef.current?.(render);
     else queuedRenderRef.current = render;
   }, [bars, formula, hasBars]);
@@ -751,6 +750,7 @@ export function MarketChart({
               role="img"
               aria-busy={!isReady}
               data-chart-ready={isReady ? 'true' : 'false'}
+              data-chart-generation={finishedFor?.generation}
               aria-label={`${bars[0]?.symbol ?? '证券'} ${
                 formula === undefined
                   ? 'K 线与成交量'

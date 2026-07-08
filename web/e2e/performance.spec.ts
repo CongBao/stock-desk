@@ -10,8 +10,8 @@ import {
   ProcessIdentityTracker,
   progressWindowsDemonstrateChange,
   providerEvidence,
+  type RootExpectation,
   selectProcessTree,
-  type RuntimeRole,
   type RoutingManifest,
 } from './performanceEvidence';
 
@@ -78,8 +78,8 @@ function processList(): Promise<string> {
   return new Promise((resolve, reject) => {
     execFile(
       'ps',
-      ['-axo', 'pid=,ppid=,rss=,command='],
-      { encoding: 'utf8' },
+      ['-axo', 'pid=,ppid=,rss=,lstart=,command='],
+      { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C' } },
       (error, stdout) => {
         if (error !== null) {
           reject(new Error('process-list command failed', { cause: error }));
@@ -123,7 +123,7 @@ class RssSampler {
 
   static async create(
     roots: readonly number[],
-    rootRoles: ReadonlyMap<number, RuntimeRole>,
+    rootRoles: ReadonlyMap<number, RootExpectation>,
   ): Promise<RssSampler> {
     const identities = new ProcessIdentityTracker(rootRoles);
     return new RssSampler(
@@ -227,7 +227,7 @@ async function chartAction(
   page: Page,
   network: { blockedExternalRequests: number },
   roots: readonly number[],
-  rootRoles: ReadonlyMap<number, RuntimeRole>,
+  rootRoles: ReadonlyMap<number, RootExpectation>,
 ) {
   const blockedBefore = network.blockedExternalRequests;
   const sampler = await RssSampler.create(roots, rootRoles);
@@ -280,24 +280,79 @@ async function chartAction(
   } satisfies TimedSample;
 }
 
+async function completedChartGeneration(
+  chart: ReturnType<Page['locator']>,
+): Promise<number> {
+  await expect(chart).toHaveAttribute('data-chart-ready', 'true');
+  const raw = await chart.getAttribute('data-chart-generation');
+  const generation = Number(raw);
+  expect(Number.isSafeInteger(generation) && generation > 0).toBe(true);
+  return generation;
+}
+
+async function observeNextChartGeneration(
+  page: Page,
+  chart: ReturnType<Page['locator']>,
+  previousGeneration: number,
+  action: () => Promise<unknown>,
+): Promise<number> {
+  const pending = page.waitForFunction(
+    ({ generation }) => {
+      const browserGlobal = globalThis as unknown as {
+        document: {
+          querySelector(
+            selector: string,
+          ): { dataset: Record<string, string | undefined> } | undefined;
+        };
+      };
+      const element = browserGlobal.document.querySelector(
+        '.market-chart-canvas',
+      );
+      return (
+        element?.dataset['chartReady'] === 'false' &&
+        element.dataset['chartGeneration'] === generation
+      );
+    },
+    { generation: String(previousGeneration) },
+    { polling: 'raf', timeout: 2_000 },
+  );
+  await action();
+  await pending;
+  await expect
+    .poll(async () => {
+      if ((await chart.getAttribute('data-chart-ready')) !== 'true') return 0;
+      const generation = Number(
+        await chart.getAttribute('data-chart-generation'),
+      );
+      return Number.isSafeInteger(generation) ? generation : 0;
+    })
+    .toBeGreaterThan(previousGeneration);
+  return completedChartGeneration(chart);
+}
+
 async function warmChartAction(
   page: Page,
   network: { blockedExternalRequests: number },
   roots: readonly number[],
-  rootRoles: ReadonlyMap<number, RuntimeRole>,
+  rootRoles: ReadonlyMap<number, RootExpectation>,
 ) {
   const adjustment = page.getByRole('combobox', { name: '复权方式' });
-  await Promise.all([
-    page.waitForResponse((response) => {
-      const url = new URL(response.url());
-      return (
-        url.pathname === '/api/market/bars' &&
-        url.searchParams.get('adjustment') === 'none'
-      );
-    }),
-    adjustment.selectOption('none'),
-  ]);
-  await expect(page.locator('[data-chart-ready="true"]')).toBeVisible();
+  const chart = page.locator('.market-chart-canvas');
+  const qfqGeneration = await completedChartGeneration(chart);
+  const noneResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return (
+      url.pathname === '/api/market/bars' &&
+      url.searchParams.get('adjustment') === 'none'
+    );
+  });
+  const noneGeneration = await observeNextChartGeneration(
+    page,
+    chart,
+    qfqGeneration,
+    () => adjustment.selectOption('none'),
+  );
+  await noneResponse;
 
   const blockedBefore = network.blockedExternalRequests;
   const sampler = await RssSampler.create(roots, rootRoles);
@@ -310,7 +365,12 @@ async function warmChartAction(
       url.searchParams.get('adjustment') === 'qfq'
     );
   });
-  await adjustment.selectOption('qfq');
+  const qfqFinishedGeneration = await observeNextChartGeneration(
+    page,
+    chart,
+    noneGeneration,
+    () => adjustment.selectOption('qfq'),
+  );
   const response = await responsePromise;
   const body = (await response.json()) as {
     bars: readonly unknown[];
@@ -318,8 +378,7 @@ async function warmChartAction(
     route_version: string;
     routing_manifest: RoutingManifest;
   };
-  const chart = page.locator('[data-chart-ready="true"]');
-  await expect(chart).toBeVisible();
+  expect(qfqFinishedGeneration).toBeGreaterThan(noneGeneration);
   await proveChartInteractionHandshake(page, chart);
   const wall = (performance.now() - started) / 1000;
   const rss = await sampler.finish();
@@ -356,7 +415,7 @@ async function formulaAction(
   page: Page,
   network: { blockedExternalRequests: number },
   roots: readonly number[],
-  rootRoles: ReadonlyMap<number, RuntimeRole>,
+  rootRoles: ReadonlyMap<number, RootExpectation>,
 ) {
   const blockedBefore = network.blockedExternalRequests;
   const sampler = await RssSampler.create(roots, rootRoles);
@@ -431,7 +490,7 @@ async function backtestAction(
   versionId: string,
   network: { blockedExternalRequests: number },
   roots: readonly number[],
-  rootRoles: ReadonlyMap<number, RuntimeRole>,
+  rootRoles: ReadonlyMap<number, RootExpectation>,
   cachedManifest: RoutingManifest,
   cachedManifestId: string,
 ) {
@@ -702,12 +761,19 @@ test('records aggregate 2/3/5 budgets and worker-backed UI responsiveness', asyn
   ]
     .filter((pid) => Number.isInteger(pid) && pid > 0)
     .sort((left, right) => left - right);
-  const rootRoles = new Map<number, RuntimeRole>([
-    [process.pid, 'playwright'],
-    [process.ppid, 'playwright'],
-    [processEvidence.supervisor_pid, 'supervisor'],
+  const rootRoles = new Map<number, RootExpectation>([
+    [process.pid, { role: 'playwright' }],
+    [process.ppid, { role: 'playwright' }],
+    [processEvidence.supervisor_pid, { role: 'supervisor' }],
     ...processEvidence.service_processes.map(
-      (service) => [service.pid, serviceRole(service.command)] as const,
+      (service) =>
+        [
+          service.pid,
+          {
+            role: serviceRole(service.command),
+            commandTokens: service.command,
+          },
+        ] as const,
     ),
   ]);
   expect(rootRoles.size).toBe(roots.length);
@@ -969,20 +1035,23 @@ test('records aggregate 2/3/5 budgets and worker-backed UI responsiveness', asyn
       chart_cold:
         'new Chromium context with empty browser and HTTP cache; timer starts at selecting the cached symbol and ends at ECharts finished plus hover/zoom/drag/crosshair proof',
       chart_warm:
-        'same Chromium and service processes after one unmeasured completed render; timer boundaries match chart_cold',
+        'same Chromium and service processes after one unmeasured completed render; timer requires pending then a newer finished ECharts generation before the chart_cold interaction boundary',
       formula_cache_cold:
         'one distinct pre-seeded immutable formula version per sample; timer starts at preview action and ends at ECharts finished with main/subchart/BUY/SELL visible',
       single_backtest_fresh:
         'new submitted task per sample; timer starts at POST submit and ends after worker-persisted report is visible',
       pool_ui:
-        '20 raw windows from one worker-backed pool task: 18 changing rendered/API-matched progress windows, one SPA navigation window, and one actual cancellation window',
+        '20 raw windows from one worker-backed pool task: 18 rendered/API-matched progress windows with at least two distinct states, one SPA navigation window, and one actual cancellation window',
     },
     process_tree: {
       declared_roots: roots,
-      declared_services: processEvidence.service_processes.map((service) => ({
-        pid: service.pid,
-        role: serviceRole(service.command),
-      })),
+      declared_services: processEvidence.service_processes
+        .map((service) => ({
+          pid: service.pid,
+          role: serviceRole(service.command),
+          command: service.command,
+        }))
+        .sort((left, right) => left.pid - right.pid),
       sampled_process_roles: sampledProcessRoles,
       role_set_digest: digest(sampledProcessRoles),
     },
