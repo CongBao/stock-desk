@@ -1,5 +1,17 @@
 import type { TaskView } from './taskApi';
 
+const lifecycleRank = {
+  queued: 0,
+  running: 1,
+  succeeded: 2,
+  failed: 2,
+  cancelled: 2,
+} as const;
+
+function isTerminal(task: TaskView) {
+  return lifecycleRank[task.status] === 2;
+}
+
 export function updateTaskSnapshot(
   items: readonly TaskView[],
   replacement: TaskView,
@@ -12,9 +24,10 @@ export function updateTaskSnapshot(
     const replacementTime = Date.parse(replacement.updatedAt);
     if (
       replacementTime < currentTime ||
-      (replacementTime === currentTime &&
-        ((item.status !== 'queued' && item.status !== 'running') ||
-          (item.cancelRequested && !replacement.cancelRequested)))
+      lifecycleRank[replacement.status] < lifecycleRank[item.status] ||
+      replacement.progress < item.progress ||
+      (item.cancelRequested && !replacement.cancelRequested) ||
+      (isTerminal(item) && replacement.status !== item.status)
     ) {
       return item;
     }

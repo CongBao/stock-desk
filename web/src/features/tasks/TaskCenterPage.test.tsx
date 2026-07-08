@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 
 import { TaskCenterPage } from './TaskCenterPage';
-import { mergeTaskSnapshots } from './taskState';
+import { mergeTaskSnapshots, updateTaskSnapshot } from './taskState';
 import {
   TaskApiError,
   type TaskApi,
@@ -108,6 +108,9 @@ it('renders all-time metrics and a safe selected pool-backtest view', async () =
   ).toBeVisible();
   expect(screen.getByText('全部任务')).toBeVisible();
   expect(screen.getByText('12')).toBeVisible();
+  const metrics = screen.getByRole('region', { name: '全部任务汇总' });
+  expect(within(metrics).getByText('成功')).toBeVisible();
+  expect(within(metrics).getByText('6')).toBeVisible();
   expect(screen.getByText('执行中')).toBeVisible();
   expect(screen.getByText('2 / 5')).toBeVisible();
   expect(screen.getByText('失败 1')).toBeVisible();
@@ -123,6 +126,34 @@ it('renders all-time metrics and a safe selected pool-backtest view', async () =
   expect(document.body.textContent).not.toMatch(
     /PAYLOAD|RESULT|ERROR|SENTINEL/u,
   );
+});
+
+it('does not count a queued cancellation as a successful task', async () => {
+  const client = api({
+    getMetrics: vi.fn(() =>
+      Promise.resolve({
+        total: 1,
+        byStatus: {
+          queued: 0,
+          running: 0,
+          succeeded: 0,
+          failed: 0,
+          cancelled: 1,
+        },
+        failureCount: 0,
+        completedCount: 0,
+        averageDurationMs: null,
+        minDurationMs: null,
+        maxDurationMs: null,
+      }),
+    ),
+  });
+  renderPage(client);
+
+  const metrics = await screen.findByRole('region', { name: '全部任务汇总' });
+  const successful = within(metrics).getByText('成功').parentElement;
+  expect(successful).not.toBeNull();
+  expect(within(successful!).getByText('0')).toBeVisible();
 });
 
 it('filters the latest 100 client-side and preserves a stable selection', async () => {
@@ -255,6 +286,35 @@ it('merges task snapshots monotonically by updated time', () => {
   expect(mergeTaskSnapshots([terminal], [stale])).toEqual([terminal]);
 });
 
+it('keeps lifecycle, progress and cancellation monotonic at equal timestamps', () => {
+  const running = task({ progress: 0.6, cancelRequested: true });
+  const queued = task({
+    status: 'queued',
+    progress: 0.8,
+    cancelRequested: true,
+    startedAt: null,
+    presentation: {
+      ...task().presentation,
+      stage: 'queued',
+      processed: 4,
+    },
+  });
+  const lowerProgress = task({ progress: 0.3, cancelRequested: true });
+  const lostCancellation = task({ progress: 0.7, cancelRequested: false });
+  const terminal = task({
+    status: 'succeeded',
+    progress: 1,
+    finishedAt: '2026-07-08T00:00:02Z',
+    durationMs: 1_000,
+    presentation: { ...task().presentation, stage: 'completed', processed: 5 },
+  });
+
+  expect(updateTaskSnapshot([running], queued)).toEqual([running]);
+  expect(updateTaskSnapshot([running], lowerProgress)).toEqual([running]);
+  expect(updateTaskSnapshot([running], lostCancellation)).toEqual([running]);
+  expect(updateTaskSnapshot([terminal], running)).toEqual([terminal]);
+});
+
 it('coalesces refreshes and never overlaps serialized polling', async () => {
   vi.useFakeTimers();
   let resolveRefresh: ((value: readonly TaskView[]) => void) | undefined;
@@ -329,6 +389,9 @@ it('cancels queued or running work once and reflects idempotent request state', 
   expect(
     await screen.findByRole('button', { name: '已请求取消' }),
   ).toBeVisible();
+  expect(screen.getByTestId('task-live-status')).toHaveTextContent(
+    '已请求取消',
+  );
   expect(cancel).toBeDisabled();
 });
 

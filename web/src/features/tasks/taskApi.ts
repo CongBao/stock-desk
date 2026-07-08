@@ -339,7 +339,8 @@ export function decodeTaskResponse(value: JsonValue): TaskView {
     presentation.label !== expectedLabel ||
     (presentation.stage !== null &&
       (source.kind !== 'backtest.run' ||
-        presentation.stage !== stageForStatus[status]))
+        (presentation.stage !== stageForStatus[status] &&
+          !(status === 'running' && presentation.stage === 'queued'))))
   ) {
     throw new TaskApiError('protocol');
   }

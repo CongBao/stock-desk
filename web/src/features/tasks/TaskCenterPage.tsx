@@ -372,7 +372,7 @@ export function TaskCenterPage({
       >
         {selectedTask === null
           ? notice
-          : `${selectedTask.presentation.label}${statusLabels[selectedTask.status]}，进度 ${Math.round(selectedTask.progress * 100)}%`}
+          : `${selectedTask.presentation.label}${statusLabels[selectedTask.status]}，进度 ${Math.round(selectedTask.progress * 100)}%${selectedTask.cancelRequested ? '，已请求取消' : ''}`}
       </p>
 
       {isPartial ? (
@@ -401,8 +401,8 @@ export function TaskCenterPage({
           </strong>
         </div>
         <div>
-          <span>已完成</span>
-          <strong>{metrics?.completedCount ?? '—'}</strong>
+          <span>成功</span>
+          <strong>{metrics?.byStatus.succeeded ?? '—'}</strong>
         </div>
         <div>
           <span>失败</span>

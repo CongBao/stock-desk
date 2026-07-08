@@ -241,6 +241,9 @@ test('keyboard selection and cancellation send one POST and announce reflection'
     'aria-live',
     'polite',
   );
+  await expect(page.getByTestId('task-live-status')).toContainText(
+    '股票池回测正在运行，进度 40%，已请求取消',
+  );
 });
 
 test('a safe 503 keeps stale state and never renders diagnostic secrets', async ({
@@ -267,7 +270,11 @@ for (const viewport of [
   { name: 'tablet landscape', width: 1024, height: 768 },
   { name: 'tablet portrait', width: 768, height: 1024 },
   { name: 'mobile', width: 390, height: 844 },
-  { name: '200 percent zoom equivalent', width: 800, height: 450 },
+  {
+    name: '800 by 450 CSS viewport (200 percent desktop equivalent)',
+    width: 800,
+    height: 450,
+  },
 ]) {
   test(`${viewport.name} keeps task controls reachable without overlap or document overflow`, async ({
     page,
@@ -288,18 +295,6 @@ for (const viewport of [
     await noHorizontalOverflow(page);
     const navigationToggle = page.locator('.navigation-toggle');
     await expect(navigationToggle).toBeVisible();
-    const initiallyExpanded =
-      await navigationToggle.getAttribute('aria-expanded');
-    await navigationToggle.click();
-    await expect(navigationToggle).toHaveAttribute(
-      'aria-expanded',
-      initiallyExpanded === 'true' ? 'false' : 'true',
-    );
-    await navigationToggle.click();
-    await expect(navigationToggle).toHaveAttribute(
-      'aria-expanded',
-      initiallyExpanded ?? 'false',
-    );
     await expect(page.locator('.nav-icon svg').first()).toBeVisible();
     await page.getByRole('button', { name: '打开上下文面板' }).click();
     await expect(
@@ -351,30 +346,86 @@ for (const viewport of [
   });
 }
 
-test('Chromium 200 percent page zoom reflows task controls without clipping', async ({
+test('navigation follows the wide-to-narrow breakpoint and remains manually operable', async ({
   page,
 }) => {
-  const cdp = await page.context().newCDPSession(page);
-  await cdp.send('Emulation.setDeviceMetricsOverride', {
-    width: 800,
-    height: 450,
-    deviceScaleFactor: 2,
-    mobile: false,
-  });
+  await page.setViewportSize({ width: 1600, height: 900 });
   await installTaskStubs(page);
   await page.goto('/tasks');
-  await expect(page.getByRole('button', { name: '刷新任务' })).toBeVisible();
-  await expect(page.getByRole('button', { name: '取消任务' })).toBeVisible();
+
+  const navigationToggle = page.locator('.navigation-toggle');
+  await expect(navigationToggle).toHaveAttribute('aria-expanded', 'true');
+  await expect(navigationToggle).toHaveAccessibleName('收起主导航');
+  await expect(page.locator('.nav-icon svg').first()).toBeVisible();
+
+  await page.setViewportSize({ width: 1024, height: 768 });
+  await expect(navigationToggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(navigationToggle).toHaveAccessibleName('展开主导航');
+  await expect(page.locator('.nav-icon svg').first()).toBeVisible();
+
+  await navigationToggle.click();
+  await expect(navigationToggle).toHaveAttribute('aria-expanded', 'true');
+  await expect(navigationToggle).toHaveAccessibleName('收起主导航');
+  await expect(page.locator('.nav-icon svg').first()).toBeVisible();
+
+  await navigationToggle.click();
+  await expect(navigationToggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(navigationToggle).toHaveAccessibleName('展开主导航');
+  await expect(page.locator('.nav-icon svg').first()).toBeVisible();
   await noHorizontalOverflow(page);
-  expect(
-    await page.evaluate(() => {
-      const browserGlobal = globalThis as unknown as {
-        devicePixelRatio: number;
-        innerWidth: number;
-      };
-      return (
-        browserGlobal.devicePixelRatio === 2 && browserGlobal.innerWidth === 800
-      );
-    }),
-  ).toBe(true);
+});
+
+test('Chromium page scale changes the visual viewport while controls remain reachable', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 800, height: 450 });
+  await installTaskStubs(page);
+  await page.goto('/tasks');
+  const before = await page.evaluate(() => {
+    const browserGlobal = globalThis as unknown as {
+      visualViewport?: { scale: number; width: number; height: number };
+      innerWidth: number;
+      innerHeight: number;
+    };
+    return {
+      scale: browserGlobal.visualViewport?.scale ?? 1,
+      width: browserGlobal.visualViewport?.width ?? browserGlobal.innerWidth,
+      height: browserGlobal.visualViewport?.height ?? browserGlobal.innerHeight,
+    };
+  });
+  const cdp = await page.context().newCDPSession(page);
+  // CDP page scale models visual-viewport zoom; CSS breakpoint reflow is covered above.
+  expect(before).toEqual({ scale: 1, width: 800, height: 450 });
+  await cdp.send('Emulation.setPageScaleFactor', { pageScaleFactor: 2 });
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const browserGlobal = globalThis as unknown as {
+          visualViewport?: { scale: number; width: number; height: number };
+          innerWidth: number;
+          innerHeight: number;
+        };
+        return {
+          scale: browserGlobal.visualViewport?.scale ?? 1,
+          width:
+            browserGlobal.visualViewport?.width ?? browserGlobal.innerWidth,
+          height:
+            browserGlobal.visualViewport?.height ?? browserGlobal.innerHeight,
+        };
+      }),
+    )
+    .toEqual({
+      scale: 2,
+      width: before.width / 2,
+      height: before.height / 2,
+    });
+  const refresh = page.getByRole('button', { name: '刷新任务' });
+  const cancel = page.getByRole('button', { name: '取消任务' });
+  await expect(refresh).toBeVisible();
+  await refresh.focus();
+  await expect(refresh).toBeFocused();
+  await expect(cancel).toBeVisible();
+  await cancel.focus();
+  await expect(cancel).toBeFocused();
+  await noHorizontalOverflow(page);
 });

@@ -664,27 +664,15 @@ class TaskRepository:
             or not 0 <= failed <= processed <= total <= 10_000
         ):
             raise TaskValidationError("Task progress event is invalid")
-        latest = connection.execute(
-            select(TaskEvent.progress, TaskEvent.detail_json)
-            .where(
-                TaskEvent.task_id == task_id,
-                TaskEvent.event_name == "backtest.progressed",
-            )
-            .order_by(TaskEvent.occurred_at.desc(), TaskEvent.id.desc())
-            .limit(1)
-        ).one_or_none()
-        bucket = math.floor(float(progress) * 100)
-        if latest is not None:
-            latest_progress = latest[0]
-            latest_detail = latest[1]
-            if (
-                isinstance(latest_progress, (int, float))
-                and not isinstance(latest_progress, bool)
-                and math.floor(float(latest_progress) * 100) >= bucket
-                and isinstance(latest_detail, Mapping)
-                and latest_detail.get("stage") == stage
-            ):
-                return
+        first_checkpoint = processed == 1
+        final_checkpoint = total > 0 and processed == total
+        crossed_percent_bucket = (
+            total > 0
+            and processed > 0
+            and (processed * 100) // total > ((processed - 1) * 100) // total
+        )
+        if not (first_checkpoint or crossed_percent_bucket or final_checkpoint):
+            return
         _append_event(
             connection,
             task_id=task_id,

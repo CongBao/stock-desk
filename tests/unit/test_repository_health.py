@@ -644,6 +644,7 @@ def test_ci_and_release_gate_the_chromium_end_to_end_slice() -> None:
         "make e2e-formula",
         "make e2e-backtest",
         "make e2e-analysis",
+        "make e2e-task-center",
     ):
         assert required in ci_e2e
 
@@ -658,6 +659,7 @@ def test_ci_and_release_gate_the_chromium_end_to_end_slice() -> None:
     assert "make e2e-market" in release
     assert "make e2e-formula" in release
     assert "make e2e-backtest" in release
+    assert "make e2e-task-center" in release
     assert "contents: write" in release
     assert 'tags:\n      - "v*"' in release
 
@@ -723,6 +725,7 @@ def test_e2e_is_a_root_script_without_changing_the_make_contract() -> None:
         "e2e-formula",
         "e2e-backtest",
         "e2e-analysis",
+        "e2e-task-center",
         "test",
         "lint",
         "typecheck",
@@ -866,6 +869,38 @@ def test_stage_four_analysis_gates_extend_every_release_surface() -> None:
         assert command in release
 
 
+def test_task_center_e2e_gate_extends_every_release_surface() -> None:
+    makefile = _read("Makefile")
+    assert re.search(
+        r"^e2e-task-center:\n\tpnpm exec playwright test "
+        r"web/e2e/task-center\.spec\.ts --project=chromium$",
+        makefile,
+        re.MULTILINE,
+    )
+    e2e = re.search(r"^e2e:\s*(.+)$", makefile, re.MULTILINE)
+    assert e2e is not None
+    assert "e2e-task-center" in e2e.group(1).split()
+    release_check = re.search(r"^release-check:\s*(.+)$", makefile, re.MULTILINE)
+    assert release_check is not None
+    assert "e2e-task-center" in release_check.group(1).split()
+
+    ci = _load_github_actions_yaml(_read(".github/workflows/ci.yml"))
+    ci_commands = [
+        str(step.get("run", ""))
+        for step in ci["jobs"]["e2e"]["steps"]
+        if isinstance(step, dict)
+    ]
+    assert ci_commands.count("make e2e-task-center") == 1
+
+    release = _load_github_actions_yaml(_read(".github/workflows/release.yml"))
+    release_steps = release["jobs"]["verify"]["steps"]
+    release_gates = next(
+        step for step in release_steps if step.get("name") == "Run release gates"
+    )
+    release_commands = [line.strip() for line in release_gates["run"].splitlines()]
+    assert release_commands.count("make e2e-task-center") == 1
+
+
 def test_dependabot_covers_all_package_ecosystems_weekly() -> None:
     dependabot = _load_yaml(".github/dependabot.yml")
     updates = dependabot["updates"]
@@ -947,6 +982,7 @@ def test_readmes_match_commands_and_describe_current_release_limits() -> None:
         "make e2e-formula",
         "make e2e-backtest",
         "make e2e-analysis",
+        "make e2e-task-center",
     )
     for fact in shared_facts:
         assert fact in english

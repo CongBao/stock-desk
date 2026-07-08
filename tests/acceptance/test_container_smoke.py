@@ -176,6 +176,7 @@ def test_deployment_contract_is_complete_and_public_only() -> None:
         "e2e-formula",
         "e2e-backtest",
         "e2e-analysis",
+        "e2e-task-center",
         "lint",
         "check-public-tree",
         "container-smoke",
@@ -199,6 +200,7 @@ def test_deployment_contract_is_complete_and_public_only() -> None:
         "e2e-market",
         "e2e-backtest",
         "e2e-analysis",
+        "e2e-task-center",
     } <= set(release_targets)
 
     dev_script = _read("scripts/dev.py")

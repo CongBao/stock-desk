@@ -107,4 +107,4 @@ make public-tree
 make security
 ```
 
-先用 `pnpm exec playwright install chromium` 安装 Chromium，再运行 `make e2e-market`、`make e2e-formula`、`make e2e-backtest` 与 `make e2e-analysis`，即可验证真实 Stage 1–4 浏览器流程。`make security` 需要网络访问：它通过 OSV 检查 Python 依赖，并通过 npm registry 检查 JavaScript 生产依赖；执行审计前还会确认清单与锁文件一致。Docker 运行时，`make release-check` 会执行全部浏览器、安全和隔离的容器 smoke 门禁，并自行启动、清理 Compose。项目采用 Apache-2.0 许可证。Stock Desk 是研究软件，不构成投资建议；请独立核验数据和决策。
+先用 `pnpm exec playwright install chromium` 安装 Chromium，再运行 `make e2e-market`、`make e2e-formula`、`make e2e-backtest`、`make e2e-analysis` 与 `make e2e-task-center`，即可验证真实 Stage 1–5 浏览器流程。`make security` 需要网络访问：它通过 OSV 检查 Python 依赖，并通过 npm registry 检查 JavaScript 生产依赖；执行审计前还会确认清单与锁文件一致。Docker 运行时，`make release-check` 会执行全部浏览器、安全和隔离的容器 smoke 门禁，并自行启动、清理 Compose。项目采用 Apache-2.0 许可证。Stock Desk 是研究软件，不构成投资建议；请独立核验数据和决策。

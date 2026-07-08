@@ -1,4 +1,4 @@
-.PHONY: bootstrap dev test acceptance acceptance-formula acceptance-backtest acceptance-analysis benchmark benchmark-formula benchmark-backtest e2e e2e-foundation e2e-market e2e-formula e2e-backtest e2e-analysis lint typecheck build smoke container-smoke public-tree check-public-tree security release-check
+.PHONY: bootstrap dev test acceptance acceptance-formula acceptance-backtest acceptance-analysis benchmark benchmark-formula benchmark-backtest e2e e2e-foundation e2e-market e2e-formula e2e-backtest e2e-analysis e2e-task-center lint typecheck build smoke container-smoke public-tree check-public-tree security release-check
 
 bootstrap:
 	uv sync --frozen --all-groups --extra providers
@@ -32,7 +32,7 @@ benchmark-formula:
 benchmark-backtest:
 	uv run --frozen pytest -W error tests/performance/test_single_backtest.py --benchmark-only
 
-e2e: e2e-foundation e2e-market e2e-formula e2e-backtest e2e-analysis
+e2e: e2e-foundation e2e-market e2e-formula e2e-backtest e2e-analysis e2e-task-center
 
 e2e-foundation:
 	pnpm exec playwright test web/e2e/foundation.spec.ts --project=chromium
@@ -48,6 +48,9 @@ e2e-backtest:
 
 e2e-analysis:
 	pnpm exec playwright test web/e2e/analysis.spec.ts --project=chromium
+
+e2e-task-center:
+	pnpm exec playwright test web/e2e/task-center.spec.ts --project=chromium
 
 lint:
 	uv run --frozen ruff format --check .
@@ -86,4 +89,4 @@ security:
 	pnpm install --lockfile-only --frozen-lockfile --ignore-scripts
 	pnpm audit --prod --audit-level high
 
-release-check: test acceptance acceptance-formula acceptance-backtest acceptance-analysis benchmark benchmark-formula benchmark-backtest e2e-foundation e2e-market e2e-formula e2e-backtest e2e-analysis lint typecheck build public-tree security container-smoke
+release-check: test acceptance acceptance-formula acceptance-backtest acceptance-analysis benchmark benchmark-formula benchmark-backtest e2e-foundation e2e-market e2e-formula e2e-backtest e2e-analysis e2e-task-center lint typecheck build public-tree security container-smoke

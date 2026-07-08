@@ -66,6 +66,29 @@ it('strictly decodes the allowlisted safe task response', async () => {
   expect(JSON.stringify(task)).not.toMatch(/SENTINEL|worker-secret/u);
 });
 
+it('accepts the production transition where a claimed task precedes backtest start', async () => {
+  const api = createTaskApi(
+    stubClient({
+      get: vi.fn(() =>
+        Promise.resolve({
+          ...taskResponse,
+          presentation: {
+            ...taskResponse.presentation,
+            stage: 'queued',
+            processed: 0,
+            failed: 0,
+          },
+        } as unknown as JsonValue),
+      ),
+    }),
+  );
+
+  await expect(api.getTask(TASK_ID)).resolves.toMatchObject({
+    status: 'running',
+    presentation: { stage: 'queued', processed: 0 },
+  });
+});
+
 it('rejects raw task JSON crossing the safe browser boundary', async () => {
   const api = createTaskApi(
     stubClient({
