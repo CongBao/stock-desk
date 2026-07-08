@@ -5,7 +5,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import shutil
 import sqlite3
 import stat
 import warnings
@@ -21,6 +20,7 @@ from stock_desk.storage.backup import (
     inspect_backup,
 )
 from stock_desk.storage.database import create_engine_for_url, migrate
+from tests.fixtures.releases.materialize import materialize_tagged_fixture
 from stock_desk.storage.models import AppSetting
 from stock_desk.market.lake import MarketLake
 from tests.integration.market.lake_test_helpers import routed_daily_bars
@@ -300,8 +300,9 @@ def test_backup_rejects_hard_linked_catalog_object(tmp_path: Path) -> None:
 
 
 def test_logical_inventory_covers_complete_domain_rows(tmp_path: Path) -> None:
-    data_dir = tmp_path / "tagged-v0.5"
-    shutil.copytree(ROOT / "tests/fixtures/releases/v0.5.0", data_dir)
+    data_dir = materialize_tagged_fixture(
+        ROOT / "tests/fixtures/releases/v0.5.0", tmp_path / "tagged-v0.5"
+    )
     archive = tmp_path / "inventory.stockdesk-backup"
 
     manifest = create_backup(

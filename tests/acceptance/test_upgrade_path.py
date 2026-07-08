@@ -4,7 +4,6 @@ from collections.abc import Callable
 import hashlib
 import json
 from pathlib import Path
-import shutil
 import sqlite3
 
 import pytest
@@ -19,6 +18,7 @@ from stock_desk.storage.backup import (
 from stock_desk.storage.database import create_engine_for_url, migrate
 from stock_desk.tasks.repository import TaskRepository
 from tests.fixtures.releases import generate_tagged_fixtures
+from tests.fixtures.releases.materialize import materialize_tagged_fixture
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -146,8 +146,7 @@ def test_upgrade_from_exact_tagged_release_fixture_is_idempotent(
     assert manifest["tag_commit"] == RELEASE_COMMITS[tag]
     assert manifest["generated_by"] == "checked-out-tag-software"
 
-    destination = tmp_path / tag
-    shutil.copytree(source, destination)
+    destination = materialize_tagged_fixture(source, tmp_path / tag)
     database = destination / "stock-desk.db"
     assert _sha256(database) == manifest["database_sha256"]
     expected_inventory = manifest["logical_inventory"]
@@ -184,8 +183,9 @@ def test_compatible_backup_from_tagged_fixture_restores_on_current_release(
     tag: str,
     tmp_path: Path,
 ) -> None:
-    fixture = tmp_path / f"{tag}-source"
-    shutil.copytree(RELEASE_FIXTURES / tag, fixture)
+    fixture = materialize_tagged_fixture(
+        RELEASE_FIXTURES / tag, tmp_path / f"{tag}-source"
+    )
     source_url = f"sqlite:///{fixture / 'stock-desk.db'}"
     archive = tmp_path / f"{tag}.stockdesk-backup"
 
