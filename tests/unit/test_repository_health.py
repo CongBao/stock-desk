@@ -579,8 +579,7 @@ def test_release_publishes_only_the_attested_immutable_asset_directory() -> None
     assert steps[2]["working-directory"] == "release-assets"
     assert "sha256sum -c SHA256SUMS.complete" in steps[2]["run"]
     assert (
-        steps[3]["run"]
-        == 'gh release create "$GITHUB_REF_NAME" release-assets/* '
+        steps[3]["run"] == 'gh release create "$GITHUB_REF_NAME" release-assets/* '
         '--verify-tag --generate-notes --title "Stock Desk $GITHUB_REF_NAME"'
     )
 
@@ -1576,7 +1575,7 @@ def test_performance_target_ci_is_explicit_and_requirements_remain_mapped() -> N
 
     requirements = yaml.safe_load(_read("tests/acceptance/requirements.yml"))
     records = {item["id"]: item for item in requirements["requirements"]}
-    for requirement_id in ("R-054", "R-055", "R-060"):
+    for requirement_id in ("R-053",):
         requirement = records[requirement_id]
         assert requirement["status"] == "mapped"
         assert any(

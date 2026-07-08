@@ -1,10 +1,10 @@
 # v1 acceptance coverage
 
-<!-- requirements-yaml-sha256: 716cc9fc7974d06e9116c7cfd719c744c595249bdb35e664874fb5ee9d0b0a3b -->
+<!-- requirements-yaml-sha256: 30565f31041b8f96c5417bb583145096cf8e5839c2daeb9522d89f325ab6e597 -->
 
 The machine-readable acceptance authority is `tests/acceptance/requirements.yml`. The digest above is checked by `scripts/check_requirement_coverage.py` so this public summary cannot silently drift from the matrix.
 
-The matrix maps exactly 60 product/design semantics, 17 operational/publication refinements, and 10 explicit non-goals. A fixed public-safe registry binds each R identifier to one unique authoritative semantic requirement and its valid scenarios. Each entry has one stable behavior key, a complete acceptance statement, an owning stage, mapping status, and assertion-level evidence.
+The matrix maps the 77 authoritative requirements in their original stable-ID order and the 10 explicit non-goals in their original exclusion order. A public-safe frozen registry binds every ID to its behavior key, acceptance-text digest, metadata, and exact semantic reference set. Each entry also has an owning stage, mapping status, and assertion-level evidence.
 
 Evidence state and requirement status are intentionally separate:
 

@@ -6,7 +6,6 @@ import importlib.util
 import os
 import subprocess
 import sys
-from collections import Counter
 from pathlib import Path
 from types import ModuleType
 
@@ -92,40 +91,14 @@ def test_manifest_has_exact_ids_and_unique_semantics(matrix: dict[str, object]) 
     )
 
 
-def test_manifest_matches_the_canonical_60_plus_17_registry(
+def test_manifest_matches_the_frozen_authoritative_registry(
     checker: ModuleType,
     matrix: dict[str, object],
 ) -> None:
     registry = checker.CANONICAL_REQUIREMENTS
     assert list(registry) == [f"R-{number:03d}" for number in range(1, 78)]
-    assert sum(entry["semantic_type"] == "product" for entry in registry.values()) == 60
-    assert (
-        sum(entry["semantic_type"] == "operational" for entry in registry.values())
-        == 17
-    )
-    assert all(
-        registry[f"R-{number:03d}"]["semantic_type"] == "product"
-        for number in range(1, 61)
-    )
-    assert all(
-        registry[f"R-{number:03d}"]["semantic_type"] == "operational"
-        for number in range(61, 78)
-    )
-    assert Counter(
-        entry["capability"]
-        for entry in registry.values()
-        if entry["semantic_type"] == "product"
-    ) == {
-        "market-data-charting": 17,
-        "formula-system": 12,
-        "backtesting-reporting": 16,
-        "multi-agent-analysis": 12,
-        "product-design": 3,
-    }
-    semantics = [
-        (entry["capability"], entry["requirement"]) for entry in registry.values()
-    ]
-    assert len(semantics) == len(set(semantics)) == 77
+    assert list(checker.AUTHORITATIVE_BEHAVIOR_KEYS) == list(registry)
+    assert list(checker.AUTHORITATIVE_ACCEPTANCE_SHA256) == list(registry)
 
     for item in matrix["requirements"]:
         canonical = registry[item["id"]]
@@ -133,12 +106,14 @@ def test_manifest_matches_the_canonical_60_plus_17_registry(
         assert item["category"] == canonical["category"]
         assert item["kind"] == canonical["kind"]
         assert item["owning_stage"] == canonical["owning_stage"]
+        assert (
+            hashlib.sha256(item["acceptance"].encode("utf-8")).hexdigest()
+            == (canonical["acceptance_sha256"])
+        )
         assert {
-            (ref["capability"], ref["requirement"]) for ref in item["source_refs"]
-        } == {(canonical["capability"], canonical["requirement"])}
-        assert {ref["scenario"] for ref in item["source_refs"]} == canonical[
-            "scenarios"
-        ]
+            (ref["capability"], ref["requirement"], ref["scenario"])
+            for ref in item["source_refs"]
+        } == canonical["source_refs"]
 
 
 def test_canonical_scenario_set_cannot_be_missing_added_or_duplicated(
@@ -147,14 +122,14 @@ def test_canonical_scenario_set_cannot_be_missing_added_or_duplicated(
 ) -> None:
     missing = copy.deepcopy(matrix)
     missing["requirements"][0]["source_refs"].pop()
-    with pytest.raises(checker.ValidationError, match="exact canonical scenario set"):
+    with pytest.raises(checker.ValidationError, match="authoritative reference set"):
         validate_without_collecting(checker, missing)
 
     added = copy.deepcopy(matrix)
     fabricated = copy.deepcopy(added["requirements"][0]["source_refs"][0])
     fabricated["scenario"] = "fabricated-scenario"
     added["requirements"][0]["source_refs"].append(fabricated)
-    with pytest.raises(checker.ValidationError, match="canonical scenario"):
+    with pytest.raises(checker.ValidationError, match="authoritative reference set"):
         validate_without_collecting(checker, added)
 
     duplicated = copy.deepcopy(matrix)
@@ -165,28 +140,39 @@ def test_canonical_scenario_set_cannot_be_missing_added_or_duplicated(
         validate_without_collecting(checker, duplicated)
 
 
+def test_duplicate_evidence_records_are_rejected(
+    checker: ModuleType,
+    matrix: dict[str, object],
+) -> None:
+    changed = copy.deepcopy(matrix)
+    duplicate = copy.deepcopy(changed["requirements"][0]["evidence"][0])
+    duplicate["assertion"] = (
+        "Changing prose must not disguise a duplicate evidence identity."
+    )
+    changed["requirements"][0]["evidence"].append(duplicate)
+
+    with pytest.raises(checker.ValidationError, match="duplicate evidence record"):
+        validate_without_collecting(checker, changed)
+
+
 def test_manifest_matches_the_canonical_non_goal_registry(
     checker: ModuleType,
     matrix: dict[str, object],
 ) -> None:
     registry = checker.CANONICAL_NON_GOALS
     assert list(registry) == [f"N-{number:03d}" for number in range(1, 11)]
-    semantics = [
-        (entry["capability"], entry["requirement"]) for entry in registry.values()
-    ]
-    assert len(semantics) == len(set(semantics)) == 10
-
     for item in matrix["non_goals"]:
         canonical = registry[item["id"]]
         for field in ("category", "kind", "behavior_key", "owning_stage"):
             assert item[field] == canonical[field]
-        assert item["source_refs"] == [
-            {
-                "capability": canonical["capability"],
-                "requirement": canonical["requirement"],
-                "scenario": canonical["scenario"],
-            }
-        ]
+        assert (
+            hashlib.sha256(item["acceptance"].encode("utf-8")).hexdigest()
+            == (canonical["acceptance_sha256"])
+        )
+        assert {
+            (ref["capability"], ref["requirement"], ref["scenario"])
+            for ref in item["source_refs"]
+        } == canonical["source_refs"]
 
 
 @pytest.mark.parametrize("field", ["category", "behavior_key", "owning_stage"])
@@ -228,180 +214,45 @@ def test_fabricated_or_cross_requirement_source_refs_are_rejected(
     fabricated["requirements"][0]["source_refs"][0].update(
         {"capability": "fabricated-capability", "requirement": "fabricated-requirement"}
     )
-    with pytest.raises(checker.ValidationError, match="canonical semantic requirement"):
+    with pytest.raises(checker.ValidationError, match="authoritative reference set"):
         validate_without_collecting(checker, fabricated)
 
     wrong_scenario = copy.deepcopy(matrix)
     wrong_scenario["requirements"][0]["source_refs"][0]["scenario"] = (
         "fabricated-scenario"
     )
-    with pytest.raises(checker.ValidationError, match="canonical scenario"):
+    with pytest.raises(checker.ValidationError, match="authoritative reference set"):
         validate_without_collecting(checker, wrong_scenario)
 
 
 def test_requirement_evidence_does_not_overclaim_unproven_clauses(
     matrix: dict[str, object],
 ) -> None:
-    by_behavior = {item["behavior_key"]: item for item in matrix["requirements"]}
+    by_id = {item["id"]: item for item in matrix["requirements"]}
 
-    required_selectors = {
-        "backtest_uses_builtin_or_saved_signals": "desktop market prefill runs MACD through report, replay, and export",
-        "single_and_pool_backtests": "tests/acceptance/test_backtest_scope_matrix.py::test_all_a_index_industry_custom_failure_and_insufficient_scopes",
-        "formula_editing_assistance": "tests/acceptance/test_formula_editing_assistance.py::test_highlight_hints_templates_preview_save_and_copy",
-        "modular_monolith_with_worker_boundary": "tests/acceptance/test_architecture_boundaries.py::test_module_inventory_and_heavy_work_use_independent_worker",
-        "local_tdx_is_safe_fallback": "tests/unit/market/providers/test_tdx_local.py::test_tdx_preflight_and_fetch_reject_every_symlink_component",
-        "first_release_market_scope_is_bounded": "real local market workflow stays cached, traceable, and interactive",
-        "first_release_formula_scope_is_bounded": "tests/acceptance/test_formula_types.py::test_only_indicator_and_trading_formula_types_are_public",
+    delivered = {
+        "R-003": "tests/acceptance/test_full_user_journey.py::test_complete_no_network_application_journey",
+        "R-021": "tests/acceptance/test_full_user_journey.py::test_demo_data_categories_and_missing_category_are_visible",
+        "R-022": "tests/acceptance/test_full_user_journey.py::test_analysis_remains_independent",
     }
-    for behavior_key, selector in required_selectors.items():
-        assert selector in {
-            evidence.get("selector")
-            for evidence in by_behavior[behavior_key]["evidence"]
-        }
+    for requirement_id, selector in delivered.items():
+        evidence = next(
+            item
+            for item in by_id[requirement_id]["evidence"]
+            if item.get("selector") == selector
+        )
+        assert evidence["state"] == "existing"
 
-    required_selector_sets = {
-        "analysis_is_research_only": {
-            "configures a model and completes traceable analysis, retry, and insufficient flows",
-        },
-        "stock_desk_product_identity": {
-            "recognizes a direct backtest run URL as strategy backtesting",
-            "shows the product identity and all primary navigation items",
-            "shows stock-desk name version and repository in about information",
-            "tests/unit/test_verify_release.py::test_rejects_package_metadata_with_a_different_name",
-            "tests/unit/test_repository_health.py::test_project_metadata_is_complete_and_points_to_the_public_repository",
-        },
-        "guided_backtest_configuration": {
-            "collects immutable formula scope period dates and costs and discloses T+1 suspension price limits and pool semantics",
-        },
-        "local_tdx_is_safe_fallback": {
-            "tests/acceptance/test_tdx_local_user_flow.py::test_valid_tdx_directory_shows_markets_period_and_data_cutoff",
-            "tests/unit/market/providers/test_tdx_local.py::test_tdx_preflight_returns_safe_typed_layout_failures",
-            "tests/unit/market/providers/test_tdx_local.py::test_tdx_preflight_rejects_structurally_invalid_day_file_sizes",
-            "tests/unit/market/providers/test_tdx_local.py::test_tdx_preflight_translates_permission_without_os_text",
-            "tests/acceptance/test_tdx_local_user_flow.py::test_unsupported_tdx_file_format_is_rejected_before_enablement",
-        },
-        "private_single_user_web_access": {
-            "/market has bounded non-overlapping layout",
-            "/formulas has bounded non-overlapping layout",
-            "/backtests has bounded non-overlapping layout",
-            "/analysis has bounded non-overlapping layout",
-            "/tasks has bounded non-overlapping layout",
-            "/settings has bounded non-overlapping layout",
-        },
-        "responsive_icon_navigation_never_overlaps": {
-            "/market has bounded non-overlapping layout",
-            "/formulas has bounded non-overlapping layout",
-            "/backtests has bounded non-overlapping layout",
-            "/analysis has bounded non-overlapping layout",
-            "/tasks has bounded non-overlapping layout",
-            "/settings has bounded non-overlapping layout",
-            "navigation auto-collapses only when crossing the narrow breakpoint",
-            "collapsed navigation renders icons without textual abbreviations",
-        },
-        "professional_terminal_visual_structure": {
-            "market terminal preserves navy structure and rise-fall colors with three aligned regions",
-        },
-        "preset_and_custom_stock_pools": {
-            "all-A index industry and editable custom pools show composition timestamps across sessions",
-        },
-        "pluggable_model_configuration": {
-            "configures domestic OpenAI-compatible and Ollama providers with immutable runtime parameters",
-        },
-        "future_or_repainting_formula_is_blocked": {
-            "tests/acceptance/test_formula_safety_boundary.py::test_future_or_repainting_formula_cannot_be_saved_or_backtested",
-        },
-        "provenance_prevents_silent_splicing": {
-            "tests/acceptance/test_market_provenance_contract.py::test_normalized_series_and_source_transitions_expose_complete_provenance",
-        },
-        "versioned_tdx_compatibility_subset": {
-            "tests/unit/formula/test_parser.py::test_parser_understands_assignment_output_and_cross",
-            "tests/unit/formula/test_registry.py::test_unknown_function_is_rejected_at_its_source_span",
-        },
-        "local_data_updates_are_observable": {
-            "tests/acceptance/test_observable_market_updates.py::test_manual_and_scheduled_updates_show_cutoff_state_and_partial_failures",
-        },
+    still_planned = {
+        "R-014": "tests/acceptance/test_backtest_scope_matrix.py::test_all_a_index_industry_custom_failure_and_insufficient_scopes",
+        "R-040": "collects immutable formula scope period dates and costs and discloses T+1 suspension price limits and pool semantics",
+        "R-052": "tests/acceptance/test_release_acceptance_scope.py::test_all_first_release_acceptance_domains_and_full_journey_are_gated",
     }
-    for behavior_key, selectors in required_selector_sets.items():
-        evidence = by_behavior[behavior_key]["evidence"]
-        actual = {entry.get("selector") for entry in evidence}
-        assert selectors <= actual
-
-    analysis_disclaimer = next(
-        entry
-        for entry in by_behavior["analysis_is_research_only"]["evidence"]
-        if entry.get("selector")
-        == "configures a model and completes traceable analysis, retry, and insufficient flows"
-    )
-    assert analysis_disclaimer["state"] == "existing"
-    assert analysis_disclaimer["runner"] == "playwright"
-
-    product_identity = by_behavior["stock_desk_product_identity"]["evidence"]
-    assert (
-        next(
-            entry
-            for entry in product_identity
-            if entry.get("selector")
-            == "shows stock-desk name version and repository in about information"
-        )["state"]
-        == "planned"
-    )
-
-    wizard = by_behavior["guided_backtest_configuration"]["evidence"]
-    assert (
-        next(
-            entry
-            for entry in wizard
-            if entry.get("selector")
-            == "collects immutable formula scope period dates and costs and discloses T+1 suspension price limits and pool semantics"
-        )["state"]
-        == "planned"
-    )
-
-    tdx = by_behavior["local_tdx_is_safe_fallback"]["evidence"]
-    valid_preflight = next(
-        entry
-        for entry in tdx
-        if entry.get("selector")
-        == "tests/unit/market/providers/test_tdx_local.py::test_tdx_preflight_reports_validated_markets_and_bounded_counts"
-    )
-    assert "intentionally has no data cutoff" in valid_preflight["assertion"].lower()
-    assert {entry["selector"] for entry in tdx if entry["state"] == "planned"} >= {
-        "tests/acceptance/test_tdx_local_user_flow.py::test_valid_tdx_directory_shows_markets_period_and_data_cutoff",
-        "tests/acceptance/test_tdx_local_user_flow.py::test_unsupported_tdx_file_format_is_rejected_before_enablement",
-    }
-
-    formula_outputs = by_behavior["formula_types_have_typed_outputs"]
-    formula_selectors = {
-        evidence.get("selector") for evidence in formula_outputs["evidence"]
-    }
-    assert (
-        "tests/acceptance/test_formula_consistency.py::test_macd_template_has_public_outputs_signals_and_subchart_evaluation"
-        in formula_selectors
-    )
-    assert (
-        "labels main-chart overlays and subcharts according to formula placement"
-        in formula_selectors
-    )
-
-    chart_performance = by_behavior["cached_chart_is_interactive_within_two_seconds"]
-    assert any(
-        evidence["state"] == "existing"
-        and evidence["selector"]
-        == "records aggregate 2/3/5 budgets and worker-backed UI responsiveness"
-        for evidence in chart_performance["evidence"]
-    )
-    assert any(
-        evidence["kind"] == "performance" for evidence in chart_performance["evidence"]
-    )
-
-    backtest_performance = by_behavior["single_backtest_finishes_within_five_seconds"]
-    assert any(
-        evidence["state"] == "existing"
-        and evidence["runner"] == "playwright"
-        and evidence["selector"]
-        == "records aggregate 2/3/5 budgets and worker-backed UI responsiveness"
-        for evidence in backtest_performance["evidence"]
-    )
+    for requirement_id, selector in still_planned.items():
+        assert any(
+            item["state"] == "planned" and item.get("selector") == selector
+            for item in by_id[requirement_id]["evidence"]
+        )
 
 
 def test_reviewed_multiclause_rows_keep_clause_level_evidence(
@@ -410,9 +261,9 @@ def test_reviewed_multiclause_rows_keep_clause_level_evidence(
     by_id = {item["id"]: item for item in matrix["requirements"]}
 
     expected = {
-        "R-030": {
-            "desktop market prefill runs MACD through report, replay, and export": "existing",
-            "tests/acceptance/test_non_goal_inventory.py::test_every_non_goal_is_checked_on_every_declared_public_surface": "existing",
+        "R-018": {
+            "tests/acceptance/test_backtest_semantics.py::test_runner_persists_complete_deferred_constraint_and_cancellation_chains": "existing",
+            "tests/unit/backtest/test_trades.py::test_realized_net_return_discloses_each_cost": "existing",
         },
         "R-045": {
             "tests/unit/backtest/test_state_machine.py::test_duplicate_buy_is_ignored_when_already_holding": "existing",
@@ -421,11 +272,9 @@ def test_reviewed_multiclause_rows_keep_clause_level_evidence(
             "tests/unit/backtest/test_state_machine.py::test_opposite_signal_cancels_pending_buy": "existing",
             "tests/unit/backtest/test_state_machine.py::test_fill_pending_buy_then_sell_updates_exactly_one_position": "existing",
         },
-        "R-059": {
-            "tests/security/test_analysis_boundaries.py::test_analysis_write_contract_rejects_formula_trading_and_prompt_fields": "existing",
-            "tests/security/test_analysis_boundaries.py::test_analysis_package_has_no_formula_backtest_or_broker_imports": "existing",
-            "tests/unit/analysis/test_workflow.py::test_analysis_api_import_boundary_rejects_formula_and_backtest": "existing",
-            "tests/acceptance/test_analysis_decoupling.py::test_analysis_cannot_read_or_mutate_formula_signal_or_backtest_state_and_opinion_never_triggers_backtest": "planned",
+        "R-050": {
+            "tests/security/test_secret_surfaces.py::test_market_token_never_leaves_masked_state_across_legacy_and_new_tasks": "existing",
+            "tests/security/test_analysis_boundaries.py::test_real_worker_error_redacts_logs_task_http_and_report": "existing",
         },
     }
     for requirement_id, selectors in expected.items():
@@ -435,19 +284,17 @@ def test_reviewed_multiclause_rows_keep_clause_level_evidence(
         }
         assert selectors.items() <= actual.items()
 
-    r030 = by_id["R-030"]["evidence"]
-    assert any(
-        entry.get("selector")
-        == "desktop market prefill runs MACD through report, replay, and export"
-        and "historical" in entry["assertion"].lower()
-        for entry in r030
-    )
-
-    r059_planned = next(
-        entry for entry in by_id["R-059"]["evidence"] if entry["state"] == "planned"
-    )
-    for clause in ("read", "mutate", "opinion", "trigger"):
-        assert clause in r059_planned["assertion"].lower()
+    responsive = {item.get("selector") for item in by_id["R-077"]["evidence"]}
+    assert {
+        "/market has bounded non-overlapping layout",
+        "/formulas has bounded non-overlapping layout",
+        "/backtests has bounded non-overlapping layout",
+        "/analysis has bounded non-overlapping layout",
+        "/tasks has bounded non-overlapping layout",
+        "/settings has bounded non-overlapping layout",
+        "navigation auto-collapses only when crossing the narrow breakpoint",
+        "collapsed navigation renders icons without textual abbreviations",
+    } <= responsive
 
 
 def test_final_multiclause_audit_keeps_explicit_plans_for_unproven_groups(
@@ -455,22 +302,15 @@ def test_final_multiclause_audit_keeps_explicit_plans_for_unproven_groups(
 ) -> None:
     by_id = {item["id"]: item for item in matrix["requirements"]}
     audited_plans = {
-        "R-003": "tests/acceptance/test_formula_to_backtest_journey.py::test_builtin_and_custom_formulas_validate_preview_save_and_run_backtest",
-        "R-004": "tests/acceptance/test_formula_to_backtest_journey.py::test_formula_version_copy_and_historical_run_pinning",
-        "R-007": "tests/acceptance/test_market_period_adjustment_contract.py::test_period_and_adjustment_switches_recalculate_visible_market_and_indicator_values",
-        "R-009": "tests/acceptance/test_analysis_parallel_workflow.py::test_snapshot_parallel_roles_and_bull_bear_risk_dependencies_are_exact",
-        "R-010": "tests/acceptance/test_async_task_lifecycle.py::test_updates_backtests_and_analysis_expose_progress_cancellation_errors_logs_and_partial_results_without_blocking",
-        "R-015": "tests/acceptance/test_backtest_statistics_contract.py::test_win_rate_summary_distributions_and_symbol_time_groups_are_complete",
-        "R-019": "tests/acceptance/test_pool_task_lifecycle.py::test_pool_progress_failures_cancellation_logs_checkpoints_and_partial_results_are_durable",
-        "R-021": "tests/acceptance/test_market_routing_contract.py::test_default_and_fallback_sources_record_complete_routing_without_splicing",
-        "R-022": "analysis layout keeps process conclusions and synchronized evidence in three visible regions",
-        "R-023": "tests/acceptance/test_analysis_claim_contract.py::test_claims_reports_and_unsupported_statements_have_complete_traceability",
-        "R-048": "tests/acceptance/test_analysis_retry_contract.py::test_retry_is_bounded_and_child_run_preserves_parent_partial_report_and_error",
-        "R-049": "tests/acceptance/test_analysis_insufficient_evidence_matrix.py::test_missing_technical_or_fundamental_evidence_lists_recovery_without_rating_or_fabrication",
-        "R-047": "tests/acceptance/test_complete_rating_report.py::test_rating_confidence_rationale_balanced_cases_and_risks_are_complete",
-        "R-052": "tests/acceptance/test_formula_validation_boundary.py::test_all_validation_stages_block_invalid_save_preview_and_backtest_while_preserving_draft",
-        "R-053": "backtest report keeps conclusions tabs sample states and snapshot context complete",
-        "R-056": "tests/acceptance/test_first_release_market_scope.py::test_positive_market_periods_and_every_excluded_entry_are_exact",
+        "R-002": "tests/acceptance/test_market_period_adjustment_contract.py::test_period_and_adjustment_switches_recalculate_visible_market_and_indicator_values",
+        "R-014": "tests/acceptance/test_backtest_scope_matrix.py::test_all_a_index_industry_custom_failure_and_insufficient_scopes",
+        "R-029": "tests/acceptance/test_formula_editing_assistance.py::test_highlight_hints_templates_preview_save_and_copy",
+        "R-031": "tests/acceptance/test_tdx_local_user_flow.py::test_valid_tdx_directory_shows_markets_period_and_data_cutoff",
+        "R-033": "tests/acceptance/test_formula_safety_boundary.py::test_future_or_repainting_formula_cannot_be_saved_or_backtested",
+        "R-039": "tests/acceptance/test_formula_validation_boundary.py::test_all_validation_stages_block_invalid_save_preview_and_backtest_while_preserving_draft",
+        "R-052": "tests/acceptance/test_release_acceptance_scope.py::test_all_first_release_acceptance_domains_and_full_journey_are_gated",
+        "R-066": "tests/acceptance/test_release_artifacts.py::test_release_history_contains_only_public_artifacts",
+        "R-073": "tests/acceptance/test_release_docs.py::test_readmes_are_concise_reciprocal_and_install_verified",
     }
     for requirement_id, selector in audited_plans.items():
         assert any(
@@ -478,7 +318,7 @@ def test_final_multiclause_audit_keeps_explicit_plans_for_unproven_groups(
             for evidence in by_id[requirement_id]["evidence"]
         ), requirement_id
 
-    analysis_run = by_id["R-046"]["evidence"]
+    analysis_run = by_id["R-023"]["evidence"]
     assert any(
         evidence["state"] == "existing"
         and evidence.get("selector")
@@ -809,7 +649,7 @@ def test_user_visible_strength_requires_one_compatible_evidence_item(
     checker: ModuleType,
     matrix: dict[str, object],
 ) -> None:
-    item = copy.deepcopy(matrix["requirements"][0])
+    item = copy.deepcopy(matrix["requirements"][1])
     evidence = [
         {
             "state": "existing",
