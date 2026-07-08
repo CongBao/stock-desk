@@ -714,7 +714,9 @@ def test_parallel_failure_retry_requests_are_parent_globally_unique(
     with ThreadPoolExecutor(max_workers=2) as executor:
         responses = tuple(executor.map(retry, (RoleName.BULL, RoleName.BEAR)))
 
-    assert sorted(response.status_code for response in responses) == [202, 409]
+    assert sorted(response.status_code for response in responses) == [202, 409], [
+        (response.status_code, response.text) for response in responses
+    ]
     conflict = next(response for response in responses if response.status_code == 409)
     assert conflict.json() == {"code": "state_conflict"}
     with tasks.engine.connect() as connection:

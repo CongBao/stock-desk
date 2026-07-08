@@ -169,6 +169,8 @@ def test_deployment_contract_is_complete_and_public_only() -> None:
         "benchmark-formula",
         "benchmark-backtest",
         "performance",
+        "performance-reference",
+        "performance-target",
         "performance-regressions",
         "build",
         "dev",
@@ -179,6 +181,7 @@ def test_deployment_contract_is_complete_and_public_only() -> None:
         "e2e-backtest",
         "e2e-analysis",
         "e2e-task-center",
+        "e2e-accessibility",
         "lint",
         "check-public-tree",
         "container-smoke",
@@ -203,6 +206,7 @@ def test_deployment_contract_is_complete_and_public_only() -> None:
         "e2e-backtest",
         "e2e-analysis",
         "e2e-task-center",
+        "e2e-accessibility",
     } <= set(release_targets)
 
     dev_script = _read("scripts/dev.py")
