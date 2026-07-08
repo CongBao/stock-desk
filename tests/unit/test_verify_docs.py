@@ -337,6 +337,21 @@ def test_repository_contract_reports_broken_links_unsupported_commands_and_bound
     assert any("openspec/" in failure for failure in failures)
 
 
+def test_repository_contract_checks_every_public_docs_page(tmp_path: Path) -> None:
+    _write_repository(tmp_path)
+    (tmp_path / "docs/feature-guide.md").write_text(
+        "# Feature guide\n\n[Missing recovery guide](missing-recovery.md)\n",
+        encoding="utf-8",
+    )
+
+    failures = verify_repository(tmp_path)
+
+    assert any(
+        "docs/feature-guide.md" in failure and "missing-recovery.md" in failure
+        for failure in failures
+    )
+
+
 def test_repository_contract_requires_all_documented_settings(tmp_path: Path) -> None:
     _write_repository(tmp_path)
     configuration = tmp_path / "docs/configuration.md"

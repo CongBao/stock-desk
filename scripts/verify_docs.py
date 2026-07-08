@@ -223,6 +223,11 @@ def verify_repository(repo_root: Path) -> list[str]:
                 failures.append(
                     f"{relative_path}: missing required heading: {required_heading}"
                 )
+
+    public_paths = sorted(root.glob("*.md")) + sorted((root / "docs").rglob("*.md"))
+    for path in public_paths:
+        relative_path = path.relative_to(root).as_posix()
+        document = documents.get(relative_path, _read(path))
         failures.extend(_relative_link_failures(root, relative_path, document))
         failures.extend(_command_failures(root, relative_path, document))
         for blocked in FORBIDDEN_PUBLIC_REFERENCES:
