@@ -223,13 +223,19 @@ def test_real_worker_error_redacts_logs_task_http_and_report(
 
     def production_provider_builder(
         secret_store: SecretStore,
-    ) -> Callable[[AnalysisExecutionConfig], ModelProvider]:
+    ) -> tuple[
+        Callable[[AnalysisExecutionConfig], ModelProvider],
+        Callable[[], None],
+    ]:
         factory = ModelProviderFactory(
             secret_store=secret_store,
             transport=httpx2.MockTransport(transport_handler),
             resolver=resolve_public,
         )
-        return lambda execution: factory.create(execution.public_config)
+        return (
+            lambda execution: factory.create(execution.public_config),
+            factory.close,
+        )
 
     with _harness(
         tmp_path,

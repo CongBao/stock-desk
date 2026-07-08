@@ -270,7 +270,11 @@ def _harness(
     data_service: ResearchDataService | None = None,
     provider_builder: Callable[[AnalysisExecutionConfig], ModelProvider] | None = None,
     provider_builder_factory: Callable[
-        [SecretStore], Callable[[AnalysisExecutionConfig], ModelProvider]
+        [SecretStore],
+        tuple[
+            Callable[[AnalysisExecutionConfig], ModelProvider],
+            Callable[[], None],
+        ],
     ]
     | None = None,
 ) -> Iterator[AnalysisHarness]:
@@ -320,11 +324,11 @@ def _harness(
             ),
         )
 
-    resolved_builder = (
-        provider_builder_factory(secret_store)
-        if provider_builder_factory is not None
-        else provider_builder or default_provider_builder
-    )
+    owned_provider_close: Callable[[], None] | None = None
+    if provider_builder_factory is not None:
+        resolved_builder, owned_provider_close = provider_builder_factory(secret_store)
+    else:
+        resolved_builder = provider_builder or default_provider_builder
     worker = TaskWorker(tasks, worker_id="analysis-acceptance-worker")
 
     async def no_wait(_delay: float) -> None:
@@ -359,18 +363,22 @@ def _harness(
         analysis_service=analysis,
         analysis_preflight_service=preflight,
     )
-    with TestClient(app) as client:
-        yield AnalysisHarness(
-            client=client,
-            worker=worker,
-            repository=repository,
-            tasks=tasks,
-            engine=engine,
-            provider_factory=resolved_builder,
-        )
-    model_settings.close()
-    catalog.close()
-    engine.dispose()
+    try:
+        with TestClient(app) as client:
+            yield AnalysisHarness(
+                client=client,
+                worker=worker,
+                repository=repository,
+                tasks=tasks,
+                engine=engine,
+                provider_factory=resolved_builder,
+            )
+    finally:
+        if owned_provider_close is not None:
+            owned_provider_close()
+        model_settings.close()
+        catalog.close()
+        engine.dispose()
 
 
 def _configure_verified_model(
