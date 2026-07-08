@@ -51,12 +51,9 @@ docker compose down --volumes --remove-orphans
 ```
 
 Contributors working from source need Python `>=3.12,<3.13`,
-[uv](https://docs.astral.sh/uv/), Node.js 22 or 24 LTS, and pnpm 11:
-
-```bash
-make bootstrap
-make dev
-```
+[uv](https://docs.astral.sh/uv/), Node.js 22 or 24 LTS, and pnpm 11. Follow
+[CONTRIBUTING.md](CONTRIBUTING.md); its setup path uses `make bootstrap` and
+`make dev`.
 
 Open [http://localhost:5173/market](http://localhost:5173/market). `make dev`
 starts the API, task worker, and Vite development server; stop them with
@@ -131,7 +128,6 @@ make e2e-backtest
 make e2e-analysis
 make e2e-task-center
 make security
-make release-check
 ```
 
 `make security` requires network access. It audits locked Python dependencies

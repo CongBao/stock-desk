@@ -43,12 +43,8 @@ docker compose down --volumes --remove-orphans
 ```
 
 从源码参与开发需要 Python `>=3.12,<3.13`、[uv](https://docs.astral.sh/uv/)、
-Node.js 22 或 24 LTS 与 pnpm 11：
-
-```bash
-make bootstrap
-make dev
-```
+Node.js 22 或 24 LTS 与 pnpm 11。请按 [CONTRIBUTING.md](CONTRIBUTING.md)
+操作；其中的源码设置流程使用 `make bootstrap` 与 `make dev`。
 
 打开 [http://localhost:5173/market](http://localhost:5173/market)。`make dev`
 会启动 API、任务 worker 和 Vite 开发服务器；按 `Ctrl-C` 停止。
@@ -107,7 +103,6 @@ make e2e-backtest
 make e2e-analysis
 make e2e-task-center
 make security
-make release-check
 ```
 
 `make security` 需要网络访问：它通过 OSV 审计锁定的 Python 依赖，并通过 npm registry

@@ -195,6 +195,12 @@ class RenderedTarget:
     target: str
 
 
+@dataclass(frozen=True, slots=True)
+class ReadmeCommandEvidence:
+    gate: str
+    test_selectors: tuple[str, ...]
+
+
 class _RenderedHTMLTargets(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
@@ -214,6 +220,93 @@ _MAKE_COMMAND = re.compile(r"(?:^|[;&|]\s*|\s)make\s+([A-Za-z0-9_.-]+)")
 _SCRIPT_COMMAND = re.compile(
     r"uv\s+run(?:\s+--frozen)?\s+python\s+(scripts/[A-Za-z0-9_./-]+\.py)"
 )
+
+_ATTESTATION_BASE = (
+    "gh",
+    "attestation",
+    "verify",
+    "INSTALLER_PATH",
+    "--repo",
+    "CongBao/stock-desk",
+    "--signer-workflow",
+    "CongBao/stock-desk/.github/workflows/release.yml",
+)
+_NATIVE_ATTESTATION_TESTS = (
+    "tests/acceptance/test_release_artifacts.py::"
+    "test_native_manifest_checksum_sbom_and_attestation_chain_is_revision_bound",
+    "tests/acceptance/test_installed_distribution.py::"
+    "test_release_workflow_generates_checksums_sbom_and_provenance",
+)
+_CONTAINER_SMOKE_TESTS = (
+    "tests/acceptance/test_container_smoke.py::"
+    "test_compose_worker_completes_demo_task_through_shared_sqlite",
+)
+
+README_COMMAND_EVIDENCE: dict[tuple[str, ...], ReadmeCommandEvidence] = {
+    _ATTESTATION_BASE: ReadmeCommandEvidence(
+        gate="clean-install:native-attestation",
+        test_selectors=_NATIVE_ATTESTATION_TESTS,
+    ),
+    (*_ATTESTATION_BASE, "--predicate-type", "https://spdx.dev/Document/v2.3"): (
+        ReadmeCommandEvidence(
+            gate="clean-install:native-sbom-attestation",
+            test_selectors=_NATIVE_ATTESTATION_TESTS,
+        )
+    ),
+    ("docker", "compose", "up", "--build", "--wait"): ReadmeCommandEvidence(
+        gate="smoke:release-container",
+        test_selectors=_CONTAINER_SMOKE_TESTS,
+    ),
+    (
+        "docker",
+        "compose",
+        "down",
+        "--volumes",
+        "--remove-orphans",
+    ): ReadmeCommandEvidence(
+        gate="smoke:release-container",
+        test_selectors=_CONTAINER_SMOKE_TESTS,
+    ),
+    (
+        "uv",
+        "run",
+        "--frozen",
+        "python",
+        "scripts/verify_docs.py",
+    ): ReadmeCommandEvidence(
+        gate="candidate:verify-docs",
+        test_selectors=(
+            "tests/acceptance/test_release_docs.py::"
+            "test_bilingual_readme_baseline_contains_verified_installation_and_use",
+        ),
+    ),
+}
+
+for _target, _selector in {
+    "acceptance": "tests/acceptance/test_market_flow.py",
+    "acceptance-formula": "tests/acceptance/test_formula_consistency.py",
+    "acceptance-backtest": "tests/acceptance/test_backtest_semantics.py",
+    "e2e-market": "web/e2e/market.spec.ts",
+    "e2e-formula": "web/e2e/formula-studio.spec.ts",
+    "e2e-backtest": "web/e2e/backtest.spec.ts",
+    "e2e-analysis": "web/e2e/analysis.spec.ts",
+    "e2e-task-center": "web/e2e/task-center.spec.ts",
+    "security": "tests/security",
+}.items():
+    README_COMMAND_EVIDENCE[("make", _target)] = ReadmeCommandEvidence(
+        gate=f"candidate:make-{_target}",
+        test_selectors=(_selector,),
+    )
+
+for _target, _selector in {
+    "benchmark": "tests/performance/test_chart_query.py",
+    "benchmark-formula": "tests/performance/test_formula_preview.py",
+    "benchmark-backtest": "tests/performance/test_single_backtest.py",
+}.items():
+    README_COMMAND_EVIDENCE[("make", _target)] = ReadmeCommandEvidence(
+        gate="candidate:make-performance-regressions",
+        test_selectors=(_selector,),
+    )
 
 
 def _read(path: Path) -> str:
@@ -363,43 +456,10 @@ def _logical_shell_commands(block: str) -> tuple[str, ...]:
     return tuple(commands)
 
 
-def _allowed_attestation_command(arguments: list[str]) -> bool:
-    if (
-        len(arguments) < 7
-        or arguments[:3] != ["gh", "attestation", "verify"]
-        or arguments[3] not in {"INSTALLER", "INSTALLER_PATH"}
-    ):
-        return False
-    options = arguments[4:]
-    expected = {
-        "--repo": "CongBao/stock-desk",
-        "--signer-workflow": "CongBao/stock-desk/.github/workflows/release.yml",
-    }
-    optional = {
-        "--predicate-type": "https://spdx.dev/Document/v2.3",
-    }
-    observed: dict[str, str] = {}
-    if len(options) % 2:
-        return False
-    for index in range(0, len(options), 2):
-        name, value = options[index : index + 2]
-        if name in observed or name not in expected | optional:
-            return False
-        observed[name] = value
-    return all(observed.get(name) == value for name, value in expected.items()) and all(
-        observed.get(name, value) == value for name, value in optional.items()
-    )
-
-
 def _readme_command_failures(
     repo_root: Path, relative_path: str, block: str
 ) -> list[str]:
-    make_targets = _make_targets(repo_root)
-    allowed_exact = {
-        ("docker", "compose", "up", "--build", "--wait"),
-        ("docker", "compose", "down", "--volumes", "--remove-orphans"),
-        ("uv", "run", "--frozen", "python", "scripts/verify_docs.py"),
-    }
+    del repo_root
     failures: list[str] = []
     for command in _logical_shell_commands(block):
         if any(token in command for token in ("|", ";", "`", "$(", ">", "<")):
@@ -410,16 +470,7 @@ def _readme_command_failures(
         except ValueError:
             failures.append(f"{relative_path}: README command is not allowlisted")
             continue
-        allowed = (
-            tuple(arguments) in allowed_exact
-            or (
-                len(arguments) == 2
-                and arguments[0] == "make"
-                and arguments[1] in make_targets
-            )
-            or _allowed_attestation_command(arguments)
-        )
-        if not allowed:
+        if tuple(arguments) not in README_COMMAND_EVIDENCE:
             failures.append(f"{relative_path}: README command is not allowlisted")
     return failures
 

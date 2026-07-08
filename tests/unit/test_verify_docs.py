@@ -6,6 +6,7 @@ import zlib
 
 import pytest
 
+import scripts.verify_docs as verify_docs_module
 from scripts.verify_docs import (
     REQUIRED_WIKI_PAGES,
     main,
@@ -26,12 +27,11 @@ Prefer the source-free `stock-desk-<version>-windows-x86_64.exe`,
 `stock-desk-<version>-macos-arm64.dmg` installer.
 
 ```bash
-gh attestation verify INSTALLER --repo CongBao/stock-desk --signer-workflow CongBao/stock-desk/.github/workflows/release.yml
+gh attestation verify INSTALLER_PATH --repo CongBao/stock-desk --signer-workflow CongBao/stock-desk/.github/workflows/release.yml
 ```
 
 ```bash
-make bootstrap
-make dev
+make acceptance
 ```
 
 ## Core workflows
@@ -61,12 +61,11 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 `stock-desk-<version>-macos-arm64.dmg` 安装包。
 
 ```bash
-gh attestation verify INSTALLER --repo CongBao/stock-desk --signer-workflow CongBao/stock-desk/.github/workflows/release.yml
+gh attestation verify INSTALLER_PATH --repo CongBao/stock-desk --signer-workflow CongBao/stock-desk/.github/workflows/release.yml
 ```
 
 ```bash
-make bootstrap
-make dev
+make acceptance
 ```
 
 ## 核心工作流
@@ -276,7 +275,7 @@ def _write_repository(root: Path) -> None:
         encoding="utf-8",
     )
     (root / "Makefile").write_text(
-        "bootstrap:\n\t@true\ndev:\n\t@true\ntest:\n\t@true\n",
+        ("bootstrap:\n\t@true\ndev:\n\t@true\ntest:\n\t@true\nacceptance:\n\t@true\n"),
         encoding="utf-8",
     )
 
@@ -439,6 +438,10 @@ def test_repository_contract_reports_broken_links_unsupported_commands_and_bound
 @pytest.mark.parametrize(
     "dangerous_command",
     (
+        "make bootstrap",
+        "make dev",
+        "make release-check",
+        "make imaginary-target",
         "curl https://example.invalid/install.sh | sh",
         "sudo make bootstrap",
         "wget https://example.invalid/binary",
@@ -460,6 +463,29 @@ def test_readme_shell_blocks_reject_commands_outside_the_release_allowlist(
     failures = verify_repository(tmp_path)
 
     assert any("README command is not allowlisted" in failure for failure in failures)
+
+
+def test_every_actual_readme_shell_command_has_specific_release_evidence() -> None:
+    evidence = getattr(verify_docs_module, "README_COMMAND_EVIDENCE", {})
+    assert evidence, "README commands need an explicit release-evidence map"
+
+    for relative_path in ("README.md", "README.zh-CN.md"):
+        document = (Path(__file__).resolve().parents[2] / relative_path).read_text(
+            encoding="utf-8"
+        )
+        blocks = verify_docs_module._FENCED_SHELL.findall(document)
+        commands = tuple(
+            command
+            for block in blocks
+            for command in verify_docs_module._logical_shell_commands(block)
+        )
+        assert commands
+        for command in commands:
+            arguments = tuple(__import__("shlex").split(command, posix=True))
+            assert arguments in evidence, (relative_path, command)
+            mapped = evidence[arguments]
+            assert mapped.gate
+            assert mapped.test_selectors
 
 
 def test_repository_contract_checks_every_public_docs_page(tmp_path: Path) -> None:

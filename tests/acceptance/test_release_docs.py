@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import shlex
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlsplit
@@ -8,7 +9,13 @@ from urllib.parse import unquote, urlsplit
 import pytest
 import yaml
 
-from scripts.verify_docs import _raster_failure, verify_repository
+from scripts.verify_docs import (
+    README_COMMAND_EVIDENCE,
+    _FENCED_SHELL,
+    _logical_shell_commands,
+    _raster_failure,
+    verify_repository,
+)
 from scripts.verify_release import PRE_PUBLISH_EVIDENCE_GATE, _candidate_gates
 
 
@@ -42,6 +49,15 @@ def _readmes() -> tuple[str, str]:
     return (
         README_EN.read_text(encoding="utf-8"),
         README_ZH.read_text(encoding="utf-8"),
+    )
+
+
+def _readme_commands() -> frozenset[tuple[str, ...]]:
+    return frozenset(
+        tuple(shlex.split(command, posix=True))
+        for document in _readmes()
+        for block in _FENCED_SHELL.findall(document)
+        for command in _logical_shell_commands(block)
     )
 
 
@@ -80,6 +96,59 @@ def test_bilingual_readme_baseline_contains_verified_installation_and_use() -> N
     assert PRE_PUBLISH_EVIDENCE_GATE in candidate_gates
     assert (PROJECT_ROOT / "tests/acceptance/test_clean_install.py").is_file()
     assert (PROJECT_ROOT / "tests/acceptance/test_installed_distribution.py").is_file()
+
+
+def test_readme_commands_map_to_executed_release_evidence() -> None:
+    commands = _readme_commands()
+    assert commands
+    assert commands <= README_COMMAND_EVIDENCE.keys()
+
+    candidate_commands = {
+        gate.command for gate in _candidate_gates(target_performance=False)
+    }
+    workflow = _workflow()
+    jobs = workflow["jobs"]
+    container_steps = str(jobs["container"]["steps"])
+    makefile = (PROJECT_ROOT / "Makefile").read_text(encoding="utf-8")
+
+    evidence = {README_COMMAND_EVIDENCE[command] for command in commands}
+    for binding in evidence:
+        family, _, detail = binding.gate.partition(":")
+        assert family in {"candidate", "clean-install", "smoke"}
+        if family == "candidate":
+            if detail == "verify-docs":
+                assert (
+                    "uv",
+                    "run",
+                    "--frozen",
+                    "python",
+                    "scripts/verify_docs.py",
+                ) in candidate_commands
+            else:
+                assert detail.startswith("make-")
+                assert ("make", detail.removeprefix("make-")) in candidate_commands
+        elif family == "clean-install":
+            assert {"verify-windows-installer", "verify-macos-installer"} <= set(
+                jobs["attest"]["needs"]
+            )
+        else:
+            assert "docker compose up --wait --no-build" in container_steps
+            assert "make smoke" in container_steps
+
+        for selector in binding.test_selectors:
+            relative_path = selector.partition("::")[0]
+            assert (PROJECT_ROOT / relative_path).exists(), selector
+
+    assert ("make", "test") in candidate_commands
+    test_recipe = makefile.split("test:\n", maxsplit=1)[1].split(
+        "\nacceptance:", maxsplit=1
+    )[0]
+    for required in (
+        "tests/acceptance/test_release_docs.py",
+        "tests/acceptance/test_release_artifacts.py",
+        "tests/acceptance/test_installed_distribution.py",
+    ):
+        assert f"--ignore={required}" not in test_recipe
 
 
 @pytest.mark.xfail(

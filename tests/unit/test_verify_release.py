@@ -9,6 +9,8 @@ import os
 from pathlib import Path
 import subprocess
 import tarfile
+from threading import Event, enumerate as enumerate_threads
+import time
 import tomllib
 import tracemalloc
 import zipfile
@@ -1286,6 +1288,10 @@ def test_candidate_and_final_release_require_complete_requirement_evidence(
         b"/home/" + b"real-operator" + b"/stock-desk/data.db",
         b"/Users/" + b"release-user" + b"/Workspace/stock-desk",
         b"C:\\Users\\" + b"release-user" + b"\\stock-desk\\data.db",
+        b"C:\\Users\\" + b"Jane Doe\\stock-desk\\data.db",
+        "/Users/".encode() + "发布用户/Workspace/stock-desk".encode(),
+        (b"/home/" + (b"long-profile-" * 7) + b"/stock-desk/data.db"),
+        b"/Users/" + b"bao/Workspace/stock-desk",
         b"OPENAI_API_" + b"KEY=sk-" + b"A7" * 24,
         b"DEEPSEEK_API_" + b"KEY=sk-" + b"B8" * 24,
         b"DASHSCOPE_API_" + b"KEY=sk-" + b"C9" * 24,
@@ -1308,6 +1314,7 @@ def test_release_leak_scanner_rejects_cross_platform_paths_and_provider_tokens(
         b"TUSHARE_TOKEN=secret",
         b"/home/example/private/session",
         b"/Users/operator/worktree",
+        b"/Users/" + b"Bao/synthetic-redaction-fixture",
         b"C:\\Users\\owner\\AppData\\Local",
         b"masked key: sk-a" + "\u2022".encode() * 8 + b"tail",
     ],
@@ -1317,6 +1324,14 @@ def test_release_leak_scanner_allows_documentation_and_synthetic_placeholders(
 ) -> None:
     scanner = ReleaseLeakScanner(label="fixture")
     scanner.feed(payload)
+    scanner.finish()
+
+
+def test_release_leak_scanner_does_not_treat_regex_syntax_as_a_profile() -> None:
+    scanner = ReleaseLeakScanner(label="pattern definition")
+
+    scanner.feed(b'r"(?:~|/Users/[^/]+)/Workspace/stock-desk"')
+    scanner.feed(b'b"/Users/" + b"release-user" + b"/Workspace"')
     scanner.finish()
 
 
@@ -1351,6 +1366,73 @@ def test_release_leak_scanner_has_bounded_rss_and_consumes_chunks_once() -> None
 
     assert iterations == 512
     assert peak < 2 * 1024 * 1024
+
+
+@pytest.mark.parametrize("scan_kind", ("reachable-blobs", "source-archive"))
+def test_streaming_git_scans_kill_blocked_reads_before_the_deadline(
+    release_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    scan_kind: str,
+) -> None:
+    class BlockingStdout:
+        def __init__(self) -> None:
+            self.closed = False
+            self._released = Event()
+
+        def read(self, _size: int = -1) -> bytes:
+            self._released.wait(5)
+            return b""
+
+        def readline(self, _size: int = -1) -> bytes:
+            return self.read(_size)
+
+        def close(self) -> None:
+            self.closed = True
+            self._released.set()
+
+    class BlockingProcess:
+        def __init__(self) -> None:
+            self.stdout = BlockingStdout()
+            self.killed = False
+            self.waited = False
+
+        def poll(self) -> int | None:
+            return -9 if self.killed else None
+
+        def kill(self) -> None:
+            self.killed = True
+
+        def wait(self, timeout: float | None = None) -> int:
+            del timeout
+            self.waited = True
+            return -9
+
+    process = BlockingProcess()
+    monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: process)
+    monkeypatch.setattr(
+        verify_release_module,
+        "_reachable_object_ids",
+        lambda _repo: (b"a" * 40,),
+    )
+
+    started = time.monotonic()
+    with pytest.raises(ReleaseVerificationError, match="timed out"):
+        if scan_kind == "reachable-blobs":
+            verify_release_module._scan_reachable_git_blobs(
+                release_repo, timeout_seconds=0.05
+            )
+        else:
+            verify_release_module._scan_git_archive(release_repo, timeout_seconds=0.05)
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 1.0
+    assert process.killed is True
+    assert process.waited is True
+    assert process.stdout.closed is True
+    assert not any(
+        thread.name.startswith("release-payload-reader")
+        for thread in enumerate_threads()
+    )
 
 
 def test_final_verifier_reports_initial_and_final_fingerprint_failures(

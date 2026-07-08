@@ -20,8 +20,10 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+from threading import Thread
+import time
 import tomllib
-from typing import Protocol
+from typing import IO, Protocol
 import zipfile
 
 from packaging.metadata import Metadata
@@ -73,12 +75,14 @@ PRE_PUBLISH_EVIDENCE_GATE = GateCommand(
 
 _RELEASE_SCAN_CHUNK_SIZE = 64 * 1024
 _RELEASE_SCAN_OVERLAP = 4096
-_SYNTHETIC_HOME_USERS = frozenset(
-    {"bao", "example", "owner", "operator", "user", "username"}
+_SYNTHETIC_HOME_USERS = frozenset({"example", "owner", "operator", "user", "username"})
+_CASE_SENSITIVE_SYNTHETIC_HOME_USERS = frozenset({"Bao"})
+_POSIX_HOME_PATH = re.compile(
+    rb"/(?:home|" + rb"Users)/(?P<user>(?!\[\^)[^/'\"\x00-\x1f\x7f]{1,512})/"
 )
-_POSIX_HOME_PATH = re.compile(rb"/(?:home|Users)/(?P<user>[A-Za-z0-9._-]{1,64})/")
 _WINDOWS_HOME_PATH = re.compile(
-    rb"(?i)(?:[A-Z]:)?[\\/]Users[\\/](?P<user>[A-Za-z0-9._-]{1,64})[\\/]"
+    rb"(?i)(?:[A-Z]:)?[\\/]Users[\\/]"
+    rb"(?P<user>(?!\[\^)[^\\/'\"\x00-\x1f\x7f]{1,512})[\\/]"
 )
 _PRIVATE_KEY_MARKERS = (
     b"-----BEGIN " + b"OPENSSH PRIVATE KEY-----",
@@ -141,8 +145,15 @@ class ReleaseLeakScanner:
     def _scan(self, payload: bytes) -> None:
         for pattern in (_POSIX_HOME_PATH, _WINDOWS_HOME_PATH):
             for match in pattern.finditer(payload):
-                user = match.group("user").decode("ascii").casefold()
-                if user not in _SYNTHETIC_HOME_USERS:
+                raw_user = match.group("user")
+                try:
+                    user = raw_user.decode("utf-8")
+                except UnicodeDecodeError:
+                    user = ""
+                if (
+                    user not in _CASE_SENSITIVE_SYNTHETIC_HOME_USERS
+                    and user.casefold() not in _SYNTHETIC_HOME_USERS
+                ):
                     self._reject()
         if any(marker in payload for marker in _PRIVATE_KEY_MARKERS):
             self._reject()
@@ -291,7 +302,73 @@ def _reachable_object_ids(repo: Path) -> tuple[bytes, ...]:
     return object_ids
 
 
-def _scan_reachable_git_blobs(repo: Path) -> None:
+def _terminate_streaming_process(
+    process: subprocess.Popen[bytes], worker: Thread
+) -> None:
+    if process.poll() is None:
+        process.kill()
+    try:
+        process.wait(timeout=1)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=1)
+    if process.stdout is not None:
+        process.stdout.close()
+    worker.join(timeout=1)
+    if worker.is_alive():
+        raise ReleaseVerificationError("release payload reader did not stop")
+
+
+def _consume_process_with_deadline(
+    process: subprocess.Popen[bytes],
+    consume: Callable[[IO[bytes]], None],
+    *,
+    timeout_seconds: float,
+    timeout_message: str,
+    failure_message: str,
+) -> None:
+    if process.stdout is None:
+        raise ReleaseVerificationError(failure_message)
+    stdout = process.stdout
+    failures: list[Exception] = []
+
+    def consume_stdout() -> None:
+        try:
+            consume(stdout)
+        except Exception as error:  # noqa: BLE001 -- propagated on the caller thread
+            failures.append(error)
+
+    deadline = time.monotonic() + timeout_seconds
+    worker = Thread(
+        target=consume_stdout,
+        name=f"release-payload-reader-{id(process)}",
+        daemon=True,
+    )
+    worker.start()
+    worker.join(timeout=max(0.0, deadline - time.monotonic()))
+    if worker.is_alive():
+        _terminate_streaming_process(process, worker)
+        raise ReleaseVerificationError(timeout_message)
+    if failures:
+        _terminate_streaming_process(process, worker)
+        error = failures[0]
+        if isinstance(error, ReleaseVerificationError):
+            raise error
+        raise ReleaseVerificationError(failure_message) from error
+    try:
+        return_code = process.wait(timeout=max(0.0, deadline - time.monotonic()))
+    except subprocess.TimeoutExpired as error:
+        _terminate_streaming_process(process, worker)
+        raise ReleaseVerificationError(timeout_message) from error
+    finally:
+        stdout.close()
+    if return_code != 0:
+        raise ReleaseVerificationError(failure_message)
+
+
+def _scan_reachable_git_blobs(
+    repo: Path, *, timeout_seconds: float = GIT_TIMEOUT_SECONDS
+) -> None:
     object_ids = _reachable_object_ids(repo)
     with tempfile.TemporaryFile() as query:
         for object_id in object_ids:
@@ -308,10 +385,16 @@ def _scan_reachable_git_blobs(repo: Path) -> None:
             raise ReleaseVerificationError(
                 "unable to scan reachable Git blobs"
             ) from error
-        assert process.stdout is not None
-        try:
+
+        def consume(stdout: IO[bytes]) -> None:
+            readline = stdout.readline
+            read = stdout.read
             for expected_id in object_ids:
-                header = process.stdout.readline()
+                header = readline()
+                if not isinstance(header, bytes):
+                    raise ReleaseVerificationError(
+                        "reachable Git object framing is invalid"
+                    )
                 fields = header.rstrip(b"\n").split()
                 if len(fields) != 3:
                     raise ReleaseVerificationError(
@@ -324,15 +407,15 @@ def _scan_reachable_git_blobs(repo: Path) -> None:
                     )
                 remaining = int(raw_size)
                 scanner = (
-                    ReleaseLeakScanner(label="reachable Git blob")
+                    ReleaseLeakScanner(
+                        label=f"reachable Git blob {object_id.decode('ascii')}"
+                    )
                     if object_type == b"blob"
                     else None
                 )
                 while remaining:
-                    chunk = process.stdout.read(
-                        min(_RELEASE_SCAN_CHUNK_SIZE, remaining)
-                    )
-                    if not chunk:
+                    chunk = read(min(_RELEASE_SCAN_CHUNK_SIZE, remaining))
+                    if not isinstance(chunk, bytes) or not chunk:
                         raise ReleaseVerificationError(
                             "reachable Git object ended unexpectedly"
                         )
@@ -341,29 +424,22 @@ def _scan_reachable_git_blobs(repo: Path) -> None:
                         scanner.feed(chunk)
                 if scanner is not None:
                     scanner.finish()
-                if process.stdout.read(1) != b"\n":
+                if read(1) != b"\n":
                     raise ReleaseVerificationError(
                         "reachable Git object framing is invalid"
                     )
-            if process.stdout.read(1):
+            if read(1):
                 raise ReleaseVerificationError(
                     "reachable Git object stream has trailing data"
                 )
-            try:
-                return_code = process.wait(timeout=GIT_TIMEOUT_SECONDS)
-            except subprocess.TimeoutExpired as error:
-                process.kill()
-                process.wait()
-                raise ReleaseVerificationError(
-                    "reachable Git object scan timed out"
-                ) from error
-            if return_code != 0:
-                raise ReleaseVerificationError("unable to scan reachable Git blobs")
-        finally:
-            if process.poll() is None:
-                process.kill()
-                process.wait()
-            process.stdout.close()
+
+        _consume_process_with_deadline(
+            process,
+            consume,
+            timeout_seconds=timeout_seconds,
+            timeout_message="reachable Git object scan timed out",
+            failure_message="unable to scan reachable Git blobs",
+        )
 
 
 def _safe_release_member_path(name: str) -> bool:
@@ -379,7 +455,9 @@ def _safe_release_member_path(name: str) -> bool:
     )
 
 
-def _scan_git_archive(repo: Path) -> None:
+def _scan_git_archive(
+    repo: Path, *, timeout_seconds: float = GIT_TIMEOUT_SECONDS
+) -> None:
     try:
         process = subprocess.Popen(  # noqa: S603
             ("git", "-C", os.fspath(repo), "archive", "--format=tar", "HEAD"),
@@ -388,9 +466,9 @@ def _scan_git_archive(repo: Path) -> None:
         )
     except OSError as error:
         raise ReleaseVerificationError("unable to scan the source archive") from error
-    assert process.stdout is not None
-    try:
-        with tarfile.open(fileobj=process.stdout, mode="r|") as archive:
+
+    def consume(stdout: IO[bytes]) -> None:
+        with tarfile.open(fileobj=stdout, mode="r|") as archive:
             for member in archive:
                 if not _safe_release_member_path(member.name):
                     raise ReleaseVerificationError(
@@ -408,21 +486,14 @@ def _scan_git_archive(repo: Path) -> None:
                         "release source archive member is unreadable"
                     )
                 _scan_stream(payload, label="source archive member")
-        try:
-            return_code = process.wait(timeout=GIT_TIMEOUT_SECONDS)
-        except subprocess.TimeoutExpired as error:
-            process.kill()
-            process.wait()
-            raise ReleaseVerificationError("source archive scan timed out") from error
-        if return_code != 0:
-            raise ReleaseVerificationError("unable to scan the source archive")
-    except (tarfile.TarError, OSError) as error:
-        raise ReleaseVerificationError("unable to scan the source archive") from error
-    finally:
-        if process.poll() is None:
-            process.kill()
-            process.wait()
-        process.stdout.close()
+
+    _consume_process_with_deadline(
+        process,
+        consume,
+        timeout_seconds=timeout_seconds,
+        timeout_message="source archive scan timed out",
+        failure_message="unable to scan the source archive",
+    )
 
 
 def compute_fixture_hashes(repo: Path) -> dict[str, str]:
