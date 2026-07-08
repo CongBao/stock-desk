@@ -656,7 +656,7 @@ def test_final_wiki_rejects_symlinks_path_escapes_and_invalid_images(
         "images/invalid.png" in failure and "decode" in failure for failure in failures
     )
     assert any(
-        "images/directory.png" in failure and "not a regular image" in failure
+        "images/directory.png" in failure and "scanned publication file" in failure
         for failure in failures
     )
 
@@ -797,6 +797,70 @@ def test_ast_link_policy_covers_reference_html_autolink_and_nested_parentheses(
             "guides/rendered-links.md" in failure and target in failure
             for failure in failures
         ), target
+
+
+def test_wiki_targets_must_be_scanned_and_screenshots_must_resolve_under_images(
+    tmp_path: Path,
+) -> None:
+    _write_wiki(tmp_path)
+    _finalize_wiki(tmp_path)
+    png = _png_bytes(640, 360, varied=True)
+    (tmp_path / "root.png").write_bytes(png)
+    (tmp_path / "notes.txt").write_text("not publishable", encoding="utf-8")
+    git_dir = tmp_path / ".git"
+    git_dir.mkdir()
+    (git_dir / "private.md").write_text("# Private", encoding="utf-8")
+    (git_dir / "private.png").write_bytes(png)
+
+    english = tmp_path / "Backtesting.md"
+    english.write_text(
+        english.read_text(encoding="utf-8")
+        .replace("images/Backtesting.png", "images/../root.png")
+        .replace(
+            "## Recovery",
+            """[Ignored](notes.txt)
+[Literal traversal](images/../notes.txt)
+[Git metadata](.git/private.md)
+![Git image](.git/private.png)
+
+## Recovery""",
+        ),
+        encoding="utf-8",
+    )
+    chinese = tmp_path / "Backtesting.zh-CN.md"
+    chinese.write_text(
+        chinese.read_text(encoding="utf-8")
+        .replace("images/Backtesting.zh-CN.png", "images/%2e%2e/root.png")
+        .replace(
+            "## 恢复方法",
+            """[编码穿越](images/%2e%2e/notes.txt)
+
+## 恢复方法""",
+        ),
+        encoding="utf-8",
+    )
+
+    failures = verify_wiki(tmp_path, final=True)
+
+    for target in (
+        "notes.txt",
+        "images/../notes.txt",
+        "images/%2e%2e/notes.txt",
+        ".git/private.md",
+        ".git/private.png",
+    ):
+        assert any(
+            target in failure and "scanned publication file" in failure
+            for failure in failures
+        ), target
+    assert any(
+        "Backtesting.md" in failure and "real screenshot" in failure
+        for failure in failures
+    )
+    assert any(
+        "Backtesting.zh-CN.md" in failure and "real screenshot" in failure
+        for failure in failures
+    )
 
 
 def test_wiki_backup_commands_require_posix_source_or_container_scope(

@@ -268,6 +268,8 @@ def _rendered_target_failures(
     root: Path,
     relative_path: str,
     targets: tuple[RenderedTarget, ...],
+    *,
+    allowed_files: frozenset[Path] | None = None,
 ) -> list[str]:
     failures: list[str] = []
     source = root / relative_path
@@ -295,6 +297,11 @@ def _rendered_target_failures(
         except ValueError:
             failures.append(
                 f"{relative_path}: rendered {rendered.kind} escapes the publication root: {target}"
+            )
+            continue
+        if allowed_files is not None and destination not in allowed_files:
+            failures.append(
+                f"{relative_path}: rendered {rendered.kind} target is not a scanned publication file: {target}"
             )
             continue
         if rendered.kind == "image":
@@ -550,6 +557,10 @@ def verify_wiki(wiki_root: Path, *, final: bool) -> list[str]:
         root, final=final
     )
     failures.extend(path_failures)
+    publication_files = frozenset(
+        path.resolve() for path in (*markdown_paths, *image_paths)
+    )
+    images_root = (root / "images").resolve()
     documents: dict[str, str] = {}
     rendered_targets: dict[str, tuple[RenderedTarget, ...]] = {}
     for path in markdown_paths:
@@ -562,7 +573,14 @@ def verify_wiki(wiki_root: Path, *, final: bool) -> list[str]:
         documents[relative_path] = document
         targets = _rendered_targets(document)
         rendered_targets[relative_path] = targets
-        failures.extend(_rendered_target_failures(root, relative_path, targets))
+        failures.extend(
+            _rendered_target_failures(
+                root,
+                relative_path,
+                targets,
+                allowed_files=publication_files,
+            )
+        )
         for blocked in WIKI_FORBIDDEN_REFERENCES:
             if blocked in document:
                 failures.append(
@@ -639,7 +657,11 @@ def verify_wiki(wiki_root: Path, *, final: bool) -> list[str]:
                     destination = _local_destination(root, path, rendered.target)
                     if destination is None:
                         continue
-                    if not rendered.target.startswith("images/"):
+                    try:
+                        destination.relative_to(images_root)
+                    except ValueError:
+                        continue
+                    if destination not in publication_files:
                         continue
                     if destination.suffix.casefold() not in APPROVED_RASTER_SUFFIXES:
                         continue
