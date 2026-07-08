@@ -1647,6 +1647,17 @@ def test_performance_pid_identity_is_scoped_to_each_timed_sample() -> None:
     assert "processTreeSnapshot(this.roots, this.identities)" in sampler
 
 
+def test_performance_rss_sampling_does_not_saturate_the_target_runner() -> None:
+    source = _read("web/e2e/performance.spec.ts")
+    sampler_start = source.index("class RssSampler")
+    sampler_end = source.index("\nasync function forbidExternalNetwork", sampler_start)
+    sampler = source[sampler_start:sampler_end]
+
+    assert "const RSS_SAMPLE_INTERVAL_MS = 500;" in source
+    assert sampler.count("}, RSS_SAMPLE_INTERVAL_MS);") == 2
+    assert "}, 50);" not in sampler
+
+
 def test_pool_navigation_interactivity_uses_rendered_spa_and_long_task_evidence() -> (
     None
 ):

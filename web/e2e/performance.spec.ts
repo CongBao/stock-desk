@@ -25,6 +25,7 @@ import {
 } from './performanceEvidence';
 
 const SAMPLE_COUNT = 20;
+const RSS_SAMPLE_INTERVAL_MS = 500;
 const OUTPUT = process.env['STOCK_DESK_PERFORMANCE_RAW_OUTPUT'];
 const PROCESS_FILE = process.env['STOCK_DESK_PERFORMANCE_PROCESS_FILE'];
 const FIXTURE_FILE = process.env['STOCK_DESK_PERFORMANCE_FIXTURE'];
@@ -176,13 +177,13 @@ class RssSampler {
         if (this.running) {
           this.timer = setTimeout(() => {
             this.inFlight = sample();
-          }, 50);
+          }, RSS_SAMPLE_INTERVAL_MS);
         }
       }
     };
     this.timer = setTimeout(() => {
       this.inFlight = sample();
-    }, 50);
+    }, RSS_SAMPLE_INTERVAL_MS);
   }
 
   async finish() {
@@ -237,12 +238,15 @@ async function proveChartInteractionHandshake(
   const beforeReadout = await readout.textContent();
   await page.mouse.move(box.x + box.width * 0.35, box.y + 120);
   await expect.poll(() => readout.textContent(), poll).not.toBe(beforeReadout);
+  const hoveredAt = performance.now();
 
   await page.getByRole('button', { name: '重置图表缩放' }).click();
   await expect.poll(() => zoom.textContent(), poll).toContain('0%–100%');
+  const resetAt = performance.now();
   await page.mouse.move(box.x + box.width * 0.5, box.y + 120);
   await page.mouse.wheel(0, -500);
   await expect.poll(() => zoom.textContent(), poll).not.toContain('0%–100%');
+  const zoomedAt = performance.now();
 
   const beforeDrag = await zoom.textContent();
   await page.mouse.move(box.x + box.width * 0.7, box.y + 120);
@@ -250,6 +254,13 @@ async function proveChartInteractionHandshake(
   await page.mouse.move(box.x + box.width * 0.5, box.y + 120, { steps: 2 });
   await page.mouse.up();
   await expect.poll(() => zoom.textContent(), poll).not.toBe(beforeDrag);
+  const draggedAt = performance.now();
+  return {
+    hovered: hoveredAt,
+    reset: resetAt,
+    zoomed: zoomedAt,
+    dragged: draggedAt,
+  } as const;
 }
 
 async function chartAction(
@@ -290,7 +301,10 @@ async function chartAction(
   const chart = page.locator('[data-chart-ready="true"]');
   await expect(chart).toBeVisible();
   const renderedAt = performance.now();
-  await proveChartInteractionHandshake(page, chart);
+  const interactionMilestones = await proveChartInteractionHandshake(
+    page,
+    chart,
+  );
   const interactedAt = performance.now();
   const wall = (interactedAt - started) / 1000;
   reportChartMilestones('chart_cold', started, {
@@ -298,6 +312,7 @@ async function chartAction(
     response: responseAt,
     decoded: decodedAt,
     rendered: renderedAt,
+    ...interactionMilestones,
     interacted: interactedAt,
   });
   const rss = await sampler.finish();
@@ -407,7 +422,10 @@ async function warmChartAction(
   };
   const decodedAt = performance.now();
   expect(qfqFinishedGeneration).toBeGreaterThan(noneGeneration);
-  await proveChartInteractionHandshake(page, chart);
+  const interactionMilestones = await proveChartInteractionHandshake(
+    page,
+    chart,
+  );
   const interactedAt = performance.now();
   const wall = (interactedAt - started) / 1000;
   reportChartMilestones('chart_warm', started, {
@@ -415,6 +433,7 @@ async function warmChartAction(
     response: responseAt,
     rendered: renderedAt,
     decoded: decodedAt,
+    ...interactionMilestones,
     interacted: interactedAt,
   });
   const rss = await sampler.finish();
