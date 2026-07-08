@@ -411,10 +411,18 @@ it('initializes, resizes, resets, and disposes the tree-shaken chart instance', 
   expect(
     screen.getByRole('status', { name: '图表缩放范围' }),
   ).toHaveTextContent('0%–100%');
+  expect(screen.getByRole('status', { name: '图表缩放范围' })).toHaveAttribute(
+    'data-zoom-start',
+    '0',
+  );
   act(() => dataZoomHandler?.({ batch: [{ start: 35, end: 80 }] }));
   expect(
     screen.getByRole('status', { name: '图表缩放范围' }),
   ).toHaveTextContent('35%–80%');
+  expect(screen.getByRole('status', { name: '图表缩放范围' })).toHaveAttribute(
+    'data-zoom-start',
+    '35',
+  );
 
   fireEvent.click(screen.getByRole('button', { name: '重置图表缩放' }));
   expect(chartMocks.dispatchAction).toHaveBeenCalledWith({

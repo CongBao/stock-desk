@@ -715,6 +715,8 @@ export function MarketChart({
                 role="status"
                 aria-label="图表缩放范围"
                 aria-live="polite"
+                data-zoom-start={zoom.start}
+                data-zoom-end={zoom.end}
               >
                 可见范围 {Math.round(zoom.start)}%–{Math.round(zoom.end)}%
               </span>

@@ -234,24 +234,28 @@ async function proveChartInteractionHandshake(
     timeout: 1_000,
     intervals: [10, 20, 30],
   };
+  const zoomRange = async () =>
+    `${await zoom.getAttribute('data-zoom-start')}:${await zoom.getAttribute(
+      'data-zoom-end',
+    )}`;
 
   const beforeReadout = await readout.textContent();
   await page.mouse.move(box.x + box.width * 0.35, box.y + 120);
   await expect.poll(() => readout.textContent(), poll).not.toBe(beforeReadout);
   const hoveredAt = performance.now();
 
-  const beforeZoom = await zoom.textContent();
+  const beforeZoom = await zoomRange();
   await page.mouse.move(box.x + box.width * 0.5, box.y + 120);
   await page.mouse.wheel(0, 500);
-  await expect.poll(() => zoom.textContent(), poll).not.toBe(beforeZoom);
+  await expect.poll(zoomRange, poll).not.toBe(beforeZoom);
   const zoomedAt = performance.now();
 
-  const beforeDrag = await zoom.textContent();
+  const beforeDrag = await zoomRange();
   await page.mouse.move(box.x + box.width * 0.7, box.y + 120);
   await page.mouse.down();
   await page.mouse.move(box.x + box.width * 0.5, box.y + 120, { steps: 2 });
   await page.mouse.up();
-  await expect.poll(() => zoom.textContent(), poll).not.toBe(beforeDrag);
+  await expect.poll(zoomRange, poll).not.toBe(beforeDrag);
   const draggedAt = performance.now();
   return {
     hovered: hoveredAt,
