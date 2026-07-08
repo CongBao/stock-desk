@@ -354,9 +354,7 @@ def test_security_workflow_fails_closed_on_dependencies_sbom_and_image_cves() ->
 
     audit = workflow["jobs"]["locked-audit"]
     assert audit["permissions"] == {"contents": "read"}
-    audit_commands = "\n".join(
-        str(step.get("run", "")) for step in audit["steps"]
-    )
+    audit_commands = "\n".join(str(step.get("run", "")) for step in audit["steps"])
     assert "make security" in audit_commands
 
     image = workflow["jobs"]["container-security"]
@@ -405,9 +403,7 @@ def test_tag_release_generates_and_attests_sbom_and_artifacts() -> None:
     assert sbom["with"]["upload-artifact"] is False
     assert sbom["with"]["upload-release-assets"] is False
     provenance = steps[provenance_index]
-    assert str(provenance["uses"]).startswith(
-        "actions/attest-build-provenance@"
-    )
+    assert str(provenance["uses"]).startswith("actions/attest-build-provenance@")
     assert provenance["with"]["subject-path"] == "dist/*.{whl,tar.gz}"
     sbom_attestation = steps[attest_sbom_index]
     assert str(sbom_attestation["uses"]).startswith("actions/attest-sbom@")
@@ -1291,9 +1287,7 @@ def test_release_checksum_manifest_is_flat_and_verified_before_publish() -> None
         command for command in prepare_commands if command.startswith("sha256sum")
     ]
 
-    assert checksum_commands == [
-        "sha256sum -- *.whl *.tar.gz *.json > SHA256SUMS"
-    ]
+    assert checksum_commands == ["sha256sum -- *.whl *.tar.gz *.json > SHA256SUMS"]
     assert all("dist/" not in command for command in checksum_commands)
     assert prepare_commands.index("cd dist") < prepare_commands.index(
         checksum_commands[0]
