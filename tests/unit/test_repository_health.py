@@ -381,20 +381,15 @@ def test_security_workflow_fails_closed_on_dependencies_sbom_and_image_cves() ->
 def test_tag_release_generates_and_attests_sbom_and_artifacts() -> None:
     release = _load_github_actions_yaml(_read(".github/workflows/release.yml"))
     verify = release["jobs"]["verify"]
-    assert verify["permissions"] == {
-        "attestations": "write",
-        "contents": "read",
-        "id-token": "write",
-    }
+    assert verify["permissions"] == {"contents": "read"}
     steps = verify["steps"]
     names = [step.get("name") for step in steps]
     archive_index = names.index("Prepare release archives")
     sbom_index = names.index("Generate release SBOM")
     checksums_index = names.index("Prepare checksummed assets")
-    provenance_index = names.index("Attest release provenance")
-    attest_sbom_index = names.index("Attest release SBOM")
-    assert archive_index < sbom_index < checksums_index < provenance_index
-    assert provenance_index < attest_sbom_index
+    upload_index = names.index("Upload verified release assets for attestation")
+    assert archive_index < sbom_index < checksums_index < upload_index
+    assert not any("Attest" in str(name) for name in names)
     sbom = steps[sbom_index]
     assert str(sbom["uses"]).startswith("anchore/sbom-action@")
     assert sbom["with"]["path"] == "dist"
@@ -402,15 +397,80 @@ def test_tag_release_generates_and_attests_sbom_and_artifacts() -> None:
     assert sbom["with"]["output-file"] == "dist/stock-desk.spdx.json"
     assert sbom["with"]["upload-artifact"] is False
     assert sbom["with"]["upload-release-assets"] is False
-    provenance = steps[provenance_index]
+
+    attest = release["jobs"]["attest"]
+    assert attest["needs"] == ["verify"]
+    assert attest["permissions"] == {
+        "attestations": "write",
+        "contents": "read",
+        "id-token": "write",
+    }
+    for job_name, job in release["jobs"].items():
+        if job_name == "attest":
+            continue
+        permissions = job.get("permissions", {})
+        assert "attestations" not in permissions
+        assert "id-token" not in permissions
+    attest_steps = attest["steps"]
+    attest_names = [step.get("name") for step in attest_steps]
+    assert attest_names == [
+        "Download verified release assets",
+        "Verify release asset checksums",
+        "Attest release provenance",
+        "Attest release SBOM",
+        "Upload attested release assets",
+    ]
+    provenance = attest_steps[attest_names.index("Attest release provenance")]
     assert str(provenance["uses"]).startswith("actions/attest-build-provenance@")
-    assert provenance["with"]["subject-path"] == "dist/*.{whl,tar.gz}"
-    sbom_attestation = steps[attest_sbom_index]
+    assert provenance["with"]["subject-path"] == "release-assets/*.{whl,tar.gz}"
+    sbom_attestation = attest_steps[attest_names.index("Attest release SBOM")]
     assert str(sbom_attestation["uses"]).startswith("actions/attest-sbom@")
     assert sbom_attestation["with"] == {
-        "subject-path": "dist/*.{whl,tar.gz}",
-        "sbom-path": "dist/stock-desk.spdx.json",
+        "subject-path": "release-assets/*.{whl,tar.gz}",
+        "sbom-path": "release-assets/stock-desk.spdx.json",
     }
+
+    codeql = release["jobs"]["codeql"]
+    assert codeql["permissions"] == {
+        "contents": "read",
+        "security-events": "write",
+    }
+    assert codeql["strategy"]["matrix"]["language"] == [
+        "python",
+        "javascript-typescript",
+    ]
+    assert [step.get("name") for step in codeql["steps"]] == [
+        "Check out source",
+        "Initialize CodeQL",
+        "Analyze",
+    ]
+    assert any(
+        str(step.get("uses", "")).startswith("github/codeql-action/analyze@")
+        for step in codeql["steps"]
+    )
+
+    container = release["jobs"]["container"]
+    trivy = next(
+        step
+        for step in container["steps"]
+        if str(step.get("uses", "")).startswith("aquasecurity/trivy-action@")
+    )
+    assert trivy["with"] == {
+        "image-ref": "stock-desk-runtime:local",
+        "format": "table",
+        "severity": "CRITICAL,HIGH",
+        "ignore-unfixed": False,
+        "exit-code": 1,
+    }
+
+    publish = release["jobs"]["release"]
+    assert set(publish["needs"]) == {"verify", "attest", "codeql", "container"}
+    download = next(
+        step
+        for step in publish["steps"]
+        if step.get("name") == "Download attested release assets"
+    )
+    assert download["with"]["name"] == "release-assets-attested"
 
 
 def test_compose_services_use_read_only_least_privilege_runtime() -> None:
@@ -422,6 +482,8 @@ def test_compose_services_use_read_only_least_privilege_runtime() -> None:
     assert shared["security_opt"] == ["no-new-privileges:true"]
     assert shared["tmpfs"] == ["/tmp:rw,noexec,nosuid,nodev,size=64m"]
     mounts = {mount["target"]: mount for mount in shared["volumes"]}
+    assert set(mounts) == {"/app/data", "/app/tdx"}
+    assert "/app/logs" not in mounts
     assert mounts["/app/data"] == {
         "type": "bind",
         "source": "./data",
@@ -1248,7 +1310,9 @@ def test_tag_release_verifies_built_artifacts_before_packaging_and_upload() -> N
         if step.get("name") == "Prepare checksummed assets"
     )
     upload_step = next(
-        step for step in verify_steps if step.get("name") == "Upload release assets"
+        step
+        for step in verify_steps
+        if step.get("name") == "Upload verified release assets for attestation"
     )
 
     assert build_step["run"] == "make build"
