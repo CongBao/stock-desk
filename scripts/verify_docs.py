@@ -210,6 +210,37 @@ def _relative_link_failures(
     return failures
 
 
+def _wiki_image_link_failures(
+    root: Path, relative_path: str, document: str
+) -> list[str]:
+    failures: list[str] = []
+    source = root / relative_path
+    for raw_target in _IMAGE_LINK.findall(document):
+        target = raw_target.strip().split(maxsplit=1)[0].strip("<>")
+        parts = urlsplit(target)
+        if parts.scheme or parts.netloc:
+            failures.append(
+                f"{relative_path}: external image cannot be verified: {target}"
+            )
+            continue
+        decoded_path = unquote(parts.path)
+        destination = (source.parent / decoded_path).resolve()
+        try:
+            destination.relative_to(root.resolve())
+        except ValueError:
+            continue
+        if not destination.is_file():
+            failures.append(
+                f"{relative_path}: image is not a regular image file: {target}"
+            )
+            continue
+        if destination.suffix.casefold() not in IMAGE_SUFFIXES or not _valid_image(
+            destination
+        ):
+            failures.append(f"{relative_path}: invalid image link: {target}")
+    return failures
+
+
 def _make_targets(repo_root: Path) -> set[str]:
     makefile = repo_root / "Makefile"
     if not makefile.is_file():
@@ -417,6 +448,8 @@ def verify_wiki(wiki_root: Path, *, final: bool) -> list[str]:
             continue
         documents[relative_path] = document
         failures.extend(_relative_link_failures(root, relative_path, document))
+        if final:
+            failures.extend(_wiki_image_link_failures(root, relative_path, document))
         for blocked in WIKI_FORBIDDEN_REFERENCES:
             if blocked in document:
                 failures.append(

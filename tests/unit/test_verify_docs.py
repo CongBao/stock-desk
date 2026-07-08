@@ -574,9 +574,10 @@ def test_final_wiki_rejects_symlinks_path_escapes_and_invalid_images(
     (wiki / "images" / "linked.png").symlink_to(outside)
     nested = wiki / "guides.md"
     nested.write_text(
-        "# Unsafe\n\n![Escape](../outside.png)\n\n![Symlink](images/linked.png)\n",
+        "# Unsafe\n\n![Escape](../outside.png)\n\n![Symlink](images/linked.png)\n\n![Directory](images/directory.png)\n",
         encoding="utf-8",
     )
+    (wiki / "images" / "directory.png").mkdir()
     (wiki / "images" / "invalid.png").write_bytes(b"not a real screenshot")
 
     failures = verify_wiki(wiki, final=True)
@@ -587,6 +588,10 @@ def test_final_wiki_rejects_symlinks_path_escapes_and_invalid_images(
     )
     assert any(
         "images/invalid.png" in failure and "invalid image" in failure
+        for failure in failures
+    )
+    assert any(
+        "images/directory.png" in failure and "not a regular image" in failure
         for failure in failures
     )
 
