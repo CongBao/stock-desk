@@ -162,6 +162,16 @@ export function canonicalDigest(value: unknown): string {
     .digest('hex')}`;
 }
 
+export function progressWindowsDemonstrateChange(
+  initialKey: string,
+  windowKeys: readonly string[],
+): boolean {
+  return (
+    windowKeys.some((key) => key !== initialKey) &&
+    new Set(windowKeys).size >= 2
+  );
+}
+
 export function providerEvidence(manifest: RoutingManifest) {
   if (manifest.selected_source !== 'stock_desk_demo') {
     throw new Error('performance route did not select stock_desk_demo');

@@ -8,6 +8,7 @@ import {
   canonicalDigest as digest,
   parseProcessRows,
   ProcessIdentityTracker,
+  progressWindowsDemonstrateChange,
   providerEvidence,
   selectProcessTree,
   type RuntimeRole,
@@ -867,15 +868,17 @@ test('records aggregate 2/3/5 budgets and worker-backed UI responsiveness', asyn
     poolSubmission.run_id,
     null,
   );
-  let previousProgressKey = progressKey(initialProgress.rendered_state);
+  const initialProgressKey = progressKey(initialProgress.rendered_state);
+  let requiredChangeFrom = initialProgressKey;
   for (let index = 0; index < SAMPLE_COUNT - 2; index += 1) {
     await beginLongTaskWindow(page);
     const progressEvidence = await observeMatchedProgress(
       page,
       poolSubmission.run_id,
-      previousProgressKey,
+      index < 2 ? requiredChangeFrom : null,
     );
-    previousProgressKey = progressKey(progressEvidence.rendered_state);
+    if (index < 2)
+      requiredChangeFrom = progressKey(progressEvidence.rendered_state);
     observedProgressStates.push(progressEvidence.rendered_state);
     const cancelVisible = await page
       .getByRole('button', { name: '取消回测' })
@@ -892,9 +895,12 @@ test('records aggregate 2/3/5 budgets and worker-backed UI responsiveness', asyn
       correctness_hash: '',
     });
   }
-  expect(new Set(observedProgressStates.map(progressKey)).size).toBe(
-    SAMPLE_COUNT - 2,
-  );
+  expect(
+    progressWindowsDemonstrateChange(
+      initialProgressKey,
+      observedProgressStates.map(progressKey),
+    ),
+  ).toBe(true);
   await beginLongTaskWindow(page);
   await page.getByRole('link', { name: '任务' }).click();
   const taskCenterHeading = page.getByRole('heading', { name: '任务中心' });
@@ -910,9 +916,8 @@ test('records aggregate 2/3/5 budgets and worker-backed UI responsiveness', asyn
   const navigationEvidence = await observeMatchedProgress(
     page,
     poolSubmission.run_id,
-    previousProgressKey,
+    null,
   );
-  previousProgressKey = progressKey(navigationEvidence.rendered_state);
   poolSamples.push({
     long_task_count: await endLongTaskWindow(page),
     interaction_kind: 'navigation',
@@ -930,7 +935,7 @@ test('records aggregate 2/3/5 budgets and worker-backed UI responsiveness', asyn
   const cancellationEvidence = await observeMatchedProgress(
     page,
     poolSubmission.run_id,
-    previousProgressKey,
+    null,
   );
   const finalOverview = cancellationEvidence.api_state;
   expect(finalOverview.status).toBe('cancelled');

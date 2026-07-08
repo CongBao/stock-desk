@@ -301,6 +301,39 @@ def test_target_baseline_requires_github_ubuntu_x64_exact_four_cpu() -> None:
         )
 
 
+def test_gate_accepts_repeated_exact_pool_windows_after_progress_is_proven() -> None:
+    result = _valid_result()
+    first = _progress(processed=1)
+    second = _progress(processed=2)
+    repeated = [first] * 9 + [second] * 9
+    result["metrics"]["pool_ui"]["observed_progress_states"] = deepcopy(repeated)
+    for sample, state in zip(
+        result["metrics"]["pool_ui"]["samples"][:18], repeated, strict=True
+    ):
+        sample["rendered_state"] = deepcopy(state)
+        sample["api_state"] = deepcopy(state)
+
+    validate_performance_result(
+        result, expected_fixture_digest="sha256:" + "a" * 64
+    )
+
+
+def test_gate_rejects_pool_windows_that_never_show_progress() -> None:
+    result = _valid_result()
+    stationary = [_progress(processed=1)] * 18
+    result["metrics"]["pool_ui"]["observed_progress_states"] = deepcopy(stationary)
+    for sample, state in zip(
+        result["metrics"]["pool_ui"]["samples"][:18], stationary, strict=True
+    ):
+        sample["rendered_state"] = deepcopy(state)
+        sample["api_state"] = deepcopy(state)
+
+    with pytest.raises(PerformanceGateError, match="at least two distinct"):
+        validate_performance_result(
+            result, expected_fixture_digest="sha256:" + "a" * 64
+        )
+
+
 def test_gate_rejects_a_stale_fixture_digest() -> None:
     with pytest.raises(PerformanceGateError, match="fixture digest"):
         validate_performance_result(

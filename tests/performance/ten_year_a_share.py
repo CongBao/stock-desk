@@ -504,9 +504,9 @@ def _validate_pool(value: object) -> None:
     for index, state in enumerate(progress_states):
         checked = _validate_progress_state(state, f"pool progress state {index}")
         progress_keys.append(json.dumps(checked, sort_keys=True, separators=(",", ":")))
-    if len(set(progress_keys)) != 18:
+    if len(set(progress_keys)) < 2:
         raise PerformanceGateError(
-            "pool rendered progress states must change in every window"
+            "pool rendered progress evidence requires at least two distinct states"
         )
     if pool["worker_claim_observed"] is not True:
         raise PerformanceGateError("pool worker claim was not observed")

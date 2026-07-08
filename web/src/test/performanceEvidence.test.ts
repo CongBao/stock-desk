@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   canonicalDigest,
+  progressWindowsDemonstrateChange,
   ProcessIdentityTracker,
   parseProcessRows,
   providerEvidence,
@@ -41,6 +42,31 @@ describe('canonical performance evidence', () => {
         attempts: [{ source: 'tushare', decision: 'unavailable' }],
       }),
     ).toThrow(/duration is unavailable/u);
+  });
+
+  it('accepts repeated progress windows once the rendered UI has truly changed', () => {
+    const initial = 'running|executing|1|5000|0';
+    const firstChange = 'running|executing|2|5000|0';
+    const secondChange = 'running|executing|3|5000|0';
+
+    expect(
+      progressWindowsDemonstrateChange(initial, [
+        firstChange,
+        firstChange,
+        secondChange,
+        secondChange,
+      ]),
+    ).toBe(true);
+    expect(
+      progressWindowsDemonstrateChange(initial, [
+        firstChange,
+        firstChange,
+        firstChange,
+      ]),
+    ).toBe(false);
+    expect(progressWindowsDemonstrateChange(initial, [initial, initial])).toBe(
+      false,
+    );
   });
 });
 
