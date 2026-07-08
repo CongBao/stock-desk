@@ -51,6 +51,15 @@ it('uses a compact vertical rail instead of horizontally clipped navigation', ()
   );
 });
 
+it('keeps short landscape navigation scrollable and truncates expanded labels safely', () => {
+  expect(theme).toMatch(
+    /\.primary-navigation\s*\{[^}]*min-height:\s*0[^}]*overflow-y:\s*auto[^}]*scrollbar-gutter:\s*stable/su,
+  );
+  expect(theme).toMatch(
+    /\.nav-label\s*\{[^}]*min-width:\s*0[^}]*overflow:\s*hidden[^}]*text-overflow:\s*ellipsis[^}]*white-space:\s*nowrap/su,
+  );
+});
+
 it('collapses the backtest editor to one overflow-safe column by 1100px', () => {
   const start = theme.indexOf('@media (max-width: 1100px)');
   const end = theme.indexOf('@media (max-width: 760px)', start);
@@ -125,5 +134,9 @@ it('keeps the 390px collapsed rail single-column and reserves two columns for ma
   );
   expect(mobile).toMatch(
     /\[data-navigation-collapsed='false'\] \.primary-navigation ul\s*\{[^}]*grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\)/su,
+  );
+  expect(mobile).toMatch(/\.topbar-kicker\s*\{[^}]*display:\s*none/su);
+  expect(mobile).toMatch(
+    /\.topbar-product-name\s*\{[^}]*white-space:\s*nowrap/su,
   );
 });

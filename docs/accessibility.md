@@ -23,14 +23,18 @@ Automated checks supplement, rather than replace, keyboard and visual review.
 ## Responsive behavior
 
 The automated browser matrix covers 1600×900, 1100×700, 1024×768, 768×1024,
-and a 640×450 effective viewport representing 200% zoom. Every core route must
-remain free of document-level horizontal clipping and shell overlap.
+390×844, plus 640×450 and 640×360 effective viewports representing 200% zoom
+and short landscape windows. Every core route must remain free of document-level
+horizontal clipping and shell overlap.
 
 At 1200 pixels and below, the left navigation automatically becomes a compact
 icon rail. Crossing the breakpoint resets it to the appropriate mode; a manual
 expand or collapse remains stable while the viewport stays on the same side of
 the breakpoint. Collapsed items show full product icons, never letter
 abbreviations, and preserve full accessible names and tooltips.
+On short landscape windows, the rail keeps 44-pixel navigation targets and
+scrolls locally so later destinations remain reachable without covering the
+workspace. Expanded labels truncate safely instead of widening the shell.
 
 Wide tables and charts scroll within their own bounded region. Secondary panels
 reflow into the document or become labelled, keyboard-operable drawers before

@@ -199,6 +199,10 @@ a {
 
 .primary-navigation {
   flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 
 .nav-section-label {
@@ -266,6 +270,13 @@ a {
 
 .nav-link.active::before {
   background: var(--accent);
+}
+
+.nav-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .nav-icon {
@@ -5372,6 +5383,14 @@ a {
 }
 
 @media (max-width: 420px) {
+  .topbar-kicker {
+    display: none;
+  }
+
+  .topbar-product-name {
+    white-space: nowrap;
+  }
+
   .task-metrics,
   .task-detail-metadata,
   .task-pool-progress {

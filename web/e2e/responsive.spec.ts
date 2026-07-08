@@ -14,10 +14,17 @@ const viewports = [
   { name: 'narrow desktop', width: 1100, height: 700, collapsed: true },
   { name: 'tablet landscape', width: 1024, height: 768, collapsed: true },
   { name: 'tablet portrait', width: 768, height: 1024, collapsed: true },
+  { name: 'mobile portrait', width: 390, height: 844, collapsed: true },
   {
     name: '200 percent effective viewport',
     width: 640,
     height: 450,
+    collapsed: true,
+  },
+  {
+    name: 'short landscape effective viewport',
+    width: 640,
+    height: 360,
     collapsed: true,
   },
 ] as const;
@@ -107,6 +114,26 @@ async function expectNoInteractiveControlOverlap(page: Page) {
   }
 }
 
+async function expectNavigationIsOperable(page: Page) {
+  const navigation = page.getByRole('navigation', { name: '主导航' });
+  await expect(navigation).toHaveCSS('overflow-y', 'auto');
+
+  const targets = page.locator(
+    '.navigation-toggle:visible, .primary-navigation .nav-link:visible',
+  );
+  const targetCount = await targets.count();
+  expect(targetCount).toBeGreaterThan(1);
+  for (let index = 0; index < targetCount; index += 1) {
+    const target = targets.nth(index);
+    const box = await target.boundingBox();
+    expect(box, `navigation target ${String(index)} has no box`).not.toBeNull();
+    if (box !== null) {
+      expect(box.width).toBeGreaterThanOrEqual(44);
+      expect(box.height).toBeGreaterThanOrEqual(44);
+    }
+  }
+}
+
 for (const viewport of viewports) {
   test.describe(viewport.name, () => {
     test.use({ viewport: { width: viewport.width, height: viewport.height } });
@@ -136,6 +163,7 @@ for (const viewport of viewports) {
         );
         await expectNoShellOverlap(page);
         await expectNoInteractiveControlOverlap(page);
+        await expectNavigationIsOperable(page);
       });
     }
   });
