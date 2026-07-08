@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 from datetime import date
+import os
 from pathlib import Path
 import sqlite3
+from typing import Any
 
+import pytest
+
+import stock_desk.storage.backup as backup_module
 from stock_desk.market.lake import MarketLake
 from stock_desk.storage.backup import create_backup, restore_backup
 from stock_desk.storage.database import create_engine_for_url, migrate
@@ -59,3 +64,49 @@ def test_backup_restore_round_trip_preserves_inventory_and_dataset_bytes(
             "SELECT status FROM task_run WHERE id = ?", (queued.id,)
         ).fetchone() == ("queued",)
         assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+
+
+def _marker_archive(root: Path, archive: Path, marker: str) -> None:
+    database = root / "stock-desk.db"
+    url = f"sqlite:///{database}"
+    migrate(url)
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "INSERT INTO app_setting(key, encrypted_value, updated_at) VALUES(?,?,?)",
+            ("public.archive-identity", marker, "2025-01-01 00:00:00.000000"),
+        )
+    create_backup(database_url=url, data_dir=root, destination=archive)
+
+
+def test_restore_extracts_the_same_open_archive_that_was_inspected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive = tmp_path / "selected.stockdesk-backup"
+    replacement = tmp_path / "replacement.stockdesk-backup"
+    _marker_archive(tmp_path / "selected-source", archive, "selected")
+    _marker_archive(tmp_path / "replacement-source", replacement, "replacement")
+    original_restore = backup_module._restore_backup_locked
+
+    def replace_path_before_restore(**kwargs: Any) -> backup_module.RestoreResult:
+        os.replace(replacement, archive)
+        return original_restore(**kwargs)
+
+    monkeypatch.setattr(
+        backup_module,
+        "_restore_backup_locked",
+        replace_path_before_restore,
+    )
+    destination = tmp_path / "identity-restored"
+    result = restore_backup(
+        archive=archive,
+        database_url=f"sqlite:///{destination / 'stock-desk.db'}",
+        data_dir=destination,
+    )
+
+    assert result.database == destination / "stock-desk.db"
+    with sqlite3.connect(result.database) as connection:
+        assert connection.execute(
+            "SELECT encrypted_value FROM app_setting "
+            "WHERE key = 'public.archive-identity'"
+        ).fetchone() == ("selected",)

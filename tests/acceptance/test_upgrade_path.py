@@ -7,8 +7,14 @@ import shutil
 import sqlite3
 
 import pytest
+from sqlalchemy import text
 
-from stock_desk.storage.backup import create_backup, restore_backup
+import stock_desk.storage.backup as backup_module
+from stock_desk.storage.backup import (
+    BackupValidationError,
+    create_backup,
+    restore_backup,
+)
 from stock_desk.storage.database import create_engine_for_url, migrate
 from stock_desk.tasks.repository import TaskRepository
 from tests.fixtures.releases import generate_tagged_fixtures
@@ -185,3 +191,118 @@ def test_compatible_backup_from_tagged_fixture_restores_on_current_release(
     assert {
         relative: _sha256(restored / relative) for relative in market_hashes
     } == market_hashes
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "DROP TABLE formula_draft",
+        "ALTER TABLE app_setting DROP COLUMN encrypted_value",
+        "DROP INDEX ix_formula_version_formula",
+    ),
+)
+def test_current_schema_validation_rejects_missing_required_shape(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    database = tmp_path / "incomplete-current.db"
+    url = f"sqlite:///{database}"
+    migrate(url)
+    with sqlite3.connect(database) as connection:
+        source_tables = {
+            str(row[0])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        connection.execute(mutation)
+
+    with pytest.raises(BackupValidationError, match="current schema"):
+        backup_module._validate_current_schema(database, source_tables=source_tables)
+
+
+def test_current_schema_validation_rejects_missing_check_constraint(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "missing-check.db"
+    url = f"sqlite:///{database}"
+    migrate(url)
+    with sqlite3.connect(database) as connection:
+        source_tables = {
+            str(row[0])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        connection.executescript(
+            """
+            PRAGMA foreign_keys=OFF;
+            PRAGMA legacy_alter_table=ON;
+            ALTER TABLE formula RENAME TO formula_with_checks;
+            CREATE TABLE formula (
+                id VARCHAR(36) NOT NULL PRIMARY KEY,
+                name VARCHAR(64) NOT NULL,
+                formula_type VARCHAR(16) NOT NULL,
+                placement VARCHAR(16) NOT NULL,
+                latest_version INTEGER NOT NULL,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL
+            );
+            DROP TABLE formula_with_checks;
+            """
+        )
+
+    with pytest.raises(BackupValidationError, match="constraints are incomplete"):
+        backup_module._validate_current_schema(database, source_tables=source_tables)
+
+
+def test_current_schema_validation_requires_new_business_tables_to_be_empty(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "nonempty-new-table.db"
+    url = f"sqlite:///{database}"
+    migrate(url, "0002_task_observability")
+    with sqlite3.connect(database) as connection:
+        source_tables = {
+            str(row[0])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+    migrate(url)
+    engine = create_engine_for_url(url)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO formula "
+                    "(id, name, formula_type, placement, latest_version, "
+                    "created_at, updated_at) VALUES "
+                    "('migration-created', 'unexpected', 'indicator', "
+                    "'main', 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+                )
+            )
+    finally:
+        engine.dispose()
+
+    with pytest.raises(BackupValidationError, match="new business table"):
+        backup_module._validate_current_schema(database, source_tables=source_tables)
+
+
+def test_current_schema_validation_requires_migration_head(tmp_path: Path) -> None:
+    database = tmp_path / "wrong-revision.db"
+    url = f"sqlite:///{database}"
+    migrate(url)
+    with sqlite3.connect(database) as connection:
+        source_tables = {
+            str(row[0])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        connection.execute(
+            "UPDATE alembic_version SET version_num = '0009_analysis_model_configs'"
+        )
+
+    with pytest.raises(BackupValidationError, match="head revision"):
+        backup_module._validate_current_schema(database, source_tables=source_tables)

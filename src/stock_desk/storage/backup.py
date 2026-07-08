@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
@@ -18,10 +19,12 @@ import stat
 import tempfile
 import time
 from typing import Final, Literal, Self, cast
-from urllib.parse import unquote
+from urllib.parse import quote, unquote
 from uuid import uuid4
 import zipfile
 
+from alembic.autogenerate import compare_metadata
+from alembic.migration import MigrationContext
 from filelock import Timeout as FileLockTimeout
 from pydantic import (
     AwareDatetime,
@@ -31,6 +34,7 @@ from pydantic import (
     ValidationError,
     model_validator,
 )
+from sqlalchemy import CheckConstraint, create_engine, inspect
 from sqlalchemy.engine import make_url
 
 from stock_desk.market.lake import (
@@ -43,6 +47,7 @@ from stock_desk.market.lake import (
 from stock_desk.storage.database import (
     create_engine_for_url,
     migrate,
+    migration_head_revision,
     migration_lock,
 )
 from stock_desk.storage.lifecycle import (
@@ -877,52 +882,50 @@ def _validate_zip_encoding(info: zipfile.ZipInfo) -> None:
         raise BackupValidationError("backup archive entry encoding is unsafe")
 
 
-def inspect_backup(archive: Path) -> BackupManifest:
-    """Validate archive structure, limits, canonical manifest, and all file hashes."""
+def _inspect_backup_bundle(bundle: zipfile.ZipFile) -> BackupManifest:
     try:
-        with zipfile.ZipFile(archive) as bundle:
-            infos = bundle.infolist()
-            names = [info.filename for info in infos]
-            if bundle.comment:
-                raise BackupValidationError("backup archive comment is not canonical")
-            _validate_archive_limits(infos)
-            if len(names) != len(set(names)):
-                raise BackupValidationError("backup archive contains duplicate entries")
-            for info in infos:
-                _validated_archive_path(info.filename)
-                if info.is_dir() or not 0 <= info.file_size <= _MAX_ARCHIVE_FILE_BYTES:
-                    raise BackupValidationError("backup archive entry is invalid")
-                _validate_zip_encoding(info)
-            if names[:2] != ["manifest.json", "manifest.sha256"]:
-                raise BackupValidationError("backup archive metadata order is invalid")
-            manifest_info = infos[0]
-            if manifest_info.file_size > _MAX_MANIFEST_BYTES:
-                raise BackupValidationError("backup manifest exceeds the size limit")
-            if infos[1].file_size != 72:
-                raise BackupValidationError("backup manifest digest size is invalid")
-            manifest_bytes = bundle.read(manifest_info)
-            digest_bytes = bundle.read(infos[1])
-            if digest_bytes != (_sha256_bytes(manifest_bytes) + "\n").encode("ascii"):
-                raise BackupValidationError("backup manifest digest is invalid")
-            manifest = BackupManifest.model_validate_json(manifest_bytes)
-            if _canonical_json(manifest.model_dump(mode="json")) != manifest_bytes:
-                raise BackupValidationError("backup manifest is not canonical")
-            expected_names = [
-                "manifest.json",
-                "manifest.sha256",
-                *(item.archive_path for item in manifest.files),
-            ]
-            if names != expected_names:
-                raise BackupValidationError("backup entries do not match the manifest")
-            by_name = {info.filename: info for info in infos}
-            for item in manifest.files:
-                info = by_name[item.archive_path]
-                if (
-                    info.file_size != item.size
-                    or _hash_zip_member(bundle, info) != item.sha256
-                ):
-                    raise BackupValidationError("backup file hash is invalid")
-            return manifest
+        infos = bundle.infolist()
+        names = [info.filename for info in infos]
+        if bundle.comment:
+            raise BackupValidationError("backup archive comment is not canonical")
+        _validate_archive_limits(infos)
+        if len(names) != len(set(names)):
+            raise BackupValidationError("backup archive contains duplicate entries")
+        for info in infos:
+            _validated_archive_path(info.filename)
+            if info.is_dir() or not 0 <= info.file_size <= _MAX_ARCHIVE_FILE_BYTES:
+                raise BackupValidationError("backup archive entry is invalid")
+            _validate_zip_encoding(info)
+        if names[:2] != ["manifest.json", "manifest.sha256"]:
+            raise BackupValidationError("backup archive metadata order is invalid")
+        manifest_info = infos[0]
+        if manifest_info.file_size > _MAX_MANIFEST_BYTES:
+            raise BackupValidationError("backup manifest exceeds the size limit")
+        if infos[1].file_size != 72:
+            raise BackupValidationError("backup manifest digest size is invalid")
+        manifest_bytes = bundle.read(manifest_info)
+        digest_bytes = bundle.read(infos[1])
+        if digest_bytes != (_sha256_bytes(manifest_bytes) + "\n").encode("ascii"):
+            raise BackupValidationError("backup manifest digest is invalid")
+        manifest = BackupManifest.model_validate_json(manifest_bytes)
+        if _canonical_json(manifest.model_dump(mode="json")) != manifest_bytes:
+            raise BackupValidationError("backup manifest is not canonical")
+        expected_names = [
+            "manifest.json",
+            "manifest.sha256",
+            *(item.archive_path for item in manifest.files),
+        ]
+        if names != expected_names:
+            raise BackupValidationError("backup entries do not match the manifest")
+        by_name = {info.filename: info for info in infos}
+        for item in manifest.files:
+            info = by_name[item.archive_path]
+            if (
+                info.file_size != item.size
+                or _hash_zip_member(bundle, info) != item.sha256
+            ):
+                raise BackupValidationError("backup file hash is invalid")
+        return manifest
     except BackupValidationError:
         raise
     except (
@@ -936,6 +939,40 @@ def inspect_backup(archive: Path) -> BackupManifest:
         zipfile.LargeZipFile,
     ) as error:
         raise BackupValidationError("backup archive is invalid") from error
+
+
+@contextmanager
+def _open_verified_backup(
+    archive: Path,
+) -> Iterator[tuple[zipfile.ZipFile, BackupManifest]]:
+    descriptor = _open_regular(archive)
+    stream = os.fdopen(descriptor, "rb")
+    try:
+        try:
+            bundle = zipfile.ZipFile(stream)
+        except (
+            EOFError,
+            NotImplementedError,
+            OSError,
+            RuntimeError,
+            ValueError,
+            zipfile.BadZipFile,
+            zipfile.LargeZipFile,
+        ) as error:
+            raise BackupValidationError("backup archive is invalid") from error
+        try:
+            manifest = _inspect_backup_bundle(bundle)
+            yield bundle, manifest
+        finally:
+            bundle.close()
+    finally:
+        stream.close()
+
+
+def inspect_backup(archive: Path) -> BackupManifest:
+    """Validate archive structure, limits, canonical manifest, and all file hashes."""
+    with _open_verified_backup(Path(archive)) as (_bundle, manifest):
+        return manifest
 
 
 def _fsync_directory(path: Path) -> None:
@@ -953,6 +990,27 @@ def _fsync_regular_file(path: Path) -> None:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+
+
+def _fsync_directory_tree(root: Path) -> None:
+    """Persist every directory entry in a private staged tree, leaves first."""
+    try:
+        metadata = os.lstat(root)
+    except FileNotFoundError as error:
+        raise BackupValidationError("restore staging directory is missing") from error
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+        raise BackupValidationError("restore staging directory is unsafe")
+    with os.scandir(root) as scanned:
+        children = sorted(scanned, key=lambda entry: entry.name)
+    for child in children:
+        child_metadata = child.stat(follow_symlinks=False)
+        if stat.S_ISLNK(child_metadata.st_mode):
+            raise BackupValidationError("restore staging tree contains a symlink")
+        if stat.S_ISDIR(child_metadata.st_mode):
+            _fsync_directory_tree(root / child.name)
+        elif not stat.S_ISREG(child_metadata.st_mode):
+            raise BackupValidationError("restore staging tree contains an unsafe file")
+    _fsync_directory(root)
 
 
 def _replace_durably(source: Path, destination: Path) -> None:
@@ -1156,7 +1214,7 @@ def _private_parents(path: Path, boundary: Path) -> None:
 
 
 def _extract_verified_archive(
-    archive: Path,
+    bundle: zipfile.ZipFile,
     manifest: BackupManifest,
     *,
     new_root: Path,
@@ -1164,43 +1222,110 @@ def _extract_verified_archive(
 ) -> tuple[Path, Path | None]:
     staged_database = new_root / database_name
     staged_market: Path | None = None
-    with zipfile.ZipFile(archive) as bundle:
-        for item in manifest.files:
-            if item.kind == "database":
-                destination = staged_database
-            else:
-                relative = PurePosixPath(item.archive_path).relative_to("market")
-                staged_market = new_root / "market"
-                destination = staged_market.joinpath(*relative.parts)
-            _private_parents(destination.parent, new_root)
-            descriptor = os.open(
-                destination,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
-                0o600,
-            )
-            written = 0
-            digest = hashlib.sha256()
-            try:
-                with bundle.open(item.archive_path) as source:
-                    while chunk := source.read(1024 * 1024):
-                        written += len(chunk)
-                        if written > item.size:
-                            raise BackupValidationError(
-                                "backup member exceeded its declared size"
-                            )
-                        digest.update(chunk)
-                        view = memoryview(chunk)
-                        while view:
-                            count = os.write(descriptor, view)
-                            if count <= 0:
-                                raise OSError("restore staging write made no progress")
-                            view = view[count:]
-                os.fsync(descriptor)
-            finally:
-                os.close(descriptor)
-            if written != item.size or f"sha256:{digest.hexdigest()}" != item.sha256:
-                raise BackupValidationError("staged backup member hash is invalid")
+    for item in manifest.files:
+        if item.kind == "database":
+            destination = staged_database
+        else:
+            relative = PurePosixPath(item.archive_path).relative_to("market")
+            staged_market = new_root / "market"
+            destination = staged_market.joinpath(*relative.parts)
+        _private_parents(destination.parent, new_root)
+        descriptor = os.open(
+            destination,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        written = 0
+        digest = hashlib.sha256()
+        try:
+            with bundle.open(item.archive_path) as source:
+                while chunk := source.read(1024 * 1024):
+                    written += len(chunk)
+                    if written > item.size:
+                        raise BackupValidationError(
+                            "backup member exceeded its declared size"
+                        )
+                    digest.update(chunk)
+                    view = memoryview(chunk)
+                    while view:
+                        count = os.write(descriptor, view)
+                        if count <= 0:
+                            raise OSError("restore staging write made no progress")
+                        view = view[count:]
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        if written != item.size or f"sha256:{digest.hexdigest()}" != item.sha256:
+            raise BackupValidationError("staged backup member hash is invalid")
     return staged_database, staged_market
+
+
+def _database_table_names(database: Path) -> set[str]:
+    with sqlite3.connect(database) as connection:
+        return {
+            str(row[0])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+
+
+def _validate_current_schema(database: Path, *, source_tables: set[str]) -> None:
+    from stock_desk.storage.metadata import Base
+
+    engine = create_engine(f"sqlite:///{database}", future=True)
+    try:
+        with engine.connect() as connection:
+            revisions = tuple(
+                str(value)
+                for value in connection.exec_driver_sql(
+                    "SELECT version_num FROM alembic_version"
+                ).scalars()
+            )
+            if revisions != (migration_head_revision(),):
+                raise BackupValidationError(
+                    "staged database is not at the current head revision"
+                )
+            context = MigrationContext.configure(connection)
+            if compare_metadata(context, Base.metadata):
+                raise BackupValidationError(
+                    "staged database does not match the current schema"
+                )
+
+            schema_inspector = inspect(connection)
+            for table_name, table in Base.metadata.tables.items():
+                expected_checks = {
+                    constraint.name
+                    for constraint in table.constraints
+                    if isinstance(constraint, CheckConstraint)
+                }
+                actual_checks = {
+                    constraint["name"]
+                    for constraint in schema_inspector.get_check_constraints(table_name)
+                }
+                if not expected_checks <= actual_checks:
+                    raise BackupValidationError(
+                        "staged database current schema constraints are incomplete"
+                    )
+
+            introduced_tables = sorted(set(Base.metadata.tables) - source_tables)
+            for table_name in introduced_tables:
+                count = connection.exec_driver_sql(
+                    f'SELECT COUNT(*) FROM "{table_name}"'  # nosec
+                ).scalar_one()
+                if int(count) != 0:
+                    raise BackupValidationError(
+                        "staged migration populated a new business table"
+                    )
+    except BackupValidationError:
+        raise
+    except Exception as error:
+        raise BackupValidationError(
+            "staged database current schema validation failed"
+        ) from error
+    finally:
+        engine.dispose()
+    _validate_clone(database, include_encrypted_secrets=True)
 
 
 def _validate_staged_restore(
@@ -1210,6 +1335,7 @@ def _validate_staged_restore(
     manifest: BackupManifest,
 ) -> None:
     _validate_clone(database, include_encrypted_secrets=True)
+    source_tables = _database_table_names(database)
     revision, partitions, inventories, _queued, _tdx = _database_rows(database)
     if revision != manifest.schema_revision:
         raise BackupValidationError(
@@ -1233,6 +1359,7 @@ def _validate_staged_restore(
     except Exception as error:
         raise BackupValidationError("staged database migration failed") from error
     _validate_clone(database, include_encrypted_secrets=True)
+    _validate_current_schema(database, source_tables=source_tables)
     _revision, migrated_partitions, migrated_inventories, _queued, _tdx = (
         _database_rows(
             database,
@@ -1249,7 +1376,10 @@ def _validate_staged_restore(
         if migrated_partitions:
             raise BackupValidationError("restored catalog has no market component")
         return
-    engine = create_engine_for_url(staged_url)
+    staged_read_url = (
+        f"sqlite:///file:{quote(str(database), safe='/')}?mode=ro&immutable=1&uri=true"
+    )
+    engine = create_engine_for_url(staged_read_url)
     try:
         lake = MarketLake(engine=engine, root=market.resolve(strict=True))
         with sqlite3.connect(database) as connection:
@@ -1266,6 +1396,7 @@ def _validate_staged_restore(
         raise BackupValidationError("staged MarketLake validation failed") from error
     finally:
         engine.dispose()
+    _validate_clone(database, include_encrypted_secrets=True)
 
 
 def _remove_restore_stage(data_dir: Path, token: str) -> None:
@@ -1313,20 +1444,20 @@ def restore_backup(
 ) -> RestoreResult:
     """Verify, stage, migrate, and journal an owned-component restore."""
     archive = Path(archive).resolve(strict=True)
-    manifest = inspect_backup(archive)
     data_dir = Path(data_dir)
     data_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     data_dir = data_dir.resolve(strict=True)
     try:
-        with restore_lifecycle(data_dir):
-            return _restore_backup_locked(
-                archive=archive,
-                manifest=manifest,
-                database_url=database_url,
-                data_dir=data_dir,
-                offline=offline,
-                phase_hook=_phase_hook,
-            )
+        with _open_verified_backup(archive) as (bundle, manifest):
+            with restore_lifecycle(data_dir):
+                return _restore_backup_locked(
+                    bundle=bundle,
+                    manifest=manifest,
+                    database_url=database_url,
+                    data_dir=data_dir,
+                    offline=offline,
+                    phase_hook=_phase_hook,
+                )
     except LifecycleBusyError as error:
         raise BackupBusyError(str(error)) from error
     except LifecycleCorruptionError as error:
@@ -1335,7 +1466,7 @@ def restore_backup(
 
 def _restore_backup_locked(
     *,
-    archive: Path,
+    bundle: zipfile.ZipFile,
     manifest: BackupManifest,
     database_url: str,
     data_dir: Path,
@@ -1369,7 +1500,7 @@ def _restore_backup_locked(
         raise BackupValidationError("existing owned components are incomplete")
     if not had_database:
         return _restore_owned_components(
-            archive=archive,
+            bundle=bundle,
             manifest=manifest,
             database_url=database_url,
             data_dir=data_dir,
@@ -1388,7 +1519,7 @@ def _restore_backup_locked(
                 if _supports_task_leases(database):
                     tasks.requeue_expired_leases_for_offline_snapshot()
                 return _restore_owned_components(
-                    archive=archive,
+                    bundle=bundle,
                     manifest=manifest,
                     database_url=database_url,
                     data_dir=data_dir,
@@ -1415,7 +1546,7 @@ def _supports_task_leases(database: Path) -> bool:
 
 def _restore_owned_components(
     *,
-    archive: Path,
+    bundle: zipfile.ZipFile,
     manifest: BackupManifest,
     database_url: str,
     data_dir: Path,
@@ -1462,7 +1593,7 @@ def _restore_owned_components(
         _private_directory(new_root)
         _private_directory(rollback_root)
         staged_database, staged_market = _extract_verified_archive(
-            archive,
+            bundle,
             manifest,
             new_root=new_root,
             database_name=database.name,
@@ -1472,11 +1603,13 @@ def _restore_owned_components(
             market=staged_market,
             manifest=manifest,
         )
+        _fsync_regular_file(staged_database)
         installed_database_sha256 = _regular_file_sha256(staged_database)
         installed_market_sha256 = (
             _directory_sha256(staged_market) if staged_market is not None else None
         )
         _write_restore_manifest(stage, manifest)
+        _fsync_directory_tree(stage)
         journal = _RestoreJournal(
             token=token,
             database_name=database.name,
@@ -1654,8 +1787,7 @@ def _recover_interrupted_restore_locked(data_dir: Path) -> bool:
             ):
                 if os.path.lexists(path):
                     _require_recovery_directory(path, label)
-            if os.path.lexists(stage / _RESTORE_MANIFEST):
-                _validate_restore_manifest(stage, journal.archive_manifest_sha256)
+            _validate_restore_manifest(stage, journal.archive_manifest_sha256)
         else:
             _require_recovery_directory(stage / "rollback", "rollback")
             _require_recovery_directory(stage / "new", "new")

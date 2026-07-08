@@ -307,6 +307,38 @@ def test_recovery_validates_archive_manifest_binding(tmp_path: Path) -> None:
         recover_interrupted_restore(data_dir=destination)
 
 
+def test_committed_recovery_requires_manifest_while_stage_remains(
+    tmp_path: Path,
+) -> None:
+    destination = _crashed_restore(tmp_path, "committed")
+    (_restore_stage(destination) / "archive-manifest.json").unlink()
+
+    with pytest.raises(RestoreRecoveryRequired, match="manifest"):
+        recover_interrupted_restore(data_dir=destination)
+
+
+def test_rolled_back_recovery_requires_manifest_while_stage_remains(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    destination = _crashed_restore(tmp_path, "database_installed")
+    original_remove = backup_module._remove_restore_stage
+    monkeypatch.setattr(
+        backup_module,
+        "_remove_restore_stage",
+        lambda _data_dir, _token: (_ for _ in ()).throw(
+            RuntimeError("crash before stage removal")
+        ),
+    )
+    with pytest.raises(RuntimeError, match="before stage removal"):
+        recover_interrupted_restore(data_dir=destination)
+
+    (_restore_stage(destination) / "archive-manifest.json").unlink()
+    monkeypatch.setattr(backup_module, "_remove_restore_stage", original_remove)
+    with pytest.raises(RestoreRecoveryRequired, match="manifest"):
+        recover_interrupted_restore(data_dir=destination)
+
+
 @pytest.mark.parametrize("mutation", ("content", "symlink", "hardlink"))
 def test_committed_recovery_rejects_changed_or_unsafe_live_database(
     tmp_path: Path,
@@ -348,3 +380,58 @@ def test_recovery_resumes_after_rollback_stage_cleanup_crash(
     assert recover_interrupted_restore(data_dir=destination) is True
     assert _marker(destination / "stock-desk.db") == "old"
     assert not (destination / JOURNAL).exists()
+
+
+def test_staged_market_directories_are_fsynced_bottom_up_before_journal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    source_url, _ = _instance(source, marker="new", day=date(2024, 10, 7))
+    archive = tmp_path / "source.stockdesk-backup"
+    create_backup(database_url=source_url, data_dir=source, destination=archive)
+    destination = tmp_path / "destination"
+    observed: list[Path] = []
+    original_fsync = backup_module._fsync_directory
+    original_write_journal = backup_module._write_restore_journal
+
+    def record_fsync(path: Path) -> None:
+        observed.append(path)
+        original_fsync(path)
+
+    def assert_durable_before_journal(
+        data_dir: Path,
+        journal: backup_module._RestoreJournal,
+    ) -> None:
+        if journal.phase == "prepared":
+            new_root = data_dir / f".stock-desk-restore-{journal.token}" / "new"
+            directories = [
+                path for path in (new_root, *new_root.rglob("*")) if path.is_dir()
+            ]
+            positions = {
+                path: max(
+                    index
+                    for index, observed_path in enumerate(observed)
+                    if observed_path == path
+                )
+                for path in directories
+            }
+            assert all(
+                positions[path] < positions[path.parent]
+                for path in directories
+                if path != new_root
+            )
+        original_write_journal(data_dir, journal)
+
+    monkeypatch.setattr(backup_module, "_fsync_directory", record_fsync)
+    monkeypatch.setattr(
+        backup_module,
+        "_write_restore_journal",
+        assert_durable_before_journal,
+    )
+
+    restore_backup(
+        archive=archive,
+        database_url=f"sqlite:///{destination / 'stock-desk.db'}",
+        data_dir=destination,
+    )

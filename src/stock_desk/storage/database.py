@@ -11,6 +11,7 @@ from urllib.parse import unquote
 
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from filelock import FileLock, Timeout as FileLockTimeout
 from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.engine import Connection, URL, make_url
@@ -305,6 +306,15 @@ def migration_lock(
 def migrate(url: str, revision: str = "head") -> None:
     """Upgrade the configured database to an Alembic revision."""
     _run_alembic_command(command.upgrade, url, revision)
+
+
+def migration_head_revision() -> str:
+    """Return the single packaged Alembic head required by this application."""
+    config = Config(str(_alembic_config_path()))
+    heads = ScriptDirectory.from_config(config).get_heads()
+    if len(heads) != 1:
+        raise RuntimeError("Stock Desk requires exactly one Alembic head")
+    return heads[0]
 
 
 def downgrade(url: str, revision: str = "base") -> None:
