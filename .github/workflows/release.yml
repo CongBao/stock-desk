@@ -60,25 +60,11 @@ jobs:
       - name: Install Playwright Chromium
         run: pnpm exec playwright install --with-deps chromium
       - name: Run release gates
+        shell: bash
         run: |
-          make test
-          make acceptance
-          make acceptance-formula
-          make acceptance-backtest
-          make acceptance-analysis
-          make performance-regressions
-          make performance-target
-          make lint
-          make typecheck
-          make public-tree
-          make security
-          make e2e-foundation
-          make e2e-market
-          make e2e-formula
-          make e2e-backtest
-          make e2e-analysis
-          make e2e-task-center
-          make e2e-accessibility
+          set -euo pipefail
+          release_version="${GITHUB_REF_NAME#v}"
+          uv run --frozen python scripts/verify_release.py "$release_version" --candidate --target-performance --report test-results/release/candidate.json
       - name: Upload release performance evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -87,6 +73,7 @@ jobs:
           path: |
             test-results/performance/
             test-results/playwright/
+            test-results/release/candidate.json
           if-no-files-found: ignore
           retention-days: 7
       - name: Build final release assets
@@ -382,6 +369,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         env:
+          STOCK_DESK_SOURCE_REVISION: ${{ github.sha }}
           STOCK_DESK_WINDOWS_CERTIFICATE_BASE64: ${{ secrets.STOCK_DESK_WINDOWS_CERTIFICATE_BASE64 }}
           STOCK_DESK_WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.STOCK_DESK_WINDOWS_CERTIFICATE_PASSWORD }}
         run: |
@@ -391,6 +379,7 @@ jobs:
         if: runner.os == 'macOS'
         shell: bash
         env:
+          STOCK_DESK_SOURCE_REVISION: ${{ github.sha }}
           STOCK_DESK_MACOS_SIGNING_IDENTITY: ${{ secrets.STOCK_DESK_MACOS_SIGNING_IDENTITY }}
         run: |
           set -euo pipefail

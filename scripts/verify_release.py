@@ -46,6 +46,8 @@ GITHUB_MERGE_SUBJECT_PATTERN = re.compile(
     r"Merge pull request #(?P<pull_request>[1-9][0-9]*) "
     r"from CongBao/(?P<branch>[A-Za-z0-9._/-]+)"
 )
+CANDIDATE_REPORT_SCHEMA = "stock-desk-release-candidate-report-v1"
+CANDIDATE_REPORT_DIRECTORY = PurePosixPath("test-results/release")
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +82,38 @@ class SubprocessGateRunner:
         )
 
 
+def _candidate_gates(*, target_performance: bool) -> tuple[GateCommand, ...]:
+    performance = "performance-target" if target_performance else "performance"
+    return tuple(
+        GateCommand(("make", target), timeout_seconds=1800)
+        for target in (
+            "test",
+            "acceptance",
+            "acceptance-formula",
+            "acceptance-backtest",
+            "acceptance-analysis",
+            "performance-regressions",
+            performance,
+            "e2e-foundation",
+            "e2e-market",
+            "e2e-formula",
+            "e2e-backtest",
+            "e2e-analysis",
+            "e2e-task-center",
+            "e2e-accessibility",
+            "lint",
+            "typecheck",
+            "security",
+        )
+    ) + (
+        GateCommand(
+            ("uv", "run", "--frozen", "python", "scripts/verify_docs.py"),
+            timeout_seconds=300,
+        ),
+        GateCommand(("make", "public-tree"), timeout_seconds=300),
+    )
+
+
 def _git(repo: Path, *arguments: str) -> str:
     try:
         result = subprocess.run(  # noqa: S603
@@ -107,6 +141,79 @@ def _git_paths(repo: Path, *arguments: str) -> list[str]:
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
         raise ReleaseVerificationError("unable to inspect Git paths") from error
     return [os.fsdecode(path) for path in result.stdout.split(b"\0") if path]
+
+
+def compute_fixture_hashes(repo: Path) -> dict[str, str]:
+    paths = _git_paths(
+        repo,
+        "ls-files",
+        "-z",
+        "--",
+        "tests/fixtures",
+        "tests/acceptance/requirements.yml",
+    )
+    hashes: dict[str, str] = {}
+    for raw_path in sorted(paths):
+        relative = PurePosixPath(raw_path)
+        if (
+            relative.is_absolute()
+            or ".." in relative.parts
+            or relative.as_posix() != raw_path
+        ):
+            raise ReleaseVerificationError("release fixture path is invalid")
+        fixture = repo.joinpath(*relative.parts)
+        if fixture.is_symlink() or not fixture.is_file():
+            raise ReleaseVerificationError("release fixture is not a regular file")
+        hashes[raw_path] = f"sha256:{hashlib.sha256(fixture.read_bytes()).hexdigest()}"
+    if not hashes:
+        raise ReleaseVerificationError("release fixtures are missing")
+    return hashes
+
+
+def _candidate_report_target(repo: Path, requested: Path) -> Path:
+    expected_root = repo.joinpath(*CANDIDATE_REPORT_DIRECTORY.parts)
+    try:
+        relative = requested.absolute().relative_to(repo)
+    except ValueError as error:
+        raise ReleaseVerificationError("candidate report path is invalid") from error
+    if (
+        PurePosixPath(relative.as_posix()).parent != CANDIDATE_REPORT_DIRECTORY
+        or requested.suffix != ".json"
+        or requested.name.startswith(".")
+    ):
+        raise ReleaseVerificationError("candidate report path is invalid")
+    current = repo
+    for part in relative.parts[:-1]:
+        current /= part
+        if current.is_symlink():
+            raise ReleaseVerificationError("candidate report path is invalid")
+    expected_root.mkdir(parents=True, exist_ok=True)
+    if requested.is_symlink() or (requested.exists() and not requested.is_file()):
+        raise ReleaseVerificationError("candidate report path is invalid")
+    return requested
+
+
+def _write_candidate_report(repo: Path, requested: Path, payload: object) -> None:
+    target = _candidate_report_target(repo, requested)
+    encoded = (
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+    if temporary.exists() or temporary.is_symlink():
+        raise ReleaseVerificationError("candidate report temporary path is unsafe")
+    try:
+        with temporary.open("xb") as output:
+            output.write(encoded)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, target)
+    except OSError as error:
+        raise ReleaseVerificationError("unable to write candidate report") from error
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def check_clean_worktree(repo: Path) -> None:
@@ -638,6 +745,136 @@ def check_build_artifacts(repo: Path, version: str) -> None:
         ) from error
 
 
+def verify_candidate(
+    repo: Path,
+    version: str,
+    runner: GateRunner,
+    *,
+    report_path: Path,
+    target_performance: bool = False,
+    fingerprint: Callable[[Path], str] = compute_source_fingerprint,
+    fixture_hashes: Callable[[Path], dict[str, str]] = compute_fixture_hashes,
+) -> None:
+    resolved_repo = repo.resolve(strict=True)
+    if VERSION_PATTERN.fullmatch(version) is None:
+        raise ReleaseVerificationError(
+            "release version must be a stable numeric version"
+        )
+    try:
+        revision = _git(resolved_repo, "rev-parse", "HEAD").strip()
+        initial_fingerprint = fingerprint(resolved_repo)
+        initial_fixture_hashes = fixture_hashes(resolved_repo)
+    except ReleaseVerificationError:
+        raise
+    except (OSError, RuntimeError, ValueError) as error:
+        raise ReleaseVerificationError(
+            "unable to initialize release candidate verification"
+        ) from error
+
+    precheck_error: ReleaseVerificationError | None = None
+    source_unchanged = True
+    try:
+        check_clean_worktree(resolved_repo)
+    except ReleaseVerificationError as error:
+        precheck_error = error
+        source_unchanged = False
+    if precheck_error is None:
+        try:
+            check_public_history(resolved_repo)
+        except ReleaseVerificationError as error:
+            precheck_error = error
+    if precheck_error is not None:
+        _write_candidate_report(
+            resolved_repo,
+            report_path,
+            {
+                "schema_version": CANDIDATE_REPORT_SCHEMA,
+                "mode": "candidate",
+                "version": version,
+                "status": "failed",
+                "source_revision": revision,
+                "source_fingerprint": initial_fingerprint,
+                "source_unchanged": source_unchanged,
+                "fixture_hashes": initial_fixture_hashes,
+                "gates": [],
+                "failure": {
+                    "kind": "precheck_failed",
+                    "gate": None,
+                    "message": "release candidate precheck failed",
+                },
+            },
+        )
+        raise precheck_error
+
+    gate_reports: list[dict[str, object]] = []
+    failure: dict[str, object] | None = None
+    for gate in _candidate_gates(target_performance=target_performance):
+        gate_error: BaseException | None = None
+        try:
+            runner.run(gate)
+        except (
+            OSError,
+            subprocess.CalledProcessError,
+            subprocess.TimeoutExpired,
+        ) as error:
+            gate_error = error
+
+        source_unchanged = True
+        try:
+            check_clean_worktree(resolved_repo)
+            current_revision = _git(resolved_repo, "rev-parse", "HEAD").strip()
+            current_fingerprint = fingerprint(resolved_repo)
+            current_fixture_hashes = fixture_hashes(resolved_repo)
+            source_unchanged = (
+                current_revision == revision
+                and current_fingerprint == initial_fingerprint
+                and current_fixture_hashes == initial_fixture_hashes
+            )
+        except (OSError, RuntimeError, ValueError, ReleaseVerificationError):
+            source_unchanged = False
+
+        command = list(gate.command)
+        if not source_unchanged:
+            gate_reports.append({"command": command, "status": "failed"})
+            failure = {
+                "kind": "source_changed",
+                "gate": command,
+                "message": "release candidate gate modified release sources",
+            }
+        elif gate_error is not None:
+            gate_reports.append({"command": command, "status": "failed"})
+            failure = {
+                "kind": "gate_failed",
+                "gate": command,
+                "message": "release candidate gate failed",
+            }
+        else:
+            gate_reports.append({"command": command, "status": "passed"})
+        if failure is not None:
+            break
+
+    source_unchanged = failure is None or failure["kind"] != "source_changed"
+    payload = {
+        "schema_version": CANDIDATE_REPORT_SCHEMA,
+        "mode": "candidate",
+        "version": version,
+        "status": "passed" if failure is None else "failed",
+        "source_revision": revision,
+        "source_fingerprint": initial_fingerprint,
+        "source_unchanged": source_unchanged,
+        "fixture_hashes": initial_fixture_hashes,
+        "gates": gate_reports,
+        "failure": failure,
+    }
+    _write_candidate_report(resolved_repo, report_path, payload)
+    if failure is not None:
+        if failure["kind"] == "source_changed":
+            raise ReleaseVerificationError(
+                "release candidate gate modified release sources"
+            )
+        raise ReleaseVerificationError("release candidate gate failed")
+
+
 def verify_release(
     repo: Path,
     version: str,
@@ -695,6 +932,22 @@ def _parser() -> argparse.ArgumentParser:
         description="Audit and run the canonical Stock Desk release gates."
     )
     parser.add_argument("version", help="stable release version, for example 0.1.0")
+    parser.add_argument(
+        "--candidate",
+        action="store_true",
+        help="run release-candidate gates and write a machine-readable report",
+    )
+    parser.add_argument(
+        "--target-performance",
+        action="store_true",
+        help="use the target-hardware performance gate in candidate mode",
+    )
+    parser.add_argument(
+        "--report",
+        type=Path,
+        default=Path("test-results/release/candidate.json"),
+        help="candidate JSON report path inside test-results/release",
+    )
     return parser
 
 
@@ -702,11 +955,32 @@ def main(arguments: list[str] | None = None) -> int:
     options = _parser().parse_args(arguments)
     repo = Path(__file__).resolve().parent.parent
     try:
-        verify_release(repo, options.version, SubprocessGateRunner(repo))
+        if options.candidate:
+            report_path = (
+                options.report
+                if options.report.is_absolute()
+                else repo / options.report
+            )
+            verify_candidate(
+                repo,
+                options.version,
+                SubprocessGateRunner(repo),
+                report_path=report_path,
+                target_performance=options.target_performance,
+            )
+        else:
+            if options.target_performance or options.report != Path(
+                "test-results/release/candidate.json"
+            ):
+                raise ReleaseVerificationError(
+                    "candidate report options require --candidate"
+                )
+            verify_release(repo, options.version, SubprocessGateRunner(repo))
     except ReleaseVerificationError as error:
         print(f"Release verification failed: {error}", file=sys.stderr)
         return 1
-    print(f"Release verification passed for {options.version}.")
+    label = "candidate " if options.candidate else ""
+    print(f"Release {label}verification passed for {options.version}.")
     return 0
 
 

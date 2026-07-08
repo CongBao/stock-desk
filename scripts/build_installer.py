@@ -14,6 +14,8 @@ import sys
 import tempfile
 from typing import Final
 
+from scripts.source_fingerprint import compute_source_fingerprint
+
 
 ROOT: Final = Path(__file__).resolve().parent.parent
 VERSION_PATTERN: Final = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(?:[a-zA-Z0-9.-]+)?")
@@ -21,6 +23,8 @@ INNO_SETUP_VERSION: Final = "6.7.3"
 INNO_SETUP_PACKAGE_SHA256: Final = (
     "9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732"
 )
+SOURCE_REVISION_PATTERN: Final = re.compile(r"[0-9a-f]{40}")
+SOURCE_FINGERPRINT_PATTERN: Final = re.compile(r"[0-9a-f]{64}")
 
 
 def _host_target() -> tuple[str, str]:
@@ -47,10 +51,76 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _git_source_revision() -> str:
+    try:
+        completed = subprocess.run(  # noqa: S603
+            ("git", "-C", os.fspath(ROOT), "rev-parse", "HEAD"),
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+        raise RuntimeError("unable to bind installer source revision") from error
+    revision = completed.stdout.strip()
+    if SOURCE_REVISION_PATTERN.fullmatch(revision) is None:
+        raise RuntimeError("installer source revision is invalid")
+    return revision
+
+
+def _source_identity() -> dict[str, str]:
+    revision = _git_source_revision()
+    expected = os.environ.get("STOCK_DESK_SOURCE_REVISION")
+    if expected is not None and (
+        SOURCE_REVISION_PATTERN.fullmatch(expected) is None or expected != revision
+    ):
+        raise RuntimeError("installer source revision does not match workflow")
+    fingerprint = compute_source_fingerprint(ROOT)
+    if SOURCE_FINGERPRINT_PATTERN.fullmatch(fingerprint) is None:
+        raise RuntimeError("installer source fingerprint is invalid")
+    return {
+        "source_fingerprint": fingerprint,
+        "source_revision": revision,
+    }
+
+
 def _write_checksum(artifact: Path) -> Path:
     checksum = artifact.with_name(f"{artifact.name}.sha256")
     checksum.write_text(f"{_sha256(artifact)}  {artifact.name}\n", encoding="ascii")
     return checksum
+
+
+def _write_installer_manifest(
+    manifest: Path,
+    *,
+    version: str,
+    os_name: str,
+    architecture: str,
+    artifact: Path,
+    build_provenance: dict[str, object],
+    source_identity: dict[str, str],
+) -> None:
+    manifest.write_text(
+        json.dumps(
+            {
+                "architecture": architecture,
+                "artifact": artifact.name,
+                "build_provenance": build_provenance,
+                "os": os_name,
+                "sha256": _sha256(artifact),
+                "signed": bool(
+                    os.environ.get("STOCK_DESK_WINDOWS_CERTIFICATE_BASE64")
+                    or os.environ.get("STOCK_DESK_MACOS_SIGNING_IDENTITY")
+                ),
+                **source_identity,
+                "version": version,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
 
 def _find_inno_compiler() -> Path:
@@ -197,6 +267,7 @@ def build_installer(version: str, *, output_dir: Path) -> tuple[Path, Path]:
     if VERSION_PATTERN.fullmatch(version) is None:
         raise ValueError("installer version is invalid")
     os_name, architecture = _host_target()
+    source_identity = _source_identity()
     output_dir = output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     pyinstaller_dist = ROOT / "dist" / "pyinstaller"
@@ -237,25 +308,14 @@ def build_installer(version: str, *, output_dir: Path) -> tuple[Path, Path]:
         artifact = _build_macos(version, architecture, pyinstaller_dist, output_dir)
     checksum = _write_checksum(artifact)
     manifest = output_dir / f"stock-desk-{version}-{os_name}-{architecture}.json"
-    manifest.write_text(
-        json.dumps(
-            {
-                "architecture": architecture,
-                "artifact": artifact.name,
-                "build_provenance": build_provenance,
-                "os": os_name,
-                "sha256": _sha256(artifact),
-                "signed": bool(
-                    os.environ.get("STOCK_DESK_WINDOWS_CERTIFICATE_BASE64")
-                    or os.environ.get("STOCK_DESK_MACOS_SIGNING_IDENTITY")
-                ),
-                "version": version,
-            },
-            indent=2,
-            sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
+    _write_installer_manifest(
+        manifest,
+        version=version,
+        os_name=os_name,
+        architecture=architecture,
+        artifact=artifact,
+        build_provenance=build_provenance,
+        source_identity=source_identity,
     )
     return artifact, checksum
 

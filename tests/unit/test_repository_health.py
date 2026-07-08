@@ -853,16 +853,10 @@ def test_ci_uploads_coverage_reports_and_release_uses_canonical_test() -> None:
     release_gates = next(
         step for step in release_steps if step.get("name") == "Run release gates"
     )
-    commands = [line.strip() for line in release_gates["run"].splitlines()]
-    assert commands[0] == "make test"
-    assert "make acceptance" in commands
-    assert "make acceptance-formula" in commands
-    assert "make acceptance-backtest" in commands
-    assert "make performance-regressions" in commands
-    assert "make performance-target" in commands
-    assert "make e2e-market" in commands
-    assert "make e2e-formula" in commands
-    assert "make e2e-backtest" in commands
+    command = str(release_gates["run"])
+    assert "scripts/verify_release.py" in command
+    assert "--candidate" in command
+    assert "--target-performance" in command
 
 
 def test_security_target_audits_only_locked_production_dependencies() -> None:
@@ -914,8 +908,9 @@ def test_ci_and_release_run_the_canonical_dependency_audit_gate() -> None:
     release_gates = next(
         step for step in release_steps if step.get("name") == "Run release gates"
     )
-    commands = [line.strip() for line in release_gates["run"].splitlines()]
-    assert commands.count("make security") == 1
+    command = str(release_gates["run"])
+    assert command.count("scripts/verify_release.py") == 1
+    assert '"security"' in _read("scripts/verify_release.py")
 
 
 def test_readmes_document_networked_dependency_audits() -> None:
@@ -959,11 +954,8 @@ def test_ci_and_release_gate_the_chromium_end_to_end_slice() -> None:
         'git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main' in release
     )
     assert "pnpm exec playwright install --with-deps chromium" in release
-    assert "make e2e-foundation" in release
-    assert "make e2e-market" in release
-    assert "make e2e-formula" in release
-    assert "make e2e-backtest" in release
-    assert "make e2e-task-center" in release
+    assert "scripts/verify_release.py" in release
+    assert "--candidate --target-performance" in release
     assert "contents: write" in release
     assert 'tags:\n      - "v*"' in release
 
@@ -979,12 +971,47 @@ def test_release_builds_final_artifacts_only_after_all_source_gates() -> None:
     assert gate_index < build_index < verify_index
 
     gate_commands = str(steps[gate_index]["run"])
-    assert "make e2e-foundation" in gate_commands
-    assert "make e2e-market" in gate_commands
-    assert "make e2e-formula" in gate_commands
-    assert "make e2e-backtest" in gate_commands
+    assert "scripts/verify_release.py" in gate_commands
+    assert "--candidate" in gate_commands
     assert "make build" not in gate_commands
     assert steps[build_index]["run"] == "make build"
+
+
+def test_release_workflow_uses_candidate_gate_and_always_uploads_its_report() -> None:
+    workflow = _load_github_actions_yaml(_read(".github/workflows/release.yml"))
+    steps = workflow["jobs"]["verify"]["steps"]
+    gate = next(step for step in steps if step.get("name") == "Run release gates")
+    command = str(gate["run"])
+
+    assert 'release_version="${GITHUB_REF_NAME#v}"' in command
+    assert (
+        'uv run --frozen python scripts/verify_release.py "$release_version" '
+        "--candidate --target-performance "
+        "--report test-results/release/candidate.json"
+    ) in command.replace("\n", " ")
+
+    evidence = next(
+        step
+        for step in steps
+        if step.get("name") == "Upload release performance evidence"
+    )
+    assert evidence["if"] == "always()"
+    assert "test-results/release/candidate.json" in evidence["with"]["path"]
+
+    installer_steps = workflow["jobs"]["build-installers"]["steps"]
+    native_builds = [
+        step
+        for step in installer_steps
+        if step.get("name") in {"Build Windows installer", "Build macOS installer"}
+    ]
+    assert len(native_builds) == 2
+    assert all(
+        step["env"]["STOCK_DESK_SOURCE_REVISION"] == "${{ github.sha }}"
+        for step in native_builds
+    )
+    build_script = _read("scripts/build_installer.py")
+    assert '"source_revision"' in build_script
+    assert '"source_fingerprint"' in build_script
 
 
 def test_e2e_is_a_root_script_without_changing_the_make_contract() -> None:
@@ -1093,12 +1120,15 @@ def test_stage_two_formula_gates_extend_every_release_surface() -> None:
         assert command in ci_commands
 
     release = _read(".github/workflows/release.yml")
+    candidate = _read("scripts/verify_release.py")
     for command in (
         "make acceptance-formula",
         "make performance-regressions",
         "make e2e-formula",
     ):
-        assert command in release
+        target = command.removeprefix("make ")
+        assert f'"{target}"' in candidate
+    assert "scripts/verify_release.py" in release
 
 
 def test_stage_three_backtest_gates_extend_every_release_surface() -> None:
@@ -1135,6 +1165,7 @@ def test_stage_three_backtest_gates_extend_every_release_surface() -> None:
         if isinstance(step, dict)
     )
     release = _read(".github/workflows/release.yml")
+    candidate = _read("scripts/verify_release.py")
     for command in (
         "make acceptance-backtest",
         "make benchmark-backtest",
@@ -1146,7 +1177,9 @@ def test_stage_three_backtest_gates_extend_every_release_surface() -> None:
         "make performance-regressions",
         "make e2e-backtest",
     ):
-        assert command in release
+        target = command.removeprefix("make ")
+        assert f'"{target}"' in candidate
+    assert "scripts/verify_release.py" in release
 
 
 def test_stage_four_analysis_gates_extend_every_release_surface() -> None:
@@ -1178,9 +1211,12 @@ def test_stage_four_analysis_gates_extend_every_release_surface() -> None:
         if isinstance(step, dict)
     )
     release = _read(".github/workflows/release.yml")
+    candidate = _read("scripts/verify_release.py")
     for command in ("make acceptance-analysis", "make e2e-analysis"):
         assert command in ci_commands
-        assert command in release
+        target = command.removeprefix("make ")
+        assert f'"{target}"' in candidate
+    assert "scripts/verify_release.py" in release
 
 
 def test_task_center_e2e_gate_extends_every_release_surface() -> None:
@@ -1211,8 +1247,8 @@ def test_task_center_e2e_gate_extends_every_release_surface() -> None:
     release_gates = next(
         step for step in release_steps if step.get("name") == "Run release gates"
     )
-    release_commands = [line.strip() for line in release_gates["run"].splitlines()]
-    assert release_commands.count("make e2e-task-center") == 1
+    assert "scripts/verify_release.py" in str(release_gates["run"])
+    assert '"e2e-task-center"' in _read("scripts/verify_release.py")
 
 
 def test_dependabot_covers_all_package_ecosystems_weekly() -> None:

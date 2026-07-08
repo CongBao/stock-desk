@@ -52,6 +52,58 @@ def test_checksum_manifest_is_flat_and_reproducible(tmp_path: Path) -> None:
     assert checksum.read_text(encoding="ascii").endswith("  artifact.dmg\n")
 
 
+def test_installer_manifest_writer_binds_artifact_and_source_identity(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    artifact = tmp_path / "stock-desk.dmg"
+    artifact.write_bytes(b"installer")
+    manifest = tmp_path / "stock-desk.json"
+    monkeypatch.delenv("STOCK_DESK_WINDOWS_CERTIFICATE_BASE64", raising=False)
+    monkeypatch.delenv("STOCK_DESK_MACOS_SIGNING_IDENTITY", raising=False)
+
+    build_installer._write_installer_manifest(
+        manifest,
+        version="1.2.3",
+        os_name="macos",
+        architecture="arm64",
+        artifact=artifact,
+        build_provenance={"builder": "test"},
+        source_identity={
+            "source_revision": "a" * 40,
+            "source_fingerprint": "b" * 64,
+        },
+    )
+
+    assert json.loads(manifest.read_text(encoding="utf-8")) == {
+        "architecture": "arm64",
+        "artifact": "stock-desk.dmg",
+        "build_provenance": {"builder": "test"},
+        "os": "macos",
+        "sha256": build_installer._sha256(artifact),
+        "signed": False,
+        "source_fingerprint": "b" * 64,
+        "source_revision": "a" * 40,
+        "version": "1.2.3",
+    }
+
+
+def test_installer_command_runner_uses_requested_working_directory(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[list[str], Path, bool]] = []
+    monkeypatch.setattr(
+        build_installer.subprocess,
+        "run",
+        lambda arguments, *, cwd, check: calls.append((arguments, cwd, check)),
+    )
+
+    build_installer._run(["tool", "argument"], cwd=tmp_path)
+
+    assert calls == [(["tool", "argument"], tmp_path, True)]
+
+
 def test_inno_compiler_prefers_explicit_verified_path(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -248,6 +300,14 @@ def test_build_installer_drives_native_bundle_and_manifest(
     calls: list[object] = []
     monkeypatch.setattr(build_installer, "ROOT", root)
     monkeypatch.setattr(build_installer, "_host_target", lambda: target)
+    monkeypatch.setattr(
+        build_installer,
+        "_source_identity",
+        lambda: {
+            "source_fingerprint": "b" * 64,
+            "source_revision": "c" * 40,
+        },
+    )
     monkeypatch.setattr(build_installer, "_run", lambda args: calls.append(args))
     monkeypatch.setattr(
         build_installer.shutil, "rmtree", lambda path, **kwargs: calls.append(path)
@@ -288,10 +348,71 @@ def test_build_installer_drives_native_bundle_and_manifest(
     )
     assert manifest["os"] == target[0]
     assert manifest["architecture"] == target[1]
+    assert manifest["source_fingerprint"] == "b" * 64
+    assert manifest["source_revision"] == "c" * 40
     if target[0] == "windows":
         assert manifest["build_provenance"]["inno_setup"]["version"] == "6.7.3"
         assert len(manifest["build_provenance"]["inno_setup"]["compiler_sha256"]) == 64
     assert calls
+
+
+def test_installer_source_identity_rejects_workflow_revision_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("STOCK_DESK_SOURCE_REVISION", "a" * 40)
+    monkeypatch.setattr(
+        build_installer,
+        "_git_source_revision",
+        lambda: "b" * 40,
+    )
+
+    with pytest.raises(RuntimeError, match="source revision"):
+        build_installer._source_identity()
+
+
+def test_installer_source_identity_binds_current_git_and_fingerprint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("STOCK_DESK_SOURCE_REVISION", raising=False)
+
+    identity = build_installer._source_identity()
+
+    assert len(identity["source_revision"]) == 40
+    assert len(identity["source_fingerprint"]) == 64
+
+
+def test_installer_source_identity_rejects_invalid_git_and_fingerprint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        build_installer.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(stdout="not-a-revision\n"),
+    )
+    with pytest.raises(RuntimeError, match="revision is invalid"):
+        build_installer._git_source_revision()
+
+    monkeypatch.setattr(build_installer, "_git_source_revision", lambda: "a" * 40)
+    monkeypatch.setattr(
+        build_installer,
+        "compute_source_fingerprint",
+        lambda _root: "not-a-fingerprint",
+    )
+    with pytest.raises(RuntimeError, match="fingerprint is invalid"):
+        build_installer._source_identity()
+
+
+def test_installer_source_identity_reports_git_inspection_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        build_installer.subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("private")),
+    )
+
+    with pytest.raises(RuntimeError, match="bind installer source revision"):
+        build_installer._git_source_revision()
 
 
 def test_build_installer_rejects_invalid_version(tmp_path: Path) -> None:
