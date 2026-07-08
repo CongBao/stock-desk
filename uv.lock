@@ -1203,7 +1203,7 @@ wheels = [
 
 [[package]]
 name = "stock-desk"
-version = "0.5.0"
+version = "1.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "alembic" },
@@ -1236,8 +1236,8 @@ dev = [
     { name = "hypothesis" },
     { name = "markdown-it-py", extra = ["linkify"] },
     { name = "mypy" },
-    { name = "pyinstaller" },
     { name = "pillow" },
+    { name = "pyinstaller" },
     { name = "pytest" },
     { name = "pytest-benchmark" },
     { name = "pytest-cov" },
@@ -1276,8 +1276,8 @@ dev = [
     { name = "hypothesis", specifier = ">=6.140,<7" },
     { name = "markdown-it-py", extras = ["linkify"], specifier = ">=4.2,<5" },
     { name = "mypy", specifier = ">=1.17,<2" },
-    { name = "pyinstaller", specifier = ">=6.21,<7" },
     { name = "pillow", specifier = ">=12.1,<13" },
+    { name = "pyinstaller", specifier = ">=6.21,<7" },
     { name = "pytest", specifier = ">=8.4,<9" },
     { name = "pytest-benchmark", specifier = ">=5.2,<6" },
     { name = "pytest-cov", specifier = ">=6,<8" },

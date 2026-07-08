@@ -805,7 +805,7 @@ def test_public_runtime_version_surfaces_match() -> None:
     api_source = _read("src/stock_desk/main.py")
     api_version = re.search(r'\bversion="([0-9]+\.[0-9]+\.[0-9]+)"', api_source)
     assert api_version is not None
-    assert python_version == web_version == api_version.group(1) == "0.5.0"
+    assert python_version == web_version == api_version.group(1) == "1.0.0"
 
 
 def test_make_test_enforces_coverage_and_writes_reports() -> None:
