@@ -1044,6 +1044,8 @@ def test_e2e_is_a_root_script_without_changing_the_make_contract() -> None:
         "acceptance-formula",
         "acceptance-backtest",
         "acceptance-analysis",
+        "acceptance-domain-contracts",
+        "acceptance-full-journey",
         "benchmark",
         "benchmark-formula",
         "benchmark-backtest",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -349,15 +350,26 @@ def test_tdx_windows_backend_holds_chain_during_enumeration_and_leaf_read() -> N
     backend = module._WindowsHandleBackend(api)
 
     count = backend.inspect_market(Path("C:/vipdoc"), Exchange.SH)
+    latest = backend.latest_market_day(
+        Path("C:/vipdoc"), Exchange.SH, observed_on=date(2024, 7, 8)
+    )
     payload = backend.read_snapshot(Path("C:/vipdoc"), Exchange.SH, "sh600000.day")
 
     assert count == 1
+    assert latest == date(2024, 7, 2)
     assert payload == golden_payload("600000.SH")
     assert api.enumerated_while_locked
     assert api.read_while_locked
     assert api.events == [
         "arm_watch",
         "enumerate",
+        "poll_watch",
+        "close_watch",
+        "arm_watch",
+        "enumerate",
+        "lock",
+        "read",
+        "unlock",
         "poll_watch",
         "close_watch",
         "lock",
@@ -681,6 +693,13 @@ def test_tdx_provider_routes_windows_operations_to_handle_backend(
             calls.append(("inspect", exchange))
             return 1 if exchange is Exchange.SH else 0
 
+        def latest_market_day(
+            self, root: Path, exchange: Exchange, *, observed_on: date
+        ) -> date | None:
+            assert observed_on == date(2024, 7, 8)
+            calls.append(("latest", exchange))
+            return date(2024, 7, 2)
+
         def read_snapshot(
             self,
             root: Path,
@@ -711,6 +730,7 @@ def test_tdx_provider_routes_windows_operations_to_handle_backend(
     assert isinstance(outcome, BarResult)
     assert calls == [
         ("inspect", Exchange.SH),
+        ("latest", Exchange.SH),
         ("inspect", Exchange.SZ),
         ("read", Exchange.SH),
     ]

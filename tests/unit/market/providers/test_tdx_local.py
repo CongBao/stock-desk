@@ -108,7 +108,7 @@ def test_tdx_preflight_reports_validated_markets_and_bounded_counts(
         module.TdxMarketFileCount(exchange=Exchange.SZ, count=1),
     )
     assert outcome.detail == "TDX vipdoc layout validated"
-    assert not hasattr(outcome, "data_cutoff")
+    assert outcome.data_cutoff == datetime(2024, 7, 1, 7, tzinfo=timezone.utc)
 
 
 @pytest.mark.parametrize(

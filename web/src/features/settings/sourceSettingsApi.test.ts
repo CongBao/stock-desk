@@ -164,6 +164,7 @@ it('accepts an available TDX source with explicit unsupported categories', async
       { category: 'execution_status', state: 'unsupported' },
     ],
     available_periods: ['1d'],
+    markets: ['SH', 'SZ'],
     gaps: [
       {
         category: 'minute_bars',
@@ -198,7 +199,7 @@ it('accepts an available TDX source with explicit unsupported categories', async
     ],
     last_checked: '2026-07-06T09:30:00Z',
     last_update: null,
-    data_cutoff: null,
+    data_cutoff: '2024-07-02T07:00:00Z',
     fallback_reason: null,
   } as const;
 

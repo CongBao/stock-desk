@@ -61,6 +61,7 @@ export type SourceDiagnostic = {
     readonly state: DiagnosticState;
   }[];
   readonly available_periods: readonly ('1d' | '1w' | '60m')[];
+  readonly markets: readonly ('SH' | 'SZ')[];
   readonly gaps: readonly {
     readonly category: SourceCategory;
     readonly state: DiagnosticState;
@@ -158,6 +159,7 @@ const capabilities = new Set([
   'trading_calendar',
 ] as const);
 const periods = new Set(['1d', '1w', '60m'] as const);
+const markets = new Set(['SH', 'SZ'] as const);
 const usableProviders: Readonly<
   Record<SourceCategory, ReadonlySet<SourceProvider>>
 > = {
@@ -376,6 +378,7 @@ function decodeDiagnostic(
     'capabilities',
     'permissions',
     'available_periods',
+    'markets',
     'gaps',
     'last_checked',
     'last_update',
@@ -490,6 +493,22 @@ function decodeDiagnostic(
     'diagnostic.available_periods',
     3,
   );
+  const decodedMarkets = enumArray(
+    item['markets'],
+    markets,
+    'diagnostic.markets',
+    2,
+  );
+  protocolAssert(
+    status === 'available' || decodedMarkets.length === 0,
+    'diagnostic.markets',
+  );
+  protocolAssert(
+    source !== 'tdx_local' ||
+      status !== 'available' ||
+      decodedMarkets.length > 0,
+    'diagnostic.markets',
+  );
   const availableCategories = new Set(
     permissions
       .filter((permission) => permission.state === 'available')
@@ -549,6 +568,7 @@ function decodeDiagnostic(
     capabilities: decodedCapabilities,
     permissions,
     available_periods: decodedPeriods,
+    markets: decodedMarkets,
     gaps,
     last_checked: lastChecked,
     last_update: lastUpdate,

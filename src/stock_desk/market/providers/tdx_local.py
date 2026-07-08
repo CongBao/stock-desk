@@ -116,6 +116,7 @@ class TdxMarketFileCount:
 class TdxInspectionSuccess:
     markets: frozenset[Exchange]
     file_counts: tuple[TdxMarketFileCount, ...]
+    data_cutoff: datetime
     detail: str
 
 
@@ -291,6 +292,27 @@ def _count_market_files_fd(descriptor: int, exchange: Exchange) -> int:
     return count
 
 
+def _market_file_names_fd(descriptor: int, exchange: Exchange) -> tuple[str, ...]:
+    pattern = _TDX_FILE_PATTERNS[exchange]
+    names: list[str] = []
+    entries_seen = 0
+    with os.scandir(descriptor) as entries:
+        for entry in entries:
+            entries_seen += 1
+            if entries_seen > MAX_DIRECTORY_ENTRIES:
+                raise ProviderCorrupt()
+            if not entry.name.endswith(".day"):
+                continue
+            if pattern.fullmatch(entry.name) is None:
+                raise ProviderCorrupt()
+            metadata = entry.stat(follow_symlinks=False)
+            if entry.is_symlink():
+                raise ProviderInvalidResponse()
+            _validate_day_file_metadata(metadata)
+            names.append(entry.name)
+    return tuple(names)
+
+
 def _inspect_market_posix(root: Path, exchange: Exchange) -> int:
     descriptors = _open_directory_chain(root, exchange)
     before = _chain_signatures(descriptors)
@@ -303,6 +325,32 @@ def _inspect_market_posix(root: Path, exchange: Exchange) -> int:
         return count
     finally:
         _close_descriptors(descriptors)
+
+
+def _latest_market_day_posix(
+    root: Path,
+    exchange: Exchange,
+    *,
+    observed_on: date,
+) -> date | None:
+    descriptors = _open_directory_chain(root, exchange)
+    expected = _chain_signatures(descriptors)
+    try:
+        names = _market_file_names_fd(descriptors[-1], exchange)
+        if _chain_signatures(descriptors) != expected:
+            raise ProviderTransientFailure()
+    finally:
+        _close_descriptors(descriptors)
+    latest: date | None = None
+    for name in names:
+        records = parse_day_bytes(
+            _read_stable_snapshot(root, exchange, name),
+            observed_on=observed_on,
+        )
+        candidate = records[-1].day
+        latest = candidate if latest is None else max(latest, candidate)
+    _verify_directory_chain(root, exchange, expected)
+    return latest
 
 
 def _inspection_failure(error: Exception) -> TdxInspectionFailure:
@@ -481,12 +529,14 @@ class TdxLocalProvider:
     def preflight(self) -> TdxInspectionOutcome:
         try:
             self._validate_root()
+            observed_on = self._clock().astimezone(MARKET_TIMEZONE).date()
             windows_backend = (
                 _WINDOWS_BACKEND_FACTORY()
                 if not _USE_POSIX_DESCRIPTOR_IO and _PLATFORM == "nt"
                 else None
             )
             counts: list[TdxMarketFileCount] = []
+            latest_days: list[date] = []
             for exchange in _MARKET_DIRECTORY:
                 if _USE_POSIX_DESCRIPTOR_IO:
                     count = _inspect_market_posix(self._root, exchange)
@@ -500,12 +550,31 @@ class TdxLocalProvider:
                         count=count,
                     )
                 )
+                if count > 0:
+                    if _USE_POSIX_DESCRIPTOR_IO:
+                        latest = _latest_market_day_posix(
+                            self._root,
+                            exchange,
+                            observed_on=observed_on,
+                        )
+                    elif windows_backend is not None:
+                        latest = windows_backend.latest_market_day(
+                            self._root,
+                            exchange,
+                            observed_on=observed_on,
+                        )
+                    else:
+                        raise ProviderUnavailable()
+                    if latest is None:
+                        raise ProviderCorrupt()
+                    latest_days.append(latest)
             markets = frozenset(item.exchange for item in counts if item.count > 0)
-            if not markets:
+            if not markets or not latest_days:
                 raise ProviderMissingCoverage()
             return TdxInspectionSuccess(
                 markets=markets,
                 file_counts=tuple(counts),
+                data_cutoff=_local_cutoff(max(latest_days)),
                 detail="TDX vipdoc layout validated",
             )
         except FileNotFoundError as error:

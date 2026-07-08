@@ -1,4 +1,4 @@
-.PHONY: bootstrap dev test acceptance acceptance-formula acceptance-backtest acceptance-analysis benchmark benchmark-formula benchmark-backtest performance performance-reference performance-target performance-regressions e2e e2e-foundation e2e-market e2e-formula e2e-backtest e2e-analysis e2e-task-center e2e-accessibility lint typecheck build smoke container-smoke public-tree check-public-tree security release-check
+.PHONY: bootstrap dev test acceptance acceptance-formula acceptance-backtest acceptance-analysis acceptance-domain-contracts acceptance-full-journey benchmark benchmark-formula benchmark-backtest performance performance-reference performance-target performance-regressions e2e e2e-foundation e2e-market e2e-formula e2e-backtest e2e-analysis e2e-task-center e2e-accessibility lint typecheck build smoke container-smoke public-tree check-public-tree security release-check
 
 bootstrap:
 	uv sync --frozen --all-groups --extra providers
@@ -8,7 +8,7 @@ dev:
 	uv run --frozen python scripts/dev.py
 
 test:
-	uv run --frozen pytest -W error --ignore=tests/acceptance/test_market_flow.py --ignore=tests/acceptance/test_formula_consistency.py --ignore=tests/acceptance/test_macd_formula_flow.py --ignore=tests/acceptance/test_formula_editing_assistance.py --ignore=tests/acceptance/test_backtest_semantics.py --ignore=tests/performance/test_chart_query.py --ignore=tests/performance/test_formula_preview.py --ignore=tests/performance/test_single_backtest.py --ignore=tests/performance/test_v1_budgets.py --cov=src/stock_desk --cov=scripts --cov=migrations --cov-branch --cov-report=term-missing --cov-report=xml:coverage.xml --cov-fail-under=85
+	uv run --frozen pytest -W error --ignore=tests/acceptance/test_market_flow.py --ignore=tests/acceptance/test_formula_consistency.py --ignore=tests/acceptance/test_macd_formula_flow.py --ignore=tests/acceptance/test_formula_editing_assistance.py --ignore=tests/acceptance/test_backtest_semantics.py --ignore=tests/acceptance/test_full_user_journey.py --ignore=tests/performance/test_chart_query.py --ignore=tests/performance/test_formula_preview.py --ignore=tests/performance/test_single_backtest.py --ignore=tests/performance/test_v1_budgets.py --cov=src/stock_desk --cov=scripts --cov=migrations --cov-branch --cov-report=term-missing --cov-report=xml:coverage.xml --cov-fail-under=85
 	pnpm test
 
 acceptance:
@@ -22,6 +22,20 @@ acceptance-backtest:
 
 acceptance-analysis:
 	uv run --frozen pytest -W error tests/acceptance/test_analysis_flow.py tests/security/test_analysis_boundaries.py
+
+acceptance-domain-contracts:
+	uv run --frozen pytest -W error \
+		tests/acceptance/test_market_period_adjustment_contract.py::test_period_and_adjustment_switches_recalculate_visible_market_and_indicator_values \
+		tests/acceptance/test_backtest_scope_matrix.py::test_all_a_index_industry_custom_failure_and_insufficient_scopes \
+		tests/acceptance/test_formula_safety_boundary.py::test_future_or_repainting_formula_cannot_be_saved_or_backtested \
+		tests/acceptance/test_formula_validation_boundary.py::test_all_validation_stages_block_invalid_save_preview_and_backtest_while_preserving_draft \
+		tests/acceptance/test_tdx_local_user_flow.py::test_valid_tdx_directory_shows_markets_period_and_data_cutoff \
+		tests/acceptance/test_tdx_local_user_flow.py::test_unsupported_tdx_file_format_is_rejected_before_enablement \
+		tests/acceptance/test_architecture_boundaries.py::test_module_inventory_and_heavy_work_use_independent_worker \
+		tests/acceptance/test_release_acceptance_scope.py::test_all_first_release_acceptance_domains_and_full_journey_are_gated
+
+acceptance-full-journey:
+	uv run --frozen pytest -W error tests/acceptance/test_full_user_journey.py
 
 benchmark:
 	uv run --frozen pytest -W error tests/performance/test_chart_query.py -q
@@ -106,4 +120,4 @@ security:
 	pnpm install --lockfile-only --frozen-lockfile --ignore-scripts
 	pnpm audit --prod --audit-level high
 
-release-check: test acceptance acceptance-formula acceptance-backtest acceptance-analysis performance-regressions performance e2e-foundation e2e-market e2e-formula e2e-backtest e2e-analysis e2e-task-center e2e-accessibility lint typecheck build public-tree security container-smoke
+release-check: test acceptance acceptance-formula acceptance-backtest acceptance-analysis acceptance-domain-contracts acceptance-full-journey performance-regressions performance e2e-foundation e2e-market e2e-formula e2e-backtest e2e-analysis e2e-task-center e2e-accessibility lint typecheck build public-tree security container-smoke

@@ -29,6 +29,7 @@ export const diagnosticResponse = {
     { category: 'execution_status', state: 'available' },
   ],
   available_periods: ['1d', '1w'],
+  markets: [],
   gaps: [
     {
       category: 'minute_bars',

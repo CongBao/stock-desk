@@ -83,6 +83,7 @@ const capabilityLabels = {
   trading_calendar: '交易日历',
 } as const;
 const periodLabels = { '1d': '日线', '1w': '周线', '60m': '60 分钟' } as const;
+const marketLabels = { SH: '上交所', SZ: '深交所' } as const;
 const dateTimeFormatter = new Intl.DateTimeFormat('zh-CN', {
   dateStyle: 'medium',
   timeStyle: 'short',
@@ -140,6 +141,14 @@ function DiagnosticDetails({
               ? diagnostic.available_periods
                   .map((item) => periodLabels[item])
                   .join('、')
+              : '未确认'}
+          </dd>
+        </div>
+        <div>
+          <dt>识别市场</dt>
+          <dd>
+            {diagnostic.markets.length > 0
+              ? diagnostic.markets.map((item) => marketLabels[item]).join('、')
               : '未确认'}
           </dd>
         </div>

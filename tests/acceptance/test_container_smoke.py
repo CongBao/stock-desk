@@ -165,6 +165,8 @@ def test_deployment_contract_is_complete_and_public_only() -> None:
         "acceptance-formula",
         "acceptance-backtest",
         "acceptance-analysis",
+        "acceptance-domain-contracts",
+        "acceptance-full-journey",
         "benchmark",
         "benchmark-formula",
         "benchmark-backtest",
