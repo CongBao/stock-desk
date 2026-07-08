@@ -3,9 +3,31 @@
 Stock Desk backups are application-level snapshots, not copies of a live SQLite
 file. Use them before changing an image, package, schema, or storage layout.
 
+## Deployment support
+
+The commands in this guide are **source/container POSIX only**:
+
+- For a source deployment on Linux or macOS, run them from the matching release
+  checkout and locked environment.
+- The container runtime image does not contain `scripts/backup.py` or
+  `scripts/restore.py`. For Compose, run the tools from the matching release
+  checkout on the POSIX host and point them at the bind-mounted data and
+  database. Do not present `docker exec` or in-container `uv` as available.
+- The source-free Windows and macOS installers do not bundle this operator CLI.
+  A macOS operator may use a matching source checkout as a separate POSIX
+  operation, but that is not a frozen native command.
+- The complete workflow is unsupported on native Windows filesystems in this
+  release. Do not attempt it unless a later release adds and verifies a frozen
+  native command.
+
+Never copy a live SQLite file as a substitute. Preserve the per-user native
+`config/master.key` or source/container `STOCK_DESK_MASTER_KEY` separately from
+encrypted data.
+
 ## Create a portable backup
 
-Keep Stock Desk running if desired, then run:
+For a source/container POSIX deployment, keep Stock Desk running if desired,
+then run from the matching source checkout:
 
 ```bash
 uv run python scripts/backup.py /safe/path/desk.stockdesk-backup \
@@ -40,8 +62,9 @@ data. Restoring a backup does not make a missing external TDX tree available.
 
 ## Restore
 
-Stop the API, workers, schedulers, and every other Stock Desk process that uses the
-destination. Then run:
+Stop the API, workers, schedulers, containers, and every other Stock Desk process
+that uses the destination. Then run from the matching source checkout on the
+POSIX host:
 
 ```bash
 uv run python scripts/restore.py /safe/path/desk.stockdesk-backup \
@@ -91,8 +114,9 @@ MarketLake components. Recovery verifies regular-file, single-link, non-symlink,
 directory, marker, and content-hash expectations before every rollback or cleanup.
 An unfinished replacement is rolled back; a committed replacement is finalized.
 A corrupt, missing-stage, changed-component, or ambiguous journal state makes
-startup refuse to run instead of guessing. With the application stopped, recovery
-can also be requested explicitly:
+startup refuse to run instead of guessing. With the application or Compose stack
+stopped, source/container POSIX recovery can be requested from the matching
+checkout:
 
 ```bash
 uv run python scripts/restore.py --data-dir /path/to/data --recover-only

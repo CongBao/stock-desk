@@ -92,7 +92,9 @@ finds an interrupted restore journal.
    assertion only after doing so.
 3. Preserve `.stock-desk-restore-journal.json`, recovery archives, and staging
    directories. Never edit or delete them by hand.
-4. With every application process stopped, request explicit journal recovery:
+4. For a source/container POSIX deployment, stop every application process or
+   the Compose stack, then request explicit journal recovery from the matching
+   source checkout:
 
 ```bash
 uv run python scripts/restore.py --data-dir /path/to/data --recover-only
@@ -100,4 +102,6 @@ uv run python scripts/restore.py --data-dir /path/to/data --recover-only
 
 If recovery still refuses, keep the complete filesystem state and seek support.
 The tool refuses ambiguous or changed components instead of guessing. Follow the
-full [backup, restore, upgrade, and rollback guide](backup-and-restore.md).
+full [backup, restore, upgrade, and rollback guide](backup-and-restore.md). This
+source CLI is not bundled in native installers, and the complete workflow is not
+supported on native Windows filesystems in this release.
