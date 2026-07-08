@@ -1350,14 +1350,28 @@ def test_security_and_support_use_the_right_reporting_channels() -> None:
 def test_changelog_roadmap_and_architecture_match_current_release_scope() -> None:
     changelog = _read("CHANGELOG.md")
     unreleased = re.search(
-        r"## \[Unreleased\](?P<body>.*?)## \[0\.5\.0\]",
+        r"## \[Unreleased\](?P<body>.*?)## \[1\.0\.0\] - 2026-07-08",
         changelog,
         re.DOTALL,
     )
     assert unreleased is not None
     unreleased_body = unreleased.group("body")
-    assert "public documentation contract" in unreleased_body
-    assert "without declaring a later release" in unreleased_body
+    assert "Nothing yet" in unreleased_body
+    final_release_section = re.search(
+        r"## \[1\.0\.0\] - 2026-07-08(?P<body>.*?)## \[0\.5\.0\]",
+        changelog,
+        re.DOTALL,
+    )
+    assert final_release_section is not None
+    final_release_body = final_release_section.group("body")
+    for fact in (
+        "stage 5",
+        "source-free windows",
+        "2/3/5-second",
+        "responsive",
+        "github wiki",
+    ):
+        assert fact in final_release_body.casefold()
     release_section = re.search(
         r"## \[0\.5\.0\] - 2026-07-08(?P<body>.*?)## \[0\.4\.0\]",
         changelog,
@@ -1384,10 +1398,22 @@ def test_changelog_roadmap_and_architecture_match_current_release_scope() -> Non
     roadmap = _read("ROADMAP.md")
     for stage in range(6):
         assert f"| {stage} —" in roadmap
-    assert len(re.findall(r"\|\s+Complete\s+\|", roadmap)) == 5
+    assert len(re.findall(r"\|\s+Complete\s+\|", roadmap)) == 6
     assert len(re.findall(r"\|\s+In verification\s+\|", roadmap)) == 0
     assert len(re.findall(r"\|\s+Current\s+\|", roadmap)) == 0
-    assert len(re.findall(r"\|\s+Planned\s+\|", roadmap)) == 1
+    assert len(re.findall(r"\|\s+Planned\s+\|", roadmap)) == 0
+
+    release_notes = _read("docs/releases/v1.0.0.md")
+    for fact in (
+        "Windows x86_64",
+        "macOS x86_64",
+        "macOS arm64",
+        "checksums",
+        "SBOM",
+        "rollback",
+        "not investment advice",
+    ):
+        assert fact.casefold() in release_notes.casefold()
 
     architecture = _read("docs/architecture.md")
     for boundary in ("FastAPI", "worker", "SQLite", "security", "trust boundary"):

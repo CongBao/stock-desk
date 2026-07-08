@@ -6,19 +6,43 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [1.0.0] - 2026-07-08
+
+Stage 5 integrated v1 release.
+
 ### Added
 
-- A public documentation contract covering required pages and sections,
-  reciprocal English/Chinese entry points, local links, supported commands,
-  documented settings, public-tree boundaries, and external Wiki readiness.
+- A complete personal A-share desk joining cached market charts, TDX-compatible
+  formulas, reproducible backtests, evidence-linked multi-agent research, and a
+  safe task center in one low-code interface.
+- Source-free Windows x86_64 and macOS x86_64/arm64 installers with clean-runner
+  first-launch, persistence, upgrade, shutdown, and uninstall verification.
+- A fixed, network-forbidden performance workload and 2/3/5-second chart,
+  formula-preview, and single-stock-backtest release budgets.
+- Release-candidate backup, restore, rollback, migration, secret-redaction,
+  formula-sandbox, dependency, container, and public-history checks.
+- A concise bilingual README and screenshot-complete bilingual GitHub Wiki.
 
 ### Changed
 
-- The English and Chinese entry points now provide concise, equivalent setup,
-  workflow, safety, and documentation routes.
-- Public architecture, configuration, troubleshooting, support, contribution,
-  roadmap, and research-risk guidance are aligned with the current `v0.5.0`
-  release and unreleased maintenance tooling without declaring a later release.
+- The responsive application shell now covers wide desktop, narrow desktop,
+  tablet portrait/landscape, short landscape, and 200% effective zoom. Narrow
+  layouts automatically collapse to accessible icons and remain manually
+  expandable without component overlap.
+- Public documentation, packaging, architecture, support, security, and release
+  evidence now describe the complete v1 product instead of an intermediate
+  capability stage.
+
+### Security
+
+- Release publication fails closed on incomplete requirements, local/internal
+  paths, credentials, private-key material, unsafe README commands, stale
+  artifacts, or unverified native installer provenance.
+- Provider secrets remain encrypted and masked, external research text remains
+  untrusted data, and formulas remain constrained to the parsed compatibility
+  language rather than arbitrary code execution.
 
 ## [0.5.0] - 2026-07-08
 
