@@ -34,6 +34,7 @@ from stock_desk.analysis.roles import (
     ROLE_SECTION_KINDS,
     RoleName,
     RoleOutput,
+    clean_role_output_active_secrets,
 )
 from stock_desk.analysis.snapshot import (
     RESEARCH_SECTION_ORDER,
@@ -48,6 +49,7 @@ from stock_desk.analysis.workflow import (
     WorkflowStageTrace,
 )
 from stock_desk.market.types import UtcDatetime
+from stock_desk.security.redaction import clean_active_secrets
 
 
 REPORT_SCHEMA_VERSION: Final = "analysis-report-v1"
@@ -785,6 +787,50 @@ def parse_research_report_json(value: str | bytes | bytearray) -> ResearchReport
         _validate_report_shape(decoded)
         return ResearchReport.model_validate_json(raw)
     except (TypeError, ValueError, ValidationError, RecursionError, UnicodeError):
+        raise ReportValidationError() from None
+
+
+def clean_research_report_active_secrets(report: ResearchReport) -> ResearchReport:
+    """Return a valid report with credentials removed from model-controlled text."""
+    payload = report.model_dump(mode="json", exclude={"report_id"})
+    payload["role_outputs"] = [
+        output.model_dump(mode="json")
+        for output in (
+            clean_role_output_active_secrets(item) for item in report.role_outputs
+        )
+    ]
+    for field_name in (
+        "core_judgments",
+        "bull_claims",
+        "bear_claims",
+        "risks",
+    ):
+        claims = payload[field_name]
+        if type(claims) is not list:
+            raise ReportValidationError()
+        for claim in claims:
+            if type(claim) is not dict or type(claim.get("text")) is not str:
+                raise ReportValidationError()
+            cleaned = clean_active_secrets(claim["text"])
+            if type(cleaned) is not str:
+                raise ReportValidationError()
+            claim["text"] = cleaned
+    explanation = clean_active_secrets(payload["confidence_explanation"])
+    if type(explanation) is not str:
+        raise ReportValidationError()
+    payload["confidence_explanation"] = explanation
+    payload["report_id"] = _content_id(payload)
+    try:
+        return ResearchReport.model_validate_json(
+            json.dumps(
+                payload,
+                allow_nan=False,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+        )
+    except (TypeError, ValueError, ValidationError):
         raise ReportValidationError() from None
 
 

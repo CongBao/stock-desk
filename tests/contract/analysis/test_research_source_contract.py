@@ -440,6 +440,30 @@ def test_router_skips_unsupported_sources_and_never_calls_them() -> None:
     assert akshare.calls == [(SYMBOL, ResearchSectionKind.NEWS)]
 
 
+def test_router_treats_provenance_only_source_as_unsupported_diagnostic() -> None:
+    akshare = StubSource(
+        ProviderId.AKSHARE,
+        {
+            ResearchSectionKind.NEWS: section(
+                ProviderId.AKSHARE, ResearchSectionKind.NEWS
+            )
+        },
+    )
+    router = ResearchSourceRouter(
+        kind=ResearchSectionKind.NEWS,
+        priority=(ProviderId.STOCK_DESK_DEMO, ProviderId.AKSHARE),
+        sources=(akshare,),
+    )
+
+    loaded, diagnostic = router.load_with_diagnostics(SYMBOL)
+
+    assert loaded.canonical_source == "akshare"
+    assert diagnostic.ordered_candidates[0].source == "stock_desk_demo"
+    assert diagnostic.ordered_candidates[0].supported is False
+    assert diagnostic.ordered_candidates[0].outcome == "unsupported"
+    assert akshare.calls == [(SYMBOL, ResearchSectionKind.NEWS)]
+
+
 def test_router_falls_back_without_merging_and_marks_degraded_source() -> None:
     tushare = StubSource(
         ProviderId.TUSHARE,

@@ -29,9 +29,13 @@ from stock_desk.analysis.model_config import (
     OLLAMA_BASE_URL,
 )
 from stock_desk.analysis.evidence import EvidenceGraph
-from stock_desk.analysis.report import ReportStatus, ResearchReport
+from stock_desk.analysis.report import (
+    ReportStatus,
+    ResearchReport,
+    clean_research_report_active_secrets,
+)
 from stock_desk.analysis.retry import RetryDecision, RetryPolicy
-from stock_desk.analysis.roles import RoleOutput
+from stock_desk.analysis.roles import RoleOutput, clean_role_output_active_secrets
 from stock_desk.analysis.snapshot import ResearchSnapshot
 from stock_desk.analysis.snapshot import MissingResearchSection, ResearchSection
 from stock_desk.analysis.workflow import WorkflowStageTrace
@@ -1617,8 +1621,10 @@ class AnalysisRepository:
         trace: WorkflowStageTrace,
         *,
         now: datetime,
-    ) -> AnalysisAttemptSnapshot:
-        canonical_output = RoleOutput.model_validate_json(output.model_dump_json())
+    ) -> RoleOutput:
+        canonical_output = clean_role_output_active_secrets(
+            RoleOutput.model_validate_json(output.model_dump_json())
+        )
         canonical_trace = WorkflowStageTrace.model_validate_json(
             trace.model_dump_json()
         )
@@ -1672,7 +1678,7 @@ class AnalysisRepository:
             if changed != 1:
                 raise AnalysisConflict("analysis stage is not running")
             self._checkpoint_progress(connection, claim, run_id, now)
-        return _attempt_snapshot(row)
+        return canonical_output
 
     def finish_data_attempt_success(
         self,
@@ -1937,7 +1943,9 @@ class AnalysisRepository:
         ] != _content_hash(row["trace_json"]):
             raise AnalysisRepositoryError("analysis stage artifact hash is invalid")
         try:
-            output = RoleOutput.model_validate_json(row["output_json"])
+            output = clean_role_output_active_secrets(
+                RoleOutput.model_validate_json(row["output_json"])
+            )
             trace = WorkflowStageTrace.model_validate_json(row["trace_json"])
         except ValueError:
             raise AnalysisRepositoryError(
@@ -2024,6 +2032,7 @@ class AnalysisRepository:
             AnalysisRunStatus.INSUFFICIENT_EVIDENCE,
         }:
             raise AnalysisConflict("analysis report requires a successful task outcome")
+        report = clean_research_report_active_secrets(report)
         report_json = report.model_dump_json()
         with self._engine.begin() as connection:
             task = self._guard(connection, claim, now)
@@ -2118,7 +2127,9 @@ class AnalysisRepository:
         if row[2] != _content_hash(row[1]):
             raise AnalysisRepositoryError("analysis report hash is invalid")
         try:
-            report = ResearchReport.model_validate_json(row[1])
+            report = clean_research_report_active_secrets(
+                ResearchReport.model_validate_json(row[1])
+            )
         except ValueError:
             raise AnalysisRepositoryError("analysis report is invalid") from None
         if report.report_id != row[0] or report.snapshot_id != row[3]:

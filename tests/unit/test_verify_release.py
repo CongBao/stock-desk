@@ -4,11 +4,15 @@ import base64
 from dataclasses import dataclass, field
 import hashlib
 import io
+import json
 import os
 from pathlib import Path
 import subprocess
 import tarfile
+from threading import Event, enumerate as enumerate_threads
+import time
 import tomllib
+import tracemalloc
 import zipfile
 
 import pytest
@@ -17,10 +21,12 @@ import scripts.verify_release as verify_release_module
 from scripts.verify_release import (
     GateCommand,
     ReleaseVerificationError,
+    ReleaseLeakScanner,
     SubprocessGateRunner,
     check_build_artifacts,
     check_changelog,
     check_remote,
+    verify_candidate,
     verify_release,
 )
 
@@ -666,7 +672,10 @@ def test_reports_a_failed_canonical_gate(release_repo: Path) -> None:
     with pytest.raises(ReleaseVerificationError, match="release gate failed"):
         run_verifier(release_repo, runner)
 
-    assert [call.command for call in runner.calls] == [("make", "release-check")]
+    assert [call.command for call in runner.calls] == [
+        verify_release_module.PRE_PUBLISH_EVIDENCE_GATE.command,
+        ("make", "release-check"),
+    ]
 
 
 def test_accepts_a_future_release_with_a_different_valid_date(
@@ -1239,6 +1248,7 @@ def test_success_runs_timed_gates_and_rechecks_clean_sources(
     run_verifier(release_repo, runner)
 
     assert runner.calls == [
+        verify_release_module.PRE_PUBLISH_EVIDENCE_GATE,
         GateCommand(("make", "release-check"), timeout_seconds=1800),
         GateCommand(
             ("pnpm", "e2e"),
@@ -1246,3 +1256,829 @@ def test_success_runs_timed_gates_and_rechecks_clean_sources(
             environment=(("STOCK_DESK_E2E_BASE_URL", E2E_BASE_URL),),
         ),
     ]
+
+
+def test_candidate_and_final_release_require_complete_requirement_evidence(
+    release_repo: Path,
+) -> None:
+    evidence_gate = GateCommand(
+        (
+            "uv",
+            "run",
+            "--frozen",
+            "python",
+            "scripts/check_requirement_coverage.py",
+            "--mode",
+            "pre-publish",
+        ),
+        timeout_seconds=300,
+    )
+    assert evidence_gate in verify_release_module._candidate_gates(
+        target_performance=False
+    )
+
+    runner = FakeGateRunner(release_repo)
+    run_verifier(release_repo, runner)
+    assert evidence_gate in runner.calls
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"/home/" + b"real-operator" + b"/stock-desk/data.db",
+        b"/".join((b"", b"Users", b"release-user", b"Workspace", b"stock-desk")),
+        b"C:\\Users\\" + b"release-user" + b"\\stock-desk\\data.db",
+        b"C:\\Users\\" + b"Jane Doe\\stock-desk\\data.db",
+        "/".join(("", "Users", "发布用户", "Workspace", "stock-desk")).encode(),
+        (b"/home/" + (b"long-profile-" * 7) + b"/stock-desk/data.db"),
+        b"/".join((b"", b"Users", b"bao", b"Workspace", b"stock-desk")),
+        b"OPENAI_API_" + b"KEY=sk-" + b"A7" * 24,
+        b"DEEPSEEK_API_" + b"KEY=sk-" + b"B8" * 24,
+        b"DASHSCOPE_API_" + b"KEY=sk-" + b"C9" * 24,
+        b"TUSHARE_" + b"TOKEN=" + b"d4" * 24,
+    ],
+)
+def test_release_leak_scanner_rejects_cross_platform_paths_and_provider_tokens(
+    payload: bytes,
+) -> None:
+    scanner = ReleaseLeakScanner(label="fixture")
+
+    with pytest.raises(ReleaseVerificationError, match="release payload"):
+        scanner.feed(payload)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"Use OPENAI_API_KEY as the environment variable name.",
+        b"TUSHARE_TOKEN=secret",
+        b"/home/example/private/session",
+        b"/Users/operator/worktree",
+        b"/Users/" + b"Bao/synthetic-redaction-fixture",
+        b"C:\\Users\\owner\\AppData\\Local",
+        b"masked key: sk-a" + "\u2022".encode() * 8 + b"tail",
+    ],
+)
+def test_release_leak_scanner_allows_documentation_and_synthetic_placeholders(
+    payload: bytes,
+) -> None:
+    scanner = ReleaseLeakScanner(label="fixture")
+    scanner.feed(payload)
+    scanner.finish()
+
+
+def test_release_leak_scanner_does_not_treat_regex_syntax_as_a_profile() -> None:
+    scanner = ReleaseLeakScanner(label="pattern definition")
+
+    scanner.feed(b'r"(?:~|/Users/[^/]+)/Workspace/stock-desk"')
+    scanner.feed(b'b"/Users/" + b"release-user" + b"/Workspace"')
+    scanner.finish()
+
+
+def test_release_leak_scanner_detects_tokens_split_across_chunks() -> None:
+    token = b"OPENAI_API_" + b"KEY=sk-" + b"Q7" * 24
+    token_value_start = token.index(b"sk-") + len(b"sk-")
+    for split in range(token_value_start + 1, token_value_start + 24):
+        scanner = ReleaseLeakScanner(label="split fixture")
+        scanner.feed(token[:split])
+        with pytest.raises(ReleaseVerificationError, match="release payload"):
+            scanner.feed(token[split:])
+
+
+def test_release_leak_scanner_has_bounded_rss_and_consumes_chunks_once() -> None:
+    chunk = b"ordinary public release bytes\n" * 2048
+    iterations = 0
+
+    def chunks() -> object:
+        nonlocal iterations
+        for _ in range(512):
+            iterations += 1
+            yield chunk
+
+    tracemalloc.start()
+    scanner = ReleaseLeakScanner(label="large stream")
+    for payload in chunks():
+        assert isinstance(payload, bytes)
+        scanner.feed(payload)
+    scanner.finish()
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+
+    assert iterations == 512
+    assert peak < 2 * 1024 * 1024
+
+
+@pytest.mark.parametrize("scan_kind", ("reachable-blobs", "source-archive"))
+def test_streaming_git_scans_kill_blocked_reads_before_the_deadline(
+    release_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    scan_kind: str,
+) -> None:
+    class BlockingStdout:
+        def __init__(self) -> None:
+            self.closed = False
+            self._released = Event()
+
+        def read(self, _size: int = -1) -> bytes:
+            self._released.wait(5)
+            return b""
+
+        def readline(self, _size: int = -1) -> bytes:
+            return self.read(_size)
+
+        def close(self) -> None:
+            self.closed = True
+            self._released.set()
+
+    class BlockingProcess:
+        def __init__(self) -> None:
+            self.stdout = BlockingStdout()
+            self.killed = False
+            self.waited = False
+
+        def poll(self) -> int | None:
+            return -9 if self.killed else None
+
+        def kill(self) -> None:
+            self.killed = True
+
+        def wait(self, timeout: float | None = None) -> int:
+            del timeout
+            self.waited = True
+            return -9
+
+    process = BlockingProcess()
+    monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: process)
+    monkeypatch.setattr(
+        verify_release_module,
+        "_reachable_object_ids",
+        lambda _repo: (b"a" * 40,),
+    )
+
+    started = time.monotonic()
+    with pytest.raises(ReleaseVerificationError, match="timed out"):
+        if scan_kind == "reachable-blobs":
+            verify_release_module._scan_reachable_git_blobs(
+                release_repo, timeout_seconds=0.05
+            )
+        else:
+            verify_release_module._scan_git_archive(release_repo, timeout_seconds=0.05)
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 1.0
+    assert process.killed is True
+    assert process.waited is True
+    assert process.stdout.closed is True
+    assert not any(
+        thread.name.startswith("release-payload-reader")
+        for thread in enumerate_threads()
+    )
+
+
+def test_final_verifier_reports_initial_and_final_fingerprint_failures(
+    release_repo: Path,
+) -> None:
+    with pytest.raises(ReleaseVerificationError, match="unable to fingerprint"):
+        verify_release(
+            release_repo,
+            "0.1.0",
+            FakeGateRunner(release_repo),
+            fingerprint=lambda _repo: (_ for _ in ()).throw(OSError("private")),
+        )
+
+    calls = 0
+
+    def failing_recheck(_repo: Path) -> str:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("private")
+        return "stable"
+
+    with pytest.raises(ReleaseVerificationError, match="unable to recheck"):
+        verify_release(
+            release_repo,
+            "0.1.0",
+            FakeGateRunner(release_repo),
+            fingerprint=failing_recheck,
+        )
+
+
+def test_final_verifier_rejects_source_fingerprint_change(
+    release_repo: Path,
+) -> None:
+    fingerprints = iter(("initial", "changed"))
+
+    with pytest.raises(ReleaseVerificationError, match="fingerprint changed"):
+        verify_release(
+            release_repo,
+            "0.1.0",
+            FakeGateRunner(release_repo),
+            fingerprint=lambda _repo: next(fingerprints),
+        )
+
+
+def test_build_artifact_os_errors_are_wrapped(
+    release_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_valid_artifacts(release_repo, "0.1.0")
+    monkeypatch.setattr(
+        verify_release_module,
+        "_check_wheel_artifact",
+        lambda *_args: (_ for _ in ()).throw(OSError("private")),
+    )
+
+    with pytest.raises(ReleaseVerificationError, match="artifact is invalid"):
+        check_build_artifacts(release_repo, "0.1.0")
+
+
+def test_candidate_stops_at_first_failed_gate_and_writes_safe_report(
+    release_repo: Path,
+    tmp_path: Path,
+) -> None:
+    report = release_repo / "test-results" / "release" / "candidate.json"
+    gitignore = release_repo / ".gitignore"
+    gitignore.write_text(
+        gitignore.read_text(encoding="utf-8") + "test-results/\n",
+        encoding="utf-8",
+    )
+    git(release_repo, "add", ".gitignore")
+    git(release_repo, "commit", "-q", "-m", "ignore candidate reports")
+    runner = FakeGateRunner(
+        release_repo,
+        fail_command=("make", "acceptance-formula"),
+    )
+
+    with pytest.raises(ReleaseVerificationError, match="candidate gate failed"):
+        verify_candidate(
+            release_repo,
+            "1.0.0",
+            runner,
+            report_path=report,
+            fingerprint=lambda _repo: "stable-source",
+            fixture_hashes=lambda _repo: {
+                "tests/fixtures/example.json": "sha256:" + "a" * 64
+            },
+        )
+
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    assert payload == {
+        "schema_version": "stock-desk-release-candidate-report-v1",
+        "mode": "candidate",
+        "version": "1.0.0",
+        "status": "failed",
+        "source_revision": git_output(release_repo, "rev-parse", "HEAD"),
+        "source_fingerprint": "stable-source",
+        "source_unchanged": True,
+        "fixture_hashes": {"tests/fixtures/example.json": "sha256:" + "a" * 64},
+        "gates": [
+            {"command": ["make", "test"], "status": "passed"},
+            {"command": ["make", "acceptance"], "status": "passed"},
+            {
+                "command": ["make", "acceptance-formula"],
+                "status": "failed",
+            },
+        ],
+        "failure": {
+            "kind": "gate_failed",
+            "gate": ["make", "acceptance-formula"],
+            "message": "release candidate gate failed",
+        },
+    }
+    assert str(tmp_path) not in report.read_text(encoding="utf-8")
+
+
+def test_candidate_rejects_gate_source_mutation_before_next_gate(
+    release_repo: Path,
+) -> None:
+    report = release_repo / "test-results" / "release" / "candidate.json"
+    gitignore = release_repo / ".gitignore"
+    gitignore.write_text(
+        gitignore.read_text(encoding="utf-8") + "test-results/\n",
+        encoding="utf-8",
+    )
+    git(release_repo, "add", ".gitignore")
+    git(release_repo, "commit", "-q", "-m", "ignore candidate reports")
+
+    @dataclass
+    class MutatingRunner:
+        calls: list[GateCommand] = field(default_factory=list)
+
+        def run(self, gate: GateCommand) -> None:
+            self.calls.append(gate)
+            (release_repo / "src" / "stock_desk" / "__init__.py").write_text(
+                "mutated during gate\n",
+                encoding="utf-8",
+            )
+
+    runner = MutatingRunner()
+
+    with pytest.raises(ReleaseVerificationError, match="modified release sources"):
+        verify_candidate(
+            release_repo,
+            "1.0.0",
+            runner,
+            report_path=report,
+            fingerprint=lambda repo: hashlib.sha256(
+                (repo / "src" / "stock_desk" / "__init__.py").read_bytes()
+            ).hexdigest(),
+            fixture_hashes=lambda _repo: {},
+        )
+
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    assert payload["status"] == "failed"
+    assert payload["source_unchanged"] is False
+    assert payload["gates"] == [{"command": ["make", "test"], "status": "failed"}]
+    assert payload["failure"] == {
+        "kind": "source_changed",
+        "gate": ["make", "test"],
+        "message": "release candidate gate modified release sources",
+    }
+    assert len(runner.calls) == 1
+
+
+def test_candidate_rejects_revision_change_with_identical_source(
+    release_repo: Path,
+) -> None:
+    report = release_repo / "test-results" / "release" / "candidate.json"
+    gitignore = release_repo / ".gitignore"
+    gitignore.write_text(
+        gitignore.read_text(encoding="utf-8") + "test-results/\n",
+        encoding="utf-8",
+    )
+    git(release_repo, "add", ".gitignore")
+    git(release_repo, "commit", "-q", "-m", "ignore candidate reports")
+
+    class RevisionChangingRunner:
+        def run(self, _gate: GateCommand) -> None:
+            git(release_repo, "commit", "-q", "--allow-empty", "-m", "changed head")
+
+    with pytest.raises(ReleaseVerificationError, match="modified release sources"):
+        verify_candidate(
+            release_repo,
+            "1.0.0",
+            RevisionChangingRunner(),
+            report_path=report,
+            fingerprint=lambda _repo: "stable",
+            fixture_hashes=lambda _repo: {},
+        )
+
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    assert payload["failure"]["kind"] == "source_changed"
+    assert payload["source_unchanged"] is False
+    assert len(payload["gates"]) == 1
+
+
+def test_candidate_precheck_failure_still_writes_machine_report(
+    release_repo: Path,
+) -> None:
+    report = release_repo / "test-results" / "release" / "candidate.json"
+    gitignore = release_repo / ".gitignore"
+    gitignore.write_text(
+        gitignore.read_text(encoding="utf-8") + "test-results/\n",
+        encoding="utf-8",
+    )
+    git(release_repo, "add", ".gitignore")
+    git(release_repo, "commit", "-q", "-m", "ignore candidate reports")
+    (release_repo / "README.md").write_text(
+        "dirty before candidate\n", encoding="utf-8"
+    )
+    runner = FakeGateRunner(release_repo)
+
+    with pytest.raises(ReleaseVerificationError, match="worktree is not clean"):
+        verify_candidate(
+            release_repo,
+            "1.0.0",
+            runner,
+            report_path=report,
+            fingerprint=lambda _repo: "dirty-source",
+            fixture_hashes=lambda _repo: {},
+        )
+
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    assert payload["status"] == "failed"
+    assert payload["source_unchanged"] is False
+    assert payload["gates"] == []
+    assert payload["failure"] == {
+        "kind": "precheck_failed",
+        "gate": None,
+        "message": "release candidate precheck failed",
+    }
+    assert runner.calls == []
+
+
+def test_candidate_success_report_is_deterministic_and_uses_target_performance(
+    release_repo: Path,
+) -> None:
+    report = release_repo / "test-results" / "release" / "candidate.json"
+    gitignore = release_repo / ".gitignore"
+    gitignore.write_text(
+        gitignore.read_text(encoding="utf-8") + "test-results/\n",
+        encoding="utf-8",
+    )
+    git(release_repo, "add", ".gitignore")
+    git(release_repo, "commit", "-q", "-m", "ignore candidate reports")
+    runner = FakeGateRunner(release_repo)
+
+    verify_candidate(
+        release_repo,
+        "1.0.0",
+        runner,
+        report_path=report,
+        target_performance=True,
+        fingerprint=lambda _repo: "stable-source",
+        fixture_hashes=lambda _repo: {
+            "tests/fixtures/example.json": "sha256:" + "b" * 64
+        },
+    )
+    first = report.read_bytes()
+    verify_candidate(
+        release_repo,
+        "1.0.0",
+        FakeGateRunner(release_repo),
+        report_path=report,
+        target_performance=True,
+        fingerprint=lambda _repo: "stable-source",
+        fixture_hashes=lambda _repo: {
+            "tests/fixtures/example.json": "sha256:" + "b" * 64
+        },
+    )
+
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    assert report.read_bytes() == first
+    assert payload["status"] == "passed"
+    assert payload["failure"] is None
+    commands = [tuple(item["command"]) for item in payload["gates"]]
+    assert commands == [
+        ("make", "test"),
+        ("make", "acceptance"),
+        ("make", "acceptance-formula"),
+        ("make", "acceptance-backtest"),
+        ("make", "acceptance-analysis"),
+        ("make", "acceptance-domain-contracts"),
+        ("make", "acceptance-full-journey"),
+        ("make", "performance-regressions"),
+        ("make", "performance-target"),
+        ("make", "e2e-foundation"),
+        ("make", "e2e-market"),
+        ("make", "e2e-formula"),
+        ("make", "e2e-backtest"),
+        ("make", "e2e-analysis"),
+        ("make", "e2e-task-center"),
+        ("make", "e2e-accessibility"),
+        ("make", "lint"),
+        ("make", "typecheck"),
+        ("make", "security"),
+        ("uv", "run", "--frozen", "python", "scripts/verify_docs.py"),
+        ("make", "public-tree"),
+        verify_release_module.PRE_PUBLISH_EVIDENCE_GATE.command,
+    ]
+
+
+def test_candidate_cli_delegates_with_machine_report_and_target_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: dict[str, object] = {}
+
+    def capture(
+        repo: Path,
+        version: str,
+        runner: object,
+        *,
+        report_path: Path,
+        target_performance: bool,
+    ) -> None:
+        observed.update(
+            repo=repo,
+            version=version,
+            runner=runner,
+            report_path=report_path,
+            target_performance=target_performance,
+        )
+
+    monkeypatch.setattr(verify_release_module, "verify_candidate", capture)
+
+    result = verify_release_module.main(
+        [
+            "1.0.0",
+            "--candidate",
+            "--target-performance",
+            "--report",
+            "test-results/release/ci-candidate.json",
+        ]
+    )
+
+    expected_repo = Path(verify_release_module.__file__).resolve().parent.parent
+    assert result == 0
+    assert observed["repo"] == expected_repo
+    assert observed["version"] == "1.0.0"
+    assert isinstance(observed["runner"], SubprocessGateRunner)
+    assert observed["report_path"] == (
+        expected_repo / "test-results/release/ci-candidate.json"
+    )
+    assert observed["target_performance"] is True
+
+
+def test_candidate_fixture_hashes_bind_only_tracked_regular_files(
+    release_repo: Path,
+) -> None:
+    fixture = release_repo / "tests" / "fixtures" / "sample.json"
+    fixture.parent.mkdir(parents=True)
+    fixture.write_text('{"fixture":true}\n', encoding="utf-8")
+    requirements = release_repo / "tests" / "acceptance" / "requirements.yml"
+    requirements.parent.mkdir(parents=True)
+    requirements.write_text("requirements: []\n", encoding="utf-8")
+    git(release_repo, "add", "tests")
+    git(release_repo, "commit", "-q", "-m", "add release fixtures")
+
+    hashes = verify_release_module.compute_fixture_hashes(release_repo)
+
+    assert hashes == {
+        "tests/acceptance/requirements.yml": (
+            "sha256:" + hashlib.sha256(requirements.read_bytes()).hexdigest()
+        ),
+        "tests/fixtures/sample.json": (
+            "sha256:" + hashlib.sha256(fixture.read_bytes()).hexdigest()
+        ),
+    }
+
+
+def test_candidate_fixture_hashes_reject_missing_unsafe_and_symlink_inputs(
+    release_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(ReleaseVerificationError, match="fixtures are missing"):
+        verify_release_module.compute_fixture_hashes(release_repo)
+
+    monkeypatch.setattr(
+        verify_release_module,
+        "_git_paths",
+        lambda *_args: ["../private-fixture"],
+    )
+    with pytest.raises(ReleaseVerificationError, match="path is invalid"):
+        verify_release_module.compute_fixture_hashes(release_repo)
+
+    fixture = release_repo / "tests" / "fixtures" / "linked.json"
+    fixture.parent.mkdir(parents=True)
+    fixture.symlink_to(release_repo / "README.md")
+    monkeypatch.setattr(
+        verify_release_module,
+        "_git_paths",
+        lambda *_args: ["tests/fixtures/linked.json"],
+    )
+    with pytest.raises(ReleaseVerificationError, match="regular file"):
+        verify_release_module.compute_fixture_hashes(release_repo)
+
+
+@pytest.mark.parametrize(
+    "report_path",
+    [
+        Path("outside.json"),
+        Path("test-results/release/.hidden.json"),
+        Path("test-results/nested/candidate.json"),
+    ],
+)
+def test_candidate_report_rejects_paths_outside_its_fixed_directory(
+    release_repo: Path,
+    tmp_path: Path,
+    report_path: Path,
+) -> None:
+    requested = (
+        tmp_path / report_path
+        if report_path == Path("outside.json")
+        else release_repo / report_path
+    )
+
+    with pytest.raises(ReleaseVerificationError, match="report path is invalid"):
+        verify_release_module._write_candidate_report(
+            release_repo,
+            requested,
+            {"status": "failed"},
+        )
+
+
+def test_candidate_report_rejects_symlink_parent_and_temporary_collision(
+    release_repo: Path,
+    tmp_path: Path,
+) -> None:
+    (release_repo / "test-results").symlink_to(tmp_path, target_is_directory=True)
+    target = release_repo / "test-results" / "release" / "candidate.json"
+    with pytest.raises(ReleaseVerificationError, match="report path is invalid"):
+        verify_release_module._write_candidate_report(
+            release_repo, target, {"status": "failed"}
+        )
+    (release_repo / "test-results").unlink()
+    target.parent.mkdir(parents=True)
+    temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+    temporary.write_text("occupied", encoding="utf-8")
+    with pytest.raises(ReleaseVerificationError, match="temporary path is unsafe"):
+        verify_release_module._write_candidate_report(
+            release_repo, target, {"status": "failed"}
+        )
+
+
+def test_candidate_initialization_and_public_history_fail_safely(
+    release_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report = release_repo / "test-results" / "release" / "candidate.json"
+    gitignore = release_repo / ".gitignore"
+    gitignore.write_text(
+        gitignore.read_text(encoding="utf-8") + "test-results/\n",
+        encoding="utf-8",
+    )
+    git(release_repo, "add", ".gitignore")
+    git(release_repo, "commit", "-q", "-m", "ignore candidate reports")
+
+    with pytest.raises(ReleaseVerificationError, match="initialize"):
+        verify_candidate(
+            release_repo,
+            "1.0.0",
+            FakeGateRunner(release_repo),
+            report_path=report,
+            fingerprint=lambda _repo: (_ for _ in ()).throw(OSError("private")),
+            fixture_hashes=lambda _repo: {},
+        )
+
+    monkeypatch.setattr(
+        verify_release_module,
+        "check_public_history",
+        lambda _repo: (_ for _ in ()).throw(
+            ReleaseVerificationError("private history detail")
+        ),
+    )
+    with pytest.raises(ReleaseVerificationError, match="private history detail"):
+        verify_candidate(
+            release_repo,
+            "1.0.0",
+            FakeGateRunner(release_repo),
+            report_path=report,
+            fingerprint=lambda _repo: "stable",
+            fixture_hashes=lambda _repo: {},
+        )
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    assert payload["failure"]["message"] == "release candidate precheck failed"
+    assert payload["source_unchanged"] is True
+    assert "private" not in report.read_text(encoding="utf-8")
+
+
+def test_candidate_preserves_safe_domain_initialization_errors(
+    release_repo: Path,
+) -> None:
+    with pytest.raises(ReleaseVerificationError, match="fixture inventory rejected"):
+        verify_candidate(
+            release_repo,
+            "1.0.0",
+            FakeGateRunner(release_repo),
+            report_path=release_repo / "test-results/release/candidate.json",
+            fingerprint=lambda _repo: "stable",
+            fixture_hashes=lambda _repo: (_ for _ in ()).throw(
+                ReleaseVerificationError("fixture inventory rejected")
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    "gate_error",
+    [OSError("runner missing"), subprocess.TimeoutExpired(("make", "test"), 1)],
+)
+def test_candidate_reports_os_and_timeout_gate_failures_without_details(
+    release_repo: Path,
+    gate_error: BaseException,
+) -> None:
+    report = release_repo / "test-results" / "release" / "candidate.json"
+    gitignore = release_repo / ".gitignore"
+    gitignore.write_text(
+        gitignore.read_text(encoding="utf-8") + "test-results/\n",
+        encoding="utf-8",
+    )
+    git(release_repo, "add", ".gitignore")
+    git(release_repo, "commit", "-q", "-m", "ignore candidate reports")
+
+    class ErrorRunner:
+        def run(self, _gate: GateCommand) -> None:
+            raise gate_error
+
+    with pytest.raises(ReleaseVerificationError, match="candidate gate failed"):
+        verify_candidate(
+            release_repo,
+            "1.0.0",
+            ErrorRunner(),
+            report_path=report,
+            fingerprint=lambda _repo: "stable",
+            fixture_hashes=lambda _repo: {},
+        )
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    assert payload["failure"]["kind"] == "gate_failed"
+    assert "runner missing" not in report.read_text(encoding="utf-8")
+
+
+def test_candidate_cli_rejects_candidate_only_options_without_candidate(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert verify_release_module.main(["1.0.0", "--target-performance"]) == 1
+    assert "candidate report options require --candidate" in capsys.readouterr().err
+
+
+def test_candidate_rejects_invalid_version_before_running_gates(
+    release_repo: Path,
+) -> None:
+    runner = FakeGateRunner(release_repo)
+
+    with pytest.raises(ReleaseVerificationError, match="stable numeric version"):
+        verify_candidate(
+            release_repo,
+            "1.0.0-rc1",
+            runner,
+            report_path=release_repo / "test-results/release/candidate.json",
+        )
+
+    assert runner.calls == []
+
+
+def test_candidate_report_rejects_directory_target_and_write_failure(
+    release_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = release_repo / "test-results" / "release" / "candidate.json"
+    target.mkdir(parents=True)
+    with pytest.raises(ReleaseVerificationError, match="report path is invalid"):
+        verify_release_module._write_candidate_report(
+            release_repo, target, {"status": "failed"}
+        )
+    target.rmdir()
+
+    monkeypatch.setattr(
+        verify_release_module.os,
+        "replace",
+        lambda *_args: (_ for _ in ()).throw(OSError("private write detail")),
+    )
+    with pytest.raises(ReleaseVerificationError, match="unable to write"):
+        verify_release_module._write_candidate_report(
+            release_repo, target, {"status": "failed"}
+        )
+    assert not tuple(target.parent.glob("*.tmp"))
+
+
+def test_git_helpers_wrap_os_failures_without_leaking_details(
+    release_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        verify_release_module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("private git detail")),
+    )
+
+    with pytest.raises(ReleaseVerificationError, match="inspect the Git repository"):
+        verify_release_module._git(release_repo, "status")
+    with pytest.raises(ReleaseVerificationError, match="inspect Git paths"):
+        verify_release_module._git_paths(release_repo, "ls-files", "-z")
+
+
+def test_candidate_default_uses_reference_performance_gate(
+    release_repo: Path,
+) -> None:
+    report = release_repo / "test-results" / "release" / "candidate.json"
+    gitignore = release_repo / ".gitignore"
+    gitignore.write_text(
+        gitignore.read_text(encoding="utf-8") + "test-results/\n",
+        encoding="utf-8",
+    )
+    git(release_repo, "add", ".gitignore")
+    git(release_repo, "commit", "-q", "-m", "ignore candidate reports")
+
+    verify_candidate(
+        release_repo,
+        "1.0.0",
+        FakeGateRunner(release_repo),
+        report_path=report,
+        fingerprint=lambda _repo: "stable",
+        fixture_hashes=lambda _repo: {},
+    )
+
+    commands = [
+        tuple(item["command"])
+        for item in json.loads(report.read_text(encoding="utf-8"))["gates"]
+    ]
+    assert ("make", "performance") in commands
+    assert ("make", "performance-target") not in commands
+
+
+def test_legacy_cli_delegates_to_final_verifier(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls: list[tuple[Path, str, object]] = []
+    monkeypatch.setattr(
+        verify_release_module,
+        "verify_release",
+        lambda repo, version, runner: calls.append((repo, version, runner)),
+    )
+
+    assert verify_release_module.main(["1.0.0"]) == 0
+    assert len(calls) == 1
+    assert calls[0][1] == "1.0.0"
+    assert isinstance(calls[0][2], SubprocessGateRunner)
+    assert "Release verification passed for 1.0.0." in capsys.readouterr().out

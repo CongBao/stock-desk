@@ -1484,11 +1484,13 @@ class BacktestRepository:
             if row in {"succeeded", "failed"}:
                 return self.get_run(run_id)
             counts = connection.execute(
-                select(BacktestRunRow.total, BacktestRunRow.processed).where(
-                    BacktestRunRow.id == run_id
-                )
+                select(
+                    BacktestRunRow.total,
+                    BacktestRunRow.processed,
+                    BacktestRunRow.failed_count,
+                ).where(BacktestRunRow.id == run_id)
             ).one()
-            total, processed = int(counts[0]), int(counts[1])
+            total, processed, failed = int(counts[0]), int(counts[1]), int(counts[2])
             progress = (processed + 1) / total
             tasks.guard_claim_in_transaction(
                 connection,
@@ -1566,6 +1568,16 @@ class BacktestRepository:
             )
             if changed.rowcount != 1:
                 raise BacktestConflict("backtest run checkpoint conflicted")
+            tasks.append_backtest_progress_event_in_transaction(
+                connection,
+                claim.snapshot.id,
+                progress=progress,
+                stage="executing",
+                processed=processed + 1,
+                total=total,
+                failed=failed + (1 if failure_reason is not None else 0),
+                now=now,
+            )
             self._append_log(
                 connection,
                 run_id=run_id,

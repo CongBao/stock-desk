@@ -23,6 +23,7 @@ playwright-report/
 
 # Python
 __pycache__/
+build/
 *.py[cod]
 .pytest_cache/
 .mypy_cache/

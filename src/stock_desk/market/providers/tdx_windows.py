@@ -3,6 +3,7 @@ from __future__ import annotations
 import ctypes
 from ctypes import wintypes
 from dataclasses import dataclass
+from datetime import date
 import ntpath
 import os
 from pathlib import Path
@@ -18,7 +19,11 @@ from stock_desk.market.providers.base import (
     ProviderTransientFailure,
     ProviderUnavailable,
 )
-from stock_desk.market.providers.tdx_binary import DAY_RECORD_STRUCT, MAX_DAY_BYTES
+from stock_desk.market.providers.tdx_binary import (
+    DAY_RECORD_STRUCT,
+    MAX_DAY_BYTES,
+    parse_day_bytes,
+)
 from stock_desk.market.types import Exchange
 
 
@@ -178,6 +183,10 @@ class _WindowsApi(Protocol):
 
 class WindowsBackend(Protocol):
     def inspect_market(self, root: Path, exchange: Exchange) -> int: ...
+
+    def latest_market_day(
+        self, root: Path, exchange: Exchange, *, observed_on: date
+    ) -> date | None: ...
 
     def read_snapshot(self, root: Path, exchange: Exchange, name: str) -> bytes: ...
 
@@ -374,6 +383,36 @@ class _WindowsHandleBackend:
             if self._api.directory_watch_changed(directory_watch):
                 raise ProviderTransientFailure()
             return count
+        finally:
+            self._cleanup_resources(opened, directory_watch=directory_watch)
+
+    def latest_market_day(
+        self, root: Path, exchange: Exchange, *, observed_on: date
+    ) -> date | None:
+        chain = self._open_chain(root, exchange)
+        opened = list(chain)
+        directory_watch: int | None = None
+        try:
+            directory_watch = self._api.arm_directory_watch(chain[-1].handle)
+            names = self._api.list_names(chain[-1].handle)
+            if len(names) > MAX_DIRECTORY_ENTRIES:
+                raise ProviderCorrupt()
+            pattern = _TDX_FILE_PATTERNS[exchange]
+            latest: date | None = None
+            for name in names:
+                if not name.endswith(".day"):
+                    continue
+                if pattern.fullmatch(name) is None:
+                    raise ProviderCorrupt()
+                records = parse_day_bytes(
+                    self.read_snapshot(root, exchange, name),
+                    observed_on=observed_on,
+                )
+                candidate = records[-1].day
+                latest = candidate if latest is None else max(latest, candidate)
+            if self._api.directory_watch_changed(directory_watch):
+                raise ProviderTransientFailure()
+            return latest
         finally:
             self._cleanup_resources(opened, directory_watch=directory_watch)
 

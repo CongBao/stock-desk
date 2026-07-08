@@ -1,6 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 
 const externalBaseUrl = process.env.STOCK_DESK_E2E_BASE_URL;
+const performanceMode = process.env.STOCK_DESK_PERFORMANCE_MODE === "1";
 
 export default defineConfig({
   testDir: "./web/e2e",
@@ -34,6 +35,6 @@ export default defineConfig({
         },
         url: "http://127.0.0.1:5173",
         reuseExistingServer: false,
-        timeout: 120_000,
+        timeout: performanceMode ? 300_000 : 120_000,
       },
 });

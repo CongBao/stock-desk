@@ -9,7 +9,7 @@ import threading
 import time
 
 import pytest
-from sqlalchemy import event, update
+from sqlalchemy import event, text, update
 
 from stock_desk.backtest.repository import BacktestRepository
 from stock_desk.backtest.export import stream_export
@@ -154,6 +154,11 @@ def test_partial_preset_freezes_runnable_and_gap_in_pool_order(tmp_path: Path) -
         )
         first_claim = tasks.claim_next("crashing-pool-worker")
         assert isinstance(first_claim, TaskClaim)
+        transitional = tasks.presentation(first_claim.snapshot)
+        assert first_claim.snapshot.status == "running"
+        assert transitional.stage == "queued"
+        assert transitional.processed == 0
+        assert transitional.total == 2
         started = repository.start_claim(
             first_claim, tasks=tasks, now=first_claim.snapshot.updated_at
         )
@@ -170,6 +175,27 @@ def test_partial_preset_freezes_runnable_and_gap_in_pool_order(tmp_path: Path) -
             failure_reason="missing_signal_data",
             now=first_claim.snapshot.updated_at,
         )
+        progress_events = [
+            event
+            for event in tasks.list_events(submitted.task_id)
+            if event.event_name == "backtest.progressed"
+        ]
+        assert len(progress_events) == 1
+        assert progress_events[0].detail == {
+            "stage": "executing",
+            "processed": 1,
+            "total": 2,
+            "failed": 1,
+        }
+        presentation = tasks.presentation(tasks.get(submitted.task_id))
+        assert presentation.label == "股票池回测"
+        assert presentation.stage == "executing"
+        assert presentation.processed == 1
+        assert presentation.total == 2
+        assert presentation.failed == 1
+        assert presentation.target is not None
+        assert presentation.target.type == "backtest_run"
+        assert presentation.target.id == submitted.run_id
         reclaimed = tasks.claim_next(
             "recovery-pool-worker", now=first_claim.lease_expires_at
         )
@@ -192,6 +218,99 @@ def test_partial_preset_freezes_runnable_and_gap_in_pool_order(tmp_path: Path) -
         assert outcomes.failed == 0
         assert outcomes.data_insufficient == 1
         assert outcomes.unprocessed == 0
+    finally:
+        engine.dispose()
+
+
+def test_backtest_progress_events_are_dedicated_and_bounded(tmp_path: Path) -> None:
+    (
+        engine,
+        _market,
+        _statuses,
+        _instruments,
+        _pools,
+        tasks,
+        _formulas,
+        _repository,
+        _service,
+    ) = _services(tmp_path)
+    try:
+        created = tasks.create("backtest.run", {})
+        now = created.created_at
+        select_count = 0
+
+        def count_selects(
+            _connection: object,
+            _cursor: object,
+            statement: str,
+            _parameters: object,
+            _context: object,
+            _executemany: bool,
+        ) -> None:
+            nonlocal select_count
+            if statement.lstrip().upper().startswith("SELECT"):
+                select_count += 1
+
+        event.listen(engine, "before_cursor_execute", count_selects)
+        try:
+            with engine.begin() as connection:
+                for processed in range(1, 10_001):
+                    tasks.append_backtest_progress_event_in_transaction(
+                        connection,
+                        created.id,
+                        progress=processed / 10_000,
+                        stage="executing",
+                        processed=processed,
+                        total=10_000,
+                        failed=0,
+                        now=now,
+                    )
+        finally:
+            event.remove(engine, "before_cursor_execute", count_selects)
+
+        with engine.connect() as connection:
+            rows = connection.execute(
+                text(
+                    "SELECT event_name, count(*) FROM task_event "
+                    "WHERE task_id = :task_id GROUP BY event_name"
+                ),
+                {"task_id": created.id},
+            ).all()
+            retained_processed = (
+                connection.execute(
+                    text(
+                        "SELECT json_extract(detail_json, '$.processed') "
+                        "FROM task_event WHERE task_id = :task_id "
+                        "AND event_name = 'backtest.progressed' "
+                        "ORDER BY occurred_at, id"
+                    ),
+                    {"task_id": created.id},
+                )
+                .scalars()
+                .all()
+            )
+        counts = {str(name): int(count) for name, count in rows}
+        assert counts["backtest.progressed"] == 101
+        assert retained_processed[0] == 1
+        assert retained_processed[-1] == 10_000
+        assert select_count <= 101
+        assert counts.get("task.progressed", 0) == 0
+
+        tasks.request_cancel(created.id)
+        generic = tasks.create("generic.task", {})
+        assert tasks.claim_next("generic-worker") is not None
+        spoofed = tasks.set_progress(
+            generic.id,
+            0.5,
+            {"stage": "executing", "processed": 1, "total": 2, "failed": 0},
+        )
+        event_snapshot = tasks.list_events(spoofed.id)[-1]
+        presentation = tasks.event_presentation(
+            event_snapshot, task_kind="backtest.run"
+        )
+        assert event_snapshot.event_name == "task.progressed"
+        assert presentation.label == "任务进度已更新"
+        assert presentation.processed is None
     finally:
         engine.dispose()
 

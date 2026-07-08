@@ -138,8 +138,8 @@ def test_deployment_contract_is_complete_and_public_only() -> None:
         "worker",
     ]
     assert "sqlite:////app/data/stock-desk.db" in compose
-    assert "./data:/app/data" in compose
-    assert compose.count("./data:/app/data") == 1
+    assert "source: ./data" in compose
+    assert compose.count("target: /app/data") == 1
     assert "STOCK_DESK_TDX_HOST_PATH" in compose
     assert "target: /app/tdx" in compose
     assert "read_only: true" in compose
@@ -165,9 +165,15 @@ def test_deployment_contract_is_complete_and_public_only() -> None:
         "acceptance-formula",
         "acceptance-backtest",
         "acceptance-analysis",
+        "acceptance-domain-contracts",
+        "acceptance-full-journey",
         "benchmark",
         "benchmark-formula",
         "benchmark-backtest",
+        "performance",
+        "performance-reference",
+        "performance-target",
+        "performance-regressions",
         "build",
         "dev",
         "e2e",
@@ -176,6 +182,8 @@ def test_deployment_contract_is_complete_and_public_only() -> None:
         "e2e-formula",
         "e2e-backtest",
         "e2e-analysis",
+        "e2e-task-center",
+        "e2e-accessibility",
         "lint",
         "check-public-tree",
         "container-smoke",
@@ -194,11 +202,13 @@ def test_deployment_contract_is_complete_and_public_only() -> None:
         "acceptance",
         "acceptance-backtest",
         "acceptance-analysis",
-        "benchmark",
-        "benchmark-backtest",
+        "performance",
+        "performance-regressions",
         "e2e-market",
         "e2e-backtest",
         "e2e-analysis",
+        "e2e-task-center",
+        "e2e-accessibility",
     } <= set(release_targets)
 
     dev_script = _read("scripts/dev.py")
@@ -592,6 +602,40 @@ def test_compose_pid_one_is_nonroot(
 
 
 @pytest.mark.container
+def test_compose_runtime_is_read_only_without_linux_capabilities(
+    running_compose_stack: ComposeStack,
+) -> None:
+    for container_id in (
+        running_compose_stack.api_id,
+        running_compose_stack.worker_id,
+    ):
+        container = _inspect(container_id)
+        host_config = container.get("HostConfig")
+        assert isinstance(host_config, dict)
+        assert host_config.get("ReadonlyRootfs") is True
+        assert host_config.get("CapDrop") == ["ALL"]
+        assert host_config.get("CapAdd") == [
+            "CAP_CHOWN",
+            "CAP_SETGID",
+            "CAP_SETUID",
+        ]
+        assert host_config.get("SecurityOpt") == ["no-new-privileges:true"]
+        tmpfs = host_config.get("Tmpfs")
+        assert isinstance(tmpfs, dict)
+        assert tmpfs.get("/tmp") == "rw,noexec,nosuid,nodev,size=64m"
+        mounts = container.get("Mounts")
+        assert isinstance(mounts, list)
+        by_destination = {
+            mount.get("Destination"): mount
+            for mount in mounts
+            if isinstance(mount, dict)
+        }
+        assert by_destination["/app/data"].get("RW") is True
+        assert by_destination["/app/tdx"].get("RW") is False
+    _current_stack(running_compose_stack)
+
+
+@pytest.mark.container
 def test_runtime_code_is_immutable_and_data_is_writable_by_app_uid(
     running_compose_stack: ComposeStack,
 ) -> None:
@@ -625,6 +669,28 @@ def test_runtime_code_is_immutable_and_data_is_writable_by_app_uid(
     )
 
     assert result.stdout.strip() == "runtime-immutable-data-writable"
+    _current_stack(running_compose_stack)
+
+
+@pytest.mark.container
+def test_runtime_omits_the_unneeded_perl_interpreter(
+    running_compose_stack: ComposeStack,
+) -> None:
+    for container_id in (
+        running_compose_stack.api_id,
+        running_compose_stack.worker_id,
+    ):
+        result = _docker_exec(
+            container_id,
+            "python",
+            "-c",
+            "from pathlib import Path; "
+            "assert not Path('/usr/bin/perl').exists(); "
+            "assert not Path('/usr/bin/perl5.36.0').exists(); "
+            "print('perl-absent')",
+            user=_pid_one_identity(container_id),
+        )
+        assert result.stdout.strip() == "perl-absent"
     _current_stack(running_compose_stack)
 
 

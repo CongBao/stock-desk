@@ -1,8 +1,11 @@
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import json
 import math
+from pathlib import Path
 from types import MappingProxyType
+from threading import RLock
 from typing import Any, cast
 from uuid import UUID, uuid4
 
@@ -20,7 +23,9 @@ from sqlalchemy import (
 )
 from sqlalchemy.engine import Connection, RowMapping
 from sqlalchemy.sql.elements import ColumnElement
+from filelock import FileLock, Timeout as FileLockTimeout
 
+from stock_desk.security.redaction import clean_active_secrets
 from stock_desk.storage.database import (
     DatabaseIdentity,
     DatabaseIdentityError,
@@ -34,6 +39,9 @@ from stock_desk.tasks.models import (
     TaskEventLevel,
     TaskEventSnapshot,
     TaskMetricsSnapshot,
+    TaskEventPresentationSnapshot,
+    TaskPresentationSnapshot,
+    TaskPresentationTarget,
     TaskSnapshot,
     TaskStatus,
 )
@@ -62,6 +70,20 @@ _ANALYSIS_TASK_KIND = "analysis.run"
 _LEASED_TASK_KINDS = frozenset({_BACKTEST_TASK_KIND, _ANALYSIS_TASK_KIND})
 _DEFAULT_LEASE_DURATION = timedelta(minutes=2)
 _MAX_LEASE_DURATION = timedelta(hours=1)
+_PRESENTATION_STAGES = frozenset(
+    {"queued", "executing", "completed", "failed", "cancelled"}
+)
+_EVENT_LABELS = {
+    "task.created": "任务已创建",
+    "task.claimed": "任务已开始",
+    "task.progressed": "任务进度已更新",
+    "backtest.progressed": "已处理回测标的",
+    "task.cancel_requested": "已请求取消",
+    "task.cancelled": "任务已取消",
+    "task.succeeded": "任务已完成",
+    "task.failed": "任务失败",
+}
+_CLAIM_GATE_THREAD_LOCK = RLock()
 
 
 def _utc_now() -> datetime:
@@ -131,6 +153,15 @@ def _validated_json_object(
     if not isinstance(decoded, dict):
         raise _json_validation_error(field_name)
     return cast(dict[str, Any], decoded)
+
+
+def _redacted_json_object(
+    value: Mapping[str, Any], *, field_name: str
+) -> dict[str, Any]:
+    cleaned = clean_active_secrets(value)
+    if not isinstance(cleaned, Mapping):
+        raise _json_validation_error(field_name)
+    return _validated_json_object(cleaned, field_name=field_name)
 
 
 def _assign_json_value(
@@ -350,7 +381,7 @@ def _append_event(
     detail: Mapping[str, Any],
     occurred_at: datetime,
 ) -> None:
-    safe_detail = _validated_json_object(detail, field_name="event detail")
+    safe_detail = _redacted_json_object(detail, field_name="event detail")
     latest_event_time = _aware_utc(
         connection.execute(
             select(func.max(TaskEvent.occurred_at)).where(TaskEvent.task_id == task_id)
@@ -445,7 +476,7 @@ class TaskRepository:
             raise TaskValidationError("Task kind must contain 1 to 64 characters")
         validated_task_id = _validated_uuid(task_id, field_name="id")
         validated_now = _validated_aware_utc(now, field_name="enqueue time")
-        validated_payload = _validated_json_object(payload, field_name="payload")
+        validated_payload = _redacted_json_object(payload, field_name="payload")
         values = {
             "id": validated_task_id,
             "kind": kind,
@@ -482,6 +513,195 @@ class TaskRepository:
         if row is None:
             raise TaskNotFound(f"Task {task_id} was not found")
         return _snapshot(row)
+
+    def presentation(self, task: TaskSnapshot) -> TaskPresentationSnapshot:
+        """Return the only browser-displayable task domain projection.
+
+        Raw task JSON is deliberately excluded. Backtest counts come from the
+        constrained domain row, not from task payload/result/error values.
+        """
+
+        return self.presentation_many((task,))[task.id]
+
+    def presentation_many(
+        self, tasks: tuple[TaskSnapshot, ...] | list[TaskSnapshot]
+    ) -> dict[str, TaskPresentationSnapshot]:
+        """Build browser-safe task projections with at most one domain query."""
+
+        task_items = tuple(tasks)
+        backtest_task_ids = tuple(
+            task.id for task in task_items if task.kind == _BACKTEST_TASK_KIND
+        )
+        backtest_rows: dict[str, tuple[object, ...]] = {}
+        if backtest_task_ids:
+            from stock_desk.backtest.models import BacktestRunRow
+
+            statement = select(
+                BacktestRunRow.task_id,
+                BacktestRunRow.id,
+                BacktestRunRow.stage,
+                BacktestRunRow.processed,
+                BacktestRunRow.total,
+                BacktestRunRow.failed_count,
+            ).where(BacktestRunRow.task_id.in_(backtest_task_ids))
+            with self._engine.connect() as connection:
+                backtest_rows = {
+                    cast(str, row[0]): tuple(row[1:])
+                    for row in connection.execute(statement).all()
+                }
+
+        presentations: dict[str, TaskPresentationSnapshot] = {}
+        for task in task_items:
+            if task.kind == _BACKTEST_TASK_KIND:
+                row = backtest_rows.get(task.id)
+                if row is not None:
+                    run_id = cast(str, row[0])
+                    stage = cast(str, row[1])
+                    processed = int(cast(int, row[2]))
+                    total = int(cast(int, row[3]))
+                    failed = int(cast(int, row[4]))
+                else:
+                    run_id = ""
+                    stage = ""
+                    processed = total = failed = -1
+                if (
+                    stage in _PRESENTATION_STAGES
+                    and 0 <= failed <= processed <= total <= 10_000
+                ):
+                    try:
+                        _validated_uuid(run_id, field_name="backtest run id")
+                    except TaskValidationError:
+                        pass
+                    else:
+                        presentations[task.id] = TaskPresentationSnapshot(
+                            label="股票池回测",
+                            stage=cast(Any, stage),
+                            processed=processed,
+                            total=total,
+                            failed=failed,
+                            target=TaskPresentationTarget(
+                                type="backtest_run", id=run_id
+                            ),
+                        )
+                        continue
+                label: Any = "股票池回测"
+            elif task.kind == _ANALYSIS_TASK_KIND:
+                label = "智能分析"
+            elif task.kind in {"market.update", "market.catalog.update"}:
+                label = "数据更新"
+            else:
+                label = "后台任务"
+            presentations[task.id] = TaskPresentationSnapshot(
+                label=label,
+                stage=None,
+                processed=None,
+                total=None,
+                failed=None,
+                target=None,
+            )
+        return presentations
+
+    def event_presentation(
+        self,
+        task_event: TaskEventSnapshot,
+        *,
+        task_kind: str | None = None,
+    ) -> TaskEventPresentationSnapshot:
+        label = _EVENT_LABELS.get(task_event.event_name, "任务事件")
+        stage: str | None = None
+        processed: int | None = None
+        total: int | None = None
+        failed: int | None = None
+        detail = task_event.detail
+        raw_stage = detail.get("stage")
+        raw_processed = detail.get("processed")
+        raw_total = detail.get("total")
+        raw_failed = detail.get("failed")
+        if task_event.event_name == "backtest.progressed" and task_kind is None:
+            with self._engine.connect() as connection:
+                task_kind = connection.execute(
+                    select(TaskRun.kind).where(TaskRun.id == task_event.task_id)
+                ).scalar_one_or_none()
+        if (
+            task_event.event_name == "backtest.progressed"
+            and task_kind == _BACKTEST_TASK_KIND
+            and isinstance(raw_stage, str)
+            and raw_stage in _PRESENTATION_STAGES
+            and type(raw_processed) is int
+            and type(raw_total) is int
+            and type(raw_failed) is int
+            and 0 <= raw_failed <= raw_processed <= raw_total <= 10_000
+        ):
+            stage = raw_stage
+            processed = raw_processed
+            total = raw_total
+            failed = raw_failed
+            label = "已处理回测标的"
+        return TaskEventPresentationSnapshot(
+            label=cast(Any, label),
+            stage=cast(Any, stage),
+            processed=processed,
+            total=total,
+            failed=failed,
+        )
+
+    def append_backtest_progress_event_in_transaction(
+        self,
+        connection: Connection,
+        task_id: str,
+        *,
+        progress: float,
+        stage: str,
+        processed: int,
+        total: int,
+        failed: int,
+        now: datetime,
+    ) -> None:
+        """Append a coalesced domain event inside an owning checkpoint transaction."""
+
+        if connection.closed or not connection.in_transaction():
+            raise TaskValidationError(
+                "Task progress event requires an active transaction connection"
+            )
+        if connection_database_identity(connection) != self._database_identity:
+            raise TaskValidationError(
+                "Task transaction connection targets a different database"
+            )
+        if (
+            stage not in _PRESENTATION_STAGES
+            or isinstance(progress, bool)
+            or not isinstance(progress, (int, float))
+            or not math.isfinite(progress)
+            or not 0 <= float(progress) <= 1
+            or type(processed) is not int
+            or type(total) is not int
+            or type(failed) is not int
+            or not 0 <= failed <= processed <= total <= 10_000
+        ):
+            raise TaskValidationError("Task progress event is invalid")
+        first_checkpoint = processed == 1
+        final_checkpoint = total > 0 and processed == total
+        crossed_percent_bucket = (
+            total > 0
+            and processed > 0
+            and (processed * 100) // total > ((processed - 1) * 100) // total
+        )
+        if not (first_checkpoint or crossed_percent_bucket or final_checkpoint):
+            return
+        _append_event(
+            connection,
+            task_id=task_id,
+            event_name="backtest.progressed",
+            level="info",
+            progress=float(progress),
+            detail={
+                "stage": stage,
+                "processed": processed,
+                "total": total,
+                "failed": failed,
+            },
+            occurred_at=_validated_aware_utc(now, field_name="progress event time"),
+        )
 
     def list_recent(self, *, limit: int = 50) -> list[TaskSnapshot]:
         if not 1 <= limit <= 100:
@@ -553,7 +773,230 @@ class TaskRepository:
             max_duration_ms=optional_float(duration_row["max_duration_ms"]),
         )
 
+    @contextmanager
+    def hold_claim_gate(
+        self,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> Iterator[None]:
+        """Block new claims across threads and processes without blocking enqueue."""
+        if timeout_seconds is not None and timeout_seconds < 0:
+            raise TaskValidationError("Claim gate timeout must be nonnegative")
+        lock_path = (
+            Path(cast(str, self._database_identity[1])).with_name(
+                f"{Path(cast(str, self._database_identity[1])).name}.claim.lock"
+            )
+            if self._database_identity[0] == "sqlite-file"
+            else None
+        )
+        acquired = (
+            _CLAIM_GATE_THREAD_LOCK.acquire()
+            if timeout_seconds is None
+            else _CLAIM_GATE_THREAD_LOCK.acquire(timeout=timeout_seconds)
+        )
+        if not acquired:
+            raise FileLockTimeout(str(lock_path or "in-memory claim gate"))
+        try:
+            if lock_path is None:
+                yield
+                return
+            with FileLock(
+                lock_path,
+                timeout=-1 if timeout_seconds is None else timeout_seconds,
+            ):
+                yield
+        finally:
+            _CLAIM_GATE_THREAD_LOCK.release()
+
+    def running_task_count(self) -> int:
+        with self._engine.connect() as connection:
+            value = connection.scalar(
+                select(func.count())
+                .select_from(TaskRun)
+                .where(TaskRun.status == "running")
+            )
+        return int(value or 0)
+
+    def _terminalize_expired_cancellations(
+        self,
+        connection: Connection,
+        *,
+        sampled_at: datetime,
+        transition_time: ColumnElement[datetime],
+    ) -> list[RowMapping]:
+        expired_cancellations = (
+            update(TaskRun)
+            .where(
+                TaskRun.kind.in_(_LEASED_TASK_KINDS),
+                TaskRun.status == "running",
+                TaskRun.cancel_requested.is_(True),
+                TaskRun.lease_expires_at.is_not(None),
+                TaskRun.lease_expires_at <= sampled_at,
+            )
+            .values(
+                status="cancelled",
+                result_json=None,
+                error_json=None,
+                updated_at=transition_time,
+                finished_at=transition_time,
+                claim_token=None,
+                lease_expires_at=None,
+                heartbeat_at=None,
+            )
+            .returning(TaskRun)
+        )
+        cancelled_rows = connection.execute(expired_cancellations).mappings().all()
+        if cancelled_rows:
+            from stock_desk.analysis.models import (
+                AnalysisAttemptRow,
+                AnalysisRunRow,
+                AnalysisStageRow,
+            )
+            from stock_desk.backtest.models import BacktestRunRow
+
+            cancelled_task_ids = tuple(row["id"] for row in cancelled_rows)
+            connection.execute(
+                update(BacktestRunRow)
+                .where(
+                    BacktestRunRow.task_id.in_(cancelled_task_ids),
+                    BacktestRunRow.status.in_(("queued", "running")),
+                )
+                .values(
+                    status="cancelled",
+                    stage="cancelled",
+                    updated_at=sampled_at,
+                    finished_at=sampled_at,
+                )
+            )
+            analysis_run_ids = tuple(
+                connection.execute(
+                    select(AnalysisRunRow.id).where(
+                        AnalysisRunRow.task_id.in_(cancelled_task_ids),
+                        AnalysisRunRow.status.in_(("queued", "running")),
+                    )
+                ).scalars()
+            )
+            if analysis_run_ids:
+                connection.execute(
+                    update(AnalysisAttemptRow)
+                    .where(
+                        AnalysisAttemptRow.run_id.in_(analysis_run_ids),
+                        AnalysisAttemptRow.status == "running",
+                    )
+                    .values(
+                        status="cancelled",
+                        error_json=None,
+                        retryable=None,
+                        backoff_seconds=None,
+                        finished_at=sampled_at,
+                    )
+                )
+                connection.execute(
+                    update(AnalysisStageRow)
+                    .where(
+                        AnalysisStageRow.run_id.in_(analysis_run_ids),
+                        AnalysisStageRow.status.in_(("pending", "running")),
+                    )
+                    .values(
+                        status="cancelled",
+                        failure_code=None,
+                        retryable=None,
+                        updated_at=sampled_at,
+                        finished_at=sampled_at,
+                    )
+                )
+                connection.execute(
+                    update(AnalysisRunRow)
+                    .where(
+                        AnalysisRunRow.id.in_(analysis_run_ids),
+                        AnalysisRunRow.status.in_(("queued", "running")),
+                    )
+                    .values(
+                        status="cancelled",
+                        current_stage=None,
+                        updated_at=sampled_at,
+                        finished_at=sampled_at,
+                    )
+                )
+        for cancelled_row in cancelled_rows:
+            cancelled = _snapshot(cancelled_row)
+            _append_event(
+                connection,
+                task_id=cancelled.id,
+                event_name="task.cancelled",
+                level="info",
+                progress=cancelled.progress,
+                detail={},
+                occurred_at=cancelled.updated_at,
+            )
+        return list(cancelled_rows)
+
+    def requeue_expired_leases_for_offline_snapshot(
+        self,
+        *,
+        now: datetime | None = None,
+    ) -> int:
+        """Resolve abandoned leased tasks while the offline claim gate is held."""
+        sampled_at = (
+            _utc_now()
+            if now is None
+            else _validated_aware_utc(now, field_name="offline snapshot time")
+        )
+        transition_time = _transition_time(sampled_at)
+        statement = (
+            update(TaskRun)
+            .where(
+                TaskRun.kind.in_(_LEASED_TASK_KINDS),
+                TaskRun.status == "running",
+                TaskRun.cancel_requested.is_(False),
+                TaskRun.lease_expires_at.is_not(None),
+                TaskRun.lease_expires_at <= sampled_at,
+            )
+            .values(
+                status="queued",
+                worker_id=None,
+                updated_at=transition_time,
+                claim_token=None,
+                lease_expires_at=None,
+                heartbeat_at=None,
+            )
+            .returning(TaskRun)
+        )
+        with self._engine.begin() as connection:
+            cancelled_rows = self._terminalize_expired_cancellations(
+                connection,
+                sampled_at=sampled_at,
+                transition_time=transition_time,
+            )
+            rows = connection.execute(statement).mappings().all()
+            for row in rows:
+                task = _snapshot(row)
+                _append_event(
+                    connection,
+                    task_id=task.id,
+                    event_name="task.lease_requeued",
+                    level="warning",
+                    progress=task.progress,
+                    detail={"code": "offline_restore_expired_lease"},
+                    occurred_at=task.updated_at,
+                )
+        return len(rows) + len(cancelled_rows)
+
     def claim_next(
+        self,
+        worker_id: str,
+        *,
+        now: datetime | None = None,
+        lease_duration: timedelta = _DEFAULT_LEASE_DURATION,
+    ) -> TaskSnapshot | TaskClaim | None:
+        with self.hold_claim_gate():
+            return self._claim_next_without_gate(
+                worker_id,
+                now=now,
+                lease_duration=lease_duration,
+            )
+
+    def _claim_next_without_gate(
         self,
         worker_id: str,
         *,
@@ -624,113 +1067,12 @@ class TaskRepository:
             )
             .returning(TaskRun)
         )
-        expired_cancellations = (
-            update(TaskRun)
-            .where(
-                TaskRun.kind.in_(_LEASED_TASK_KINDS),
-                TaskRun.status == "running",
-                TaskRun.cancel_requested.is_(True),
-                TaskRun.lease_expires_at.is_not(None),
-                TaskRun.lease_expires_at <= sampled_at,
-            )
-            .values(
-                status="cancelled",
-                result_json=None,
-                error_json=None,
-                updated_at=transition_time,
-                finished_at=transition_time,
-                claim_token=None,
-                lease_expires_at=None,
-                heartbeat_at=None,
-            )
-            .returning(TaskRun)
-        )
         with self._engine.begin() as connection:
-            cancelled_rows = connection.execute(expired_cancellations).mappings().all()
-            if cancelled_rows:
-                from stock_desk.backtest.models import BacktestRunRow
-                from stock_desk.analysis.models import (
-                    AnalysisAttemptRow,
-                    AnalysisRunRow,
-                    AnalysisStageRow,
-                )
-
-                cancelled_task_ids = tuple(row["id"] for row in cancelled_rows)
-
-                connection.execute(
-                    update(BacktestRunRow)
-                    .where(
-                        BacktestRunRow.task_id.in_(cancelled_task_ids),
-                        BacktestRunRow.status.in_(("queued", "running")),
-                    )
-                    .values(
-                        status="cancelled",
-                        stage="cancelled",
-                        updated_at=sampled_at,
-                        finished_at=sampled_at,
-                    )
-                )
-                analysis_run_ids = tuple(
-                    connection.execute(
-                        select(AnalysisRunRow.id).where(
-                            AnalysisRunRow.task_id.in_(cancelled_task_ids),
-                            AnalysisRunRow.status.in_(("queued", "running")),
-                        )
-                    ).scalars()
-                )
-                if analysis_run_ids:
-                    connection.execute(
-                        update(AnalysisAttemptRow)
-                        .where(
-                            AnalysisAttemptRow.run_id.in_(analysis_run_ids),
-                            AnalysisAttemptRow.status == "running",
-                        )
-                        .values(
-                            status="cancelled",
-                            error_json=None,
-                            retryable=None,
-                            backoff_seconds=None,
-                            finished_at=sampled_at,
-                        )
-                    )
-                    connection.execute(
-                        update(AnalysisStageRow)
-                        .where(
-                            AnalysisStageRow.run_id.in_(analysis_run_ids),
-                            AnalysisStageRow.status.in_(("pending", "running")),
-                        )
-                        .values(
-                            status="cancelled",
-                            failure_code=None,
-                            retryable=None,
-                            updated_at=sampled_at,
-                            finished_at=sampled_at,
-                        )
-                    )
-                    connection.execute(
-                        update(AnalysisRunRow)
-                        .where(
-                            AnalysisRunRow.id.in_(analysis_run_ids),
-                            AnalysisRunRow.status.in_(("queued", "running")),
-                        )
-                        .values(
-                            status="cancelled",
-                            current_stage=None,
-                            updated_at=sampled_at,
-                            finished_at=sampled_at,
-                        )
-                    )
-            for cancelled_row in cancelled_rows:
-                cancelled = _snapshot(cancelled_row)
-                _append_event(
-                    connection,
-                    task_id=cancelled.id,
-                    event_name="task.cancelled",
-                    level="info",
-                    progress=cancelled.progress,
-                    detail={},
-                    occurred_at=cancelled.updated_at,
-                )
+            self._terminalize_expired_cancellations(
+                connection,
+                sampled_at=sampled_at,
+                transition_time=transition_time,
+            )
             row = connection.execute(statement).mappings().one_or_none()
             if row is None:
                 return None
@@ -893,7 +1235,7 @@ class TaskRepository:
             raise TaskValidationError(
                 "Task transaction connection targets a different database"
             )
-        validated_result = _validated_json_object(result, field_name="result")
+        validated_result = _redacted_json_object(result, field_name="result")
         sampled_at = _validated_aware_utc(now, field_name="completion time")
         cancelling = TaskRun.cancel_requested.is_(True)
         statement = (
@@ -965,7 +1307,7 @@ class TaskRepository:
             raise TaskValidationError(
                 "Task transaction connection targets a different database"
             )
-        validated_error = _validated_json_object(error, field_name="error")
+        validated_error = _redacted_json_object(error, field_name="error")
         sampled_at = _validated_aware_utc(now, field_name="failure time")
         cancelling = TaskRun.cancel_requested.is_(True)
         row = (
@@ -1032,7 +1374,7 @@ class TaskRepository:
             raise TaskValidationError(
                 "Task progress must be a finite number from 0 to 1"
             )
-        validated_detail = _validated_json_object(
+        validated_detail = _redacted_json_object(
             detail if detail is not None else {},
             field_name="progress detail",
         )
@@ -1079,7 +1421,7 @@ class TaskRepository:
         claim_token: str | None = None,
         now: datetime | None = None,
     ) -> TaskSnapshot:
-        validated_result = _validated_json_object(result, field_name="result")
+        validated_result = _redacted_json_object(result, field_name="result")
         sampled_at = (
             _utc_now()
             if now is None
@@ -1144,7 +1486,7 @@ class TaskRepository:
         claim_token: str | None = None,
         now: datetime | None = None,
     ) -> TaskSnapshot:
-        validated_error = _validated_json_object(error, field_name="error")
+        validated_error = _redacted_json_object(error, field_name="error")
         sampled_at = (
             _utc_now()
             if now is None

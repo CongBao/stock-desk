@@ -15,7 +15,7 @@ make dev
 
 The native development command starts the API on port 8000, the worker, and Vite on port 5173. Read the [architecture overview](docs/architecture.md) before changing module boundaries.
 
-## Development workflow
+## Quality gates
 
 Use test-driven development for behavior changes: add a focused failing test, confirm that it fails for the intended reason, implement the smallest change, then refactor while green. Keep generated files and lockfiles consistent with their source manifests.
 
@@ -28,6 +28,10 @@ make typecheck
 make build
 make public-tree
 ```
+
+`make security` is the canonical locked production-dependency audit. It needs
+network access to query OSV for Python packages and the npm registry for Web
+packages, and first checks that manifests match their lockfiles.
 
 For the complete release gate, Docker must be running. The command starts an isolated Compose stack for the smoke test and removes it on exit:
 

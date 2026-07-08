@@ -155,3 +155,14 @@ def test_runtime_accepts_a_nonempty_command() -> None:
 
     assert command == ("python", "-m", "worker")
     assert isinstance(command, Sequence)
+
+
+def test_runtime_recovery_refuses_a_corrupt_restore_journal(tmp_path: Path) -> None:
+    entrypoint = _entrypoint()
+    (tmp_path / ".stock-desk-restore-journal.json").write_text(
+        '{"phase":"database_installed"}',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="journal"):
+        entrypoint.recover_interrupted_restore(data_dir=tmp_path)

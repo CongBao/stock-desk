@@ -59,6 +59,11 @@ it('renders source cards, safe token state, priorities, and TDX path', async () 
     screen.getByRole('group', { name: '回测执行状态优先级' }),
   ).toBeInTheDocument();
   expect(
+    screen.getByRole('group', { name: '基本面优先级' }),
+  ).toBeInTheDocument();
+  expect(screen.getByRole('group', { name: '公告优先级' })).toBeInTheDocument();
+  expect(screen.getByRole('group', { name: '新闻优先级' })).toBeInTheDocument();
+  expect(
     screen.getAllByRole('button', { name: /^上移/u }).length,
   ).toBeGreaterThan(0);
 });
@@ -117,6 +122,49 @@ it('shows diagnostic status, permissions, periods, cutoffs, gaps, and fallback',
   expect(screen.getByText(/检测于 2026年7月6日/u)).toBeInTheDocument();
   expect(screen.getByText('数据截至').parentElement).toHaveTextContent('2026');
   expect(screen.getByText('最近更新').parentElement).toHaveTextContent('2026');
+});
+
+it('shows recognized TDX markets with its validated period and cutoff', async () => {
+  const user = userEvent.setup();
+  const tdxDiagnostic: SourceDiagnostic = {
+    ...diagnosticResponse,
+    source: 'tdx_local',
+    status: 'available',
+    capabilities: ['bars'],
+    permissions: diagnosticResponse.permissions.map((permission) => ({
+      ...permission,
+      state: permission.category === 'daily_bars' ? 'available' : 'unsupported',
+    })),
+    available_periods: ['1d'],
+    markets: ['SH', 'SZ'],
+    gaps: diagnosticResponse.permissions
+      .filter((permission) => permission.category !== 'daily_bars')
+      .map((permission) => ({
+        category: permission.category,
+        state: 'unsupported',
+        reason: 'unsupported',
+        detail: `unsupported ${permission.category}`,
+      })),
+    last_update: null,
+    data_cutoff: '2024-07-02T07:00:00Z',
+    fallback_reason: null,
+  };
+  const api = createApi({
+    testSource: vi.fn(() => Promise.resolve(tdxDiagnostic)),
+  });
+  render(<DataSourcesPage api={api} />);
+  await screen.findByDisplayValue('/safe/vipdoc');
+
+  await user.click(
+    screen.getByRole('button', { name: '测试 通达信本地 连接' }),
+  );
+
+  const result = await screen.findByLabelText('通达信本地 检测结果');
+  expect(within(result).getByText('上交所、深交所')).toBeInTheDocument();
+  expect(within(result).getByText('日线')).toBeInTheDocument();
+  expect(within(result).getByText('数据截至').parentElement).toHaveTextContent(
+    '2024',
+  );
 });
 
 it('uses fixed safe UI errors without rendering rejected provider details', async () => {

@@ -14,10 +14,10 @@ from stock_desk.storage.database import create_engine_for_url, migrate
 from tests.integration.market.lake_test_helpers import routed_daily_bars
 
 
-def test_cached_ten_year_daily_query_under_one_second(
+def test_legacy_cached_chart_query_preserves_payload_correctness(
     tmp_path: Path,
-    benchmark: Any,
 ) -> None:
+    """Correctness regression only; the aggregate browser gate owns timing."""
     database_url = f"sqlite:///{tmp_path / 'performance.db'}"
     migrate(database_url)
     engine = create_engine_for_url(database_url)
@@ -49,19 +49,10 @@ def test_cached_ten_year_daily_query_under_one_second(
                 assert isinstance(body, dict)
                 return body
 
-            warmed = query_cached_chart()
-            assert len(warmed["bars"]) == len(days)
-            assert warmed["route_version"] == stored.route_version
-
-            result = benchmark.pedantic(
-                query_cached_chart,
-                rounds=5,
-                iterations=1,
-            )
+            result = query_cached_chart()
 
             assert len(result["bars"]) >= 2_400
             assert result["dataset_version"] == stored.dataset_version
             assert result["route_version"] == stored.route_version
-            assert benchmark.stats.stats.mean < 1.0
     finally:
         services.close()

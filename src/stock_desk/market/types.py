@@ -120,6 +120,18 @@ class ProviderId(StrEnum):
     EASTMONEY = "eastmoney"
     TDX_LOCAL = "tdx_local"
     TUSHARE = "tushare"
+    STOCK_DESK_DEMO = "stock_desk_demo"
+
+
+CONFIGURABLE_SOURCE_PROVIDER_IDS: Final[frozenset[ProviderId]] = frozenset(
+    {
+        ProviderId.AKSHARE,
+        ProviderId.BAOSTOCK,
+        ProviderId.EASTMONEY,
+        ProviderId.TDX_LOCAL,
+        ProviderId.TUSHARE,
+    }
+)
 
 
 class Exchange(StrEnum):

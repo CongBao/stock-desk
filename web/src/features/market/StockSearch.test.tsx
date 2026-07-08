@@ -102,6 +102,34 @@ it('debounces search and supports keyboard combobox selection', async () => {
   expect(input).toHaveAttribute('aria-expanded', 'false');
 });
 
+it('searches a complete six-digit A-share code without waiting for name debounce', async () => {
+  const user = userEvent.setup();
+  const searchInstruments = vi.fn(() => Promise.resolve([instrument]));
+  render(
+    <StockSearch
+      api={{ searchInstruments } as unknown as MarketApi}
+      debounceMs={10_000}
+      onSelect={vi.fn()}
+    />,
+    { wrapper },
+  );
+
+  await user.type(screen.getByRole('combobox', { name: '搜索证券' }), '600000');
+
+  expect(
+    await screen.findByRole(
+      'option',
+      { name: /浦发银行.*600000\.SH/u },
+      { timeout: 500 },
+    ),
+  ).toBeInTheDocument();
+  expect(searchInstruments).toHaveBeenCalledWith({
+    query: '600000',
+    limit: 20,
+    signal: expect.any(AbortSignal) as unknown,
+  });
+});
+
 it('announces empty and failed searches without inventing results', async () => {
   const user = userEvent.setup();
   const searchInstruments = vi

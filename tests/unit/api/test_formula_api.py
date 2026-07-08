@@ -387,7 +387,9 @@ def test_partial_frame_cannot_block_past_deadline_and_next_request_recovers() ->
     context = multiprocessing.get_context("spawn")
     partial_sent = context.Event()
     executor = IsolatedFormulaExecutor(
-        timeout_seconds=0.75,
+        # Leave enough time for a cold hosted-runner spawn so this test reaches
+        # the partial-frame state it is intended to classify.
+        timeout_seconds=5.0,
         worker_target=partial(posix_partial_frame_worker, partial_sent),
     )
 
@@ -402,7 +404,7 @@ def test_partial_frame_cannot_block_past_deadline_and_next_request_recovers() ->
     # process-startup benchmark.
     executor.timeout_seconds = 30.0
     assert executor.execute(b"recovered") == b"recovered"
-    assert elapsed < 1.5
+    assert elapsed < 5.75
     assert {child.pid for child in multiprocessing.active_children()} == children_before
     assert {
         thread.ident

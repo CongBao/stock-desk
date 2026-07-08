@@ -24,14 +24,19 @@ test('real local market workflow stays cached, traceable, and interactive', asyn
   await Promise.all([
     waitForBars(page, '1d', 'qfq'),
     page
-      .getByRole('option', { name: '浦发银行 600000.SH', exact: true })
+      .getByRole('option', {
+        name: 'Stock Desk Synthetic Alpha (CC0 Demo) 600000.SH',
+        exact: true,
+      })
       .click(),
   ]);
   const ohlcv = page.getByRole('status', { name: '当前 K 线 OHLCV' });
   await expect(ohlcv).toContainText('量');
   await expect(page.locator('.market-chart-canvas canvas')).toHaveCount(1);
   expect(Date.now() - chartStart).toBeLessThan(2_000);
-  await expect(page.getByText(/数据来源：Tushare/u)).toBeVisible();
+  await expect(
+    page.getByText(/数据来源：Stock Desk 合成演示 · CC0-1\.0/u),
+  ).toBeVisible();
 
   const dailyReadout = await ohlcv.textContent();
   await Promise.all([
@@ -69,14 +74,24 @@ test('real local market workflow stays cached, traceable, and interactive', asyn
   await page.getByRole('button', { name: '重置图表缩放' }).click();
   await expect(zoomState).toContainText('0%–100%');
 
-  await expect(page.getByRole('button', { name: /E2E 指数/u })).toBeVisible();
-  await expect(page.getByRole('button', { name: /E2E 行业/u })).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: /Stock Desk Synthetic Demo Index/u }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: /Stock Desk Synthetic Demo Industry/u }),
+  ).toBeVisible();
 
   await page.getByRole('button', { name: '新建自定义池' }).click();
   await page.getByRole('textbox', { name: '股票池名称' }).fill('E2E 观察池');
-  await page.getByRole('button', { name: /加入浦发银行/u }).click();
+  await page
+    .getByRole('button', { name: /加入Stock Desk Synthetic Alpha/u })
+    .click();
   await page.getByLabel('搜索更多证券').fill('600036');
-  await page.getByRole('button', { name: /加入 招商银行 600036.SH/u }).click();
+  await page
+    .getByRole('button', {
+      name: /加入 Stock Desk Synthetic Missing.*600036.SH/u,
+    })
+    .click();
   await page.getByRole('button', { name: '创建股票池' }).click();
   await expect(page.getByRole('dialog')).toHaveCount(0);
   await page.getByRole('button', { name: /E2E 观察池/u }).click();

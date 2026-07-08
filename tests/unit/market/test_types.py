@@ -141,6 +141,7 @@ def test_period_has_exact_public_members_and_values() -> None:
 def test_shared_provider_exchange_and_failure_enums_are_closed() -> None:
     assert ProviderId.AKSHARE.value == "akshare"
     assert ProviderId.TDX_LOCAL.value == "tdx_local"
+    assert ProviderId.STOCK_DESK_DEMO.value == "stock_desk_demo"
     assert tuple(exchange.value for exchange in Exchange) == ("SH", "SZ", "BJ")
     assert {
         "permission_denied",

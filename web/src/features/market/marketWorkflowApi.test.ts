@@ -26,6 +26,14 @@ const task = {
   started_at: '2026-07-06T08:00:00Z',
   finished_at: null,
   duration_ms: null,
+  presentation: {
+    label: '数据更新',
+    stage: null,
+    processed: null,
+    total: null,
+    failed: null,
+    target: null,
+  },
 } as const;
 
 function client(
@@ -80,6 +88,26 @@ it('strictly decodes update task items and the frozen daily schedule', async () 
   });
   expect(schedule.symbolsFrozen).toBe(true);
   expect(schedule.nextDueAt).toBe('2026-07-06T10:30:00Z');
+});
+
+it('accepts the browser-safe presentation included by current task responses', async () => {
+  const transport = client({
+    get: {
+      ...task,
+      presentation: {
+        label: '数据更新',
+        stage: null,
+        processed: null,
+        total: null,
+        failed: null,
+        target: null,
+      },
+    },
+  });
+
+  await expect(
+    createMarketWorkflowApi(transport).getTask(task.id),
+  ).resolves.toMatchObject({ status: 'running', progress: 0.5 });
 });
 
 it('rejects unknown task keys and impossible terminal task state', async () => {

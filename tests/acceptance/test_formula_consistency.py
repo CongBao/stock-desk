@@ -171,6 +171,60 @@ def test_preview_and_chart_signal_payload_match(tmp_path: Path) -> None:
     ) == json.dumps(chart.json()["formula"], sort_keys=True, separators=(",", ":"))
 
 
+def test_signal_series_identity_changes_when_a_later_sell_value_changes(
+    tmp_path: Path,
+) -> None:
+    database_url = f"sqlite:///{tmp_path / 'formula-sell-identity.db'}"
+    migrate(database_url)
+    services = MarketServices(
+        engine=create_engine_for_url(database_url),
+        lake_root=(tmp_path / "market").resolve(),
+    )
+    repository = FormulaRepository(services.engine)
+    routed = routed_daily_bars(
+        (
+            date(2024, 1, 2),
+            date(2024, 1, 3),
+            date(2024, 1, 4),
+            date(2024, 1, 5),
+        )
+    )
+    services.lake.write(routed)
+    version = repository.create(
+        "Sell identity",
+        "trading",
+        "BUY:C>0;SELL:C<0;",
+        {},
+    )
+    try:
+        original = FormulaService(repository=repository, lake=services.lake).preview(
+            version.id,
+            routed.result.query,
+            {},
+        )
+    finally:
+        services.close()
+
+    sell = original.signals[1]
+    changed_values = (*sell.values[:-1], not bool(sell.values[-1]))
+    changed_signals = (
+        original.signals[0],
+        type(sell)(
+            name=sell.name,
+            values=changed_values,
+            warmup_null_count=sell.warmup_null_count,
+        ),
+    )
+    changed = SignalSeries.from_canonical_json_bytes(
+        _forge_series(original, {"signals": changed_signals})
+    )
+
+    assert changed.signals[0].values == original.signals[0].values
+    assert changed.signals[1].values[:-1] == original.signals[1].values[:-1]
+    assert changed.signals[1].values[-1] != original.signals[1].values[-1]
+    assert changed.signal_series_id != original.signal_series_id
+
+
 def test_preview_cache_hits_and_invalidates_on_dataset_provenance(
     tmp_path: Path,
 ) -> None:

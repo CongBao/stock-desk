@@ -3,18 +3,23 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from contextlib import AbstractContextManager
 from datetime import datetime, timezone
 import os
 from pathlib import Path
 import socket
 from threading import Event, Lock
+from time import monotonic as _monotonic
 from typing import Any
 
 from sqlalchemy import Engine
 
 from stock_desk.analysis.model_catalog import AnalysisModelCatalog
 from stock_desk.analysis.data_service import ResearchDataService
-from stock_desk.analysis.model_settings import ModelProviderFactory
+from stock_desk.analysis.model_settings import (
+    ModelProviderFactory,
+    ModelSettingsService,
+)
 from stock_desk.analysis.providers.base import ModelProvider
 from stock_desk.analysis.repository import AnalysisExecutionConfig, AnalysisRepository
 from stock_desk.analysis.runtime import (
@@ -56,10 +61,16 @@ from stock_desk.market.update import (
 )
 from stock_desk.security.redaction import scoped_log_redaction
 from stock_desk.security.secrets import SecretConfigurationError, SecretStore
+from stock_desk.storage.backup import recover_interrupted_restore
 from stock_desk.storage.database import create_engine_for_url, migrate
+from stock_desk.storage.lifecycle import service_lifecycle
 from stock_desk.tasks.models import TaskSnapshot
 from stock_desk.tasks.repository import TaskRepository
 from stock_desk.tasks.worker import ClaimedTaskHandler, TaskWorker, demo_double
+
+
+_IDLE_TASK_POLL_SECONDS = 0.1
+_SCHEDULE_POLL_SECONDS = 1.0
 
 
 def _utc_now() -> datetime:
@@ -266,6 +277,9 @@ class ProductionMarketWorker:
         scheduler: MarketUpdateScheduler,
         analysis_repository: AnalysisRepository,
         model_catalog: AnalysisModelCatalog,
+        lifecycle_guard: AbstractContextManager[None],
+        model_provider_factory: ModelProviderFactory | None = None,
+        model_settings_service: ModelSettingsService | None = None,
     ) -> None:
         self._engine = engine
         self.tasks = tasks
@@ -274,6 +288,9 @@ class ProductionMarketWorker:
         self.scheduler = scheduler
         self.analysis_repository = analysis_repository
         self.model_catalog = model_catalog
+        self._lifecycle_guard = lifecycle_guard
+        self._model_provider_factory = model_provider_factory
+        self._model_settings_service = model_settings_service
         self._close_lock = Lock()
         self._closed = False
 
@@ -290,14 +307,29 @@ class ProductionMarketWorker:
         | None = None,
         analysis_data_service_factory: Callable[[], ResearchDataService] | None = None,
     ) -> ProductionMarketWorker:
-        migrate(settings.database_url)
-        engine = create_engine_for_url(settings.database_url)
+        data_dir = Path(os.path.abspath(os.fspath(settings.data_dir.expanduser())))
+        lifecycle_guard = service_lifecycle(
+            data_dir,
+            role="worker",
+            preflight=lambda: recover_interrupted_restore(
+                data_dir=data_dir,
+                _lifecycle_held=True,
+            ),
+        )
+        lifecycle_guard.__enter__()
+        try:
+            migrate(settings.database_url)
+            engine = create_engine_for_url(settings.database_url)
+        except BaseException as error:
+            lifecycle_guard.__exit__(type(error), error, error.__traceback__)
+            raise
         source_settings: SourceSettingsServices | None = None
         model_catalog: AnalysisModelCatalog | None = None
+        model_provider_factory: ModelProviderFactory | None = None
+        model_settings_service: ModelSettingsService | None = None
         try:
             tasks = TaskRepository(engine)
             source_settings = SourceSettingsServices(engine=engine, settings=settings)
-            data_dir = Path(os.path.abspath(os.fspath(settings.data_dir.expanduser())))
             lake = MarketLake(engine=engine, root=data_dir / "market")
             execution_status_lake = ExecutionStatusLake(engine)
             instruments = InstrumentRepository(engine)
@@ -361,17 +393,23 @@ class ProductionMarketWorker:
             )
             if any(identity != identities[0] for identity in identities[1:]):
                 raise ValueError("analysis worker database identities do not match")
+            try:
+                model_secrets: SecretStore | None = SecretStore(
+                    engine,
+                    settings,
+                    expected_database_identity=tasks.database_identity,
+                )
+            except SecretConfigurationError:
+                model_secrets = None
+            model_providers = ModelProviderFactory(secret_store=model_secrets)
+            model_provider_factory = model_providers
+            model_settings_service = ModelSettingsService(
+                catalog=model_catalog,
+                secret_store=model_secrets,
+                provider_factory=model_providers,
+            )
             resolved_analysis_handler = analysis_handler
             if resolved_analysis_handler is None:
-                try:
-                    model_secrets: SecretStore | None = SecretStore(
-                        engine,
-                        settings,
-                        expected_database_identity=tasks.database_identity,
-                    )
-                except SecretConfigurationError:
-                    model_secrets = None
-                model_providers = ModelProviderFactory(secret_store=model_secrets)
                 resolved_analysis_provider_factory = (
                     analysis_provider_factory
                     if analysis_provider_factory is not None
@@ -403,20 +441,29 @@ class ProductionMarketWorker:
                 scheduler=scheduler,
                 analysis_repository=analysis_repository,
                 model_catalog=model_catalog,
+                lifecycle_guard=lifecycle_guard,
+                model_provider_factory=model_provider_factory,
+                model_settings_service=model_settings_service,
             )
-        except BaseException:
+        except BaseException as error:
             _best_effort_cleanup(
                 tuple(
                     action
                     for action in (
                         source_settings.close if source_settings is not None else None,
                         model_catalog.close if model_catalog is not None else None,
+                        model_settings_service.close
+                        if model_settings_service is not None
+                        else model_provider_factory.close
+                        if model_provider_factory is not None
+                        else None,
                         engine.dispose,
                     )
                     if action is not None
                 ),
                 raise_first=False,
             )
+            lifecycle_guard.__exit__(type(error), error, error.__traceback__)
             raise
 
     def run_once(self) -> TaskSnapshot | None:
@@ -424,21 +471,40 @@ class ProductionMarketWorker:
         return self.worker.run_once()
 
     def run_forever(self, stop_event: Event) -> None:
+        next_schedule_poll = 0.0
         while not stop_event.is_set():
-            completed = self.run_once()
+            now = _monotonic()
+            if now >= next_schedule_poll:
+                self.scheduler.tick()
+                next_schedule_poll = now + _SCHEDULE_POLL_SECONDS
+            completed = self.worker.run_once()
             if completed is None:
-                stop_event.wait(1.0)
+                stop_event.wait(_IDLE_TASK_POLL_SECONDS)
 
     def close(self) -> None:
         with self._close_lock:
             if self._closed:
                 return
             self._closed = True
+
+        def close_lifecycle() -> None:
+            self._lifecycle_guard.__exit__(None, None, None)
+
         _best_effort_cleanup(
-            (
-                self.source_settings.close,
-                self.model_catalog.close,
-                self._engine.dispose,
+            tuple(
+                action
+                for action in (
+                    self.source_settings.close,
+                    self.model_catalog.close,
+                    self._model_settings_service.close
+                    if self._model_settings_service is not None
+                    else self._model_provider_factory.close
+                    if self._model_provider_factory is not None
+                    else None,
+                    self._engine.dispose,
+                    close_lifecycle,
+                )
+                if action is not None
             ),
             raise_first=True,
         )

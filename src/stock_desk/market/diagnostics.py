@@ -20,6 +20,7 @@ from stock_desk.market.providers import (
     ProviderPermissionDenied,
     ProviderUnsupported,
     TdxInspectionFailure,
+    TdxInspectionSuccess,
     TdxLocalProvider,
     TushareProvider,
 )
@@ -96,6 +97,7 @@ class SourceDiagnostic(_DiagnosticModel):
     capabilities: tuple[MarketCapability, ...]
     permissions: tuple[DiagnosticPermission, ...]
     available_periods: tuple[Period, ...]
+    markets: tuple[Exchange, ...]
     gaps: tuple[DiagnosticGap, ...]
     last_checked: UtcDatetime
     last_update: UtcDatetime | None
@@ -305,6 +307,7 @@ def _failure_diagnostic(
             for category in SOURCE_CATEGORY_ORDER
         ),
         available_periods=(),
+        markets=(),
         gaps=gaps,
         last_checked=checked_at,
         last_update=None,
@@ -363,6 +366,7 @@ def _success_diagnostic(
         available_periods=tuple(
             sorted(report.available_periods, key=lambda item: item.value)
         ),
+        markets=tuple(sorted(report.markets, key=lambda item: item.value)),
         gaps=gaps,
         last_checked=checked_at,
         last_update=None,
@@ -626,6 +630,7 @@ def _tushare_diagnostic(
         available_periods=tuple(
             sorted(successful_periods, key=lambda item: item.value)
         ),
+        markets=(),
         gaps=tuple(gaps),
         last_checked=checked_at,
         last_update=None,
@@ -683,11 +688,26 @@ def diagnose_source(
                     detail=_safe_detail(source, outcome.reason),
                     checked_at=provisional_checked_at,
                 )
-            else:
-                result = _generic_report_diagnostic(
+            elif isinstance(outcome, TdxInspectionSuccess):
+                base = _generic_report_diagnostic(
                     source,
                     provider,
                     provider.capabilities(),
+                    checked_at=provisional_checked_at,
+                )
+                result = base.model_copy(
+                    update={
+                        "markets": tuple(
+                            sorted(outcome.markets, key=lambda item: item.value)
+                        ),
+                        "data_cutoff": outcome.data_cutoff,
+                    }
+                )
+            else:
+                result = _failure_diagnostic(
+                    source=source,
+                    reason=FailureReason.INVALID_RESPONSE,
+                    detail=_safe_detail(source, FailureReason.INVALID_RESPONSE),
                     checked_at=provisional_checked_at,
                 )
         else:

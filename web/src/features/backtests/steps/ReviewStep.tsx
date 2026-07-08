@@ -55,7 +55,8 @@ export function ReviewStep({
         5. 复核
       </h3>
       <p>
-        收盘确认，下一对应周期开盘尝试成交；停牌、涨跌停和数据状态按固化规则处理。
+        收盘确认，下一对应周期开盘尝试成交；卖出遵守 A 股
+        T+1，停牌、涨跌停和数据状态按固化规则处理。
       </p>
       <p className="backtest-disclaimer">每只股票独立模拟，不代表组合收益。</p>
       <dl className="review-intent">

@@ -69,16 +69,19 @@ class AnalysisRunRow(Base):
             name="ck_analysis_run_input_binding",
         ),
         CheckConstraint(
-            "snapshot_id IS NULL OR " + _HASH_CHECK.format(name="snapshot_id"),
+            "snapshot_id IS NULL OR (" + _HASH_CHECK.format(name="snapshot_id") + ")",
             name="ck_analysis_run_snapshot_id",
         ),
         CheckConstraint(
-            "snapshot_hash IS NULL OR " + _HASH_CHECK.format(name="snapshot_hash"),
+            "snapshot_hash IS NULL OR ("
+            + _HASH_CHECK.format(name="snapshot_hash")
+            + ")",
             name="ck_analysis_run_snapshot_hash",
         ),
         CheckConstraint(
-            "evidence_graph_hash IS NULL OR "
-            + _HASH_CHECK.format(name="evidence_graph_hash"),
+            "evidence_graph_hash IS NULL OR ("
+            + _HASH_CHECK.format(name="evidence_graph_hash")
+            + ")",
             name="ck_analysis_run_evidence_hash",
         ),
         CheckConstraint(
@@ -215,19 +218,19 @@ class AnalysisStageRow(Base):
         ),
         CheckConstraint("attempt_count >= 0", name="ck_analysis_stage_attempt_count"),
         CheckConstraint(
-            f"output_json IS NULL OR ({_json_object('output_json', 65_536)})",
+            "output_json IS NULL OR " + _json_object("output_json", 65_536),
             name="ck_analysis_stage_output_json",
         ),
         CheckConstraint(
-            f"trace_json IS NULL OR ({_json_object('trace_json', 32_768)})",
+            "trace_json IS NULL OR " + _json_object("trace_json", 32_768),
             name="ck_analysis_stage_trace_json",
         ),
         CheckConstraint(
-            "output_hash IS NULL OR " + _HASH_CHECK.format(name="output_hash"),
+            "output_hash IS NULL OR (" + _HASH_CHECK.format(name="output_hash") + ")",
             name="ck_analysis_stage_output_hash",
         ),
         CheckConstraint(
-            "trace_hash IS NULL OR " + _HASH_CHECK.format(name="trace_hash"),
+            "trace_hash IS NULL OR (" + _HASH_CHECK.format(name="trace_hash") + ")",
             name="ck_analysis_stage_trace_hash",
         ),
         CheckConstraint(
@@ -315,19 +318,21 @@ class AnalysisAttemptRow(Base):
             name="ck_analysis_attempt_backoff",
         ),
         CheckConstraint(
-            "request_hash IS NULL OR " + _HASH_CHECK.format(name="request_hash"),
+            "request_hash IS NULL OR (" + _HASH_CHECK.format(name="request_hash") + ")",
             name="ck_analysis_attempt_request_hash",
         ),
         CheckConstraint(
-            f"error_json IS NULL OR ({_json_object('error_json', 16_384)})",
+            "error_json IS NULL OR " + _json_object("error_json", 16_384),
             name="ck_analysis_attempt_error_json",
         ),
         CheckConstraint(
-            "template_hash IS NULL OR " + _HASH_CHECK.format(name="template_hash"),
+            "template_hash IS NULL OR ("
+            + _HASH_CHECK.format(name="template_hash")
+            + ")",
             name="ck_analysis_attempt_template_hash",
         ),
         CheckConstraint(
-            f"usage_json IS NULL OR ({_json_object('usage_json', 16_384)})",
+            "usage_json IS NULL OR " + _json_object("usage_json", 16_384),
             name="ck_analysis_attempt_usage_json",
         ),
         CheckConstraint(

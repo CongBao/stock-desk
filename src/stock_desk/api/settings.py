@@ -37,7 +37,12 @@ from stock_desk.market.diagnostics import (
     diagnose_source,
     unavailable_diagnostic,
 )
-from stock_desk.market.types import FailureReason, ProviderId
+from stock_desk.market.types import (
+    CapabilityState,
+    CONFIGURABLE_SOURCE_PROVIDER_IDS,
+    FailureReason,
+    ProviderId,
+)
 from stock_desk.security.secrets import (
     mask_secret,
     SecretConfigurationError,
@@ -46,6 +51,7 @@ from stock_desk.security.secrets import (
     SecretStore,
     SecretStorageError,
 )
+from stock_desk.security.persistence import scrub_persisted_secrets_in_transaction
 from stock_desk.security.redaction import LogSecretLease, scoped_log_redaction
 from stock_desk.storage.database import (
     DatabaseIdentity,
@@ -135,6 +141,10 @@ class SourcePriorities(_SettingsModel):
             raise ValueError("source priority must be nonempty and bounded")
         if len(value) != len(frozenset(value)):
             raise ValueError("source priority cannot contain duplicates")
+        if not frozenset(value).issubset(CONFIGURABLE_SOURCE_PROVIDER_IDS):
+            raise ValueError(
+                "source priority contains a provider that is not configurable"
+            )
         return value
 
     @model_validator(mode="after")
@@ -291,6 +301,10 @@ class SourceSettingsStorageError(RuntimeError):
     """The settings database no longer matches its frozen identity."""
 
 
+class SourceSettingsPreflightError(ValueError):
+    """A candidate source configuration failed its provider preflight."""
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeSourceSettings:
     """Secret-safe immutable configuration used by one update invocation."""
@@ -344,6 +358,42 @@ def _canonical_legacy_public(settings: _LegacyV1PublicSourceSettings) -> str:
     return encoded
 
 
+def _normalize_stored_provenance_only_sources(stored: str) -> str | None:
+    """Remove the one historically accepted provenance-only source from canonical JSON."""
+    try:
+        decoded = json.loads(stored)
+        if (
+            json.dumps(
+                decoded,
+                allow_nan=False,
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            != stored
+        ):
+            return None
+    except (TypeError, ValueError):
+        return None
+    if type(decoded) is not dict:
+        return stored
+    priorities = decoded.get("priorities")
+    if type(priorities) is not dict:
+        return stored
+    for field_name, order in priorities.items():
+        if type(order) is list:
+            priorities[field_name] = [
+                source for source in order if source != ProviderId.STOCK_DESK_DEMO.value
+            ]
+    return json.dumps(
+        decoded,
+        allow_nan=False,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
 class SourceSettingsServices:
     """One database-bound boundary for public settings, secrets, and diagnostics."""
 
@@ -383,6 +433,7 @@ class SourceSettingsServices:
             raise SourceSettingsStorageError(
                 "Source settings storage is unavailable"
             ) from None
+        self._hydrate_configured_redaction()
 
     def __repr__(self) -> str:
         return "SourceSettingsServices(configured=True)"
@@ -472,18 +523,21 @@ class SourceSettingsServices:
             or len(stored.encode("utf-8")) > _PUBLIC_SETTINGS_MAX_BYTES
         ):
             raise PublicSettingsCorrupt("Stored source settings are invalid")
+        normalized = _normalize_stored_provenance_only_sources(stored)
+        if normalized is None:
+            raise PublicSettingsCorrupt("Stored source settings are invalid")
         try:
-            decoded = PublicSourceSettings.model_validate_json(stored)
+            decoded = PublicSourceSettings.model_validate_json(normalized)
         except Exception:
             decoded = None
-        if decoded is not None and _canonical_public(decoded) == stored:
+        if decoded is not None and _canonical_public(decoded) == normalized:
             return decoded
 
         try:
-            legacy = _LegacyV1PublicSourceSettings.model_validate_json(stored)
+            legacy = _LegacyV1PublicSourceSettings.model_validate_json(normalized)
         except Exception:
             raise PublicSettingsCorrupt("Stored source settings are invalid") from None
-        if _canonical_legacy_public(legacy) != stored:
+        if _canonical_legacy_public(legacy) != normalized:
             raise PublicSettingsCorrupt("Stored source settings are invalid")
         try:
             priorities = SourcePriorities.model_validate(
@@ -506,15 +560,30 @@ class SourceSettingsServices:
     def _save_public_locked(
         self, value: PublicSourceSettings | Mapping[str, Any]
     ) -> PublicSourceSettings:
-        if isinstance(value, PublicSourceSettings):
-            validated = value
-        else:
-            try:
-                validated = PublicSourceSettings.model_validate_json(
-                    json.dumps(value, allow_nan=False)
+        serialized: object = (
+            value.model_dump(mode="json")
+            if isinstance(value, PublicSourceSettings)
+            else value
+        )
+        try:
+            validated = PublicSourceSettings.model_validate_json(
+                json.dumps(serialized, allow_nan=False)
+            )
+        except Exception as error:
+            raise ValueError("Public source settings are invalid") from error
+        if validated.tdx_path is not None:
+            with scoped_log_redaction(validated.tdx_path):
+                diagnostic = diagnose_source(
+                    ProviderId.TDX_LOCAL,
+                    token=None,
+                    tdx_path=Path(validated.tdx_path),
+                    factory=default_diagnostic_provider_factory,
+                    clock=self._clock,
                 )
-            except Exception as error:
-                raise ValueError("Public source settings are invalid") from error
+            if diagnostic.status is not CapabilityState.AVAILABLE:
+                raise SourceSettingsPreflightError(
+                    "TDX source configuration failed preflight"
+                )
         encoded = _canonical_public(validated)
         now = self._clock()
         statement = sqlite_insert(AppSetting).values(
@@ -619,11 +688,43 @@ class SourceSettingsServices:
         if request.token is not None:
             plaintext = request.token.get_secret_value()
             try:
-                self._secret_store().save_secret(
-                    _TUSHARE_SECRET_NAME,
-                    plaintext,
-                )
+                store = self._secret_store()
+                with self._checked_begin() as connection:
+                    previous = (
+                        store.read_secret_for_server_call_in_transaction(
+                            _TUSHARE_SECRET_NAME,
+                            connection,
+                        )
+                        if store.has_secret_in_transaction(
+                            _TUSHARE_SECRET_NAME, connection
+                        )
+                        else None
+                    )
+                    self._set_leased_token(previous)
+                    self._set_leased_token(plaintext)
+                    scrub_persisted_secrets_in_transaction(
+                        connection,
+                        tuple(
+                            value
+                            for value in (previous, plaintext)
+                            if value is not None
+                        ),
+                    )
+                    store.save_secret_in_transaction(
+                        _TUSHARE_SECRET_NAME,
+                        plaintext,
+                        connection,
+                    )
             except SecretStorageError:
+                self._poison()
+                raise SourceSettingsStorageError(
+                    "Source settings storage is unavailable"
+                ) from None
+            except SecureStorageUnavailable:
+                raise
+            except SourceSettingsStorageError:
+                raise
+            except Exception:
                 self._poison()
                 raise SourceSettingsStorageError(
                     "Source settings storage is unavailable"
@@ -631,6 +732,43 @@ class SourceSettingsServices:
             self._configuration_revision += 1
             self._set_leased_token(plaintext)
         return self.tushare_status()
+
+    def _hydrate_configured_redaction(self) -> None:
+        try:
+            store = SecretStore(
+                self._engine,
+                self._settings,
+                expected_database_identity=self._database_identity,
+            )
+        except SecretConfigurationError:
+            return
+        try:
+            with self._engine.begin() as connection:
+                if not store.has_secret_in_transaction(
+                    _TUSHARE_SECRET_NAME, connection
+                ):
+                    return
+                plaintext = store.read_secret_for_server_call_in_transaction(
+                    _TUSHARE_SECRET_NAME,
+                    connection,
+                )
+                self._set_leased_token(plaintext)
+                scrub_persisted_secrets_in_transaction(connection, (plaintext,))
+        except (SecretDecryptionError, SecretNotFoundError, SecretStorageError):
+            self._poison()
+            raise SourceSettingsStorageError(
+                "Source settings storage is unavailable"
+            ) from None
+        except SQLAlchemyError:
+            self._poison()
+            raise SourceSettingsStorageError(
+                "Source settings storage is unavailable"
+            ) from None
+        except Exception:
+            self._poison()
+            raise SourceSettingsStorageError(
+                "Source settings storage is unavailable"
+            ) from None
 
     def response(self) -> SourceSettingsResponse:
         with self._state_lock:
@@ -1040,8 +1178,11 @@ def get_sources(
 def put_sources(
     request: PublicSourceSettings,
     services: SourceSettingsDependency,
-) -> SourceSettingsResponse:
-    services.save_public(request)
+) -> SourceSettingsResponse | JSONResponse:
+    try:
+        services.save_public(request)
+    except SourceSettingsPreflightError:
+        return _error("tdx_preflight_failed", status.HTTP_422_UNPROCESSABLE_CONTENT)
     return services.response()
 
 

@@ -59,6 +59,24 @@ it('decodes settings and forwards abortable public/token writes', async () => {
   });
 });
 
+it('decodes every category in the backend source-priorities contract', async () => {
+  const priorities = await createSourceSettingsApi(
+    clientReturning('get', settingsResponse),
+  ).getSettings();
+
+  expect(Object.keys(priorities.priorities)).toEqual([
+    'daily_bars',
+    'weekly_bars',
+    'minute_bars',
+    'instruments',
+    'trading_calendar',
+    'execution_status',
+    'fundamentals',
+    'announcements',
+    'news',
+  ]);
+});
+
 it('posts source diagnostics and binds the response source', async () => {
   const client = clientReturning('post', diagnosticResponse);
   const controller = new AbortController();
@@ -124,6 +142,13 @@ it.each([
       payload['token'] = 'must-not-be-accepted';
     },
   ],
+  [
+    'unknown priority category',
+    (payload: Record<string, unknown>) => {
+      const priorities = payload['priorities'] as Record<string, unknown>;
+      priorities['private_feed'] = ['akshare'];
+    },
+  ],
 ] as const)('rejects malformed settings: %s', async (_name, mutate) => {
   const payload = structuredClone(settingsResponse) as Record<string, unknown>;
   mutate(payload);
@@ -164,6 +189,7 @@ it('accepts an available TDX source with explicit unsupported categories', async
       { category: 'execution_status', state: 'unsupported' },
     ],
     available_periods: ['1d'],
+    markets: ['SH', 'SZ'],
     gaps: [
       {
         category: 'minute_bars',
@@ -198,7 +224,7 @@ it('accepts an available TDX source with explicit unsupported categories', async
     ],
     last_checked: '2026-07-06T09:30:00Z',
     last_update: null,
-    data_cutoff: null,
+    data_cutoff: '2024-07-02T07:00:00Z',
     fallback_reason: null,
   } as const;
 

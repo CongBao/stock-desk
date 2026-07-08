@@ -127,15 +127,82 @@ it('builds synchronized candlestick and volume grids with explicit rise/fall enc
         },
       },
       { type: 'bar', xAxisIndex: 1, yAxisIndex: 1 },
+      { type: 'bar', xAxisIndex: 1, yAxisIndex: 1 },
+      { type: 'bar', xAxisIndex: 1, yAxisIndex: 1 },
     ],
   });
-  expect(option.series[1]?.data).toMatchObject([
-    { itemStyle: { color: '#ef4444', decal: { symbol: 'rect' } } },
-    { itemStyle: { color: '#22c55e', decal: { symbol: 'triangle' } } },
+  expect(option.series.slice(1).map((series) => series.itemStyle)).toEqual([
+    { color: '#ef4444', decal: { symbol: 'rect' } },
+    { color: '#22c55e', decal: { symbol: 'triangle' } },
+    { color: '#94a3b8', decal: { symbol: 'circle' } },
   ]);
   expect(formatMarketTooltip(bars[0])).toContain('上涨');
   expect(formatMarketTooltip(bars[0])).toContain('开 10');
   expect(formatMarketTooltip(bars[0])).toContain('量 1,000');
+});
+
+it('keeps full market bars out of the ECharts series graph while preserving indexed tooltips', () => {
+  const option = buildMarketChartOption(bars);
+
+  expect(option.series[0].data).toEqual([
+    [10, 10.8, 9.8, 11],
+    [10.8, 10.2, 10.1, 11],
+  ]);
+  expect(option.series[1].data[0]).toBe(1_000);
+  expect(JSON.stringify(option.series)).not.toContain('rawBar');
+
+  const formatter = (
+    option.tooltip as { readonly formatter: (parameters: unknown) => string }
+  ).formatter;
+  expect(formatter([{ dataIndex: 0 }])).toContain('上涨');
+  expect(formatter([{ dataIndex: 1 }])).toContain('开 10.8');
+  expect(formatter([{ dataIndex: 99 }])).toBe('');
+});
+
+it('batches direction-specific volume bars into overlapping large series', () => {
+  const flatBar = {
+    ...bars[0],
+    timestamp: '2024-01-03T16:00:00Z',
+    direction: 'flat' as const,
+    volume: 900,
+  };
+  const option = buildMarketChartOption([...bars, flatBar]);
+  const volumeSeries = option.series.slice(1);
+
+  expect(volumeSeries).toHaveLength(3);
+  expect(volumeSeries.some((series) => 'stack' in series)).toBe(false);
+  expect(volumeSeries).toMatchObject([
+    {
+      name: '成交量·上涨',
+      type: 'bar',
+      large: true,
+      largeThreshold: 400,
+      silent: true,
+      barGap: '-100%',
+      itemStyle: { color: '#ef4444', decal: { symbol: 'rect' } },
+      data: [1_000, '-', '-'],
+    },
+    {
+      name: '成交量·下跌',
+      type: 'bar',
+      large: true,
+      largeThreshold: 400,
+      silent: true,
+      barGap: '-100%',
+      itemStyle: { color: '#22c55e', decal: { symbol: 'triangle' } },
+      data: ['-', 1_200, '-'],
+    },
+    {
+      name: '成交量·平盘',
+      type: 'bar',
+      large: true,
+      largeThreshold: 400,
+      silent: true,
+      barGap: '-100%',
+      itemStyle: { color: '#94a3b8', decal: { symbol: 'circle' } },
+      data: ['-', '-', 900],
+    },
+  ]);
 });
 
 it('aligns formula subchart outputs and BUY/SELL markers by timestamp', () => {
@@ -344,10 +411,18 @@ it('initializes, resizes, resets, and disposes the tree-shaken chart instance', 
   expect(
     screen.getByRole('status', { name: '图表缩放范围' }),
   ).toHaveTextContent('0%–100%');
+  expect(screen.getByRole('status', { name: '图表缩放范围' })).toHaveAttribute(
+    'data-zoom-start',
+    '0',
+  );
   act(() => dataZoomHandler?.({ batch: [{ start: 35, end: 80 }] }));
   expect(
     screen.getByRole('status', { name: '图表缩放范围' }),
   ).toHaveTextContent('35%–80%');
+  expect(screen.getByRole('status', { name: '图表缩放范围' })).toHaveAttribute(
+    'data-zoom-start',
+    '35',
+  );
 
   fireEvent.click(screen.getByRole('button', { name: '重置图表缩放' }));
   expect(chartMocks.dispatchAction).toHaveBeenCalledWith({
@@ -368,7 +443,60 @@ it('initializes, resizes, resets, and disposes the tree-shaken chart instance', 
   expect(chartMocks.dispose).toHaveBeenCalledOnce();
 });
 
+it('serializes delayed ECharts generations so A cannot mark queued B ready', () => {
+  let finishedHandler: ((event: unknown) => void) | undefined;
+  chartMocks.on.mockImplementation(
+    (eventName: string, handler: (event: unknown) => void) => {
+      if (eventName === 'finished') finishedHandler = handler;
+    },
+  );
+  const { rerender, unmount } = render(<MarketChart bars={bars} />);
+  const chart = screen.getByRole('img', {
+    name: '600000.SH K 线与成交量交互图',
+  });
+
+  expect(chart).toHaveAttribute('data-chart-ready', 'false');
+  expect(chart).toHaveAttribute('aria-busy', 'true');
+  expect(chart).not.toHaveAttribute('data-chart-generation');
+  const nextBars = bars.map((bar) => ({ ...bar }));
+  rerender(<MarketChart bars={nextBars} />);
+  expect(chart).toHaveAttribute('data-chart-ready', 'false');
+  expect(chart).not.toHaveAttribute('data-chart-generation');
+
+  // B is queued while A is still the active ECharts render.
+  expect(chartMocks.setOption).toHaveBeenCalledTimes(1);
+  act(() => finishedHandler?.({}));
+
+  // A completed, which starts B, but only B's own event may mark B ready.
+  expect(chartMocks.setOption).toHaveBeenCalledTimes(2);
+  expect(chart).toHaveAttribute('data-chart-ready', 'false');
+  expect(chart).toHaveAttribute('aria-busy', 'true');
+  expect(chart).toHaveAttribute('data-chart-generation', '1');
+  act(() => finishedHandler?.({}));
+  expect(chart).toHaveAttribute('data-chart-ready', 'true');
+  expect(chart).toHaveAttribute('aria-busy', 'false');
+  expect(chart).toHaveAttribute('data-chart-generation', '2');
+
+  const thirdBars = nextBars.map((bar) => ({ ...bar }));
+  rerender(<MarketChart bars={thirdBars} />);
+  expect(chart).toHaveAttribute('data-chart-ready', 'false');
+  expect(chart).toHaveAttribute('aria-busy', 'true');
+  expect(chart).toHaveAttribute('data-chart-generation', '2');
+  act(() => finishedHandler?.({}));
+  expect(chart).toHaveAttribute('data-chart-ready', 'true');
+  expect(chart).toHaveAttribute('data-chart-generation', '3');
+
+  unmount();
+  expect(chartMocks.off).toHaveBeenCalledWith('finished', expect.any(Function));
+});
+
 it('keeps the cached canvas and chart instance through a background error and recovery', () => {
+  let finishedHandler: ((event: unknown) => void) | undefined;
+  chartMocks.on.mockImplementation(
+    (eventName: string, handler: (event: unknown) => void) => {
+      if (eventName === 'finished') finishedHandler = handler;
+    },
+  );
   const { rerender, unmount } = render(<MarketChart bars={bars} />);
   const canvas = screen.getByRole('img', {
     name: '600000.SH K 线与成交量交互图',
@@ -391,11 +519,13 @@ it('keeps the cached canvas and chart instance through a background error and re
     screen.getByRole('img', { name: '600000.SH K 线与成交量交互图' }),
   ).toBe(canvas);
   expect(chartMocks.init).toHaveBeenCalledOnce();
+  expect(chartMocks.setOption).toHaveBeenCalledOnce();
+  act(() => finishedHandler?.({}));
   expect(chartMocks.setOption).toHaveBeenCalledTimes(2);
 
   unmount();
-  expect(chartMocks.on).toHaveBeenCalledTimes(2);
-  expect(chartMocks.off).toHaveBeenCalledTimes(2);
+  expect(chartMocks.on).toHaveBeenCalledTimes(3);
+  expect(chartMocks.off).toHaveBeenCalledTimes(3);
   expect(chartMocks.dispose).toHaveBeenCalledOnce();
 });
 

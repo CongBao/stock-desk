@@ -289,6 +289,15 @@ class SecretStore:
         connection: Connection,
     ) -> dict[str, str]:
         """Read and mask a strict bounded set with one caller-transaction query."""
+        plaintext = self.redaction_values_in_transaction(names, connection)
+        return {name: mask_secret(value) for name, value in plaintext.items()}
+
+    def redaction_values_in_transaction(
+        self,
+        names: tuple[str, ...],
+        connection: Connection,
+    ) -> dict[str, str]:
+        """Read a bounded set solely for an application redaction lease."""
         if type(names) is not tuple or len(names) > 100:
             raise SecretValidationError("Secret names are invalid")
         if len(names) != len(frozenset(names)):
@@ -315,7 +324,7 @@ class SecretStore:
                 name: self._decrypt_validated_token(tokens[key])
                 for name, key in zip(validated, keys, strict=True)
             }
-            return {name: mask_secret(value) for name, value in plaintext.items()}
+            return plaintext
 
     def _validate_transaction_connection(self, connection: Connection) -> None:
         if (

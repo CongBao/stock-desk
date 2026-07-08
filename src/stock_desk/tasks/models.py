@@ -5,6 +5,44 @@ from typing import Any, Literal, Mapping, TypeAlias
 
 TaskStatus: TypeAlias = Literal["queued", "running", "succeeded", "failed", "cancelled"]
 TaskEventLevel: TypeAlias = Literal["info", "warning", "error"]
+TaskPresentationStage: TypeAlias = Literal[
+    "queued", "executing", "completed", "failed", "cancelled"
+]
+
+
+@dataclass(frozen=True, slots=True)
+class TaskPresentationTarget:
+    type: Literal["backtest_run"]
+    id: str
+
+
+@dataclass(frozen=True, slots=True)
+class TaskPresentationSnapshot:
+    label: Literal["股票池回测", "智能分析", "数据更新", "后台任务"]
+    stage: TaskPresentationStage | None
+    processed: int | None
+    total: int | None
+    failed: int | None
+    target: TaskPresentationTarget | None
+
+
+@dataclass(frozen=True, slots=True)
+class TaskEventPresentationSnapshot:
+    label: Literal[
+        "任务已创建",
+        "任务已开始",
+        "任务进度已更新",
+        "已处理回测标的",
+        "已请求取消",
+        "任务已取消",
+        "任务已完成",
+        "任务失败",
+        "任务事件",
+    ]
+    stage: TaskPresentationStage | None
+    processed: int | None
+    total: int | None
+    failed: int | None
 
 
 @dataclass(frozen=True, slots=True)

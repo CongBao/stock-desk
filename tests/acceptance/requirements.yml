@@ -1,0 +1,1076 @@
+schema_version: 1
+requirements:
+  - id: R-001
+    category: market
+    kind: architecture
+    behavior_key: a_share_analysis_focus
+    acceptance: "Stock Desk focuses its analysis, data model, workflows, and terminology on shares listed in mainland China."
+    source_refs: [{capability: market-data-charting, requirement: base-a-share-data-scope, scenario: load-stock-analysis-data}, {capability: market-data-charting, requirement: base-a-share-data-scope, scenario: report-missing-category}]
+    owning_stage: 1
+    status: mapped
+    evidence:
+      - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_market_flow.py, selector: 'tests/acceptance/test_market_flow.py::test_settings_route_worker_cache_api_and_schedule_flow_without_network', assertion: The accepted market flow exercises the unified cached data categories and explicit source diagnostics.}
+      - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_full_user_journey.py, selector: 'tests/acceptance/test_full_user_journey.py::test_demo_data_categories_and_missing_category_are_visible', assertion: The public demo contract proves every declared A-share analysis data category and an explicit visible missing category without substitution.}
+  - id: R-002
+    category: market
+    kind: user_visible
+    behavior_key: market_chart_workstation
+    acceptance: "The market chart supports A-share search and switching, candlesticks and volume, daily, weekly, and 60-minute periods, adjustment switching, main and subchart indicators, crosshair, zoom, drag, and formula BUY and SELL markers."
+    source_refs: [{capability: market-data-charting, requirement: stock-search-and-chart-interaction, scenario: search-and-switch-stock}, {capability: market-data-charting, requirement: stock-search-and-chart-interaction, scenario: inspect-history}, {capability: market-data-charting, requirement: periods-and-adjustments, scenario: switch-period}, {capability: market-data-charting, requirement: periods-and-adjustments, scenario: switch-adjustment}, {capability: market-data-charting, requirement: candlestick-main-and-formula-subchart, scenario: preview-subchart-formula}]
+    owning_stage: 1
+    status: mapped
+    evidence:
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/market.spec.ts, selector: 'real local market workflow stays cached, traceable, and interactive', assertion: 'The browser flow searches, selects, and interacts with locally cached market charts.'}
+      - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_market_period_adjustment_contract.py, selector: 'tests/acceptance/test_market_period_adjustment_contract.py::test_period_and_adjustment_switches_recalculate_visible_market_and_indicator_values', assertion: 'The acceptance matrix proves every supported period and adjustment returns distinct aligned bars and formula values, unique signal identity, and the current daily cutoff.'}
+      - {state: existing, runner: vitest, kind: component, path: web/src/features/market/MarketChart.test.tsx, selector: labels main-chart overlays and subcharts according to formula placement, assertion: The chart component distinguishes explicit main overlays from aligned formula subcharts.}
+  - id: R-003
+    category: formula
+    kind: user_visible
+    behavior_key: user_defined_indicators
+    acceptance: "Users can create, validate, preview, save, and reuse custom indicators."
+    source_refs: [{capability: formula-system, requirement: builtin-and-custom-formulas, scenario: use-builtin-macd}, {capability: formula-system, requirement: builtin-and-custom-formulas, scenario: create-custom-formula}]
+    owning_stage: 2
+    status: mapped
+    evidence:
+      - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_macd_formula_flow.py, selector: 'tests/acceptance/test_macd_formula_flow.py::test_macd_template_preview_versioning_and_safety_are_one_flow', assertion: The public MACD template and a safe versioned preview are exercised as one accepted formula flow.}
+      - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_full_user_journey.py, selector: 'tests/acceptance/test_full_user_journey.py::test_complete_no_network_application_journey', assertion: 'The complete no-network journey creates, validates, previews, saves, and backtests both the built-in MACD formula and a user-defined formula.'}
+  - id: R-004
+    category: backtest
+    kind: user_visible
+    behavior_key: indicator_strategy_backtesting
+    acceptance: "Historical backtests use BUY and SELL signals from built-in indicators, user-defined indicators, or strategies and estimate win rate; the built-in example buys on a MACD golden cross and sells on a MACD death cross."
+    source_refs: [{capability: backtesting-reporting, requirement: builtin-and-custom-signal-backtest, scenario: backtest-builtin-macd}, {capability: backtesting-reporting, requirement: builtin-and-custom-signal-backtest, scenario: backtest-custom-formula}, {capability: backtesting-reporting, requirement: win-rate-and-statistics, scenario: calculate-win-rate}, {capability: backtesting-reporting, requirement: win-rate-and-statistics, scenario: inspect-detailed-statistics}]
+    owning_stage: 3
+    status: mapped
+    evidence:
+      - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_backtest_semantics.py, selector: 'tests/acceptance/test_backtest_semantics.py::test_custom_saved_formula_persists_the_exact_computed_signal_series', assertion: The accepted backtest pins and persists the exact signal series computed for a saved custom formula.}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/backtest.spec.ts, selector: 'desktop market prefill runs MACD through report, replay, and export', assertion: 'The browser acceptance flow runs the built-in MACD strategy through report, replay, and export.'}
+      - {state: existing, runner: pytest, kind: integration, path: tests/unit/backtest/test_metrics.py, selector: 'tests/unit/backtest/test_metrics.py::test_win_rate_uses_positive_net_realized_trades_only', assertion: Metric calculation defines win rate from positive-net realized trades over all realized trades.}
+      - {state: existing, runner: pytest, kind: integration, path: tests/unit/backtest/test_metrics.py, selector: 'tests/unit/backtest/test_metrics.py::test_summary_discloses_returns_pnl_payoff_extremes_and_holding', assertion: 'The summary discloses returns, profit and loss, payoff, extrema, and holding-period statistics.'}
+      - {state: existing, runner: pytest, kind: integration, path: tests/unit/backtest/test_metrics.py, selector: 'tests/unit/backtest/test_metrics.py::test_histogram_uses_fixed_deterministic_bins_and_reconciles', assertion: The return distribution uses fixed deterministic bins that reconcile to realized samples.}
+      - {state: existing, runner: pytest, kind: integration, path: tests/unit/backtest/test_grouping.py, selector: 'tests/unit/backtest/test_grouping.py::test_symbol_groups_reconcile_to_global_realized_denominator', assertion: Per-symbol grouped results reconcile to the global realized-trade denominator.}
+  - id: R-005
+    category: operations
+    kind: operational
+    behavior_key: requirements_frozen_before_implementation
+    acceptance: "Product requirements are refined, confirmed, and frozen before implementation begins."
+    source_refs: [{capability: delivery-governance, requirement: requirements-frozen-before-implementation, scenario: verify-authoritative-requirement}]
+    owning_stage: 0
+    status: mapped
+    evidence:
+      - {state: manual, runner: manual, kind: manual, procedure_id: requirements-freeze-review, artifact_kind: requirements-reconciliation, required_by_gate: release-acceptance, final_artifact_contract: A public-safe reconciliation record binds every stable requirement ID to its acceptance contract., completed: true, assertion: The final review confirms requirements were refined and frozen before implementation began.}
+  - id: R-006
+    category: operations
+    kind: operational
+    behavior_key: confirmed_specs_are_hosted_in_openspec
+    acceptance: "The final confirmed product specifications are maintained in OpenSpec as the implementation authority."
+    source_refs: [{capability: delivery-governance, requirement: confirmed-specs-are-hosted-in-openspec, scenario: verify-authoritative-requirement}]
+    owning_stage: 0
+    status: mapped
+    evidence:
+      - {state: manual, runner: manual, kind: manual, procedure_id: openspec-authority-review, artifact_kind: specification-authority-record, required_by_gate: release-acceptance, final_artifact_contract: A redacted specification-authority record confirms the final product specification and implemented scope agree., completed: true, assertion: The final review confirms the implemented product follows the confirmed specification authority without publishing local planning files.}
+  - id: R-007
+    category: market
+    kind: architecture
+    behavior_key: base_a_share_data_sources
+    acceptance: "The product connects the data sources required for baseline A-share analysis."
+    source_refs: [{capability: market-data-charting, requirement: pluggable-sources-and-priority, scenario: primary-source-succeeds}, {capability: market-data-charting, requirement: pluggable-sources-and-priority, scenario: primary-source-fails}, {capability: market-data-charting, requirement: pluggable-sources-and-priority, scenario: inspect-tushare-configuration}]
+    owning_stage: 1
+    status: mapped
+    evidence:
+      - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_market_flow.py, selector: 'tests/acceptance/test_market_flow.py::test_settings_route_worker_cache_api_and_schedule_flow_without_network', assertion: 'The accepted offline flow verifies configured category routing, diagnostics, cache, API, and worker update behavior.'}
+      - {state: existing, runner: pytest, kind: contract, path: tests/unit/market/test_routing.py, selector: 'tests/unit/market/test_routing.py::test_source_priorities_have_exact_independent_defaults', assertion: The routing contract fixes independent per-category defaults with Tushare first and the declared fallback order.}
+      - {state: existing, runner: pytest, kind: contract, path: tests/unit/market/test_routing_bars.py, selector: 'tests/unit/market/test_routing_bars.py::test_fetch_bars_routes_whole_query_and_records_safe_attempts', assertion: A complete bar query routes as one unit and records every safe provider attempt and selected source.}
+      - {state: existing, runner: pytest, kind: contract, path: tests/unit/market/test_routing_bars.py, selector: 'tests/unit/market/test_routing_bars.py::test_fetch_bars_rejects_partial_results_without_splicing', assertion: A provider partial result is rejected instead of being silently spliced with another provider series.}
+  - id: R-008
+    category: operations
+    kind: operational
+    behavior_key: tradingagents_cn_product_reference
+    acceptance: "Overall product capabilities and interaction patterns use TradingAgents-CN as the primary reference product."
+    source_refs: [{capability: delivery-governance, requirement: tradingagents-cn-product-reference, scenario: verify-authoritative-requirement}]
+    owning_stage: 0
+    status: mapped
+    evidence:
+      - {state: manual, runner: manual, kind: manual, procedure_id: reference-product-review, artifact_kind: product-reference-record, required_by_gate: release-acceptance, final_artifact_contract: A public-safe product reference record documents which interaction concepts were adopted without copying private material., completed: true, assertion: The final design review confirms TradingAgents-CN was the primary capability and interaction reference.}
+  - id: R-009
+    category: analysis
+    kind: architecture
+    behavior_key: compact_multi_agent_analysis
+    acceptance: "The first release includes compact multi-agent analysis in which technical analysis, fundamentals and news analysis, bull and bear review, and risk synthesis jointly produce a report."
+    source_refs: [{capability: multi-agent-analysis, requirement: compact-research-workflow, scenario: complete-research-workflow}, {capability: multi-agent-analysis, requirement: compact-research-workflow, scenario: inspect-analysis-trace}]
+    owning_stage: 4
+    status: mapped
+    evidence:
+      - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_analysis_flow.py, selector: 'tests/acceptance/test_analysis_flow.py::test_full_stubbed_analysis_is_traceable_and_history_is_immutable', assertion: 'The stubbed accepted flow proves ordered roles, evidence traceability, and immutable history.'}
+      - {state: existing, runner: pytest, kind: contract, path: tests/unit/analysis/test_workflow.py, selector: 'tests/unit/analysis/test_workflow.py::test_analysts_really_overlap_then_reviews_and_decision_follow_dependencies', assertion: 'The workflow test proves technical and fundamental/news roles overlap, reviews wait for both, risk waits for both reviews, and the result stays pinned to one snapshot.'}
+      - {state: existing, runner: pytest, kind: contract, path: tests/unit/analysis/test_workflow.py, selector: 'tests/unit/analysis/test_workflow.py::test_roles_receive_only_allowed_snapshot_and_structured_dependency_blocks', assertion: 'The workflow contract proves each downstream role receives only the allowed structured outputs, evidence references, and snapshot context from its declared predecessors.'}
+  - id: R-010
+    category: platform
+    kind: user_visible
+    behavior_key: low_programming_personal_audience
+    acceptance: "The first release primarily serves individual A-share investors who do not program or know only a small amount of formula syntax."
+    source_refs: [{capability: market-data-charting, requirement: desktop-first-single-user-web-workstation, scenario: open-workstation-in-browser}, {capability: market-data-charting, requirement: desktop-first-single-user-web-workstation, scenario: open-workstation-on-tablet}]
+    owning_stage: 0
+    status: mapped
+    evidence:
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/foundation.spec.ts, selector: fresh user sees the live foundation shell and completed demo task, assertion: A fresh private user reaches the complete browser shell and worker state without an account flow.}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: /market has bounded non-overlapping layout, assertion: The market workspace remains reachable without an account and bounded at every tested ratio including both tablet orientations.}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: /formulas has bounded non-overlapping layout, assertion: The formula workspace remains reachable without an account and bounded at every tested ratio including both tablet orientations.}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: /backtests has bounded non-overlapping layout, assertion: The backtest workspace remains reachable without an account and bounded at every tested ratio including both tablet orientations.}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: /analysis has bounded non-overlapping layout, assertion: The analysis workspace remains reachable without an account and bounded at every tested ratio including both tablet orientations.}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: /tasks has bounded non-overlapping layout, assertion: The task workspace remains reachable without an account and bounded at every tested ratio including both tablet orientations.}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: /settings has bounded non-overlapping layout, assertion: The settings workspace remains reachable without an account and bounded at every tested ratio including both tablet orientations.}
+  - id: R-011
+    category: platform
+    kind: user_visible
+    behavior_key: visual_low_code_primary_workflows
+    acceptance: "Primary workflows are driven by visual interface interactions and, except for authoring custom formulas, avoid requiring users to enter code."
+    source_refs: [{capability: market-data-charting, requirement: desktop-first-single-user-web-workstation, scenario: open-workstation-in-browser}, {capability: market-data-charting, requirement: desktop-first-single-user-web-workstation, scenario: open-workstation-on-tablet}, {capability: formula-system, requirement: three-column-formula-editor, scenario: insert-function}, {capability: formula-system, requirement: three-column-formula-editor, scenario: preview-formula}]
+    owning_stage: 0
+    status: mapped
+    evidence:
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/foundation.spec.ts, selector: fresh user sees the live foundation shell and completed demo task, assertion: A fresh private user reaches the complete browser shell and worker state without an account flow.}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: /market has bounded non-overlapping layout, assertion: The market workspace remains reachable without an account and bounded at every tested ratio including both tablet orientations.}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: /formulas has bounded non-overlapping layout, assertion: The formula workspace remains reachable without an account and bounded at every tested ratio including both tablet orientations.}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: /backtests has bounded non-overlapping layout, assertion: The backtest workspace remains reachable without an account and bounded at every tested ratio including both tablet orientations.}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: /analysis has bounded non-overlapping layout, assertion: The analysis workspace remains reachable without an account and bounded at every tested ratio including both tablet orientations.}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: /tasks has bounded non-overlapping layout, assertion: The task workspace remains reachable without an account and bounded at every tested ratio including both tablet orientations.}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: /settings has bounded non-overlapping layout, assertion: The settings workspace remains reachable without an account and bounded at every tested ratio including both tablet orientations.}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/formula-studio.spec.ts, selector: 'desktop MACD flow is atomic, versioned, parameterized, and safe', assertion: The desktop browser flow operates all three Formula Studio regions through a complete MACD edit and preview.}
+  - id: R-012
+    category: formula
+    kind: user_visible
+    behavior_key: tdx_style_formula_editor_and_subset
+    acceptance: "Custom indicators and strategies are created in a TDX-style formula editor; the first release accepts the common supported TDX subset, allows common formulas to be pasted, and reports unsupported functions clearly."
+    source_refs: [{capability: formula-system, requirement: common-tdx-syntax-compatibility, scenario: paste-supported-formula}, {capability: formula-system, requirement: common-tdx-syntax-compatibility, scenario: use-unsupported-function}, {capability: formula-system, requirement: three-column-formula-editor, scenario: insert-function}, {capability: formula-system, requirement: three-column-formula-editor, scenario: preview-formula}]
+    owning_stage: 2
+    status: mapped
+    evidence:
+      - {state: existing, runner: pytest, kind: contract, path: tests/unit/formula/test_registry.py, selector: 'tests/unit/formula/test_registry.py::test_v1_registry_contains_documented_common_subset', assertion: The compatibility registry exposes a stable version and the exact supported function metadata.}
+      - {state: existing, runner: pytest, kind: contract, path: tests/unit/formula/test_parser.py, selector: 'tests/unit/formula/test_parser.py::test_parser_understands_assignment_output_and_cross', assertion: 'The parser accepts representative first-release TDX assignment, output, field, and CROSS syntax.'}
+      - {state: existing, runner: pytest, kind: contract, path: tests/unit/formula/test_registry.py, selector: 'tests/unit/formula/test_registry.py::test_unknown_function_is_rejected_at_its_source_span', assertion: 'An unsupported function is rejected with stable code, function name, and actionable line and column diagnostics.'}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/formula-studio.spec.ts, selector: 'desktop MACD flow is atomic, versioned, parameterized, and safe', assertion: The desktop browser flow operates all three Formula Studio regions through a complete MACD edit and preview.}
+  - id: R-013
+    category: backtest
+    kind: architecture
+    behavior_key: backtest_consumes_tdx_signals
+    acceptance: "The backtest engine directly consumes BUY and SELL points emitted by a compatible TDX trading formula."
+    source_refs: [{capability: backtesting-reporting, requirement: builtin-and-custom-signal-backtest, scenario: backtest-builtin-macd}, {capability: backtesting-reporting, requirement: builtin-and-custom-signal-backtest, scenario: backtest-custom-formula}]
+    owning_stage: 3
+    status: mapped
+    evidence:
+      - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_backtest_semantics.py, selector: 'tests/acceptance/test_backtest_semantics.py::test_custom_saved_formula_persists_the_exact_computed_signal_series', assertion: The accepted backtest pins and persists the exact signal series computed for a saved custom formula.}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/backtest.spec.ts, selector: 'desktop market prefill runs MACD through report, replay, and export', assertion: 'The browser acceptance flow runs the built-in MACD strategy through report, replay, and export.'}
+  - id: R-014
+    category: backtest
+    kind: user_visible
+    behavior_key: selected_pool_batch_backtest
+    acceptance: "The first release applies one indicator formula or strategy to a user-selected stock pool, backtests each selected stock, and presents aggregate results."
+    source_refs: [{capability: backtesting-reporting, requirement: single-and-pool-backtests, scenario: run-single-stock}, {capability: backtesting-reporting, requirement: single-and-pool-backtests, scenario: run-stock-pool}]
+    owning_stage: 3
+    status: mapped
+    evidence:
+      - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_backtest_semantics.py, selector: 'tests/acceptance/test_backtest_semantics.py::test_complete_runner_matrix_supports_single_and_pool_scopes_for_every_period', assertion: The parameterized acceptance parent collects every single and pool scope for every supported period.}
+      - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_backtest_scope_matrix.py, selector: 'tests/acceptance/test_backtest_scope_matrix.py::test_all_a_index_industry_custom_failure_and_insufficient_scopes', assertion: 'The scope matrix proves all-A, index, industry, and custom pool preflights plus separate failed and insufficient-data outcomes in a real pool run.'}
+  - id: R-015
+    category: backtest
+    kind: architecture
+    behavior_key: independent_pool_signal_samples
+    acceptance: "Pool backtests simulate each stock independently and aggregate all realized trades for win rate, return, and holding-period statistics."
+    source_refs: [{capability: backtesting-reporting, requirement: independent-signal-sample-model, scenario: simultaneous-pool-buy-signals}, {capability: backtesting-reporting, requirement: win-rate-and-statistics, scenario: calculate-win-rate}, {capability: backtesting-reporting, requirement: win-rate-and-statistics, scenario: inspect-detailed-statistics}]
+    owning_stage: 3
+    status: mapped
+    evidence:
+      - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_backtest_semantics.py, selector: 'tests/acceptance/test_backtest_semantics.py::test_two_symbol_pool_reconciles_independent_samples_without_equity_curve', assertion: Two simultaneous symbols reconcile as independent samples and cannot produce a portfolio equity curve.}
+      - {state: existing, runner: pytest, kind: integration, path: tests/unit/backtest/test_metrics.py, selector: 'tests/unit/backtest/test_metrics.py::test_win_rate_uses_positive_net_realized_trades_only', assertion: Metric calculation defines win rate from positive-net realized trades over all realized trades.}
+      - {state: existing, runner: pytest, kind: integration, path: tests/unit/backtest/test_metrics.py, selector: 'tests/unit/backtest/test_metrics.py::test_summary_discloses_returns_pnl_payoff_extremes_and_holding', assertion: 'The summary discloses returns, profit and loss, payoff, extrema, and holding-period statistics.'}
+      - {state: existing, runner: pytest, kind: integration, path: tests/unit/backtest/test_metrics.py, selector: 'tests/unit/backtest/test_metrics.py::test_histogram_uses_fixed_deterministic_bins_and_reconciles', assertion: The return distribution uses fixed deterministic bins that reconcile to realized samples.}
+      - {state: existing, runner: pytest, kind: integration, path: tests/unit/backtest/test_grouping.py, selector: 'tests/unit/backtest/test_grouping.py::test_symbol_groups_reconcile_to_global_realized_denominator', assertion: Per-symbol grouped results reconcile to the global realized-trade denominator.}
+      - {state: existing, runner: pytest, kind: contract, path: tests/unit/backtest/test_grouping.py, selector: 'tests/unit/backtest/test_grouping.py::test_entry_month_and_year_use_shanghai_calendar_dates', assertion: Monthly and yearly groupings use explicit Shanghai calendar dates for every realized entry sample.}
+      - {state: existing, runner: pytest, kind: contract, path: tests/unit/backtest/test_metrics.py, selector: 'tests/unit/backtest/test_metrics.py::test_reliability_reports_sample_size_and_symbol_concentration', assertion: Reliability evidence reports the realized sample size and per-symbol concentration used to qualify aggregate results.}
+  - id: R-016
+    category: backtest
+    kind: architecture
+    behavior_key: daily_weekly_sixty_minute_backtests
+    acceptance: "Historical backtesting supports daily, weekly, and 60-minute periods."
+    source_refs: [{capability: backtesting-reporting, requirement: backtest-periods, scenario: run-weekly-backtest}, {capability: backtesting-reporting, requirement: backtest-periods, scenario: run-sixty-minute-backtest}]
+    owning_stage: 3
+    status: mapped
+    evidence:
+      - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_backtest_semantics.py, selector: 'tests/acceptance/test_backtest_semantics.py::test_complete_runner_matrix_supports_single_and_pool_scopes_for_every_period', assertion: 'The parameterized acceptance parent collects both scopes for daily, weekly, and 60-minute periods.'}
+  - id: R-017
+    category: backtest
+    kind: architecture
+    behavior_key: close_confirmed_next_open_execution
+    acceptance: "BUY and SELL signals are confirmed after the current period closes and are simulated at the next period open."
+    source_refs: [{capability: backtesting-reporting, requirement: signal-confirmation-and-execution-time, scenario: daily-buy-signal}, {capability: backtesting-reporting, requirement: signal-confirmation-and-execution-time, scenario: weekly-sell-signal}]
+    owning_stage: 3
+    status: mapped
+    evidence:
+      - {state: existing, runner: pytest, kind: integration, path: tests/unit/backtest/test_execution_timing.py, selector: 'tests/unit/backtest/test_execution_timing.py::test_daily_signal_executes_at_next_trade_day_open', assertion: Execution timing proves a close-confirmed daily signal cannot fill before the following open.}
+      - {state: existing, runner: pytest, kind: integration, path: tests/unit/backtest/test_execution_timing.py, selector: 'tests/unit/backtest/test_execution_timing.py::test_weekly_signal_uses_first_executable_daily_open', assertion: A weekly close-confirmed signal first attempts execution at the following week's executable open.}
+  - id: R-018
+    category: backtest
+    kind: architecture
+    behavior_key: a_share_constraints_costs_and_slippage
+    acceptance: "The first-release backtest applies A-share T+1, suspension, and price-limit constraints, commission and tax, and configurable slippage."
+    source_refs: [{capability: backtesting-reporting, requirement: a-share-execution-constraints, scenario: t-plus-one-blocks-sale}, {capability: backtesting-reporting, requirement: a-share-execution-constraints, scenario: suspension-blocks-fill}, {capability: backtesting-reporting, requirement: a-share-execution-constraints, scenario: price-limit-blocks-fill}, {capability: backtesting-reporting, requirement: costs-and-slippage, scenario: calculate-net-trade-return}]
+    owning_stage: 3
+    status: mapped
+    evidence:
+      - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_backtest_semantics.py, selector: 'tests/acceptance/test_backtest_semantics.py::test_runner_persists_complete_deferred_constraint_and_cancellation_chains', assertion: 'The accepted runner persists T+1, suspension, limit, deferred-order, and cancellation chains.'}
+      - {state: existing, runner: pytest, kind: integration, path: tests/unit/backtest/test_trades.py, selector: 'tests/unit/backtest/test_trades.py::test_realized_net_return_discloses_each_cost', assertion: 'The realized trade separately records commissions, sell tax, slippage, and resulting net return.'}
+  - id: R-019
+    category: backtest
+    kind: user_visible
+    behavior_key: complete_backtest_statistics_and_trades
+    acceptance: "The first-release report shows sample size, win rate, average and median return, payoff ratio, maximum trade gain and loss, average holding period, return distribution, symbol and time groupings, and every trade detail."
+    source_refs: [{capability: backtesting-reporting, requirement: win-rate-and-statistics, scenario: calculate-win-rate}, {capability: backtesting-reporting, requirement: win-rate-and-statistics, scenario: inspect-detailed-statistics}]
+    owning_stage: 3
+    status: mapped
+    evidence:
+      - {state: existing, runner: pytest, kind: integration, path: tests/unit/backtest/test_metrics.py, selector: 'tests/unit/backtest/test_metrics.py::test_win_rate_uses_positive_net_realized_trades_only', assertion: Metric calculation defines win rate from positive-net realized trades over all realized trades.}
+      - {state: existing, runner: pytest, kind: integration, path: tests/unit/backtest/test_metrics.py, selector: 'tests/unit/backtest/test_metrics.py::test_summary_discloses_returns_pnl_payoff_extremes_and_holding', assertion: 'The summary discloses returns, profit and loss, payoff, extrema, and holding-period statistics.'}
+      - {state: existing, runner: pytest, kind: integration, path: tests/unit/backtest/test_metrics.py, selector: 'tests/unit/backtest/test_metrics.py::test_histogram_uses_fixed_deterministic_bins_and_reconciles', assertion: The return distribution uses fixed deterministic bins that reconcile to realized samples.}
+      - {state: existing, runner: pytest, kind: integration, path: tests/unit/backtest/test_grouping.py, selector: 'tests/unit/backtest/test_grouping.py::test_symbol_groups_reconcile_to_global_realized_denominator', assertion: Per-symbol grouped results reconcile to the global realized-trade denominator.}
+      - {state: existing, runner: pytest, kind: contract, path: tests/unit/backtest/test_grouping.py, selector: 'tests/unit/backtest/test_grouping.py::test_entry_month_and_year_use_shanghai_calendar_dates', assertion: Monthly and yearly groupings use explicit Shanghai calendar dates for every realized entry sample.}
+      - {state: existing, runner: pytest, kind: contract, path: tests/unit/backtest/test_metrics.py, selector: 'tests/unit/backtest/test_metrics.py::test_reliability_reports_sample_size_and_symbol_concentration', assertion: Reliability evidence reports the realized sample size and per-symbol concentration used to qualify aggregate results.}
+      - {state: existing, runner: vitest, kind: component, path: web/src/features/backtests/BacktestReportPage.test.tsx, selector: shows every required realized and open-trade metric as separate server values, assertion: The report component renders every required realized statistic and open-trade value separately from server-authoritative fields.}
+  - id: R-020
+    category: market
+    kind: user_visible
+    behavior_key: daily_weekly_sixty_and_latest_market_data
+    acceptance: "The first-release market view provides historical daily, weekly, and 60-minute bars plus the latest daily market data."
+    source_refs: [{capability: market-data-charting, requirement: periods-and-adjustments, scenario: switch-period}, {capability: market-data-charting, requirement: periods-and-adjustments, scenario: switch-adjustment}]
+    owning_stage: 1
+    status: mapped
+    evidence:
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/market.spec.ts, selector: 'real local market workflow stays cached, traceable, and interactive', assertion: The browser acceptance flow switches periods and adjustment modes against the cached market route.}
+      - {state: existing, runner: pytest, kind: contract, path: tests/unit/api/test_market_api.py, selector: 'tests/unit/api/test_market_api.py::test_bars_are_cache_only_with_full_series_exact_and_stable_misses', assertion: The market API returns the latest complete cached daily series when no explicit range is supplied.}
+  - id: R-021
+    category: market
+    kind: user_visible
+    behavior_key: complete_baseline_analysis_data
+    acceptance: "Baseline data covers market bars and adjustment, instruments, trading calendars, suspension and price-limit status, financial statements and metrics, announcements and news, indices, and industries."
+    source_refs: [{capability: market-data-charting, requirement: base-a-share-data-scope, scenario: load-stock-analysis-data}, {capability: market-data-charting, requirement: base-a-share-data-scope, scenario: report-missing-category}]
+    owning_stage: 1
+    status: mapped
+    evidence:
+      - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_market_flow.py, selector: 'tests/acceptance/test_market_flow.py::test_settings_route_worker_cache_api_and_schedule_flow_without_network', assertion: The accepted market flow exercises the unified cached data categories and explicit source diagnostics.}
+      - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_full_user_journey.py, selector: 'tests/acceptance/test_full_user_journey.py::test_demo_data_categories_and_missing_category_are_visible', assertion: The public demo contract proves every declared A-share analysis data category and an explicit visible missing category without substitution.}
+  - id: R-022
+    category: analysis
+    kind: architecture
+    behavior_key: analysis_is_independent_from_formula_backtest
+    acceptance: "Multi-agent analysis is independent from indicators, strategies, and historical backtests and does not read formulas, signal series, or backtest results."
+    source_refs: [{capability: multi-agent-analysis, requirement: analysis-decoupled-from-formula-and-backtest, scenario: report-has-technical-opinion}]
+    owning_stage: 4
+    status: mapped
+    evidence:
+      - {state: existing, runner: pytest, kind: security, path: tests/security/test_analysis_boundaries.py, selector: 'tests/security/test_analysis_boundaries.py::test_analysis_write_contract_rejects_formula_trading_and_prompt_fields', assertion: 'The analysis boundary rejects formula, signal-series, and backtest identifiers from research input.'}
+      - {state: existing, runner: pytest, kind: security, path: tests/security/test_analysis_boundaries.py, selector: 'tests/security/test_analysis_boundaries.py::test_analysis_package_has_no_formula_backtest_or_broker_imports', assertion: 'Every analysis package source file is checked for forbidden formula, backtest, broker, and order dependencies.'}
+      - {state: existing, runner: pytest, kind: contract, path: tests/unit/analysis/test_workflow.py, selector: 'tests/unit/analysis/test_workflow.py::test_analysis_api_import_boundary_rejects_formula_and_backtest', assertion: The analysis API boundary rejects static formula and backtest dependencies before they enter the package.}
+      - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_full_user_journey.py, selector: 'tests/acceptance/test_full_user_journey.py::test_analysis_remains_independent', assertion: The complete journey proves analysis neither reads formula or signal identifiers nor mutates or triggers any historical backtest.}
+  - id: R-023
+    category: analysis
+    kind: user_visible
+    behavior_key: on_demand_structured_traceable_analysis
+    acceptance: "Users trigger analysis on one stock on demand; its structured report includes technical, fundamental and news analysis, bull and bear views, risk synthesis, final rating, and the source and timestamp for every supporting item."
+    source_refs: [{capability: multi-agent-analysis, requirement: on-demand-single-stock-report, scenario: start-complete-analysis}, {capability: multi-agent-analysis, requirement: on-demand-single-stock-report, scenario: open-historical-report}, {capability: multi-agent-analysis, requirement: evidence-and-source-traceability, scenario: inspect-claim-evidence}, {capability: multi-agent-analysis, requirement: evidence-and-source-traceability, scenario: source-data-is-missing}]
+    owning_stage: 4
+    status: mapped
+    evidence:
+      - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_analysis_flow.py, selector: 'tests/acceptance/test_analysis_flow.py::test_full_stubbed_analysis_is_traceable_and_history_is_immutable', assertion: The accepted on-demand run saves a structured report that reopens with immutable historical metadata.}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/analysis.spec.ts, selector: 'configures a model and completes traceable analysis, retry, and insufficient flows', assertion: 'The browser requests one A-share analysis, visibly observes asynchronous stages, and opens the completed report and history.'}
+      - {state: existing, runner: pytest, kind: contract, path: tests/unit/analysis/test_report.py, selector: 'tests/unit/analysis/test_report.py::test_complete_report_contains_one_rating_balanced_claims_and_run_metadata', assertion: 'A complete report contains one allowed rating, confidence, balanced claims, risks, registered evidence, model identity, and template metadata.'}
+      - {state: existing, runner: pytest, kind: contract, path: tests/unit/analysis/test_report.py, selector: 'tests/unit/analysis/test_report.py::test_report_json_round_trip_is_deeply_immutable_and_rejects_identity_tampering', assertion: 'Report JSON round-trips its complete traceable identity and rejects changes to bound snapshot, evidence, model, or generation metadata.'}
+  - id: R-024
+    category: analysis
+    kind: user_visible
+    behavior_key: five_level_rating_confidence_evidence_risk
+    acceptance: "The final multi-agent rating is one of strong bullish, bullish, neutral, bearish, or strong bearish and displays confidence, principal evidence, and risks."
+    source_refs: [{capability: multi-agent-analysis, requirement: five-level-rating-and-confidence, scenario: produce-final-conclusion}]
+    owning_stage: 4
+    status: mapped
+    evidence:
+      - {state: existing, runner: pytest, kind: contract, path: tests/unit/analysis/test_rating.py, selector: 'tests/unit/analysis/test_rating.py::test_rating_has_exactly_five_stable_values_and_chinese_labels', assertion: The public rating contract permits exactly five levels and requires bounded confidence fields.}
+      - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_analysis_flow.py, selector: 'tests/acceptance/test_analysis_flow.py::test_full_stubbed_analysis_is_traceable_and_history_is_immutable', assertion: The accepted complete report presents exactly one five-level rating with confidence and balanced evidence.}
+      - {state: existing, runner: pytest, kind: contract, path: tests/unit/analysis/test_report.py, selector: 'tests/unit/analysis/test_report.py::test_complete_report_contains_one_rating_balanced_claims_and_run_metadata', assertion: 'A complete report contains one allowed rating, confidence, balanced claims, risks, registered evidence, model identity, and template metadata.'}
+  - id: R-025
+    category: platform
+    kind: user_visible
+    behavior_key: desktop_first_web_with_tablet_support
+    acceptance: "The first release is a desktop-first Web application accessed in a browser and adapted for tablet layouts."
+    source_refs: [{capability: market-data-charting, requirement: desktop-first-single-user-web-workstation, scenario: open-workstation-in-browser}, {capability: market-data-charting, requirement: desktop-first-single-user-web-workstation, scenario: open-workstation-on-tablet}]
+    owning_stage: 0
+    status: mapped
+    evidence:
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/foundation.spec.ts, selector: fresh user sees the live foundation shell and completed demo task, assertion: A fresh private user reaches the complete browser shell and worker state without an account flow.}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: /market has bounded non-overlapping layout, assertion: The market workspace remains reachable without an account and bounded at every tested ratio including both tablet orientations.}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: /formulas has bounded non-overlapping layout, assertion: The formula workspace remains reachable without an account and bounded at every tested ratio including both tablet orientations.}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: /backtests has bounded non-overlapping layout, assertion: The backtest workspace remains reachable without an account and bounded at every tested ratio including both tablet orientations.}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: /analysis has bounded non-overlapping layout, assertion: The analysis workspace remains reachable without an account and bounded at every tested ratio including both tablet orientations.}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: /tasks has bounded non-overlapping layout, assertion: The task workspace remains reachable without an account and bounded at every tested ratio including both tablet orientations.}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: /settings has bounded non-overlapping layout, assertion: The settings workspace remains reachable without an account and bounded at every tested ratio including both tablet orientations.}
+  - id: R-026
+    category: platform
+    kind: architecture
+    behavior_key: private_single_user_deployment
+    acceptance: "The first release is a personal single-user tool that supports local-computer or private-server deployment."
+    source_refs: [{capability: market-data-charting, requirement: desktop-first-single-user-web-workstation, scenario: open-workstation-in-browser}, {capability: market-data-charting, requirement: desktop-first-single-user-web-workstation, scenario: open-workstation-on-tablet}]
+    owning_stage: 0
+    status: mapped
+    evidence:
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/foundation.spec.ts, selector: fresh user sees the live foundation shell and completed demo task, assertion: A fresh private user reaches the complete browser shell and worker state without an account flow.}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: /market has bounded non-overlapping layout, assertion: The market workspace remains reachable without an account and bounded at every tested ratio including both tablet orientations.}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: /formulas has bounded non-overlapping layout, assertion: The formula workspace remains reachable without an account and bounded at every tested ratio including both tablet orientations.}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: /backtests has bounded non-overlapping layout, assertion: The backtest workspace remains reachable without an account and bounded at every tested ratio including both tablet orientations.}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: /analysis has bounded non-overlapping layout, assertion: The analysis workspace remains reachable without an account and bounded at every tested ratio including both tablet orientations.}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: /tasks has bounded non-overlapping layout, assertion: The task workspace remains reachable without an account and bounded at every tested ratio including both tablet orientations.}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: /settings has bounded non-overlapping layout, assertion: The settings workspace remains reachable without an account and bounded at every tested ratio including both tablet orientations.}
+  - id: R-027
+    category: formula
+    kind: user_visible
+    behavior_key: indicator_and_trading_formula_outputs
+    acceptance: "The formula system supports technical-indicator and trading-system formulas: indicators output main-chart or subchart data, while trading systems output explicit BUY and SELL conditions for chart markers and backtests."
+    source_refs: [{capability: formula-system, requirement: formula-types-and-outputs, scenario: evaluate-technical-indicator}, {capability: formula-system, requirement: formula-types-and-outputs, scenario: evaluate-trading-system}]
+    owning_stage: 2
+    status: mapped
+    evidence:
+      - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_formula_consistency.py, selector: 'tests/acceptance/test_formula_consistency.py::test_macd_template_has_public_outputs_signals_and_subchart_evaluation', assertion: 'The accepted MACD template exposes numeric outputs, Boolean BUY/SELL signals, and subchart placement through one evaluation.'}
+      - {state: existing, runner: vitest, kind: component, path: web/src/features/market/MarketChart.test.tsx, selector: labels main-chart overlays and subcharts according to formula placement, assertion: The chart component renders declared main overlays and subchart outputs according to typed placement.}
+  - id: R-028
+    category: market
+    kind: user_visible
+    behavior_key: preset_and_custom_stock_lists
+    acceptance: "Stock pools include all-A, major-index constituent, and industry presets and let users create and save custom stock lists."
+    source_refs: [{capability: market-data-charting, requirement: preset-and-custom-pools, scenario: use-preset-pool}, {capability: market-data-charting, requirement: preset-and-custom-pools, scenario: save-custom-pool}]
+    owning_stage: 1
+    status: mapped
+    evidence:
+      - {state: existing, runner: pytest, kind: integration, path: tests/integration/market/test_pools_presets.py, selector: 'tests/integration/market/test_pools_presets.py::test_index_and_industry_presets_are_latest_persistent_and_idempotent', assertion: Preset membership is materialized with its composition identity and timestamp.}
+      - {state: existing, runner: pytest, kind: integration, path: tests/integration/market/test_pools_custom.py, selector: 'tests/integration/market/test_pools_custom.py::test_custom_pool_reopens_with_order_and_instrument_pin', assertion: A saved custom pool reopens with its ordered members and pinned instrument identity.}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/market-pools.spec.ts, selector: all-A index industry and editable custom pools show composition timestamps across sessions, assertion: 'The browser flow proves all-A, index, and industry presets expose composition times and a custom pool can be created, edited, reopened, and deleted across reloads.'}
+  - id: R-029
+    category: formula
+    kind: user_visible
+    behavior_key: formula_editor_assistance_preview_save_copy
+    acceptance: "The formula editor provides syntax highlighting, function completion and descriptions, parameter hints, line-level errors, current-stock preview, save, and copy."
+    source_refs: [{capability: formula-system, requirement: formula-editing-assistance, scenario: use-function-assistance}, {capability: formula-system, requirement: formula-editing-assistance, scenario: locate-formula-error}]
+    owning_stage: 2
+    status: mapped
+    evidence:
+      - {state: existing, runner: vitest, kind: component, path: web/src/features/formulas/FormulaStudioPage.test.tsx, selector: 'debounces validation, locates line diagnostics, and blocks saving invalid source', assertion: Formula Studio surfaces line diagnostics and prevents an invalid draft from becoming executable.}
+      - {state: existing, runner: vitest, kind: component, path: web/src/features/formulas/tdxLanguage.test.ts, selector: defines TDX tokens and completion snippets from server metadata, assertion: The language service provides syntax tokens and completion snippets from bounded function metadata.}
+      - {state: existing, runner: vitest, kind: component, path: web/src/features/formulas/FormulaStudioPage.test.tsx, selector: inserts a function snippet from the searchable categorized library, assertion: The editor exposes searchable function descriptions and inserts a selected function snippet.}
+      - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_formula_editing_assistance.py, selector: 'tests/acceptance/test_formula_editing_assistance.py::test_highlight_hints_templates_preview_save_and_copy', assertion: 'The acceptance flow proves function metadata, templates, located validation errors, current-stock preview, immutable version saving, and independent copying.'}
+  - id: R-030
+    category: backtest
+    kind: user_visible
+    behavior_key: durable_cancellable_pool_backtest
+    acceptance: "Pool backtests run asynchronously, display progress, current stage, and failed stocks, support cancellation, and retain parameters, logs, and results."
+    source_refs: [{capability: backtesting-reporting, requirement: asynchronous-pool-task, scenario: run-pool-task}, {capability: backtesting-reporting, requirement: asynchronous-pool-task, scenario: cancel-pool-task}]
+    owning_stage: 3
+    status: mapped
+    evidence:
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/backtest.spec.ts, selector: held pool run reaches persisted terminal cancellation through the worker, assertion: The browser and real worker prove durable pool progress and a persisted terminal cancellation.}
+      - {state: existing, runner: pytest, kind: integration, path: tests/integration/backtest/test_pool_run.py, selector: 'tests/integration/backtest/test_pool_run.py::test_partial_preset_freezes_runnable_and_gap_in_pool_order', assertion: A partial preset run freezes runnable symbols and data gaps in pool order while retaining its immutable scope.}
+      - {state: existing, runner: pytest, kind: integration, path: tests/integration/backtest/test_pool_run.py, selector: 'tests/integration/backtest/test_pool_run.py::test_cancel_between_symbols_keeps_checkpoint_and_stops_new_work', assertion: Cancellation between symbols keeps the completed checkpoint and stops the Worker from starting further pool work.}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/backtest.spec.ts, selector: custom formula discloses and completes a partial pool, assertion: The browser displays per-symbol partial pool outcomes and reaches the retained terminal report.}
+  - id: R-031
+    category: market
+    kind: user_visible
+    behavior_key: pluggable_market_sources_with_local_tdx
+    acceptance: "Market data uses pluggable adapters with Tushare as primary and AKShare, BaoStock, and local TDX data as fallbacks; users can configure the Tushare token and permissions and the local TDX directory."
+    source_refs: [{capability: market-data-charting, requirement: pluggable-sources-and-priority, scenario: primary-source-succeeds}, {capability: market-data-charting, requirement: pluggable-sources-and-priority, scenario: primary-source-fails}, {capability: market-data-charting, requirement: pluggable-sources-and-priority, scenario: inspect-tushare-configuration}, {capability: market-data-charting, requirement: local-tdx-fallback, scenario: configure-valid-directory}, {capability: market-data-charting, requirement: local-tdx-fallback, scenario: local-directory-unavailable}]
+    owning_stage: 1
+    status: mapped
+    evidence:
+      - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_market_flow.py, selector: 'tests/acceptance/test_market_flow.py::test_settings_route_worker_cache_api_and_schedule_flow_without_network', assertion: 'The accepted offline flow verifies configured category routing, diagnostics, cache, API, and worker update behavior.'}
+      - {state: existing, runner: pytest, kind: integration, path: tests/unit/market/providers/test_tdx_local.py, selector: 'tests/unit/market/providers/test_tdx_local.py::test_tdx_preflight_reports_validated_markets_and_bounded_counts', assertion: A valid local directory reports recognized markets and bounded per-market file counts; this preflight result intentionally has no data cutoff.}
+      - {state: existing, runner: pytest, kind: security, path: tests/unit/market/providers/test_tdx_local.py, selector: 'tests/unit/market/providers/test_tdx_local.py::test_tdx_preflight_and_fetch_reject_every_symlink_component', assertion: Preflight and fetch reject linked roots and every linked path component before enabling the source.}
+      - {state: existing, runner: pytest, kind: integration, path: tests/unit/market/providers/test_tdx_local.py, selector: 'tests/unit/market/providers/test_tdx_local.py::test_tdx_preflight_maps_unknown_os_error_to_safe_unavailable', assertion: Unknown filesystem errors map to an actionable unavailable result without unsafe source activation.}
+      - {state: existing, runner: pytest, kind: integration, path: tests/unit/market/providers/test_tdx_local.py, selector: 'tests/unit/market/providers/test_tdx_local.py::test_tdx_preflight_returns_safe_typed_layout_failures', assertion: 'The preflight matrix returns bounded actionable failures for missing paths, non-directories, relative paths, and market-layout mismatches.'}
+      - {state: existing, runner: pytest, kind: integration, path: tests/unit/market/providers/test_tdx_local.py, selector: 'tests/unit/market/providers/test_tdx_local.py::test_tdx_preflight_rejects_structurally_invalid_day_file_sizes', assertion: 'Empty, misaligned, truncated, and oversized day files are rejected as corrupt before source enablement.'}
+      - {state: existing, runner: pytest, kind: security, path: tests/unit/market/providers/test_tdx_local.py, selector: 'tests/unit/market/providers/test_tdx_local.py::test_tdx_preflight_translates_permission_without_os_text', assertion: Unreadable directories produce a safe permission-denied result without exposing path or operating-system text.}
+      - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_tdx_local_user_flow.py, selector: 'tests/acceptance/test_tdx_local_user_flow.py::test_valid_tdx_directory_shows_markets_period_and_data_cutoff', assertion: 'A configured valid TDX directory reports recognized SH and SZ markets, its supported daily period, category gaps, and observed data cutoff together.'}
+      - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_tdx_local_user_flow.py, selector: 'tests/acceptance/test_tdx_local_user_flow.py::test_unsupported_tdx_file_format_is_rejected_before_enablement', assertion: 'An unsupported local TDX file is rejected before activation without changing the active settings or runtime, then a valid replacement is accepted.'}
+      - {state: existing, runner: pytest, kind: contract, path: tests/unit/market/test_routing.py, selector: 'tests/unit/market/test_routing.py::test_source_priorities_have_exact_independent_defaults', assertion: The routing contract fixes independent per-category defaults with Tushare first and the declared fallback order.}
+      - {state: existing, runner: pytest, kind: contract, path: tests/unit/market/test_routing_bars.py, selector: 'tests/unit/market/test_routing_bars.py::test_fetch_bars_routes_whole_query_and_records_safe_attempts', assertion: A complete bar query routes as one unit and records every safe provider attempt and selected source.}
+      - {state: existing, runner: pytest, kind: contract, path: tests/unit/market/test_routing_bars.py, selector: 'tests/unit/market/test_routing_bars.py::test_fetch_bars_rejects_partial_results_without_splicing', assertion: A provider partial result is rejected instead of being silently spliced with another provider series.}
+  - id: R-032
+    category: analysis
+    kind: user_visible
+    behavior_key: domestic_llm_openai_ollama_adapters
+    acceptance: "Model access is pluggable, prioritizes domestic providers such as DeepSeek V4, supports OpenAI-compatible endpoints and local Ollama, and lets users configure model, API key, and service address in the interface."
+    source_refs: [{capability: multi-agent-analysis, requirement: pluggable-model-interfaces, scenario: configure-domestic-model}, {capability: multi-agent-analysis, requirement: pluggable-model-interfaces, scenario: switch-model-configuration}]
+    owning_stage: 4
+    status: mapped
+    evidence:
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/analysis.spec.ts, selector: 'configures a model and completes traceable analysis, retry, and insufficient flows', assertion: 'The browser configures and tests a model before completing traceable success, retry, and insufficient-data analysis flows.'}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/model-provider-matrix.spec.ts, selector: 'model settings UI offers domestic providers, serializes runtime fields, and renders masked responses', assertion: 'The model settings UI offers DeepSeek, OpenAI-compatible, and Ollama options, serializes endpoint and runtime fields, and renders API-key responses only in masked form.'}
+      - {state: existing, runner: pytest, kind: integration, path: tests/integration/analysis/test_model_provider_runtime_matrix.py, selector: 'tests/integration/analysis/test_model_provider_runtime_matrix.py::test_real_model_provider_run_freezes_endpoint_secret_reference_and_runtime', assertion: 'A real run for each provider executes its frozen endpoint, model, opaque secret reference, and runtime parameters after a successor configuration has been created.'}
+  - id: R-033
+    category: formula
+    kind: security
+    behavior_key: future_and_repainting_formulas_blocked
+    acceptance: "Backtesting rejects future-looking or historically repainting formula capabilities and identifies and explains the offending function."
+    source_refs: [{capability: formula-system, requirement: forbid-future-and-repainting, scenario: detect-future-function}, {capability: formula-system, requirement: forbid-future-and-repainting, scenario: detect-signal-drift}]
+    owning_stage: 2
+    status: mapped
+    evidence:
+      - {state: existing, runner: pytest, kind: security, path: tests/unit/formula/test_future_detection.py, selector: 'tests/unit/formula/test_future_detection.py::test_negative_literal_and_bound_ref_are_blocked_with_structured_diagnostics', assertion: Future-directed references are blocked with structured source diagnostics before execution.}
+      - {state: existing, runner: pytest, kind: security, path: tests/unit/formula/test_future_detection.py, selector: 'tests/unit/formula/test_future_detection.py::test_registry_temporal_metadata_blocks_unsafe_or_unknown_behavior', assertion: Unsafe or unknown temporal function behavior fails closed in the versioned registry.}
+      - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_formula_safety_boundary.py, selector: 'tests/acceptance/test_formula_safety_boundary.py::test_future_or_repainting_formula_cannot_be_saved_or_backtested', assertion: 'Source-located future and repainting diagnostics retain the invalid draft while blocking save, preview, and backtest capability without changing the prior valid version.'}
+  - id: R-034
+    category: analysis
+    kind: user_visible
+    behavior_key: analysis_partial_failure_retry_and_no_rating
+    acceptance: "When a data source or model call fails, analysis retains completed content, labels the failed module, supports retrying it alone, and emits no final rating when critical evidence is insufficient."
+    source_refs: [{capability: multi-agent-analysis, requirement: retry-and-partial-report, scenario: noncritical-module-fails}, {capability: multi-agent-analysis, requirement: retry-and-partial-report, scenario: retry-failed-module}, {capability: multi-agent-analysis, requirement: no-rating-without-critical-evidence, scenario: all-critical-data-unavailable}]
+    owning_stage: 4
+    status: mapped
+    evidence:
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/analysis.spec.ts, selector: 'configures a model and completes traceable analysis, retry, and insufficient flows', assertion: 'The browser produces a partial result, retries a failed module, and preserves the original run.'}
+      - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_analysis_flow.py, selector: 'tests/acceptance/test_analysis_flow.py::test_empty_tushare_fundamentals_becomes_insufficient_without_rating', assertion: Missing fundamental evidence terminates as insufficient and persists no final rating.}
+      - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_analysis_flow.py, selector: 'tests/acceptance/test_analysis_flow.py::test_partial_retry_insufficient_evidence_and_cancel_are_durable', assertion: 'The accepted flow retains partial content, creates a retry child without overwriting its parent, suppresses insufficient ratings, and preserves cancellation.'}
+      - {state: existing, runner: pytest, kind: contract, path: tests/unit/analysis/test_report.py, selector: 'tests/unit/analysis/test_report.py::test_only_unusable_technical_evidence_suppresses_rating', assertion: 'Unusable critical technical evidence deterministically suppresses rating and exposes missing modules, sections, and recovery actions.'}
+      - {state: existing, runner: pytest, kind: contract, path: tests/unit/analysis/test_report.py, selector: 'tests/unit/analysis/test_report.py::test_missing_fundamentals_cannot_be_hidden_by_news_evidence', assertion: Missing fundamentals cannot be hidden by news evidence and produces no rating plus an explicit recovery action.}
+      - {state: existing, runner: pytest, kind: contract, path: tests/unit/analysis/test_report.py, selector: 'tests/unit/analysis/test_report.py::test_preflight_builds_deterministic_insufficient_report_without_impossible_workflow', assertion: Preflight builds a deterministic insufficient report for each critical evidence gap without running an impossible model workflow.}
+  - id: R-035
+    category: platform
+    kind: architecture
+    behavior_key: modular_monolith_worker_and_capability_specs
+    acceptance: "The first release uses one modular-monolith repository and deployment package with an asynchronous Worker, clear market, formula, backtest, and analysis boundaries, and OpenSpec capability specifications implemented in stages."
+    source_refs: [{capability: product-design, requirement: modular-monolith-worker-and-persistence, scenario: run-heavy-work-in-worker}]
+    owning_stage: 0
+    status: mapped
+    evidence:
+      - {state: existing, runner: pytest, kind: contract, path: tests/unit/analysis/test_workflow.py, selector: 'tests/unit/analysis/test_workflow.py::test_analysis_import_boundary_rejects_domain_and_direct_network_imports', assertion: The analysis module boundary rejects forbidden domain and direct-network imports.}
+      - {state: existing, runner: pytest, kind: integration, path: tests/acceptance/test_container_smoke.py, selector: 'tests/acceptance/test_container_smoke.py::test_compose_worker_completes_demo_task_through_shared_sqlite', assertion: The container smoke test proves heavy task execution crosses an independent worker through shared durable storage.}
+      - {state: existing, runner: pytest, kind: contract, path: tests/acceptance/test_architecture_boundaries.py, selector: 'tests/acceptance/test_architecture_boundaries.py::test_module_inventory_and_heavy_work_use_independent_worker', assertion: 'The architecture inventory verifies the exact capability packages, forbids heavy-worker imports from API modules, and executes queued work through an independent production worker.'}
+  - id: R-036
+    category: market
+    kind: architecture
+    behavior_key: normalized_market_model_with_provenance
+    acceptance: "The market module normalizes different sources into one data model and records each dataset source, update time, and adjustment mode."
+    source_refs: [{capability: market-data-charting, requirement: unified-model-and-provenance, scenario: display-data-source}, {capability: market-data-charting, requirement: unified-model-and-provenance, scenario: switch-series-source}]
+    owning_stage: 1
+    status: mapped
+    evidence:
+      - {state: existing, runner: pytest, kind: integration, path: tests/unit/market/test_provenance.py, selector: 'tests/unit/market/test_provenance.py::test_source_transition_requires_category_specific_boundary', assertion: A source transition must carry an explicit compatible boundary and reason before composition.}
+      - {state: existing, runner: pytest, kind: contract, path: tests/unit/market/test_routing_security.py, selector: 'tests/unit/market/test_routing_security.py::test_router_attaches_transition_from_previous_manifest_to_current_success', assertion: Routing binds the previous manifest and exact transition boundary to the current successful normalized result.}
+      - {state: existing, runner: pytest, kind: contract, path: tests/unit/market/test_provenance_transitions.py, selector: 'tests/unit/market/test_provenance_transitions.py::test_derive_source_transition_classifies_source_changes', assertion: Source transitions classify provider changes with the required reason and versioned provenance fields.}
+      - {state: existing, runner: pytest, kind: contract, path: tests/contract/providers/test_provider_contract.py, selector: 'tests/contract/providers/test_provider_contract.py::test_bar_contract_normalizes_schema_units_order_and_provenance', assertion: 'The cross-provider contract normalizes every period and adjustment into one bar schema while preserving source, fetched time, data cutoff, and adjustment provenance.'}
+      - {state: existing, runner: pytest, kind: contract, path: tests/unit/market/test_provenance_hashes.py, selector: 'tests/unit/market/test_provenance_hashes.py::test_manifest_preserves_upstream_provenance_but_excludes_fetched_at_from_hash', assertion: 'The routing manifest preserves upstream fetched time, cutoff, adjustment, source selection, and dataset identity and validates them against the normalized result.'}
+  - id: R-037
+    category: formula
+    kind: architecture
+    behavior_key: shared_formula_engine_result
+    acceptance: "Formula preview, chart BUY and SELL markers, and historical backtesting share one formula engine and one calculation result so entry points cannot disagree."
+    source_refs: [{capability: formula-system, requirement: single-formula-calculation-source, scenario: preview-to-backtest}]
+    owning_stage: 2
+    status: mapped
+    evidence:
+      - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_formula_consistency.py, selector: 'tests/acceptance/test_formula_consistency.py::test_preview_and_chart_signal_payload_match', assertion: Preview and chart payloads contain identical outputs and BUY/SELL signal positions.}
+      - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_full_user_journey.py, selector: 'tests/acceptance/test_full_user_journey.py::test_formula_signal_matches_backtest_entry', assertion: The full journey will prove that the first backtest entry is caused by the same previewed signal timestamp.}
+  - id: R-038
+    category: platform
+    kind: user_visible
+    behavior_key: desktop_workstation_primary_navigation
+    acceptance: "The desktop workstation navigation includes market, custom formulas, strategy backtests, intelligent analysis, task center, and settings; the market page combines pools, candlesticks, stock overview, and primary actions in one workspace."
+    source_refs: [{capability: market-data-charting, requirement: professional-terminal-visual-structure, scenario: open-market-workspace}, {capability: market-data-charting, requirement: desktop-first-single-user-web-workstation, scenario: open-workstation-in-browser}, {capability: market-data-charting, requirement: desktop-first-single-user-web-workstation, scenario: open-workstation-on-tablet}]
+    owning_stage: 1
+    status: mapped
+    evidence:
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/foundation.spec.ts, selector: desktop market terminal keeps all three work areas aligned without overflow, assertion: Desktop browser acceptance proves the professional three-region market layout and bounded overflow.}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/market-visual-identity.spec.ts, selector: market terminal preserves navy structure and rise-fall colors with three aligned regions, assertion: 'The browser visual contract verifies the aligned three-region market terminal, exact deep-navy surface, and visible A-share red-rise and green-fall encoding.'}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/foundation.spec.ts, selector: fresh user sees the live foundation shell and completed demo task, assertion: A fresh private user reaches the complete browser shell and worker state without an account flow.}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: /market has bounded non-overlapping layout, assertion: The market workspace remains reachable without an account and bounded at every tested ratio including both tablet orientations.}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: /formulas has bounded non-overlapping layout, assertion: The formula workspace remains reachable without an account and bounded at every tested ratio including both tablet orientations.}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: /backtests has bounded non-overlapping layout, assertion: The backtest workspace remains reachable without an account and bounded at every tested ratio including both tablet orientations.}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: /analysis has bounded non-overlapping layout, assertion: The analysis workspace remains reachable without an account and bounded at every tested ratio including both tablet orientations.}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: /tasks has bounded non-overlapping layout, assertion: The task workspace remains reachable without an account and bounded at every tested ratio including both tablet orientations.}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: /settings has bounded non-overlapping layout, assertion: The settings workspace remains reachable without an account and bounded at every tested ratio including both tablet orientations.}
+  - id: R-039
+    category: formula
+    kind: user_visible
+    behavior_key: template_or_pasted_formula_pre_save_validation
+    acceptance: "The editor starts from built-in templates or pasted TDX formulas and completes syntax, supported-function, and future-function checks before saving."
+    source_refs: [{capability: formula-system, requirement: builtin-and-custom-formulas, scenario: use-builtin-macd}, {capability: formula-system, requirement: builtin-and-custom-formulas, scenario: create-custom-formula}, {capability: formula-system, requirement: common-tdx-syntax-compatibility, scenario: paste-supported-formula}, {capability: formula-system, requirement: common-tdx-syntax-compatibility, scenario: use-unsupported-function}, {capability: formula-system, requirement: validate-before-save, scenario: formula-passes-validation}, {capability: formula-system, requirement: validate-before-save, scenario: formula-fails-validation}]
+    owning_stage: 2
+    status: mapped
+    evidence:
+      - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_macd_formula_flow.py, selector: 'tests/acceptance/test_macd_formula_flow.py::test_macd_template_preview_versioning_and_safety_are_one_flow', assertion: The public MACD template and a safe versioned preview are exercised as one accepted formula flow.}
+      - {state: existing, runner: pytest, kind: contract, path: tests/unit/formula/test_registry.py, selector: 'tests/unit/formula/test_registry.py::test_v1_registry_contains_documented_common_subset', assertion: The compatibility registry exposes a stable version and the exact supported function metadata.}
+      - {state: existing, runner: pytest, kind: contract, path: tests/unit/formula/test_parser.py, selector: 'tests/unit/formula/test_parser.py::test_parser_understands_assignment_output_and_cross', assertion: 'The parser accepts representative first-release TDX assignment, output, field, and CROSS syntax.'}
+      - {state: existing, runner: pytest, kind: contract, path: tests/unit/formula/test_registry.py, selector: 'tests/unit/formula/test_registry.py::test_unknown_function_is_rejected_at_its_source_span', assertion: 'An unsupported function is rejected with stable code, function name, and actionable line and column diagnostics.'}
+      - {state: existing, runner: pytest, kind: security, path: tests/integration/formula/test_backtest_preflight.py, selector: 'tests/integration/formula/test_backtest_preflight.py::test_preflight_rejects_indicator_and_invalid_parameter_binding', assertion: Backtest preflight rejects formula types and invalid parameter bindings that cannot become executable inputs.}
+      - {state: existing, runner: vitest, kind: component, path: web/src/features/formulas/FormulaStudioPage.test.tsx, selector: 'debounces validation, locates line diagnostics, and blocks saving invalid source', assertion: Formula Studio preserves an invalid draft with line diagnostics and blocks publishing it as an executable version.}
+      - {state: existing, runner: pytest, kind: security, path: tests/acceptance/test_formula_validation_boundary.py, selector: 'tests/acceptance/test_formula_validation_boundary.py::test_all_validation_stages_block_invalid_save_preview_and_backtest_while_preserving_draft', assertion: 'The boundary matrix proves syntax, function, and parameter diagnostics preserve invalid drafts while blocking save, preview, and backtest capability and retaining the prior valid version.'}
+  - id: R-040
+    category: backtest
+    kind: user_visible
+    behavior_key: guided_backtest_and_drilldown_report
+    acceptance: "A step-by-step backtest wizard selects formula, stock scope, period and dates, and trading costs before submission; results drill down from core summary to grouped statistics and trade details."
+    source_refs: [{capability: backtesting-reporting, requirement: guided-backtest-wizard, scenario: configure-and-review-backtest}, {capability: backtesting-reporting, requirement: conclusion-first-report, scenario: open-completed-backtest-report}]
+    owning_stage: 3
+    status: mapped
+    evidence:
+      - {state: existing, runner: vitest, kind: component, path: web/src/features/backtests/BacktestWizard.test.tsx, selector: shows next-open and independent-pool semantics before submit, assertion: The review step discloses next-open and independent-pool execution semantics before submission.}
+      - {state: existing, runner: vitest, kind: component, path: web/src/features/backtests/BacktestWizard.test.tsx, selector: collects immutable formula scope period dates and costs and discloses T+1 suspension price limits and pool semantics, assertion: 'The wizard review proves the selected formula, scope, period, dates, and trading costs are sent to preflight while disclosing T+1, suspension, price-limit, and independent-pool semantics.'}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/backtest.spec.ts, selector: 'desktop market prefill runs MACD through report, replay, and export', assertion: 'The browser opens a conclusion-first MACD report, then replays and exports its detailed samples.'}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/backtest.spec.ts, selector: custom formula discloses and completes a partial pool, assertion: The browser drills from a custom-formula pool summary into explicit partial sample outcomes.}
+      - {state: existing, runner: vitest, kind: component, path: web/src/features/backtests/BacktestReportPage.test.tsx, selector: keeps concrete reproducibility costs and sources visible across report tabs, assertion: 'Every report tab keeps the pinned reproducibility context, source, and concrete cost parameters visible.'}
+  - id: R-041
+    category: market
+    kind: architecture
+    behavior_key: category_priority_fallback_without_splicing
+    acceptance: "Each data category has a configurable priority, falls back only for primary-source failure, permission denial, or missing data, never silently splices one series from multiple sources, and records every switch and reason."
+    source_refs: [{capability: market-data-charting, requirement: pluggable-sources-and-priority, scenario: primary-source-succeeds}, {capability: market-data-charting, requirement: pluggable-sources-and-priority, scenario: primary-source-fails}, {capability: market-data-charting, requirement: pluggable-sources-and-priority, scenario: inspect-tushare-configuration}, {capability: market-data-charting, requirement: unified-model-and-provenance, scenario: display-data-source}, {capability: market-data-charting, requirement: unified-model-and-provenance, scenario: switch-series-source}]
+    owning_stage: 1
+    status: mapped
+    evidence:
+      - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_market_flow.py, selector: 'tests/acceptance/test_market_flow.py::test_settings_route_worker_cache_api_and_schedule_flow_without_network', assertion: 'The accepted offline flow verifies configured category routing, diagnostics, cache, API, and worker update behavior.'}
+      - {state: existing, runner: pytest, kind: integration, path: tests/unit/market/test_provenance.py, selector: 'tests/unit/market/test_provenance.py::test_source_transition_requires_category_specific_boundary', assertion: A source transition must carry an explicit compatible boundary and reason before composition.}
+      - {state: existing, runner: pytest, kind: contract, path: tests/unit/market/test_routing.py, selector: 'tests/unit/market/test_routing.py::test_source_priorities_have_exact_independent_defaults', assertion: The routing contract fixes independent per-category defaults with Tushare first and the declared fallback order.}
+      - {state: existing, runner: pytest, kind: contract, path: tests/unit/market/test_routing_bars.py, selector: 'tests/unit/market/test_routing_bars.py::test_fetch_bars_routes_whole_query_and_records_safe_attempts', assertion: A complete bar query routes as one unit and records every safe provider attempt and selected source.}
+      - {state: existing, runner: pytest, kind: contract, path: tests/unit/market/test_routing_bars.py, selector: 'tests/unit/market/test_routing_bars.py::test_fetch_bars_rejects_partial_results_without_splicing', assertion: A provider partial result is rejected instead of being silently spliced with another provider series.}
+      - {state: existing, runner: pytest, kind: contract, path: tests/unit/market/test_routing_security.py, selector: 'tests/unit/market/test_routing_security.py::test_router_attaches_transition_from_previous_manifest_to_current_success', assertion: Routing binds the previous manifest and exact transition boundary to the current successful normalized result.}
+      - {state: existing, runner: pytest, kind: contract, path: tests/unit/market/test_provenance_transitions.py, selector: 'tests/unit/market/test_provenance_transitions.py::test_derive_source_transition_classifies_source_changes', assertion: Source transitions classify provider changes with the required reason and versioned provenance fields.}
+  - id: R-042
+    category: market
+    kind: user_visible
+    behavior_key: local_manual_and_scheduled_updates
+    acceptance: "Historical data is stored locally, supports manual and daily scheduled updates, and shows the data cutoff in the interface."
+    source_refs: [{capability: market-data-charting, requirement: local-storage-and-update, scenario: manually-update-data}, {capability: market-data-charting, requirement: local-storage-and-update, scenario: scheduled-update-partially-fails}]
+    owning_stage: 1
+    status: mapped
+    evidence:
+      - {state: existing, runner: pytest, kind: integration, path: tests/integration/market/test_update_failures.py, selector: 'tests/integration/market/test_update_failures.py::test_partial_routing_failure_is_safe_and_continues_next_symbol', assertion: A partially failed update commits successful datasets and persists source-specific failure details.}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/market.spec.ts, selector: 'real local market workflow stays cached, traceable, and interactive', assertion: 'The market browser flow shows source cutoff, starts and cancels a manual update, saves a daily schedule, and retains it after reload.'}
+      - {state: existing, runner: pytest, kind: integration, path: tests/integration/market/test_update_cancel.py, selector: 'tests/integration/market/test_update_cancel.py::test_cancel_between_symbols_keeps_current_success_and_skips_routing', assertion: Cancellation between symbols retains the current successful update and prevents routing any later symbol.}
+      - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_market_flow.py, selector: 'tests/acceptance/test_market_flow.py::test_settings_route_worker_cache_api_and_schedule_flow_without_network', assertion: 'The accepted offline flow saves an enabled daily schedule, lets the runtime claim its due occurrence, and proves that occurrence creates a market.update task.'}
+  - id: R-043
+    category: backtest
+    kind: architecture
+    behavior_key: reproducible_backtest_snapshot
+    acceptance: "Every backtest saves data version, adjustment mode, formula version, and all run parameters so identical inputs reproduce identical results."
+    source_refs: [{capability: backtesting-reporting, requirement: reproducible-backtest-snapshot, scenario: rerun-same-snapshot}]
+    owning_stage: 3
+    status: mapped
+    evidence:
+      - {state: existing, runner: pytest, kind: integration, path: tests/integration/backtest/test_snapshot_replay.py, selector: 'tests/integration/backtest/test_snapshot_replay.py::test_snapshot_reopens_exact_pinned_data_after_newer_versions_are_published', assertion: Snapshot replay reopens frozen inputs and reproduces the persisted historical execution result.}
+  - id: R-044
+    category: formula
+    kind: security
+    behavior_key: controlled_tdx_parser_and_function_registry
+    acceptance: "The TDX compatibility layer parses formulas without executing arbitrary code and maintains an explicit, queryable compatibility function list."
+    source_refs: [{capability: formula-system, requirement: controlled-formula-execution, scenario: reject-arbitrary-code}, {capability: formula-system, requirement: common-tdx-syntax-compatibility, scenario: paste-supported-formula}, {capability: formula-system, requirement: common-tdx-syntax-compatibility, scenario: use-unsupported-function}]
+    owning_stage: 2
+    status: mapped
+    evidence:
+      - {state: existing, runner: pytest, kind: security, path: tests/unit/formula/test_parser.py, selector: 'tests/unit/formula/test_parser.py::test_parser_rejects_executable_or_dynamic_python_shapes', assertion: The formula parser rejects arbitrary language and host-access constructs before evaluation.}
+      - {state: existing, runner: pytest, kind: security, path: tests/security/test_formula_sandbox.py, selector: 'tests/security/test_formula_sandbox.py::test_formula_host_access_is_rejected_without_file_process_or_network_side_effects', assertion: 'The hostile formula matrix rejects import, file, process, network, eval, and host-object shapes with zero side effects, then proves a registered formula remains executable.'}
+      - {state: existing, runner: pytest, kind: security, path: tests/security/test_formula_sandbox.py, selector: 'tests/security/test_formula_sandbox.py::test_real_formula_preview_executes_before_and_after_hostile_validation_matrix', assertion: A real saved formula executes through FormulaService preview before and after the full hostile validation matrix with identical numeric and signal output and no host side effects.}
+      - {state: existing, runner: pytest, kind: contract, path: tests/unit/formula/test_registry.py, selector: 'tests/unit/formula/test_registry.py::test_v1_registry_contains_documented_common_subset', assertion: The compatibility registry exposes a stable version and the exact supported function metadata.}
+      - {state: existing, runner: pytest, kind: contract, path: tests/unit/formula/test_parser.py, selector: 'tests/unit/formula/test_parser.py::test_parser_understands_assignment_output_and_cross', assertion: 'The parser accepts representative first-release TDX assignment, output, field, and CROSS syntax.'}
+      - {state: existing, runner: pytest, kind: contract, path: tests/unit/formula/test_registry.py, selector: 'tests/unit/formula/test_registry.py::test_unknown_function_is_rejected_at_its_source_span', assertion: 'An unsupported function is rejected with stable code, function name, and actionable line and column diagnostics.'}
+  - id: R-045
+    category: backtest
+    kind: architecture
+    behavior_key: single_position_pending_orders_and_open_trades
+    acceptance: "Each stock has at most one position; duplicate buys and empty sells are ignored, blocked orders wait until the first tradable point or an opposite signal cancels them, and end-of-range open trades show floating return but do not enter realized win rate."
+    source_refs: [{capability: backtesting-reporting, requirement: single-position-and-pending-orders, scenario: repeated-buy-while-held}, {capability: backtesting-reporting, requirement: single-position-and-pending-orders, scenario: opposite-signal-cancels-pending-buy}, {capability: backtesting-reporting, requirement: open-trade-handling, scenario: end-with-open-position}]
+    owning_stage: 3
+    status: mapped
+    evidence:
+      - {state: existing, runner: pytest, kind: integration, path: tests/unit/backtest/test_state_machine.py, selector: 'tests/unit/backtest/test_state_machine.py::test_opposite_signal_cancels_pending_buy', assertion: The per-symbol state machine cancels a pending order on the opposite signal and records why.}
+      - {state: existing, runner: pytest, kind: integration, path: tests/unit/backtest/test_state_machine.py, selector: 'tests/unit/backtest/test_state_machine.py::test_duplicate_buy_is_ignored_when_already_holding', assertion: A duplicate buy while holding one position is ignored with an auditable reason.}
+      - {state: existing, runner: pytest, kind: integration, path: tests/unit/backtest/test_state_machine.py, selector: 'tests/unit/backtest/test_state_machine.py::test_flat_sell_is_ignored', assertion: A sell signal with no open position is ignored without creating an order.}
+      - {state: existing, runner: pytest, kind: integration, path: tests/unit/backtest/test_state_machine.py, selector: 'tests/unit/backtest/test_state_machine.py::test_blocked_attempt_is_audited_without_resetting_pending_order', assertion: A blocked fill remains pending until a later tradable attempt and preserves its original eligibility.}
+      - {state: existing, runner: pytest, kind: integration, path: tests/unit/backtest/test_state_machine.py, selector: 'tests/unit/backtest/test_state_machine.py::test_fill_pending_buy_then_sell_updates_exactly_one_position', assertion: The state machine fills one pending buy into exactly one position before a later sell closes it.}
+      - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_backtest_semantics.py, selector: 'tests/acceptance/test_backtest_semantics.py::test_persisted_costs_and_open_trade_stay_out_of_realized_metrics', assertion: An open trade persists with floating results and remains outside all realized metrics.}
+  - id: R-046
+    category: analysis
+    kind: architecture
+    behavior_key: ordered_evidence_bound_agent_workflow
+    acceptance: "Agents run from one data snapshot through parallel technical and fundamental/news analysis, bull and bear review, risk synthesis, and final rating; later agents use only standard data and prior evidence."
+    source_refs: [{capability: multi-agent-analysis, requirement: compact-research-workflow, scenario: complete-research-workflow}, {capability: multi-agent-analysis, requirement: compact-research-workflow, scenario: inspect-analysis-trace}]
+    owning_stage: 4
+    status: mapped
+    evidence:
+      - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_analysis_flow.py, selector: 'tests/acceptance/test_analysis_flow.py::test_full_stubbed_analysis_is_traceable_and_history_is_immutable', assertion: 'The stubbed accepted flow proves ordered roles, evidence traceability, and immutable history.'}
+      - {state: existing, runner: pytest, kind: contract, path: tests/unit/analysis/test_workflow.py, selector: 'tests/unit/analysis/test_workflow.py::test_analysts_really_overlap_then_reviews_and_decision_follow_dependencies', assertion: 'The workflow test proves technical and fundamental/news roles overlap, reviews wait for both, risk waits for both reviews, and the result stays pinned to one snapshot.'}
+      - {state: existing, runner: pytest, kind: contract, path: tests/unit/analysis/test_workflow.py, selector: 'tests/unit/analysis/test_workflow.py::test_roles_receive_only_allowed_snapshot_and_structured_dependency_blocks', assertion: 'The workflow contract proves each downstream role receives only the allowed structured outputs, evidence references, and snapshot context from its declared predecessors.'}
+  - id: R-047
+    category: analysis
+    kind: architecture
+    behavior_key: analysis_claim_and_run_traceability
+    acceptance: "Important report conclusions link to source and time, and each report saves snapshot identity, model provider, model name, and generation time."
+    source_refs: [{capability: multi-agent-analysis, requirement: evidence-and-source-traceability, scenario: inspect-claim-evidence}, {capability: multi-agent-analysis, requirement: evidence-and-source-traceability, scenario: source-data-is-missing}]
+    owning_stage: 4
+    status: mapped
+    evidence:
+      - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_analysis_flow.py, selector: 'tests/acceptance/test_analysis_flow.py::test_full_stubbed_analysis_is_traceable_and_history_is_immutable', assertion: 'The accepted report retains source times, model and prompt metadata, claim links, and immutable history.'}
+      - {state: existing, runner: pytest, kind: contract, path: tests/unit/analysis/test_report.py, selector: 'tests/unit/analysis/test_report.py::test_complete_report_contains_one_rating_balanced_claims_and_run_metadata', assertion: 'A complete report contains one allowed rating, confidence, balanced claims, risks, registered evidence, model identity, and template metadata.'}
+      - {state: existing, runner: pytest, kind: contract, path: tests/unit/analysis/test_report.py, selector: 'tests/unit/analysis/test_report.py::test_report_json_round_trip_is_deeply_immutable_and_rejects_identity_tampering', assertion: 'Report JSON round-trips its complete traceable identity and rejects changes to bound snapshot, evidence, model, or generation metadata.'}
+      - {state: existing, runner: pytest, kind: contract, path: tests/unit/analysis/test_report.py, selector: 'tests/unit/analysis/test_report.py::test_workflow_roles_trace_and_evidence_identity_must_be_exact', assertion: The saved report requires exact workflow-role trace and evidence identities before it can be accepted as traceable.}
+  - id: R-048
+    category: security
+    kind: security
+    behavior_key: external_content_is_data_and_report_is_non_advice
+    acceptance: "News and announcement bodies are analysis data rather than model instructions, and reports clearly state that they are research assistance rather than investment advice."
+    source_refs: [{capability: multi-agent-analysis, requirement: external-content-prompt-injection-defense, scenario: news-contains-instructions}, {capability: multi-agent-analysis, requirement: first-release-analysis-boundary, scenario: view-final-report}]
+    owning_stage: 4
+    status: mapped
+    evidence:
+      - {state: existing, runner: pytest, kind: security, path: tests/security/test_prompt_injection.py, selector: 'tests/security/test_prompt_injection.py::test_semantic_attacks_remain_nested_untrusted_json_and_system_is_constant', assertion: 'Injection fixtures remain quoted evidence and cannot change prompts, permissions, or workflow.'}
+      - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_analysis_flow.py, selector: 'tests/acceptance/test_analysis_flow.py::test_partial_retry_insufficient_evidence_and_cancel_are_durable', assertion: Accepted terminal reports preserve bounded research outputs without turning missing evidence into advice.}
+      - {state: existing, runner: pytest, kind: integration, path: tests/unit/analysis/test_rating.py, selector: 'tests/unit/analysis/test_rating.py::test_rating_proposal_rejects_target_and_allocation_advice', assertion: The rating contract rejects target prices and allocation advice from research output.}
+      - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_non_goal_inventory.py, selector: 'tests/acceptance/test_non_goal_inventory.py::test_every_non_goal_is_checked_on_every_declared_public_surface', assertion: The public inventory rejects advice and execution capabilities from every declared surface.}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/analysis.spec.ts, selector: 'configures a model and completes traceable analysis, retry, and insufficient flows', assertion: The completed browser report visibly renders the non-investment-advice disclaimer before evidence inspection.}
+  - id: R-049
+    category: analysis
+    kind: architecture
+    behavior_key: bounded_model_retry_preserves_runs
+    acceptance: "Model calls support a configurable automatic retry count; report history retains every run state and retry never overwrites the original failed record."
+    source_refs: [{capability: multi-agent-analysis, requirement: retry-and-partial-report, scenario: noncritical-module-fails}, {capability: multi-agent-analysis, requirement: retry-and-partial-report, scenario: retry-failed-module}]
+    owning_stage: 4
+    status: mapped
+    evidence:
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/analysis.spec.ts, selector: 'configures a model and completes traceable analysis, retry, and insufficient flows', assertion: 'The browser produces a partial result, retries a failed module, and preserves the original run.'}
+      - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_analysis_flow.py, selector: 'tests/acceptance/test_analysis_flow.py::test_partial_retry_insufficient_evidence_and_cancel_are_durable', assertion: 'The accepted flow retains partial content, creates a retry child without overwriting its parent, suppresses insufficient ratings, and preserves cancellation.'}
+      - {state: existing, runner: pytest, kind: integration, path: tests/integration/analysis/test_runner.py, selector: 'tests/integration/analysis/test_runner.py::test_runner_persists_every_attempt_and_uses_injected_backoff', assertion: The runner persists every bounded model attempt and applies the configured retry backoff without erasing prior failures.}
+      - {state: existing, runner: pytest, kind: integration, path: tests/integration/analysis/test_analysis_service.py, selector: 'tests/integration/analysis/test_analysis_service.py::test_retry_requires_report_action_is_concurrency_unique_and_preserves_parent', assertion: 'A module retry requires the report action, is concurrency-unique, and preserves the original parent run and error record.'}
+  - id: R-050
+    category: security
+    kind: security
+    behavior_key: all_sensitive_configuration_is_protected
+    acceptance: "Tushare tokens, LLM API keys, and other sensitive settings are encrypted at rest, displayed only as masks, never returned plaintext by the server, and automatically redacted from task logs and errors."
+    source_refs: [{capability: market-data-charting, requirement: market-secret-protection, scenario: save-market-token}, {capability: market-data-charting, requirement: market-secret-protection, scenario: market-source-call-fails}, {capability: multi-agent-analysis, requirement: model-secret-and-log-protection, scenario: save-model-key}, {capability: multi-agent-analysis, requirement: model-secret-and-log-protection, scenario: model-call-fails}]
+    owning_stage: 4
+    status: mapped
+    evidence:
+      - {state: existing, runner: pytest, kind: security, path: tests/unit/api/test_source_settings.py, selector: 'tests/unit/api/test_source_settings.py::test_tushare_token_is_write_only_masked_and_omission_keeps_ciphertext', assertion: 'The Tushare token is write-only, encrypted in storage, and represented publicly only by masked state.'}
+      - {state: existing, runner: pytest, kind: security, path: tests/unit/api/test_source_settings.py, selector: 'tests/unit/api/test_source_settings.py::test_provider_factory_dynamic_nonpropagating_handler_and_close_are_redacted', assertion: Dynamic provider failures and handler cleanup redact active token values from diagnostic logging.}
+      - {state: existing, runner: pytest, kind: security, path: tests/security/test_secret_surfaces.py, selector: 'tests/security/test_secret_surfaces.py::test_market_token_never_leaves_masked_state_across_legacy_and_new_tasks', assertion: Configured and rotated market tokens redact an already-persisted legacy task at the response boundary and are removed before every new task persistence write while ordinary values remain intact.}
+      - {state: existing, runner: pytest, kind: security, path: tests/security/test_secret_surfaces.py, selector: 'tests/security/test_secret_surfaces.py::test_source_rotation_scrubs_old_token_before_close_and_restart', assertion: 'Rotating a configured market token transactionally removes both the old and new values from legacy task, event, and backtest export rows before restart while preserving ordinary similar text.'}
+      - {state: existing, runner: pytest, kind: security, path: tests/security/test_analysis_boundaries.py, selector: 'tests/security/test_analysis_boundaries.py::test_real_worker_error_redacts_logs_task_http_and_report', assertion: 'A real failed model worker redacts secret material across logs, task HTTP state, and persisted reports.'}
+      - {state: existing, runner: pytest, kind: security, path: tests/integration/analysis/test_model_settings_service.py, selector: 'tests/integration/analysis/test_model_settings_service.py::test_create_remote_writes_encrypted_secret_and_catalog_in_one_transaction', assertion: Creating a remote model configuration atomically writes an encrypted secret reference and safe catalog record.}
+      - {state: existing, runner: pytest, kind: security, path: tests/unit/api/test_model_settings.py, selector: 'tests/unit/api/test_model_settings.py::test_remote_create_passes_secret_without_exposing_it_in_response_or_repr', assertion: The model settings API accepts a key without exposing it in the response or representation.}
+      - {state: existing, runner: pytest, kind: security, path: tests/security/test_secret_surfaces.py, selector: 'tests/security/test_secret_surfaces.py::test_configured_and_rotated_model_keys_register_for_all_process_boundaries', assertion: 'Configured and rotated model keys remain registered together, redact an already-persisted legacy task at the response boundary, and are removed before new task persistence.'}
+      - {state: existing, runner: pytest, kind: security, path: tests/security/test_secret_surfaces.py, selector: 'tests/security/test_secret_surfaces.py::test_active_secret_is_redacted_from_every_backtest_export_format', assertion: Model keys configured only after legacy backtest rows were written are removed from every CSV and JSON export section while ordinary allowlisted text remains.}
+      - {state: existing, runner: pytest, kind: security, path: tests/security/test_analysis_boundaries.py, selector: 'tests/security/test_analysis_boundaries.py::test_successful_model_secret_echo_is_redacted_before_analysis_persistence_and_api', assertion: 'A successful provider response that echoes its active key is redacted from role output, persisted stage data, final report JSON, task state, and API responses before the run completes.'}
+      - {state: existing, runner: pytest, kind: security, path: tests/security/test_analysis_boundaries.py, selector: 'tests/security/test_analysis_boundaries.py::test_successful_role_secret_echo_is_clean_before_all_dependency_requests', assertion: 'A real five-stage workflow canonicalizes a successful secret-echoing role before dependency propagation, so all later model requests, persisted stages, reports, and API output exclude the active key while ordinary similar text remains.'}
+      - {state: existing, runner: pytest, kind: security, path: tests/unit/analysis/test_workflow.py, selector: 'tests/unit/analysis/test_workflow.py::test_direct_workflow_cleans_secret_echo_before_dependency_requests', assertion: 'The direct five-stage workflow entry point cleans an active secret from a validated role output before constructing dependent model requests and returning the workflow result, while retaining ordinary similar text.'}
+      - {state: existing, runner: pytest, kind: security, path: tests/security/test_analysis_boundaries.py, selector: 'tests/security/test_analysis_boundaries.py::test_model_rotation_scrubs_legacy_analysis_before_restart_and_first_api_read', assertion: 'Model-key rotation rewrites legacy successful analysis stages, reports, hashes, and task report references so neither current nor rotated keys survive restart or the first API read.'}
+      - {state: existing, runner: pytest, kind: security, path: tests/security/test_secret_surfaces.py, selector: 'tests/security/test_secret_surfaces.py::test_model_restart_hydrates_and_scrubs_legacy_tasks_and_export_rows', assertion: 'Model settings construction and restart hydrate all configured key versions and transactionally scrub legacy task, event, and every backtest export surface while restoring immutability triggers.'}
+      - {state: existing, runner: pytest, kind: security, path: tests/security/test_secret_surfaces.py, selector: 'tests/security/test_secret_surfaces.py::test_application_startup_hydrates_model_secret_before_first_task_read', assertion: Application startup hydrates configured model credentials and scrubs persisted task output before the first task API read.}
+      - {state: existing, runner: pytest, kind: security, path: tests/security/test_secret_surfaces.py, selector: 'tests/security/test_secret_surfaces.py::test_worker_startup_hydrates_model_secret_before_first_task_claim', assertion: Worker startup hydrates configured model credentials and scrubs persisted task output before the first claim attempt.}
+  - id: R-051
+    category: operations
+    kind: operational
+    behavior_key: four_capability_stages_are_sequential
+    acceptance: "Market and charting, formula, historical backtest, and multi-agent analysis are independently accepted OpenSpec capability stages implemented in that order, with each stage accepted before the next begins."
+    source_refs: [{capability: delivery-governance, requirement: four-capability-stages-are-sequential, scenario: verify-authoritative-requirement}]
+    owning_stage: 5
+    status: mapped
+    evidence:
+      - {state: manual, runner: manual, kind: manual, procedure_id: sequential-capability-stage-review, artifact_kind: stage-acceptance-record, required_by_gate: release-acceptance, final_artifact_contract: 'The release record lists each capability stage, its acceptance gate, and the verified predecessor relationship.', completed: true, assertion: The final review confirms the four independently accepted capability stages completed in their required sequence.}
+  - id: R-052
+    category: operations
+    kind: operational
+    behavior_key: first_release_acceptance_scope
+    acceptance: "First-release acceptance covers adjustment and fallback provenance, TDX formula golden consistency, A-share execution boundaries and reproducibility, agent evidence and missing-critical-data behavior, secret redaction, and the end-to-end chart-to-backtest-report journey."
+    source_refs: [{capability: delivery-governance, requirement: first-release-acceptance-scope, scenario: verify-authoritative-requirement}]
+    owning_stage: 5
+    status: mapped
+    evidence:
+      - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_release_acceptance_scope.py, selector: 'tests/acceptance/test_release_acceptance_scope.py::test_all_first_release_acceptance_domains_and_full_journey_are_gated', assertion: 'The release acceptance contract proves every named domain selector and the full no-network user journey are wired into Make, candidate verification, and the release workflow.'}
+  - id: R-053
+    category: performance
+    kind: performance
+    behavior_key: four_core_sixteen_gb_performance_budgets
+    acceptance: "On an ordinary four-core 16GB device with cached data, a common daily chart is interactive within two seconds, a ten-year daily formula preview finishes within three seconds, and a ten-year single-stock daily backtest finishes within five seconds; all-A work is asynchronous and nonblocking, while external network time is separately labelled with wait and timeout reasons."
+    source_refs: [{capability: market-data-charting, requirement: market-interface-performance, scenario: open-cached-daily-chart}, {capability: market-data-charting, requirement: market-interface-performance, scenario: wait-for-external-data}, {capability: formula-system, requirement: formula-preview-performance, scenario: preview-ten-years-daily}, {capability: backtesting-reporting, requirement: single-backtest-performance, scenario: run-ten-year-single-stock}, {capability: backtesting-reporting, requirement: single-backtest-performance, scenario: run-all-a-pool}]
+    owning_stage: 5
+    status: verified
+    evidence:
+      - {state: existing, runner: pytest, kind: integration, path: tests/performance/test_chart_query.py, selector: 'tests/performance/test_chart_query.py::test_legacy_cached_chart_query_preserves_payload_correctness', assertion: The retired microbenchmark remains as a cached chart payload correctness regression and makes no release timing claim.}
+      - {state: existing, runner: playwright, kind: performance, path: web/e2e/performance.spec.ts, selector: records aggregate 2/3/5 budgets and worker-backed UI responsiveness, assertion: 'The browser gate collects 20 raw cold and same-page warm interaction-complete samples, provenance-ledger zero-call evidence, and asynchronous process-tree RSS as reference or target-shaped evidence; a faster-host reference does not verify the ordinary-machine requirement.'}
+      - {state: existing, runner: github-actions, kind: performance, path: tests/performance/baseline.json, selector: imported Ubuntu x64 4-core/16GB target baseline from CI run 28968553479, assertion: 'The byte-frozen target_baseline from source commit dfac5a7d1f1cf1b8bb465c27a623b664eceb90d2 passed the pinned Ubuntu x64 standard-runner 2/3/5-second budgets, and repository tests verify its digest, source ancestry, runner identity, correctness hashes, and asynchronous pool semantics.'}
+      - {state: existing, runner: pytest, kind: integration, path: tests/performance/test_formula_preview.py, selector: 'tests/performance/test_formula_preview.py::test_legacy_macd_preview_preserves_output_correctness', assertion: The retired microbenchmark remains as a MACD output correctness regression and makes no release timing claim.}
+      - {state: existing, runner: pytest, kind: integration, path: tests/performance/test_single_backtest.py, selector: 'tests/performance/test_single_backtest.py::test_legacy_single_backtest_preserves_report_correctness', assertion: The retired microbenchmark remains as a persisted report correctness regression and makes no release timing claim.}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/backtest.spec.ts, selector: held pool run reaches persisted terminal cancellation through the worker, assertion: Existing browser evidence proves pool execution runs through the independent Worker and remains cancellable.}
+  - id: R-054
+    category: market
+    kind: user_visible
+    behavior_key: three_region_market_terminal
+    acceptance: "The market workstation simultaneously shows left navigation and pools, center charts, and right context and actions to minimize page switching."
+    source_refs: [{capability: market-data-charting, requirement: professional-terminal-visual-structure, scenario: open-market-workspace}]
+    owning_stage: 1
+    status: mapped
+    evidence:
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/foundation.spec.ts, selector: desktop market terminal keeps all three work areas aligned without overflow, assertion: Desktop browser acceptance proves the professional three-region market layout and bounded overflow.}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/market-visual-identity.spec.ts, selector: market terminal preserves navy structure and rise-fall colors with three aligned regions, assertion: 'The browser visual contract verifies the left pool selector, central chart workspace, and right context panel remain simultaneously visible and horizontally aligned.'}
+  - id: R-055
+    category: market
+    kind: user_visible
+    behavior_key: deep_navy_red_rise_green_fall
+    acceptance: "The product uses a modern deep-navy visual style and A-share red-rise, green-fall colors."
+    source_refs: [{capability: market-data-charting, requirement: professional-terminal-visual-structure, scenario: open-market-workspace}]
+    owning_stage: 1
+    status: mapped
+    evidence:
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/foundation.spec.ts, selector: desktop market terminal keeps all three work areas aligned without overflow, assertion: Desktop browser acceptance proves the professional three-region market layout and bounded overflow.}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/market-visual-identity.spec.ts, selector: market terminal preserves navy structure and rise-fall colors with three aligned regions, assertion: 'The browser visual contract verifies the exact deep-navy surface and visible A-share red-rise and green-fall labels and color tokens.'}
+  - id: R-056
+    category: market
+    kind: user_visible
+    behavior_key: candlestick_main_formula_subchart
+    acceptance: "The market chart uses candlesticks as the default main chart and displays the current formula result in a separate subchart."
+    source_refs: [{capability: market-data-charting, requirement: candlestick-main-and-formula-subchart, scenario: preview-subchart-formula}]
+    owning_stage: 2
+    status: mapped
+    evidence:
+      - {state: existing, runner: vitest, kind: component, path: web/src/features/market/MarketChart.test.tsx, selector: labels main-chart overlays and subcharts according to formula placement, assertion: The chart component distinguishes explicit main overlays from aligned formula subcharts.}
+  - id: R-057
+    category: formula
+    kind: user_visible
+    behavior_key: three_column_formula_studio
+    acceptance: "Formula Studio uses function and template library, formula code, and live chart preview columns; users insert from the left, edit parameters and code in the center, and view candlesticks, formula subchart, and BUY and SELL signals at right."
+    source_refs: [{capability: formula-system, requirement: three-column-formula-editor, scenario: insert-function}, {capability: formula-system, requirement: three-column-formula-editor, scenario: preview-formula}]
+    owning_stage: 2
+    status: mapped
+    evidence:
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/formula-studio.spec.ts, selector: 'desktop MACD flow is atomic, versioned, parameterized, and safe', assertion: The desktop browser flow operates all three Formula Studio regions through a complete MACD edit and preview.}
+  - id: R-058
+    category: backtest
+    kind: user_visible
+    behavior_key: conclusion_first_backtest_report
+    acceptance: "The first report view prioritizes win rate, return, sample reliability, return distribution, and grouped statistics, then drills through tabs to replay, trade details, and failed samples."
+    source_refs: [{capability: backtesting-reporting, requirement: conclusion-first-report, scenario: open-completed-backtest-report}]
+    owning_stage: 3
+    status: mapped
+    evidence:
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/backtest.spec.ts, selector: 'desktop market prefill runs MACD through report, replay, and export', assertion: 'The browser opens a conclusion-first MACD report, then replays and exports its detailed samples.'}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/backtest.spec.ts, selector: custom formula discloses and completes a partial pool, assertion: The browser drills from a custom-formula pool summary into explicit partial sample outcomes.}
+      - {state: existing, runner: vitest, kind: component, path: web/src/features/backtests/BacktestReportPage.test.tsx, selector: keeps concrete reproducibility costs and sources visible across report tabs, assertion: 'Every report tab keeps the pinned reproducibility context, source, and concrete cost parameters visible.'}
+  - id: R-059
+    category: analysis
+    kind: user_visible
+    behavior_key: side_by_side_analysis_and_evidence
+    acceptance: "The agent report places workflow at left, final rating, judgments, bull and bear evidence, and risks in the center, and traceable data and information sources persistently at right."
+    source_refs: [{capability: multi-agent-analysis, requirement: side-by-side-conclusion-and-evidence, scenario: open-completed-report}]
+    owning_stage: 4
+    status: mapped
+    evidence:
+      - {state: existing, runner: vitest, kind: component, path: web/src/features/analysis/AnalysisPage.test.tsx, selector: shows a complete report and synchronizes a selected claim with persisted evidence, assertion: The report component synchronizes the selected conclusion with its persisted evidence details.}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/analysis-responsive.spec.ts, selector: wide desktop keeps synchronized three-column analysis unclipped, assertion: 'The wide desktop browser route keeps process, conclusions, and synchronized evidence visible in three unclipped columns.'}
+  - id: R-060
+    category: platform
+    kind: user_visible
+    behavior_key: stock_desk_name_and_repository_identity
+    acceptance: "The product and GitHub repository are named stock-desk, a simple personal-product English name without an A prefix, even though an existing public product may use the same name."
+    source_refs: [{capability: market-data-charting, requirement: product-identity, scenario: open-product}]
+    owning_stage: 0
+    status: mapped
+    evidence:
+      - {state: existing, runner: vitest, kind: component, path: web/src/app/App.test.tsx, selector: shows the product identity and all primary navigation items, assertion: 'The browser shell renders the exact product identity, release label, and every primary navigation item.'}
+      - {state: existing, runner: vitest, kind: component, path: web/src/app/RouteEffects.test.tsx, selector: recognizes a direct backtest run URL as strategy backtesting, assertion: Route effects set the browser title to an exact stock-desk-suffixed title on a dynamic route.}
+      - {state: existing, runner: vitest, kind: component, path: web/src/app/AppIdentity.test.tsx, selector: shows stock-desk name version and repository in about information, assertion: 'The visible About dialog verifies the exact stock-desk name, v1.0.0 version, and canonical CongBao/stock-desk repository link.'}
+      - {state: existing, runner: pytest, kind: contract, path: tests/unit/test_verify_release.py, selector: 'tests/unit/test_verify_release.py::test_rejects_package_metadata_with_a_different_name', assertion: Release verification rejects wheel and source-distribution metadata whose package name is not stock-desk.}
+      - {state: existing, runner: pytest, kind: contract, path: tests/unit/test_repository_health.py, selector: 'tests/unit/test_repository_health.py::test_project_metadata_is_complete_and_points_to_the_public_repository', assertion: Project metadata is required to point every public repository URL to CongBao/stock-desk.}
+  - id: R-061
+    category: operations
+    kind: operational
+    behavior_key: canonical_github_remote
+    acceptance: "The project GitHub remote is git@github.com:CongBao/stock-desk.git."
+    source_refs: [{capability: delivery-governance, requirement: public-repository-and-remote-identity, scenario: verify-stock-desk-repository-and-remote}]
+    owning_stage: 5
+    status: mapped
+    evidence:
+      - {state: manual, runner: manual, kind: manual, procedure_id: repository-remote-identity-check, artifact_kind: redacted-repository-attestation, required_by_gate: final-release-audit, final_artifact_contract: The attestation records the exact public stock-desk repository and SSH remote identity without credentials or user-specific key paths., completed: false, assertion: 'The release operator verifies package metadata, public repository, and configured SSH remote identity.'}
+  - id: R-062
+    category: operations
+    kind: operational
+    behavior_key: congbao_commit_identity
+    acceptance: "Every project commit, including local commits made before push, uses CongBao <bao_cong@outlook.com>."
+    source_refs: [{capability: delivery-governance, requirement: git-object-identity, scenario: verify-commits-and-tag}]
+    owning_stage: 5
+    status: mapped
+    evidence:
+      - {state: manual, runner: manual, kind: manual, procedure_id: git-identity-audit, artifact_kind: signed-identity-report, required_by_gate: final-release-audit, final_artifact_contract: The report lists release commits and tag identity and confirms the required name and email without local configuration paths., completed: false, assertion: 'The release operator confirms author, committer, and tag identities match the approved identity.'}
+  - id: R-063
+    category: operations
+    kind: operational
+    behavior_key: dedicated_github_ssh_identity
+    acceptance: "GitHub connections use an approved dedicated GitHub SSH identity and restrict SSH operations to that identity."
+    source_refs: [{capability: delivery-governance, requirement: github-ssh-and-tag-signing, scenario: verify-remote-key-and-signed-tag}]
+    owning_stage: 5
+    status: mapped
+    evidence:
+      - {state: manual, runner: manual, kind: manual, procedure_id: ssh-remote-and-signing-check, artifact_kind: redacted-ssh-signature-attestation, required_by_gate: final-release-audit, final_artifact_contract: 'The attestation records the approved GitHub SSH public fingerprint, successful remote authentication, signed tag object, and successful signature verification.', completed: false, assertion: The release operator verifies both the approved remote key and SSH-signed release tag.}
+  - id: R-064
+    category: operations
+    kind: operational
+    behavior_key: canonical_workspace_checkout
+    acceptance: "The formal local repository is the user-approved stock-desk checkout under the Workspace directory."
+    source_refs: [{capability: delivery-governance, requirement: canonical-delivery-checkout, scenario: verify-session-checkout}]
+    owning_stage: 5
+    status: mapped
+    evidence:
+      - {state: manual, runner: manual, kind: manual, procedure_id: canonical-checkout-verification, artifact_kind: checkout-identity-attestation, required_by_gate: final-release-audit, final_artifact_contract: The private operator record binds delivery actions to the approved checkout while the public artifact contains only a redacted attestation., completed: false, assertion: The release operator verifies the canonical checkout before every mutating delivery action.}
+  - id: R-065
+    category: operations
+    kind: operational
+    behavior_key: main_is_default_and_published_upstream
+    acceptance: "The default Git branch is main, and the first publication pushes local main to GitHub and sets its upstream."
+    source_refs: [{capability: delivery-governance, requirement: main-is-default-and-published-upstream, scenario: verify-authoritative-requirement}]
+    owning_stage: 5
+    status: mapped
+    evidence:
+      - {state: manual, runner: manual, kind: manual, procedure_id: main-upstream-publication-review, artifact_kind: repository-publication-record, required_by_gate: release-acceptance, final_artifact_contract: The publication record identifies main as the default branch and records the canonical upstream relationship without local paths or credentials., completed: true, assertion: The final review confirms main is the public default branch and its initial upstream publication is recorded.}
+  - id: R-066
+    category: publication
+    kind: publication
+    behavior_key: only_public_content_in_main_history
+    acceptance: "The public main branch and all reachable history contain only open-source-safe project material; internal agent workflow, review output, and temporary files are ignored and excluded."
+    source_refs: [{capability: publication-boundary, requirement: private-input-exclusion, scenario: audit-public-tree-and-history}]
+    owning_stage: 5
+    status: mapped
+    evidence:
+      - {state: existing, runner: gate, kind: gate, gate_id: public-tree, assertion: The fixed public-tree gate rejects registered private-input prefixes from tracked repository files.}
+      - {state: existing, runner: pytest, kind: integration, path: tests/acceptance/test_release_artifacts.py, selector: 'tests/acceptance/test_release_artifacts.py::test_release_history_contains_only_public_artifacts', assertion: 'The release-history acceptance test bounds memory while rejecting registered private or generated paths from the current HEAD and reachable path history, plus local-profile leaks in reachable blobs and the streamed HEAD archive.'}
+  - id: R-067
+    category: operations
+    kind: operational
+    behavior_key: complete_multi_stage_delivery_plan
+    acceptance: "The software plan covers the complete confirmed scope through final delivery and divides it into dependent stages with explicit acceptance gates."
+    source_refs: [{capability: delivery-governance, requirement: complete-confirmed-plan-scope, scenario: confirm-full-scope-completion}]
+    owning_stage: 5
+    status: mapped
+    evidence:
+      - {state: manual, runner: manual, kind: manual, procedure_id: confirmed-plan-completion-review, artifact_kind: full-scope-completion-ledger, required_by_gate: final-release-audit, final_artifact_contract: 'The ledger lists every confirmed plan and task with its completion commit, verification evidence, publication state, and any explicitly accepted limitation.', completed: false, assertion: A release reviewer confirms the full approved plan scope is complete and accounted for.}
+  - id: R-068
+    category: operations
+    kind: operational
+    behavior_key: each_stage_has_mergeable_subplan
+    acceptance: "Each stage has its own subplan and produces a runnable, testable, deliverable version suitable for pull-request merge to main."
+    source_refs: [{capability: delivery-governance, requirement: independent-stage-execution-cycle, scenario: plan-implement-verify-submit}]
+    owning_stage: 5
+    status: mapped
+    evidence:
+      - {state: manual, runner: manual, kind: manual, procedure_id: independent-stage-review, artifact_kind: stage-execution-ledger, required_by_gate: final-release-audit, final_artifact_contract: 'The ledger links each stage to its approved plan, red evidence, implementation commits, verification, submitted change, acceptance, and rollback target.', completed: false, assertion: A release reviewer confirms each stage is independently deliverable and completed the required execution cycle.}
+  - id: R-069
+    category: publication
+    kind: publication
+    behavior_key: mature_open_source_repository_configuration
+    acceptance: "The public repository provides mature open-source project description, license, contribution guide, code of conduct, security and support policies, changelog, quality and test automation, CI, dependency updates, and release process."
+    source_refs: [{capability: release-publication, requirement: open-source-repository-quality, scenario: inspect-community-security-release-configuration}]
+    owning_stage: 5
+    status: mapped
+    evidence:
+      - {state: existing, runner: pytest, kind: integration, path: tests/unit/test_repository_health.py, selector: 'tests/unit/test_repository_health.py::test_required_open_source_files_exist', assertion: 'Repository health requires the public community, contribution, support, security, changelog, and roadmap files.'}
+      - {state: existing, runner: pytest, kind: contract, path: tests/unit/test_repository_health.py, selector: 'tests/unit/test_repository_health.py::test_workflows_declare_the_expected_github_triggers', assertion: 'CI, security, code scanning, and tag release workflows expose only the expected public triggers.'}
+      - {state: existing, runner: pytest, kind: contract, path: tests/unit/test_repository_health.py, selector: 'tests/unit/test_repository_health.py::test_dependabot_covers_all_package_ecosystems_weekly', assertion: Dependency updates cover every package ecosystem on a bounded weekly schedule.}
+      - {state: existing, runner: pytest, kind: contract, path: tests/unit/test_repository_health.py, selector: 'tests/unit/test_repository_health.py::test_project_metadata_is_complete_and_points_to_the_public_repository', assertion: 'Package metadata, supported Python version, and public repository links are complete and canonical.'}
+      - {state: existing, runner: pytest, kind: contract, path: tests/unit/test_repository_health.py, selector: 'tests/unit/test_repository_health.py::test_changelog_roadmap_and_architecture_match_current_release_scope', assertion: 'Changelog, roadmap, and architecture documents agree with the current public release scope.'}
+  - id: R-070
+    category: publication
+    kind: publication
+    behavior_key: openspec_is_local_and_excluded
+    acceptance: "The OpenSpec directory remains local planning material, is ignored, and is absent from the public main tree and reachable history."
+    source_refs: [{capability: publication-boundary, requirement: private-input-exclusion, scenario: audit-public-tree-and-history}]
+    owning_stage: 5
+    status: mapped
+    evidence:
+      - {state: existing, runner: gate, kind: gate, gate_id: public-tree, assertion: The fixed public-tree gate rejects registered private-input prefixes from tracked repository files.}
+      - {state: existing, runner: pytest, kind: integration, path: tests/acceptance/test_release_artifacts.py, selector: 'tests/acceptance/test_release_artifacts.py::test_release_history_contains_only_public_artifacts', assertion: 'The release-history acceptance test rejects an openspec/ path from the current HEAD tree or any reachable path history and applies the same bounded payload leak scan to reachable blobs and the streamed HEAD archive.'}
+  - id: R-071
+    category: publication
+    kind: publication
+    behavior_key: bilingual_readme_with_verified_basics
+    acceptance: "The public README provides concise reciprocal English and Simplified-Chinese navigation and verified basic installation and use instructions."
+    source_refs: [{capability: market-data-charting, requirement: bilingual-open-source-readme, scenario: english-to-chinese}, {capability: market-data-charting, requirement: bilingual-open-source-readme, scenario: chinese-to-english}]
+    owning_stage: 5
+    status: mapped
+    evidence:
+      - {state: existing, runner: gate, kind: gate, gate_id: bilingual-readme, assertion: The fixed bilingual README gate verifies reciprocal navigation between both public entry documents.}
+      - {state: existing, runner: pytest, kind: integration, path: tests/acceptance/test_release_docs.py, selector: 'tests/acceptance/test_release_docs.py::test_bilingual_readme_baseline_contains_verified_installation_and_use', assertion: 'The baseline documentation test validates reciprocal English and Simplified-Chinese entry links, every native installer name, attestation and Compose/start instructions, and the documentation command allowlist while rejecting internal-path and placeholder references.'}
+  - id: R-072
+    category: operations
+    kind: operational
+    behavior_key: stage_plan_implementation_browser_pr_cycle
+    acceptance: "Every stage completes its plan, implementation, verification, and commit cycle, receives real browser UI acceptance, then is pushed and merged through a pull request after acceptance."
+    source_refs: [{capability: delivery-governance, requirement: stage-publication-and-release, scenario: push-review-merge-tag-release}]
+    owning_stage: 5
+    status: mapped
+    evidence:
+      - {state: manual, runner: manual, kind: manual, procedure_id: stage-publication-review, artifact_kind: stage-release-lineage, required_by_gate: final-release-audit, final_artifact_contract: 'The lineage lists each stage push, browser-reviewed pull request, main-branch merge, version tag, release page, and successor ordering.', completed: false, assertion: 'The release reviewer confirms every completed stage was independently pushed, reviewed, merged, tagged, and released.'}
+  - id: R-073
+    category: publication
+    kind: publication
+    behavior_key: final_readme_is_concise_bilingual_entry
+    acceptance: "After all stages, the public README is a concise bilingual product entry containing only introduction, core features, screenshots, and essential install and use entry points, with detailed guidance in the GitHub Wiki."
+    source_refs: [{capability: release-publication, requirement: verified-reciprocal-readme, scenario: verify-readme-pair}]
+    owning_stage: 5
+    status: mapped
+    evidence:
+      - {state: existing, runner: gate, kind: gate, gate_id: bilingual-readme, assertion: The registered bilingual-readme gate requires reciprocal English and Simplified-Chinese links.}
+      - {state: existing, runner: pytest, kind: integration, path: tests/acceptance/test_release_docs.py, selector: 'tests/acceptance/test_release_docs.py::test_readmes_are_concise_reciprocal_and_install_verified', assertion: 'The final documentation gate verifies concise reciprocal English and Simplified-Chinese product entries, real release-candidate screenshots, source-free installer names and attestation commands, one minimal start path, Wiki delegation, and public-safe links without placeholders.'}
+  - id: R-074
+    category: publication
+    kind: publication
+    behavior_key: every_feature_has_wiki_steps_and_real_screenshot
+    acceptance: "Every delivered feature has a detailed GitHub Wiki usage page with a real product screenshot that lets users understand and use it quickly."
+    source_refs: [{capability: release-publication, requirement: feature-wiki-screenshots-and-steps, scenario: validate-feature-page-image-and-steps}]
+    owning_stage: 5
+    status: mapped
+    evidence:
+      - {state: manual, runner: manual, kind: manual, procedure_id: wiki-screenshot-review, artifact_kind: feature-wiki-matrix, required_by_gate: final-release-audit, final_artifact_contract: 'The matrix maps every shipped feature to a public page and validated release-candidate screenshot with route, version, and redaction checks.', completed: false, assertion: A reviewer validates that every feature page uses a real legible and public-safe release screenshot.}
+  - id: R-075
+    category: publication
+    kind: publication
+    behavior_key: wiki_is_complete_and_bilingual
+    acceptance: "Feature documentation in the GitHub Wiki has complete English and Simplified-Chinese content with switchable navigation."
+    source_refs: [{capability: release-publication, requirement: reciprocal-bilingual-wiki, scenario: navigate-language-pair}]
+    owning_stage: 5
+    status: mapped
+    evidence:
+      - {state: manual, runner: manual, kind: manual, procedure_id: bilingual-wiki-review, artifact_kind: wiki-language-pair-report, required_by_gate: final-release-audit, final_artifact_contract: The report lists every English and Simplified-Chinese page pair and records reciprocal-link and shared-navigation verification., completed: false, assertion: A bilingual reviewer confirms complete reciprocal feature-page pairs without placeholders.}
+  - id: R-076
+    category: publication
+    kind: publication
+    behavior_key: source_free_windows_and_macos_installers
+    acceptance: "The public release gives low-code users simple Windows and macOS installers that run directly; installation and first launch require no source compilation."
+    source_refs: [{capability: release-packaging, requirement: source-checkout-free-installation, scenario: install-and-first-launch-windows}, {capability: release-packaging, requirement: source-checkout-free-installation, scenario: install-and-first-launch-macos}]
+    owning_stage: 5
+    status: mapped
+    evidence:
+      - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_installed_distribution.py, selector: 'tests/acceptance/test_installed_distribution.py::test_distribution_contract_covers_all_native_release_artifacts', assertion: 'The release contract builds Windows x86_64 and macOS x86_64/arm64 artifacts, then requires source-free verification jobs for every supported target.'}
+      - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_installed_distribution.py, selector: 'tests/acceptance/test_installed_distribution.py::test_install_verification_jobs_do_not_checkout_or_expose_development_path', assertion: Clean-runner verification installs each native artifact without a source checkout or development PATH and exercises first launch in the private browser workstation.}
+      - {state: existing, runner: pytest, kind: integration, path: tests/acceptance/test_installed_distribution.py, selector: 'tests/acceptance/test_installed_distribution.py::test_distribution_runs_without_source_or_development_tools', assertion: 'A source-free frozen distribution starts the API and worker, executes Formula and AkShare subprocess paths, and preserves state without Python, Node, Docker, or compiler tools.'}
+      - {state: manual, runner: manual, kind: manual, procedure_id: installer-artifact-review, artifact_kind: cross-platform-install-report, required_by_gate: final-release-audit, final_artifact_contract: 'The report identifies Windows and macOS assets, checksums, clean-runner results, launch behavior, uninstall behavior, and known signing status.', completed: false, assertion: The release operator verifies both installer artifacts and their clean-runner first-launch records.}
+  - id: R-077
+    category: platform
+    kind: user_visible
+    behavior_key: responsive_ui_across_screen_ratios
+    acceptance: "The interface follows established high-quality UI practices across screen ratios: narrow layouts automatically collapse the left sidebar, users can expand or collapse it manually, collapsed labels use recognizable icons rather than text abbreviations, and components never overlap."
+    source_refs: [{capability: market-data-charting, requirement: responsive-navigation-and-nonoverlap, scenario: narrow-screen-auto-collapse}, {capability: market-data-charting, requirement: responsive-navigation-and-nonoverlap, scenario: manual-navigation-toggle}, {capability: market-data-charting, requirement: responsive-navigation-and-nonoverlap, scenario: preserve-layout-at-supported-ratios}, {capability: release-quality, requirement: strengthened-all-route-responsive-ui, scenario: verify-all-routes-ratios-icons-and-nonoverlap}]
+    owning_stage: 5
+    status: mapped
+    evidence:
+      - {state: existing, runner: vitest, kind: component, path: web/src/app/App.test.tsx, selector: collapses and expands the primary navigation without abbreviating link names, assertion: The shell component collapses to icons and preserves full accessible navigation names and manual control.}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/backtest.spec.ts, selector: 'global shell stays operable across desktop, tablet, portrait, and 200% effective viewport', assertion: Existing browser evidence exercises baseline shell operability across representative viewport shapes.}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: /market has bounded non-overlapping layout, assertion: 'The market workspace is checked for shell overlap, interactive-control overlap, and document overflow at all five release viewports.'}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: /formulas has bounded non-overlapping layout, assertion: 'The formula workspace is checked for shell overlap, interactive-control overlap, and document overflow at all five release viewports.'}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: /backtests has bounded non-overlapping layout, assertion: 'The backtest workspace is checked for shell overlap, interactive-control overlap, and document overflow at all five release viewports.'}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: /analysis has bounded non-overlapping layout, assertion: 'The analysis workspace is checked for shell overlap, interactive-control overlap, and document overflow at all five release viewports.'}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: /tasks has bounded non-overlapping layout, assertion: 'The task workspace is checked for shell overlap, interactive-control overlap, and document overflow at all five release viewports.'}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: /settings has bounded non-overlapping layout, assertion: 'The settings workspace is checked for shell overlap, interactive-control overlap, and document overflow at all five release viewports.'}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: navigation auto-collapses only when crossing the narrow breakpoint, assertion: The shell automatically collapses on breakpoint entry while preserving a manual expansion choice until the breakpoint is crossed again.}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: collapsed navigation renders icons without textual abbreviations, assertion: 'Every collapsed navigation entry renders an SVG icon, hides its text label, and retains a non-empty accessible name.'}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/accessibility.spec.ts, selector: skip link and collapsed icon navigation remain keyboard operable, assertion: Keyboard users can skip to main content and expand the icon navigation through the labelled control with accurate expanded state.}
+non_goals:
+  - id: N-001
+    category: backtest
+    kind: non_goal
+    behavior_key: no_broker_or_live_ordering
+    acceptance: "Public routes, APIs, worker handlers, Web controls, and documentation expose no broker connection, live trading, automatic trading, or order-submission capability."
+    source_refs: [{capability: product-boundaries, requirement: no-live-trading, scenario: inventory-public-surfaces}]
+    owning_stage: 3
+    status: mapped
+    evidence:
+      - {state: existing, runner: pytest, kind: absence, path: tests/acceptance/test_non_goal_inventory.py, selector: 'tests/acceptance/test_non_goal_inventory.py::test_every_non_goal_is_checked_on_every_declared_public_surface', assertion: The declared public-surface inventory rejects broker and live-ordering capability identifiers and positive claims.}
+  - id: N-002
+    category: backtest
+    kind: non_goal
+    behavior_key: no_shared_capital_portfolio
+    acceptance: "Public routes, APIs, worker handlers, Web controls, and documentation expose no shared cash, cross-stock position competition, portfolio rebalancing, or shared-capital portfolio simulation."
+    source_refs: [{capability: product-boundaries, requirement: no-shared-capital-portfolio, scenario: inventory-public-surfaces}]
+    owning_stage: 3
+    status: mapped
+    evidence:
+      - {state: existing, runner: pytest, kind: absence, path: tests/acceptance/test_non_goal_inventory.py, selector: 'tests/acceptance/test_non_goal_inventory.py::test_every_non_goal_is_checked_on_every_declared_public_surface', assertion: The declared public-surface inventory rejects shared-capital portfolio and rebalance capabilities.}
+  - id: N-003
+    category: market
+    kind: non_goal
+    behavior_key: no_realtime_tick_or_level2_data
+    acceptance: "Public routes, APIs, worker handlers, Web controls, and documentation expose no realtime quote push, tick stream, transaction-level feed, order-book depth, or Level-2 market data."
+    source_refs: [{capability: product-boundaries, requirement: no-realtime-tick-level2, scenario: inventory-public-surfaces}]
+    owning_stage: 1
+    status: mapped
+    evidence:
+      - {state: existing, runner: pytest, kind: absence, path: tests/acceptance/test_non_goal_inventory.py, selector: 'tests/acceptance/test_non_goal_inventory.py::test_every_non_goal_is_checked_on_every_declared_public_surface', assertion: 'The declared public-surface inventory rejects realtime, tick-stream, and Level-2 capabilities.'}
+  - id: N-004
+    category: analysis
+    kind: non_goal
+    behavior_key: no_target_price_or_specific_allocation
+    acceptance: "Public routes, APIs, worker handlers, Web controls, and documentation expose no target-price output, specific position percentage, capital-allocation instruction, or personalized investment recommendation."
+    source_refs: [{capability: product-boundaries, requirement: no-target-price-allocation, scenario: inventory-public-surfaces}]
+    owning_stage: 4
+    status: mapped
+    evidence:
+      - {state: existing, runner: pytest, kind: absence, path: tests/acceptance/test_non_goal_inventory.py, selector: 'tests/acceptance/test_non_goal_inventory.py::test_every_non_goal_is_checked_on_every_declared_public_surface', assertion: The declared public-surface inventory rejects target-price inputs and specific allocation advice features.}
+  - id: N-005
+    category: platform
+    kind: non_goal
+    behavior_key: no_second_native_product_interface
+    acceptance: "Public routes, APIs, worker handlers, Web controls, and documentation expose no second Electron, Tauri, or other native product interface; a minimal installed launcher that opens the browser UI remains allowed."
+    source_refs: [{capability: product-boundaries, requirement: no-native-product-ui, scenario: inventory-public-surfaces}]
+    owning_stage: 5
+    status: mapped
+    evidence:
+      - {state: existing, runner: pytest, kind: absence, path: tests/acceptance/test_non_goal_inventory.py, selector: 'tests/acceptance/test_non_goal_inventory.py::test_every_non_goal_is_checked_on_every_declared_public_surface', assertion: The declared public-surface inventory rejects a second native UI while permitting a browser launcher.}
+  - id: N-006
+    category: platform
+    kind: non_goal
+    behavior_key: no_accounts_rbac_subscription_billing
+    acceptance: "Public routes, APIs, worker handlers, Web controls, and documentation expose no signup, login, multi-user account, RBAC, organization, subscription, payment, invoicing, or billing portal."
+    source_refs: [{capability: product-boundaries, requirement: no-account-or-billing-system, scenario: inventory-public-surfaces}]
+    owning_stage: 0
+    status: mapped
+    evidence:
+      - {state: existing, runner: pytest, kind: absence, path: tests/acceptance/test_non_goal_inventory.py, selector: 'tests/acceptance/test_non_goal_inventory.py::test_every_non_goal_is_checked_on_every_declared_public_surface', assertion: 'The declared public-surface inventory rejects accounts, RBAC, subscriptions, and billing features.'}
+  - id: N-007
+    category: market
+    kind: non_goal
+    behavior_key: no_drawing_multistock_or_linked_periods
+    acceptance: "Public routes, APIs, worker handlers, Web controls, and documentation expose no chart drawing tools, multi-stock same-screen workspace, or linked multi-period chart interaction."
+    source_refs: [{capability: product-boundaries, requirement: no-drawing-multistock-linked-periods, scenario: inventory-public-surfaces}]
+    owning_stage: 1
+    status: mapped
+    evidence:
+      - {state: existing, runner: pytest, kind: absence, path: tests/acceptance/test_non_goal_inventory.py, selector: 'tests/acceptance/test_non_goal_inventory.py::test_every_non_goal_is_checked_on_every_declared_public_surface', assertion: 'The declared public-surface inventory rejects drawing, multi-stock, and linked-period features.'}
+  - id: N-008
+    category: formula
+    kind: non_goal
+    behavior_key: no_condition_selection_or_color_k
+    acceptance: "Public routes, APIs, worker handlers, Web controls, and documentation expose no condition-selection formula type, color-K formula type, or editor entry for either excluded type."
+    source_refs: [{capability: product-boundaries, requirement: no-condition-selection-color-k, scenario: inventory-public-surfaces}]
+    owning_stage: 2
+    status: mapped
+    evidence:
+      - {state: existing, runner: pytest, kind: absence, path: tests/acceptance/test_non_goal_inventory.py, selector: 'tests/acceptance/test_non_goal_inventory.py::test_every_non_goal_is_checked_on_every_declared_public_surface', assertion: The declared public-surface inventory rejects condition-selection and color-K formula types.}
+  - id: N-009
+    category: market
+    kind: non_goal
+    behavior_key: no_dynamic_market_screening
+    acceptance: "Public routes, APIs, worker handlers, Web controls, and documentation expose no rules builder that dynamically screens or maintains a stock pool from market or financial conditions."
+    source_refs: [{capability: product-boundaries, requirement: no-dynamic-screening, scenario: inventory-public-surfaces}]
+    owning_stage: 1
+    status: mapped
+    evidence:
+      - {state: existing, runner: pytest, kind: absence, path: tests/acceptance/test_non_goal_inventory.py, selector: 'tests/acceptance/test_non_goal_inventory.py::test_every_non_goal_is_checked_on_every_declared_public_surface', assertion: The declared public-surface inventory rejects dynamic screeners and screening rule builders.}
+  - id: N-010
+    category: formula
+    kind: non_goal
+    behavior_key: no_ai_formula_assistance
+    acceptance: "Public routes, APIs, worker handlers, Web controls, and documentation expose no AI formula generation, formula explanation, automatic formula repair, or prompt-based formula authoring capability."
+    source_refs: [{capability: product-boundaries, requirement: no-ai-formula-assistance, scenario: inventory-public-surfaces}]
+    owning_stage: 2
+    status: mapped
+    evidence:
+      - {state: existing, runner: pytest, kind: absence, path: tests/acceptance/test_non_goal_inventory.py, selector: 'tests/acceptance/test_non_goal_inventory.py::test_every_non_goal_is_checked_on_every_declared_public_surface', assertion: 'The declared public-surface inventory rejects AI generation, explanation, and repair of formulas.'}

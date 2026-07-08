@@ -55,7 +55,8 @@ RUN groupadd --gid 10001 stockdesk \
     && useradd --uid 10001 --gid 10001 --no-create-home \
         --home-dir /nonexistent --shell /usr/sbin/nologin stockdesk \
     && mkdir -p /app/data \
-    && chown 10001:10001 /app/data
+    && chown 10001:10001 /app/data \
+    && dpkg --purge --force-remove-essential perl-base
 
 WORKDIR /app
 COPY --from=python-builder /app/.venv /app/.venv

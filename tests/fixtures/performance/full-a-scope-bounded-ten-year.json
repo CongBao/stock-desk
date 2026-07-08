@@ -1,0 +1,21 @@
+{
+  "schema_version": "stock-desk-synthetic-performance-v1",
+  "fixture_id": "full-a-scope-bounded-ten-year",
+  "label": "SYNTHETIC PERFORMANCE FIXTURE — NOT VENDOR DATA",
+  "license": "CC0-1.0",
+  "network_policy": "forbidden",
+  "source": "stock_desk_demo",
+  "generator": "tests/performance/ten_year_a_share.py",
+  "symbol": "600000.SH",
+  "period": "1d",
+  "adjustment": "qfq",
+  "warmup_start": "2015-12-01",
+  "scoring_start": "2016-01-01",
+  "scoring_end": "2026-01-01",
+  "scope_instrument_count": 5000,
+  "runnable_symbol_count": 40,
+  "row_count": 2632,
+  "scoring_sessions": 2608,
+  "wave_period": 40,
+  "content_digest": "sha256:141c4fc83ad805656ca5f43c1b3960796058f17399d0aedea7470df6a719e80b"
+}

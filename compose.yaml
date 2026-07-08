@@ -11,8 +11,22 @@ x-stock-desk-service: &stock-desk-service
     STOCK_DESK_WEB_DIST_DIR: /app/web-dist
   restart: unless-stopped
   user: "0:0"
+  read_only: true
+  cap_drop:
+    - ALL
+  cap_add:
+    - CHOWN
+    - SETGID
+    - SETUID
+  security_opt:
+    - no-new-privileges:true
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,nodev,size=64m
   volumes:
-    - ./data:/app/data
+    - type: bind
+      source: ./data
+      target: /app/data
+      read_only: false
     - type: bind
       source: "${STOCK_DESK_TDX_HOST_PATH:-./data/tdx}"
       target: /app/tdx
@@ -46,3 +60,16 @@ services:
     <<: *stock-desk-service
     command: ["python", "-m", "stock_desk.tasks.worker"]
     pull_policy: never
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          from pathlib import Path;
+          command = Path('/proc/1/cmdline').read_bytes().replace(b'\x00', b' ');
+          assert b'stock_desk.tasks.worker' in command
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s

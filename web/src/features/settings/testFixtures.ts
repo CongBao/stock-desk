@@ -6,6 +6,9 @@ export const settingsResponse = {
     instruments: ['tushare', 'akshare', 'baostock', 'eastmoney'],
     trading_calendar: ['tushare', 'baostock', 'eastmoney'],
     execution_status: ['tushare'],
+    fundamentals: ['tushare', 'akshare'],
+    announcements: ['tushare', 'akshare'],
+    news: ['akshare'],
   },
   tdx_path: '/safe/vipdoc',
   tushare: {
@@ -29,6 +32,7 @@ export const diagnosticResponse = {
     { category: 'execution_status', state: 'available' },
   ],
   available_periods: ['1d', '1w'],
+  markets: [],
   gaps: [
     {
       category: 'minute_bars',

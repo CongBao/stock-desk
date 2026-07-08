@@ -23,11 +23,12 @@ export function StockSearch({
   const normalizedInput = inputValue.trim();
 
   useEffect(() => {
+    const delay = /^\d{6}$/u.test(normalizedInput) ? 0 : debounceMs;
     const timer = window.setTimeout(() => {
-      setDebouncedQuery(inputValue.trim());
-    }, debounceMs);
+      setDebouncedQuery(normalizedInput);
+    }, delay);
     return () => window.clearTimeout(timer);
-  }, [debounceMs, inputValue]);
+  }, [debounceMs, normalizedInput]);
 
   useEffect(
     () => () => {

@@ -52,10 +52,17 @@ const timeFormatter = new Intl.DateTimeFormat('zh-CN', {
   timeZone: 'Asia/Shanghai',
 });
 
-type ChartSeriesDataItem = {
-  readonly value: readonly number[] | number;
-  readonly rawBar: MarketBar;
-  readonly itemStyle?: {
+type VolumeSeries = {
+  readonly name: string;
+  readonly type: 'bar';
+  readonly xAxisIndex: 1;
+  readonly yAxisIndex: 1;
+  readonly data: readonly (number | '-')[];
+  readonly large: true;
+  readonly largeThreshold: 400;
+  readonly silent: true;
+  readonly barGap: '-100%';
+  readonly itemStyle: {
     readonly color: string;
     readonly decal: { readonly symbol: 'rect' | 'triangle' | 'circle' };
   };
@@ -94,7 +101,7 @@ export type MarketChartOption = {
     {
       readonly name: string;
       readonly type: 'candlestick';
-      readonly data: readonly ChartSeriesDataItem[];
+      readonly data: readonly (readonly [number, number, number, number])[];
       readonly itemStyle: {
         readonly color: string;
         readonly color0: string;
@@ -102,13 +109,9 @@ export type MarketChartOption = {
         readonly borderColor0: string;
       };
     },
-    {
-      readonly name: string;
-      readonly type: 'bar';
-      readonly xAxisIndex: 1;
-      readonly yAxisIndex: 1;
-      readonly data: readonly ChartSeriesDataItem[];
-    },
+    VolumeSeries,
+    VolumeSeries,
+    VolumeSeries,
   ];
 };
 
@@ -172,33 +175,62 @@ export function formatMarketTooltip(bar: MarketBar): string {
   ].join('<br/>');
 }
 
-function tooltipFormatter(parameters: unknown): string {
-  if (!Array.isArray(parameters)) return '';
-  for (const parameter of parameters as unknown[]) {
-    if (
-      typeof parameter !== 'object' ||
-      parameter === null ||
-      !('data' in parameter)
-    )
-      continue;
-    const data = (parameter as Record<string, unknown>)['data'];
-    if (typeof data !== 'object' || data === null || !('rawBar' in data))
-      continue;
-    return formatMarketTooltip(
-      (data as Record<string, unknown>)['rawBar'] as MarketBar,
-    );
-  }
-  return '';
+function tooltipFormatter(bars: readonly MarketBar[]) {
+  return (parameters: unknown): string => {
+    if (!Array.isArray(parameters)) return '';
+    for (const parameter of parameters as unknown[]) {
+      if (typeof parameter !== 'object' || parameter === null) continue;
+      const dataIndex = (parameter as Record<string, unknown>)['dataIndex'];
+      if (
+        typeof dataIndex !== 'number' ||
+        !Number.isInteger(dataIndex) ||
+        dataIndex < 0
+      )
+        continue;
+      const bar = bars[dataIndex];
+      if (bar !== undefined) return formatMarketTooltip(bar);
+    }
+    return '';
+  };
 }
 
-function volumeStyle(bar: MarketBar) {
-  if (bar.direction === 'rise') {
-    return { color: RISE_COLOR, decal: { symbol: 'rect' as const } };
-  }
-  if (bar.direction === 'fall') {
-    return { color: FALL_COLOR, decal: { symbol: 'triangle' as const } };
-  }
-  return { color: FLAT_COLOR, decal: { symbol: 'circle' as const } };
+const RISE_VOLUME_STYLE = {
+  color: RISE_COLOR,
+  decal: { symbol: 'rect' as const },
+} as const;
+const FALL_VOLUME_STYLE = {
+  color: FALL_COLOR,
+  decal: { symbol: 'triangle' as const },
+} as const;
+const FLAT_VOLUME_STYLE = {
+  color: FLAT_COLOR,
+  decal: { symbol: 'circle' as const },
+} as const;
+
+function volumeStyle(direction: MarketBar['direction']) {
+  if (direction === 'rise') return RISE_VOLUME_STYLE;
+  if (direction === 'fall') return FALL_VOLUME_STYLE;
+  return FLAT_VOLUME_STYLE;
+}
+
+function buildVolumeSeries(
+  bars: readonly MarketBar[],
+  direction: MarketBar['direction'],
+  label: string,
+): VolumeSeries {
+  const style = volumeStyle(direction);
+  return {
+    name: `成交量·${label}`,
+    type: 'bar',
+    xAxisIndex: 1,
+    yAxisIndex: 1,
+    data: bars.map((bar) => (bar.direction === direction ? bar.volume : '-')),
+    large: true,
+    largeThreshold: 400,
+    silent: true,
+    barGap: '-100%',
+    itemStyle: style,
+  };
 }
 
 function axisPointerIndex(
@@ -288,7 +320,7 @@ export function buildMarketChartOption(
       trigger: 'axis',
       confine: true,
       axisPointer: { type: 'cross', snap: true },
-      formatter: tooltipFormatter,
+      formatter: tooltipFormatter(bars),
       backgroundColor: 'rgba(7, 17, 31, 0.96)',
       borderColor: '#27415f',
       textStyle: { color: '#dbeafe', fontSize: 12 },
@@ -368,10 +400,9 @@ export function buildMarketChartOption(
       {
         name: 'K 线（红涨绿跌）',
         type: 'candlestick',
-        data: bars.map((bar) => ({
-          value: [bar.open, bar.close, bar.low, bar.high],
-          rawBar: bar,
-        })),
+        data: bars.map(
+          (bar) => [bar.open, bar.close, bar.low, bar.high] as const,
+        ),
         itemStyle: {
           color: RISE_COLOR,
           color0: FALL_COLOR,
@@ -379,17 +410,9 @@ export function buildMarketChartOption(
           borderColor0: FALL_COLOR,
         },
       },
-      {
-        name: '成交量',
-        type: 'bar',
-        xAxisIndex: 1,
-        yAxisIndex: 1,
-        data: bars.map((bar) => ({
-          value: bar.volume,
-          rawBar: bar,
-          itemStyle: volumeStyle(bar),
-        })),
-      },
+      buildVolumeSeries(bars, 'rise', '上涨'),
+      buildVolumeSeries(bars, 'fall', '下跌'),
+      buildVolumeSeries(bars, 'flat', '平盘'),
     ],
   };
 }
@@ -533,6 +556,13 @@ type MarketChartProps = {
   readonly isLoading?: boolean;
 };
 
+type RenderGeneration = {
+  readonly generation: number;
+  readonly bars: readonly MarketBar[];
+  readonly formula: FormulaChartLayer | undefined;
+  readonly option: EChartsCoreOption;
+};
+
 export function MarketChart({
   bars,
   errorMessage,
@@ -544,6 +574,17 @@ export function MarketChart({
   const containerRef = useRef<HTMLDivElement>(null);
   const instanceRef = useRef<EChartsType | null>(null);
   const barsRef = useRef(bars);
+  const nextGenerationRef = useRef(0);
+  const activeRenderRef = useRef<RenderGeneration | null>(null);
+  const queuedRenderRef = useRef<RenderGeneration | null>(null);
+  const issueRenderRef = useRef<((render: RenderGeneration) => void) | null>(
+    null,
+  );
+  const [finishedFor, setFinishedFor] = useState<{
+    readonly generation: number;
+    readonly bars: readonly MarketBar[] | undefined;
+    readonly formula: FormulaChartLayer | undefined;
+  } | null>(null);
   const [pointer, setPointer] = useState<{
     readonly bars: readonly MarketBar[];
     readonly index: number;
@@ -551,6 +592,8 @@ export function MarketChart({
   const [zoom, setZoom] = useState<ZoomRange>({ start: 0, end: 100 });
   barsRef.current = bars;
   const hasBars = bars !== undefined && bars.length > 0;
+  const isReady =
+    hasBars && finishedFor?.bars === bars && finishedFor.formula === formula;
   const activeBar =
     bars !== undefined && pointer?.bars === bars && pointer.index < bars.length
       ? bars[pointer.index]
@@ -576,37 +619,72 @@ export function MarketChart({
       const next = dataZoomRange(event);
       if (next !== null) setZoom(next);
     };
+    const issueRender = (render: RenderGeneration) => {
+      activeRenderRef.current = render;
+      chart.setOption(render.option, {
+        lazyUpdate: true,
+        notMerge: true,
+      });
+      const zoomOptions = render.option.dataZoom as readonly {
+        readonly start?: number;
+        readonly end?: number;
+      }[];
+      setZoom({
+        start: zoomOptions[0]?.start ?? 0,
+        end: zoomOptions[0]?.end ?? 100,
+      });
+    };
+    issueRenderRef.current = issueRender;
+    const handleFinished = () => {
+      const completed = activeRenderRef.current;
+      if (completed === null) return;
+      activeRenderRef.current = null;
+      setFinishedFor({
+        generation: completed.generation,
+        bars: completed.bars,
+        formula: completed.formula,
+      });
+      const queued = queuedRenderRef.current;
+      queuedRenderRef.current = null;
+      if (queued !== null) issueRender(queued);
+    };
     chart.on('updateAxisPointer', handleAxisPointer);
     chart.on('dataZoom', handleDataZoom);
+    chart.on('finished', handleFinished);
     const observer = new ResizeObserver(() => chart.resize());
     observer.observe(containerRef.current);
     return () => {
       observer.disconnect();
       chart.off('updateAxisPointer', handleAxisPointer);
       chart.off('dataZoom', handleDataZoom);
+      chart.off('finished', handleFinished);
+      activeRenderRef.current = null;
+      queuedRenderRef.current = null;
+      issueRenderRef.current = null;
       chart.dispose();
       instanceRef.current = null;
     };
   }, [hasBars]);
 
   useEffect(() => {
-    if (!hasBars || instanceRef.current === null || bars === undefined) return;
+    if (!hasBars || instanceRef.current === null || bars === undefined) {
+      queuedRenderRef.current = null;
+      setFinishedFor(null);
+      return;
+    }
     const option =
       formula === undefined
         ? buildMarketChartOption(bars)
         : buildFormulaMarketChartOption(bars, formula);
-    instanceRef.current.setOption(option as EChartsCoreOption, {
-      lazyUpdate: true,
-      notMerge: true,
-    });
-    const zoomOptions = option.dataZoom as readonly {
-      readonly start?: number;
-      readonly end?: number;
-    }[];
-    setZoom({
-      start: zoomOptions[0]?.start ?? 0,
-      end: zoomOptions[0]?.end ?? 100,
-    });
+    const render: RenderGeneration = {
+      generation: nextGenerationRef.current + 1,
+      bars,
+      formula,
+      option,
+    };
+    nextGenerationRef.current = render.generation;
+    if (activeRenderRef.current === null) issueRenderRef.current?.(render);
+    else queuedRenderRef.current = render;
   }, [bars, formula, hasBars]);
 
   return (
@@ -637,6 +715,8 @@ export function MarketChart({
                 role="status"
                 aria-label="图表缩放范围"
                 aria-live="polite"
+                data-zoom-start={zoom.start}
+                data-zoom-end={zoom.end}
               >
                 可见范围 {Math.round(zoom.start)}%–{Math.round(zoom.end)}%
               </span>
@@ -693,6 +773,9 @@ export function MarketChart({
               ref={containerRef}
               className="market-chart-canvas"
               role="img"
+              aria-busy={!isReady}
+              data-chart-ready={isReady ? 'true' : 'false'}
+              data-chart-generation={finishedFor?.generation}
               aria-label={`${bars[0]?.symbol ?? '证券'} ${
                 formula === undefined
                   ? 'K 线与成交量'

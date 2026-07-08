@@ -25,7 +25,10 @@ from stock_desk.analysis.model_settings import (
     ModelSettingsSecureStorageError,
     ModelSettingsStorageError,
 )
-from stock_desk.analysis.report import ResearchReport
+from stock_desk.analysis.report import (
+    ResearchReport,
+    clean_research_report_active_secrets,
+)
 from stock_desk.analysis.runtime import AnalysisPreflightService
 from stock_desk.analysis.repository import (
     AnalysisConflict,
@@ -599,7 +602,7 @@ def cancel_analysis(
 def get_analysis_report(
     run_id: RunIdPath, services: AnalysisServicesDependency
 ) -> ResearchReport:
-    return services.report(run_id)
+    return clean_research_report_active_secrets(services.report(run_id))
 
 
 @router.get("/{run_id}/evidence/{evidence_id}", response_model=EvidenceItem)

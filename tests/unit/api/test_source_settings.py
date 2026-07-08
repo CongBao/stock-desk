@@ -16,7 +16,7 @@ from typing import Any
 
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 import pytest
 from sqlalchemy import Engine, event, func, insert, select
 
@@ -27,6 +27,8 @@ from stock_desk.api.settings import (
     SourceSettingsStorageError,
 )
 from stock_desk.config import Settings
+from stock_desk.analysis.snapshot import ResearchSectionKind
+from stock_desk.analysis.sources.routing import ResearchSourceRouter
 from stock_desk.main import create_app
 from stock_desk.market.providers.base import ProviderPermissionDenied
 from stock_desk.market.providers.base import (
@@ -65,6 +67,7 @@ from stock_desk.market.types import (
 )
 from stock_desk.storage.database import create_engine_for_url, migrate
 from stock_desk.storage.models import AppSetting, MarketDataset
+from tests.unit.market.providers.tdx_test_helpers import raw_record
 
 
 TOKEN = "ts-private-token-123456"
@@ -92,6 +95,13 @@ LEGACY_V1_PRIORITIES = {
     for key, value in DEFAULT_PRIORITIES.items()
     if key not in {"fundamentals", "announcements", "news"}
 }
+
+
+def make_valid_tdx_root(root: Path, *, raw_date: int = 20240701) -> Path:
+    for market in ("sh", "sz"):
+        (root / market / "lday").mkdir(parents=True)
+    (root / "sh" / "lday" / "sh600000.day").write_bytes(raw_record(raw_date=raw_date))
+    return root
 
 
 class AvailableProvider:
@@ -416,7 +426,7 @@ def test_invalid_secret_request_is_fixed_and_never_echoes_input(
 def test_public_priorities_and_tdx_path_use_bounded_canonical_json(
     tmp_path: Path,
 ) -> None:
-    tdx_path = str((tmp_path / "vipdoc").resolve())
+    tdx_path = str(make_valid_tdx_root((tmp_path / "vipdoc").resolve()))
     priorities = {
         **DEFAULT_PRIORITIES,
         "daily_bars": ["tdx_local", "tushare", "akshare"],
@@ -562,6 +572,113 @@ def test_research_priorities_reject_sources_without_declared_capability(
 
     assert response.status_code == 422
     assert response.json() == {"code": "invalid_request", "issues": []}
+
+
+@pytest.mark.parametrize("category", tuple(DEFAULT_PRIORITIES))
+def test_public_source_priorities_reject_demo_provenance_in_every_category(
+    category: str,
+) -> None:
+    priorities = json.loads(json.dumps(DEFAULT_PRIORITIES))
+    priorities[category].append("stock_desk_demo")
+
+    with pytest.raises(ValidationError, match="not configurable"):
+        settings_module.SourcePriorities.model_validate(priorities)
+
+
+def test_public_settings_api_rejects_demo_provenance_without_persisting(
+    tmp_path: Path,
+) -> None:
+    priorities = json.loads(json.dumps(DEFAULT_PRIORITIES))
+    priorities["daily_bars"].append("stock_desk_demo")
+
+    with settings_api(tmp_path, master_key=None) as context:
+        response = context.client.put(
+            "/api/settings/sources",
+            json={"priorities": priorities, "tdx_path": None},
+        )
+        with context.engine.connect() as connection:
+            stored = connection.execute(
+                select(AppSetting.encrypted_value).where(
+                    AppSetting.key == PUBLIC_SOURCE_SETTINGS_KEY
+                )
+            ).scalar_one_or_none()
+
+    assert response.status_code == 422
+    assert response.json() == {"code": "invalid_request", "issues": []}
+    assert stored is None
+
+
+def test_public_settings_service_revalidates_constructed_models_before_write(
+    tmp_path: Path,
+) -> None:
+    priorities = settings_module.SourcePriorities()
+    unsafe_priorities = priorities.model_copy(
+        update={
+            "daily_bars": (
+                *priorities.daily_bars,
+                ProviderId.STOCK_DESK_DEMO,
+            )
+        }
+    )
+    unsafe_settings = settings_module.PublicSourceSettings().model_copy(
+        update={"priorities": unsafe_priorities}
+    )
+
+    with settings_api(tmp_path, master_key=None) as context:
+        with pytest.raises(ValueError, match="invalid"):
+            context.services.save_public(unsafe_settings)
+        with context.engine.connect() as connection:
+            stored = connection.execute(
+                select(AppSetting.encrypted_value).where(
+                    AppSetting.key == PUBLIC_SOURCE_SETTINGS_KEY
+                )
+            ).scalar_one_or_none()
+
+    assert stored is None
+
+
+def test_persisted_demo_provenance_is_normalized_before_status_and_routing(
+    tmp_path: Path,
+) -> None:
+    priorities = {
+        category: [*values, "stock_desk_demo"]
+        for category, values in DEFAULT_PRIORITIES.items()
+    }
+    stored = json.dumps(
+        {"priorities": priorities, "tdx_path": None},
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+    with settings_api(tmp_path, master_key=None) as context:
+        with context.engine.begin() as connection:
+            connection.execute(
+                insert(AppSetting).values(
+                    key=PUBLIC_SOURCE_SETTINGS_KEY,
+                    encrypted_value=stored,
+                    updated_at=FIXED_NOW,
+                )
+            )
+
+        response = context.client.get("/api/settings/sources")
+        snapshot = context.services.runtime_snapshot()
+        diagnostic = ResearchSourceRouter(
+            kind=ResearchSectionKind.FUNDAMENTALS,
+            priority=snapshot.priorities.fundamentals,
+            sources=(),
+        ).diagnostic_template()
+
+    assert response.status_code == 200
+    assert response.json()["priorities"] == DEFAULT_PRIORITIES
+    assert all(
+        ProviderId.STOCK_DESK_DEMO not in priority
+        for priority in snapshot.priorities.model_dump().values()
+    )
+    assert [candidate.source for candidate in diagnostic.ordered_candidates] == [
+        "tushare",
+        "akshare",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -811,9 +928,8 @@ def test_concurrent_public_updates_remain_whole_and_readable(tmp_path: Path) -> 
                 if index % 2 == 0
                 else ["tdx_local", "tushare"]
             )
-            candidates.append(
-                {"priorities": priorities, "tdx_path": f"/safe/vipdoc-{index}"}
-            )
+            tdx_path = make_valid_tdx_root(tmp_path / f"vipdoc-{index}")
+            candidates.append({"priorities": priorities, "tdx_path": str(tdx_path)})
         with ThreadPoolExecutor(max_workers=8) as executor:
             list(executor.map(context.services.save_public, candidates))
         resolved = context.services.read_public().model_dump(mode="json")
@@ -946,9 +1062,10 @@ def test_public_update_invalidates_blocked_diagnostic_without_merging_result(
             "_merge_diagnostic_evidence",
             track_merge,
         )
+        replacement_root = make_valid_tdx_root(tmp_path / "replacement-vipdoc")
         replacement = {
             "priorities": DEFAULT_PRIORITIES,
-            "tdx_path": str((tmp_path / "replacement-vipdoc").resolve()),
+            "tdx_path": str(replacement_root.resolve()),
         }
         with ThreadPoolExecutor(max_workers=2) as executor:
             diagnostic_future = executor.submit(
@@ -1727,6 +1844,8 @@ def test_service_secret_lease_retains_only_current_and_previous_values(
     first_path = str((tmp_path / "first-current-vipdoc").resolve())
     second_path = str((tmp_path / "second-current-vipdoc").resolve())
     third_path = str((tmp_path / "third-current-vipdoc").resolve())
+    for path in (first_path, second_path, third_path):
+        make_valid_tdx_root(Path(path))
     output = io.StringIO()
     handler = logging.StreamHandler(output)
     background = logging.getLogger("third_party.provider.background")
@@ -1841,7 +1960,7 @@ def test_malicious_diagnostic_exception_and_path_never_escape(
         assert unsafe_path not in rendered
 
 
-def test_tdx_diagnostic_uses_secure_preflight_without_exposing_path(
+def test_tdx_save_uses_secure_preflight_without_exposing_missing_path(
     tmp_path: Path,
 ) -> None:
     missing_vipdoc = (tmp_path / f"missing-{TOKEN}").resolve()
@@ -1850,21 +1969,18 @@ def test_tdx_diagnostic_uses_secure_preflight_without_exposing_path(
         "tdx_path": str(missing_vipdoc),
     }
     with settings_api(tmp_path, master_key=None) as context:
-        assert context.client.put("/api/settings/sources", json=body).status_code == 200
-        response = context.client.post("/api/settings/sources/tdx_local/test")
+        response = context.client.put("/api/settings/sources", json=body)
+        persisted = context.client.get("/api/settings/sources")
 
-    assert response.status_code == 200
-    assert response.json()["status"] == "unavailable"
-    assert response.json()["fallback_reason"] == {
-        "reason": "missing",
-        "detail": "TDX vipdoc layout is missing",
-    }
+    assert response.status_code == 422
+    assert response.json() == {"code": "tdx_preflight_failed"}
+    assert persisted.json()["tdx_path"] is None
     assert str(missing_vipdoc) not in response.text
     assert TOKEN not in response.text
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX ancestor symlink security")
-def test_tdx_diagnostic_rejects_symlinked_ancestor_without_exposing_path(
+def test_tdx_save_rejects_symlinked_ancestor_without_exposing_path(
     tmp_path: Path,
 ) -> None:
     actual_parent = tmp_path / "actual-parent"
@@ -1878,15 +1994,12 @@ def test_tdx_diagnostic_rejects_symlinked_ancestor_without_exposing_path(
     body = {"priorities": DEFAULT_PRIORITIES, "tdx_path": str(configured)}
 
     with settings_api(tmp_path, master_key=None) as context:
-        assert context.client.put("/api/settings/sources", json=body).status_code == 200
-        response = context.client.post("/api/settings/sources/tdx_local/test")
+        response = context.client.put("/api/settings/sources", json=body)
+        persisted = context.client.get("/api/settings/sources")
 
-    assert response.status_code == 200
-    assert response.json()["status"] == "unavailable"
-    assert response.json()["fallback_reason"] == {
-        "reason": "invalid_response",
-        "detail": "TDX vipdoc layout is invalid",
-    }
+    assert response.status_code == 422
+    assert response.json() == {"code": "tdx_preflight_failed"}
+    assert persisted.json()["tdx_path"] is None
     assert str(configured) not in response.text
     assert TOKEN not in response.text
 

@@ -2,30 +2,17 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 
 import { ApiError, createApiClient, type JsonValue } from './client';
+import {
+  decodeTaskListResponse,
+  TaskApiError,
+  type TaskStatus,
+  type TaskView,
+} from '../../features/tasks/taskApi';
 
 const apiClient = createApiClient();
 const REQUEST_TIMEOUT_MS = 5_000;
-const taskStatuses = new Set([
-  'queued',
-  'running',
-  'succeeded',
-  'failed',
-  'cancelled',
-]);
-
-export type TaskStatus =
-  'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
-
-export type RecentTask = {
-  readonly id: string;
-  readonly kind: string;
-  readonly status: TaskStatus;
-  readonly progress: number;
-  readonly createdAt: string;
-  readonly updatedAt: string;
-  readonly finishedAt: string | null;
-  readonly resultValue: boolean | number | string | null | undefined;
-};
+export type RecentTask = TaskView;
+export type { TaskStatus };
 
 export type OverallSystemState =
   'checking' | 'healthy' | 'degraded' | 'unavailable';
@@ -92,10 +79,6 @@ function isRecord(
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function isTimestamp(value: JsonValue | undefined): value is string {
-  return typeof value === 'string' && Number.isFinite(Date.parse(value));
-}
-
 function decodeHealth(value: JsonValue | undefined) {
   if (
     !isRecord(value) ||
@@ -113,65 +96,13 @@ function decodeHealth(value: JsonValue | undefined) {
   } as const;
 }
 
-function decodeResultValue(
-  value: JsonValue | undefined,
-): boolean | number | string | null | undefined {
-  if (value === null) {
-    return undefined;
-  }
-  if (!isRecord(value)) {
-    throw new ProtocolError();
-  }
-  const resultValue = value.value;
-  if (
-    resultValue === undefined ||
-    resultValue === null ||
-    typeof resultValue === 'boolean' ||
-    typeof resultValue === 'string' ||
-    (typeof resultValue === 'number' && Number.isFinite(resultValue))
-  ) {
-    return resultValue;
-  }
-  return undefined;
-}
-
-function decodeTask(value: JsonValue): RecentTask {
-  if (
-    !isRecord(value) ||
-    typeof value.id !== 'string' ||
-    value.id.length === 0 ||
-    typeof value.kind !== 'string' ||
-    value.kind.length === 0 ||
-    typeof value.status !== 'string' ||
-    !taskStatuses.has(value.status) ||
-    typeof value.progress !== 'number' ||
-    !Number.isFinite(value.progress) ||
-    value.progress < 0 ||
-    value.progress > 1 ||
-    !isTimestamp(value.created_at) ||
-    !isTimestamp(value.updated_at) ||
-    (value.finished_at !== null && !isTimestamp(value.finished_at))
-  ) {
-    throw new ProtocolError();
-  }
-
-  return {
-    id: value.id,
-    kind: value.kind,
-    status: value.status as TaskStatus,
-    progress: value.progress,
-    createdAt: value.created_at,
-    updatedAt: value.updated_at,
-    finishedAt: value.finished_at,
-    resultValue: decodeResultValue(value.result),
-  };
-}
-
 function decodeTasks(value: JsonValue | undefined): readonly RecentTask[] {
-  if (!Array.isArray(value) || value.length > 5) {
+  try {
+    return decodeTaskListResponse(value, 5);
+  } catch (error) {
+    if (!(error instanceof TaskApiError)) throw error;
     throw new ProtocolError();
   }
-  return value.map(decodeTask);
 }
 
 function endpointState(query: {
@@ -237,7 +168,7 @@ export function useSystemStatus(): SystemStatus {
   const tasksQuery = useQuery({
     queryKey: ['system-status', 'tasks', 5],
     queryFn: async ({ signal }) =>
-      decodeTasks(await getWithTimeout('/tasks?limit=5', signal)),
+      decodeTasks(await getWithTimeout('/tasks?view=safe&limit=5', signal)),
     retry: shouldRetry,
     retryDelay: 10,
     staleTime: 1_000,

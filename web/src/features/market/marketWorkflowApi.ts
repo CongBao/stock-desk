@@ -219,6 +219,7 @@ const providerIds = new Set([
   'baostock',
   'tdx_local',
   'eastmoney',
+  'stock_desk_demo',
 ]);
 const poolCategories = new Set(['all_a', 'index', 'industry']);
 const presetKeyPattern = /^[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?$/u;
@@ -353,6 +354,26 @@ function decodePayload(
   return { symbols, period, adjustment, start, end };
 }
 
+function decodeTaskPresentation(value: JsonValue | undefined): void {
+  const item = exactRecord(value, 'task.presentation', [
+    'label',
+    'stage',
+    'processed',
+    'total',
+    'failed',
+    'target',
+  ]);
+  if (
+    item.label !== '数据更新' ||
+    item.stage !== null ||
+    item.processed !== null ||
+    item.total !== null ||
+    item.failed !== null ||
+    item.target !== null
+  )
+    return fail('task.presentation');
+}
+
 const taskKeys = [
   'id',
   'correlation_id',
@@ -369,6 +390,7 @@ const taskKeys = [
   'started_at',
   'finished_at',
   'duration_ms',
+  'presentation',
 ] as const;
 
 function decodeTask(value: JsonValue | undefined): MarketTask {
@@ -410,6 +432,7 @@ function decodeTask(value: JsonValue | undefined): MarketTask {
     item.cancel_requested,
     'task.cancel_requested',
   );
+  decodeTaskPresentation(item.presentation);
   const terminal = ['succeeded', 'failed', 'cancelled'].includes(status);
   if (
     (terminal && finishedAt === null) ||

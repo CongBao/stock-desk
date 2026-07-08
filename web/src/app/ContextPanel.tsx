@@ -2,7 +2,6 @@ import { useEffect, useRef } from 'react';
 
 import type {
   EndpointState,
-  RecentTask,
   SystemStatus,
   TaskStatus,
 } from '../shared/api/useSystemStatus';
@@ -34,6 +33,13 @@ const taskStatusLabels: Record<TaskStatus, string> = {
   failed: '已失败',
   cancelled: '已取消',
 };
+const taskStageLabels = {
+  queued: '排队',
+  executing: '执行中',
+  completed: '已完成',
+  failed: '失败',
+  cancelled: '已取消',
+} as const;
 
 const dateFormatter = new Intl.DateTimeFormat('zh-CN', {
   dateStyle: 'short',
@@ -42,16 +48,6 @@ const dateFormatter = new Intl.DateTimeFormat('zh-CN', {
 
 function formatTimestamp(timestamp: string): string {
   return dateFormatter.format(new Date(timestamp));
-}
-
-function formatResult(task: RecentTask): string | null {
-  if (task.resultValue === undefined) {
-    return null;
-  }
-  if (task.resultValue === null) {
-    return '结果：空';
-  }
-  return `结果：${String(task.resultValue)}`;
 }
 
 export function ContextPanel({
@@ -169,7 +165,6 @@ export function ContextPanel({
           <ol className="task-list">
             {systemStatus.recentTasks.map((task) => {
               const statusLabel = taskStatusLabels[task.status];
-              const result = formatResult(task);
               return (
                 <li
                   key={task.id}
@@ -177,7 +172,7 @@ export function ContextPanel({
                   data-status={task.status}
                 >
                   <div className="task-heading">
-                    <strong>{task.kind}</strong>
+                    <strong>{task.presentation.label}</strong>
                     <span>{statusLabel}</span>
                   </div>
                   <p>进度 {Math.round(task.progress * 100)}%</p>
@@ -189,8 +184,12 @@ export function ContextPanel({
                       ? '完成 未结束'
                       : `完成 ${formatTimestamp(task.finishedAt)}`}
                   </p>
-                  {result === null ? null : (
-                    <p className="task-result">{result}</p>
+                  {task.presentation.stage === null ? null : (
+                    <p>
+                      {taskStageLabels[task.presentation.stage]} ·{' '}
+                      {task.presentation.processed}/{task.presentation.total} ·
+                      失败 {task.presentation.failed}
+                    </p>
                   )}
                 </li>
               );

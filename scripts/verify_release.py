@@ -19,8 +19,11 @@ import re
 import subprocess
 import sys
 import tarfile
+import tempfile
+from threading import Thread
+import time
 import tomllib
-from typing import Protocol
+from typing import IO, Protocol
 import zipfile
 
 from packaging.metadata import Metadata
@@ -46,6 +49,8 @@ GITHUB_MERGE_SUBJECT_PATTERN = re.compile(
     r"Merge pull request #(?P<pull_request>[1-9][0-9]*) "
     r"from CongBao/(?P<branch>[A-Za-z0-9._/-]+)"
 )
+CANDIDATE_REPORT_SCHEMA = "stock-desk-release-candidate-report-v1"
+CANDIDATE_REPORT_DIRECTORY = PurePosixPath("test-results/release")
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +58,139 @@ class GateCommand:
     command: tuple[str, ...]
     timeout_seconds: int
     environment: tuple[tuple[str, str], ...] = ()
+
+
+PRE_PUBLISH_EVIDENCE_GATE = GateCommand(
+    (
+        "uv",
+        "run",
+        "--frozen",
+        "python",
+        "scripts/check_requirement_coverage.py",
+        "--mode",
+        "pre-publish",
+    ),
+    timeout_seconds=300,
+)
+
+_RELEASE_SCAN_CHUNK_SIZE = 64 * 1024
+_RELEASE_SCAN_OVERLAP = 4096
+_SYNTHETIC_HOME_USERS = frozenset({"example", "owner", "operator", "user", "username"})
+_CASE_SENSITIVE_SYNTHETIC_HOME_USERS = frozenset({"Bao"})
+_POSIX_HOME_PATH = re.compile(
+    rb"/(?:home|" + rb"Users)/(?P<user>(?!\[\^)[^/'\"\x00-\x1f\x7f]{1,512})/"
+)
+_WINDOWS_HOME_PATH = re.compile(
+    rb"(?i)(?:[A-Z]:)?[\\/]Users[\\/]"
+    rb"(?P<user>(?!\[\^)[^\\/'\"\x00-\x1f\x7f]{1,512})[\\/]"
+)
+_PRIVATE_KEY_MARKERS = (
+    b"-----BEGIN " + b"OPENSSH PRIVATE KEY-----",
+    b"-----BEGIN " + b"RSA PRIVATE KEY-----",
+    b"-----BEGIN " + b"EC PRIVATE KEY-----",
+    b"-----BEGIN " + b"PRIVATE KEY-----",
+)
+_DIRECT_CREDENTIAL_PATTERNS = (
+    re.compile(rb"\bgh[pousr]_[A-Za-z0-9]{36,}\b"),
+    re.compile(rb"\bAKIA[0-9A-Z]{16}\b"),
+    re.compile(rb"\bsk-(?:proj-)?[A-Za-z0-9]{32,}\b"),
+    re.compile(rb"\bsk-ant-[A-Za-z0-9_-]{32,}\b"),
+)
+_PROVIDER_CREDENTIAL = re.compile(
+    rb"(?ix)\b(?:OPENAI_API_KEY|DEEPSEEK_API_KEY|DASHSCOPE_API_KEY|"
+    rb"QWEN_API_KEY|MOONSHOT_API_KEY|ZHIPU_API_KEY|TUSHARE_TOKEN|"
+    rb"MODEL_API_KEY|STOCK_DESK_MASTER_KEY)\s*[:=]\s*[\"']?"
+    rb"(?P<value>(?:sk-[A-Za-z0-9._-]{24,}|[A-Za-z0-9][A-Za-z0-9._-]{31,}))"
+)
+_GENERATED_OR_PRIVATE_COMPONENTS = frozenset(
+    {
+        ".agents",
+        ".codex",
+        ".git",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".superpowers",
+        ".venv",
+        "__pycache__",
+        "coverage",
+        "dist",
+        "htmlcov",
+        "node_modules",
+        "openspec",
+        "outputs",
+        "test-results",
+        "work",
+    }
+)
+
+
+class ReleaseLeakScanner:
+    """Incrementally reject high-confidence private release payloads."""
+
+    def __init__(self, *, label: str) -> None:
+        self._label = label
+        self._tail = b""
+
+    def feed(self, payload: bytes) -> None:
+        if not payload:
+            return
+        window = self._tail + payload
+        self._scan(window)
+        self._tail = window[-_RELEASE_SCAN_OVERLAP:]
+
+    def finish(self) -> None:
+        self._tail = b""
+
+    def _scan(self, payload: bytes) -> None:
+        for pattern in (_POSIX_HOME_PATH, _WINDOWS_HOME_PATH):
+            for match in pattern.finditer(payload):
+                raw_user = match.group("user")
+                try:
+                    user = raw_user.decode("utf-8")
+                except UnicodeDecodeError:
+                    user = ""
+                if (
+                    user not in _CASE_SENSITIVE_SYNTHETIC_HOME_USERS
+                    and user.casefold() not in _SYNTHETIC_HOME_USERS
+                ):
+                    self._reject()
+        if any(marker in payload for marker in _PRIVATE_KEY_MARKERS):
+            self._reject()
+        if any(pattern.search(payload) for pattern in _DIRECT_CREDENTIAL_PATTERNS):
+            self._reject()
+        if _PROVIDER_CREDENTIAL.search(payload) is not None:
+            self._reject()
+
+    def _reject(self) -> None:
+        raise ReleaseVerificationError(
+            f"release payload contains private path or credential material: {self._label}"
+        )
+
+
+def _scan_stream(stream: object, *, label: str) -> None:
+    reader = getattr(stream, "read", None)
+    if not callable(reader):
+        raise ReleaseVerificationError("release payload stream is unreadable")
+    scanner = ReleaseLeakScanner(label=label)
+    while True:
+        chunk = reader(_RELEASE_SCAN_CHUNK_SIZE)
+        if not chunk:
+            break
+        if not isinstance(chunk, bytes):
+            raise ReleaseVerificationError("release payload stream is not binary")
+        scanner.feed(chunk)
+    scanner.finish()
+
+
+def _scan_path(path: Path, *, label: str) -> None:
+    try:
+        with path.open("rb") as payload:
+            _scan_stream(payload, label=label)
+    except ReleaseVerificationError:
+        raise
+    except OSError as error:
+        raise ReleaseVerificationError("unable to scan release payload") from error
 
 
 class GateRunner(Protocol):
@@ -78,6 +216,41 @@ class SubprocessGateRunner:
             stdin=subprocess.DEVNULL,
             timeout=gate.timeout_seconds,
         )
+
+
+def _candidate_gates(*, target_performance: bool) -> tuple[GateCommand, ...]:
+    performance = "performance-target" if target_performance else "performance"
+    return tuple(
+        GateCommand(("make", target), timeout_seconds=1800)
+        for target in (
+            "test",
+            "acceptance",
+            "acceptance-formula",
+            "acceptance-backtest",
+            "acceptance-analysis",
+            "acceptance-domain-contracts",
+            "acceptance-full-journey",
+            "performance-regressions",
+            performance,
+            "e2e-foundation",
+            "e2e-market",
+            "e2e-formula",
+            "e2e-backtest",
+            "e2e-analysis",
+            "e2e-task-center",
+            "e2e-accessibility",
+            "lint",
+            "typecheck",
+            "security",
+        )
+    ) + (
+        GateCommand(
+            ("uv", "run", "--frozen", "python", "scripts/verify_docs.py"),
+            timeout_seconds=300,
+        ),
+        GateCommand(("make", "public-tree"), timeout_seconds=300),
+        PRE_PUBLISH_EVIDENCE_GATE,
+    )
 
 
 def _git(repo: Path, *arguments: str) -> str:
@@ -107,6 +280,293 @@ def _git_paths(repo: Path, *arguments: str) -> list[str]:
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
         raise ReleaseVerificationError("unable to inspect Git paths") from error
     return [os.fsdecode(path) for path in result.stdout.split(b"\0") if path]
+
+
+def _reachable_object_ids(repo: Path) -> tuple[bytes, ...]:
+    try:
+        result = subprocess.run(  # noqa: S603
+            ("git", "-C", os.fspath(repo), "rev-list", "--objects", "HEAD"),
+            check=True,
+            capture_output=True,
+            timeout=GIT_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+        raise ReleaseVerificationError(
+            "unable to inspect reachable Git objects"
+        ) from error
+    object_ids = tuple(
+        dict.fromkeys(line.split(maxsplit=1)[0] for line in result.stdout.splitlines())
+    )
+    if not object_ids:
+        raise ReleaseVerificationError("reachable Git history has no objects")
+    return object_ids
+
+
+def _terminate_streaming_process(
+    process: subprocess.Popen[bytes], worker: Thread
+) -> None:
+    if process.poll() is None:
+        process.kill()
+    try:
+        process.wait(timeout=1)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=1)
+    if process.stdout is not None:
+        process.stdout.close()
+    worker.join(timeout=1)
+    if worker.is_alive():
+        raise ReleaseVerificationError("release payload reader did not stop")
+
+
+def _consume_process_with_deadline(
+    process: subprocess.Popen[bytes],
+    consume: Callable[[IO[bytes]], None],
+    *,
+    timeout_seconds: float,
+    timeout_message: str,
+    failure_message: str,
+) -> None:
+    if process.stdout is None:
+        raise ReleaseVerificationError(failure_message)
+    stdout = process.stdout
+    failures: list[Exception] = []
+
+    def consume_stdout() -> None:
+        try:
+            consume(stdout)
+        except Exception as error:  # noqa: BLE001 -- propagated on the caller thread
+            failures.append(error)
+
+    deadline = time.monotonic() + timeout_seconds
+    worker = Thread(
+        target=consume_stdout,
+        name=f"release-payload-reader-{id(process)}",
+        daemon=True,
+    )
+    worker.start()
+    worker.join(timeout=max(0.0, deadline - time.monotonic()))
+    if worker.is_alive():
+        _terminate_streaming_process(process, worker)
+        raise ReleaseVerificationError(timeout_message)
+    if failures:
+        _terminate_streaming_process(process, worker)
+        error = failures[0]
+        if isinstance(error, ReleaseVerificationError):
+            raise error
+        raise ReleaseVerificationError(failure_message) from error
+    try:
+        return_code = process.wait(timeout=max(0.0, deadline - time.monotonic()))
+    except subprocess.TimeoutExpired as error:
+        _terminate_streaming_process(process, worker)
+        raise ReleaseVerificationError(timeout_message) from error
+    finally:
+        stdout.close()
+    if return_code != 0:
+        raise ReleaseVerificationError(failure_message)
+
+
+def _scan_reachable_git_blobs(
+    repo: Path, *, timeout_seconds: float = GIT_TIMEOUT_SECONDS
+) -> None:
+    object_ids = _reachable_object_ids(repo)
+    with tempfile.TemporaryFile() as query:
+        for object_id in object_ids:
+            query.write(object_id + b"\n")
+        query.seek(0)
+        try:
+            process = subprocess.Popen(  # noqa: S603
+                ("git", "-C", os.fspath(repo), "cat-file", "--batch"),
+                stdin=query,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError as error:
+            raise ReleaseVerificationError(
+                "unable to scan reachable Git blobs"
+            ) from error
+
+        def consume(stdout: IO[bytes]) -> None:
+            readline = stdout.readline
+            read = stdout.read
+            for expected_id in object_ids:
+                header = readline()
+                if not isinstance(header, bytes):
+                    raise ReleaseVerificationError(
+                        "reachable Git object framing is invalid"
+                    )
+                fields = header.rstrip(b"\n").split()
+                if len(fields) != 3:
+                    raise ReleaseVerificationError(
+                        "reachable Git object framing is invalid"
+                    )
+                object_id, object_type, raw_size = fields
+                if object_id != expected_id or not raw_size.isdigit():
+                    raise ReleaseVerificationError(
+                        "reachable Git object framing is invalid"
+                    )
+                remaining = int(raw_size)
+                scanner = (
+                    ReleaseLeakScanner(
+                        label=f"reachable Git blob {object_id.decode('ascii')}"
+                    )
+                    if object_type == b"blob"
+                    else None
+                )
+                while remaining:
+                    chunk = read(min(_RELEASE_SCAN_CHUNK_SIZE, remaining))
+                    if not isinstance(chunk, bytes) or not chunk:
+                        raise ReleaseVerificationError(
+                            "reachable Git object ended unexpectedly"
+                        )
+                    remaining -= len(chunk)
+                    if scanner is not None:
+                        scanner.feed(chunk)
+                if scanner is not None:
+                    scanner.finish()
+                if read(1) != b"\n":
+                    raise ReleaseVerificationError(
+                        "reachable Git object framing is invalid"
+                    )
+            if read(1):
+                raise ReleaseVerificationError(
+                    "reachable Git object stream has trailing data"
+                )
+
+        _consume_process_with_deadline(
+            process,
+            consume,
+            timeout_seconds=timeout_seconds,
+            timeout_message="reachable Git object scan timed out",
+            failure_message="unable to scan reachable Git blobs",
+        )
+
+
+def _safe_release_member_path(name: str) -> bool:
+    path = PurePosixPath(name)
+    return (
+        bool(name)
+        and "\\" not in name
+        and "\x00" not in name
+        and not path.is_absolute()
+        and ".." not in path.parts
+        and path.as_posix() == name
+        and _GENERATED_OR_PRIVATE_COMPONENTS.isdisjoint(path.parts)
+    )
+
+
+def _scan_git_archive(
+    repo: Path, *, timeout_seconds: float = GIT_TIMEOUT_SECONDS
+) -> None:
+    try:
+        process = subprocess.Popen(  # noqa: S603
+            ("git", "-C", os.fspath(repo), "archive", "--format=tar", "HEAD"),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError as error:
+        raise ReleaseVerificationError("unable to scan the source archive") from error
+
+    def consume(stdout: IO[bytes]) -> None:
+        with tarfile.open(fileobj=stdout, mode="r|") as archive:
+            for member in archive:
+                if not _safe_release_member_path(member.name):
+                    raise ReleaseVerificationError(
+                        "release source archive contains a private or generated path"
+                    )
+                if member.isdir():
+                    continue
+                if not member.isfile():
+                    raise ReleaseVerificationError(
+                        "release source archive contains an unsupported member"
+                    )
+                payload = archive.extractfile(member)
+                if payload is None:
+                    raise ReleaseVerificationError(
+                        "release source archive member is unreadable"
+                    )
+                _scan_stream(payload, label="source archive member")
+
+    _consume_process_with_deadline(
+        process,
+        consume,
+        timeout_seconds=timeout_seconds,
+        timeout_message="source archive scan timed out",
+        failure_message="unable to scan the source archive",
+    )
+
+
+def compute_fixture_hashes(repo: Path) -> dict[str, str]:
+    paths = _git_paths(
+        repo,
+        "ls-files",
+        "-z",
+        "--",
+        "tests/fixtures",
+        "tests/acceptance/requirements.yml",
+    )
+    hashes: dict[str, str] = {}
+    for raw_path in sorted(paths):
+        relative = PurePosixPath(raw_path)
+        if (
+            relative.is_absolute()
+            or ".." in relative.parts
+            or relative.as_posix() != raw_path
+        ):
+            raise ReleaseVerificationError("release fixture path is invalid")
+        fixture = repo.joinpath(*relative.parts)
+        if fixture.is_symlink() or not fixture.is_file():
+            raise ReleaseVerificationError("release fixture is not a regular file")
+        hashes[raw_path] = f"sha256:{hashlib.sha256(fixture.read_bytes()).hexdigest()}"
+    if not hashes:
+        raise ReleaseVerificationError("release fixtures are missing")
+    return hashes
+
+
+def _candidate_report_target(repo: Path, requested: Path) -> Path:
+    expected_root = repo.joinpath(*CANDIDATE_REPORT_DIRECTORY.parts)
+    try:
+        relative = requested.absolute().relative_to(repo)
+    except ValueError as error:
+        raise ReleaseVerificationError("candidate report path is invalid") from error
+    if (
+        PurePosixPath(relative.as_posix()).parent != CANDIDATE_REPORT_DIRECTORY
+        or requested.suffix != ".json"
+        or requested.name.startswith(".")
+    ):
+        raise ReleaseVerificationError("candidate report path is invalid")
+    current = repo
+    for part in relative.parts[:-1]:
+        current /= part
+        if current.is_symlink():
+            raise ReleaseVerificationError("candidate report path is invalid")
+    expected_root.mkdir(parents=True, exist_ok=True)
+    if requested.is_symlink() or (requested.exists() and not requested.is_file()):
+        raise ReleaseVerificationError("candidate report path is invalid")
+    return requested
+
+
+def _write_candidate_report(repo: Path, requested: Path, payload: object) -> None:
+    target = _candidate_report_target(repo, requested)
+    encoded = (
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+    if temporary.exists() or temporary.is_symlink():
+        raise ReleaseVerificationError("candidate report temporary path is unsafe")
+    try:
+        with temporary.open("xb") as output:
+            output.write(encoded)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, target)
+    except OSError as error:
+        raise ReleaseVerificationError("unable to write candidate report") from error
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def check_clean_worktree(repo: Path) -> None:
@@ -276,6 +736,8 @@ def check_public_history(repo: Path) -> None:
         raise ReleaseVerificationError(
             "reachable Git history contains forbidden internal paths"
         )
+    _scan_reachable_git_blobs(repo)
+    _scan_git_archive(repo)
 
 
 def _check_package_metadata(
@@ -446,6 +908,9 @@ def _check_wheel_artifact(repo: Path, wheel_path: Path, version: str) -> bytes:
             or any(member.is_dir() for member in wheel.infolist())
         ):
             raise _invalid_wheel()
+        for member in wheel.infolist():
+            with wheel.open(member) as payload:
+                _scan_stream(payload, label="wheel member")
         archive_payloads = {
             member.filename: wheel.read(member)
             for member in wheel.infolist()
@@ -560,6 +1025,9 @@ def _check_source_artifact(repo: Path, source_path: Path, version: str) -> bytes
                 raise _invalid_source()
             payload = member_file.read()
             relative_name = relative_path.as_posix()
+            scanner = ReleaseLeakScanner(label="source distribution member")
+            scanner.feed(payload)
+            scanner.finish()
             archive_payloads[relative_name] = payload
             if relative_name != "PKG-INFO":
                 repository_payload = _read_bound_repository_file(repo, relative_path)
@@ -596,6 +1064,14 @@ def check_build_artifacts(repo: Path, version: str) -> None:
     ):
         raise ReleaseVerificationError("release web build artifact is missing")
     try:
+        for web_path in sorted(web_entrypoint.parent.rglob("*")):
+            relative = web_path.relative_to(web_entrypoint.parent).as_posix()
+            if not _safe_release_member_path(relative) or web_path.is_symlink():
+                raise ReleaseVerificationError(
+                    "release web build artifact contains an unsafe path"
+                )
+            if web_path.is_file():
+                _scan_path(web_path, label="web build member")
         web_html = web_entrypoint.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as error:
         raise ReleaseVerificationError(
@@ -638,6 +1114,136 @@ def check_build_artifacts(repo: Path, version: str) -> None:
         ) from error
 
 
+def verify_candidate(
+    repo: Path,
+    version: str,
+    runner: GateRunner,
+    *,
+    report_path: Path,
+    target_performance: bool = False,
+    fingerprint: Callable[[Path], str] = compute_source_fingerprint,
+    fixture_hashes: Callable[[Path], dict[str, str]] = compute_fixture_hashes,
+) -> None:
+    resolved_repo = repo.resolve(strict=True)
+    if VERSION_PATTERN.fullmatch(version) is None:
+        raise ReleaseVerificationError(
+            "release version must be a stable numeric version"
+        )
+    try:
+        revision = _git(resolved_repo, "rev-parse", "HEAD").strip()
+        initial_fingerprint = fingerprint(resolved_repo)
+        initial_fixture_hashes = fixture_hashes(resolved_repo)
+    except ReleaseVerificationError:
+        raise
+    except (OSError, RuntimeError, ValueError) as error:
+        raise ReleaseVerificationError(
+            "unable to initialize release candidate verification"
+        ) from error
+
+    precheck_error: ReleaseVerificationError | None = None
+    source_unchanged = True
+    try:
+        check_clean_worktree(resolved_repo)
+    except ReleaseVerificationError as error:
+        precheck_error = error
+        source_unchanged = False
+    if precheck_error is None:
+        try:
+            check_public_history(resolved_repo)
+        except ReleaseVerificationError as error:
+            precheck_error = error
+    if precheck_error is not None:
+        _write_candidate_report(
+            resolved_repo,
+            report_path,
+            {
+                "schema_version": CANDIDATE_REPORT_SCHEMA,
+                "mode": "candidate",
+                "version": version,
+                "status": "failed",
+                "source_revision": revision,
+                "source_fingerprint": initial_fingerprint,
+                "source_unchanged": source_unchanged,
+                "fixture_hashes": initial_fixture_hashes,
+                "gates": [],
+                "failure": {
+                    "kind": "precheck_failed",
+                    "gate": None,
+                    "message": "release candidate precheck failed",
+                },
+            },
+        )
+        raise precheck_error
+
+    gate_reports: list[dict[str, object]] = []
+    failure: dict[str, object] | None = None
+    for gate in _candidate_gates(target_performance=target_performance):
+        gate_error: BaseException | None = None
+        try:
+            runner.run(gate)
+        except (
+            OSError,
+            subprocess.CalledProcessError,
+            subprocess.TimeoutExpired,
+        ) as error:
+            gate_error = error
+
+        source_unchanged = True
+        try:
+            check_clean_worktree(resolved_repo)
+            current_revision = _git(resolved_repo, "rev-parse", "HEAD").strip()
+            current_fingerprint = fingerprint(resolved_repo)
+            current_fixture_hashes = fixture_hashes(resolved_repo)
+            source_unchanged = (
+                current_revision == revision
+                and current_fingerprint == initial_fingerprint
+                and current_fixture_hashes == initial_fixture_hashes
+            )
+        except (OSError, RuntimeError, ValueError, ReleaseVerificationError):
+            source_unchanged = False
+
+        command = list(gate.command)
+        if not source_unchanged:
+            gate_reports.append({"command": command, "status": "failed"})
+            failure = {
+                "kind": "source_changed",
+                "gate": command,
+                "message": "release candidate gate modified release sources",
+            }
+        elif gate_error is not None:
+            gate_reports.append({"command": command, "status": "failed"})
+            failure = {
+                "kind": "gate_failed",
+                "gate": command,
+                "message": "release candidate gate failed",
+            }
+        else:
+            gate_reports.append({"command": command, "status": "passed"})
+        if failure is not None:
+            break
+
+    source_unchanged = failure is None or failure["kind"] != "source_changed"
+    payload = {
+        "schema_version": CANDIDATE_REPORT_SCHEMA,
+        "mode": "candidate",
+        "version": version,
+        "status": "passed" if failure is None else "failed",
+        "source_revision": revision,
+        "source_fingerprint": initial_fingerprint,
+        "source_unchanged": source_unchanged,
+        "fixture_hashes": initial_fixture_hashes,
+        "gates": gate_reports,
+        "failure": failure,
+    }
+    _write_candidate_report(resolved_repo, report_path, payload)
+    if failure is not None:
+        if failure["kind"] == "source_changed":
+            raise ReleaseVerificationError(
+                "release candidate gate modified release sources"
+            )
+        raise ReleaseVerificationError("release candidate gate failed")
+
+
 def verify_release(
     repo: Path,
     version: str,
@@ -661,6 +1267,7 @@ def verify_release(
         ) from error
 
     gates = (
+        PRE_PUBLISH_EVIDENCE_GATE,
         GateCommand(("make", "release-check"), timeout_seconds=1800),
         GateCommand(
             ("pnpm", "e2e"),
@@ -695,6 +1302,22 @@ def _parser() -> argparse.ArgumentParser:
         description="Audit and run the canonical Stock Desk release gates."
     )
     parser.add_argument("version", help="stable release version, for example 0.1.0")
+    parser.add_argument(
+        "--candidate",
+        action="store_true",
+        help="run release-candidate gates and write a machine-readable report",
+    )
+    parser.add_argument(
+        "--target-performance",
+        action="store_true",
+        help="use the target-hardware performance gate in candidate mode",
+    )
+    parser.add_argument(
+        "--report",
+        type=Path,
+        default=Path("test-results/release/candidate.json"),
+        help="candidate JSON report path inside test-results/release",
+    )
     return parser
 
 
@@ -702,11 +1325,32 @@ def main(arguments: list[str] | None = None) -> int:
     options = _parser().parse_args(arguments)
     repo = Path(__file__).resolve().parent.parent
     try:
-        verify_release(repo, options.version, SubprocessGateRunner(repo))
+        if options.candidate:
+            report_path = (
+                options.report
+                if options.report.is_absolute()
+                else repo / options.report
+            )
+            verify_candidate(
+                repo,
+                options.version,
+                SubprocessGateRunner(repo),
+                report_path=report_path,
+                target_performance=options.target_performance,
+            )
+        else:
+            if options.target_performance or options.report != Path(
+                "test-results/release/candidate.json"
+            ):
+                raise ReleaseVerificationError(
+                    "candidate report options require --candidate"
+                )
+            verify_release(repo, options.version, SubprocessGateRunner(repo))
     except ReleaseVerificationError as error:
         print(f"Release verification failed: {error}", file=sys.stderr)
         return 1
-    print(f"Release verification passed for {options.version}.")
+    label = "candidate " if options.candidate else ""
+    print(f"Release {label}verification passed for {options.version}.")
     return 0
 
 

@@ -43,6 +43,7 @@ from stock_desk.analysis.workflow import (
     WorkflowRequestValidationError,
     WorkflowStageStatus,
 )
+from stock_desk.security.redaction import scoped_log_redaction
 
 
 UTC = timezone.utc
@@ -51,6 +52,8 @@ FETCHED_AT = FROZEN_AT - timedelta(minutes=5)
 DATA_CUTOFF = FETCHED_AT - timedelta(hours=1)
 VERSION = "sha256:" + "a" * 64
 SYMBOL = "600000.SH"
+WORKFLOW_SECRET = "workflow-active-secret-must-not-escape"
+SIMILAR_NON_SECRET = "workflow-active-secret-must-not-escapx"
 
 
 def run[T](awaitable: Coroutine[Any, Any, T]) -> T:
@@ -318,6 +321,47 @@ def test_roles_receive_only_allowed_snapshot_and_structured_dependency_blocks() 
     assert "formula" not in encoded
     assert "backtest" not in encoded
     assert "broker" not in encoded
+
+
+def test_direct_workflow_cleans_secret_echo_before_dependency_requests() -> None:
+    frozen = snapshot()
+
+    class SecretEchoProvider(RecordingProvider):
+        async def complete(self, request: ModelRequest) -> ModelResponse:
+            result = await super().complete(request)
+            if request_role(request) is not RoleName.TECHNICAL:
+                return result
+            content = result.content
+            content["summary"] = (
+                f"ordinary {WORKFLOW_SECRET}; similar {SIMILAR_NON_SECRET}; suffix"
+            )
+            claims = cast(list[dict[str, JsonValue]], content["claims"])
+            claims[0]["text"] = (
+                f"claim {WORKFLOW_SECRET}; similar {SIMILAR_NON_SECRET}; evidence"
+            )
+            return response(request, content=content)
+
+    provider = SecretEchoProvider()
+    with scoped_log_redaction(WORKFLOW_SECRET):
+        result = run(workflow(provider).run(frozen, evidence_graph(frozen)))
+
+    assert len(provider.requests) == 5
+    request_payloads = tuple(request.model_dump_json() for request in provider.requests)
+    assert all(WORKFLOW_SECRET not in payload for payload in request_payloads)
+    review_payloads = tuple(
+        payload
+        for request, payload in zip(
+            provider.requests,
+            request_payloads,
+            strict=True,
+        )
+        if request_role(request) in {RoleName.BULL, RoleName.BEAR}
+    )
+    assert len(review_payloads) == 2
+    assert all(SIMILAR_NON_SECRET in payload for payload in review_payloads)
+    result_payload = result.model_dump_json()
+    assert WORKFLOW_SECRET not in result_payload
+    assert SIMILAR_NON_SECRET in result_payload
 
 
 def test_snapshot_and_registered_evidence_are_defensively_copied_between_roles() -> (

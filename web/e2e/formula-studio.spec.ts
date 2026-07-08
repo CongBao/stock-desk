@@ -119,7 +119,7 @@ test('desktop MACD flow is atomic, versioned, parameterized, and safe', async ({
     ).toBe(true);
   }
   await expect(
-    page.getByRole('img', { name: /K 线、公式输出与买卖信号/u }),
+    page.getByRole('img', { name: /K 线主图.*公式输出.*买卖信号/u }),
   ).toBeVisible();
   await expect(
     page.getByRole('heading', { name: 'K 线主图与公式副图' }),
@@ -201,6 +201,9 @@ test('desktop MACD flow is atomic, versioned, parameterized, and safe', async ({
       .getByRole('region', { name: 'K 线主图与公式叠加' })
       .getByRole('img', { name: /公式输出及买卖信号/u }),
   ).toBeVisible();
+
+  await page.getByRole('button', { name: '复制公式' }).click();
+  await expect(page.getByText(/已复制为独立公式版本/u)).toBeVisible();
 
   for (const excluded of [/条件选股/u, /五彩\s*K/u, /AI.*公式/u]) {
     await expect(page.getByRole('button', { name: excluded })).toHaveCount(0);

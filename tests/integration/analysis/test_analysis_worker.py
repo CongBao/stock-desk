@@ -583,6 +583,15 @@ def test_production_worker_close_is_best_effort_and_idempotent() -> None:
         def close(self) -> None:
             calls.append("catalog")
 
+    class Lifecycle:
+        def __exit__(
+            self,
+            _error_type: object,
+            _error: object,
+            _traceback: object,
+        ) -> None:
+            calls.append("lifecycle")
+
     runtime = ProductionMarketWorker(
         engine=Engine(),  # type: ignore[arg-type]
         tasks=object(),  # type: ignore[arg-type]
@@ -591,13 +600,14 @@ def test_production_worker_close_is_best_effort_and_idempotent() -> None:
         scheduler=object(),  # type: ignore[arg-type]
         analysis_repository=object(),  # type: ignore[arg-type]
         model_catalog=Catalog(),  # type: ignore[arg-type]
+        lifecycle_guard=Lifecycle(),  # type: ignore[arg-type]
     )
 
     with pytest.raises(RuntimeError, match="source close failed"):
         runtime.close()
     runtime.close()
 
-    assert calls == ["source", "catalog", "engine"]
+    assert calls == ["source", "catalog", "engine", "lifecycle"]
 
 
 def test_production_worker_shared_catalog_disposes_engine_once_on_close(

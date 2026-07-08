@@ -705,16 +705,18 @@ def test_parallel_failure_retry_requests_are_parent_globally_unique(
     application.state.analysis_cursor_key = b"k" * 32
     start = Barrier(2)
 
-    def retry(stage: RoleName) -> object:
-        start.wait(timeout=5)
-        return TestClient(application, raise_server_exceptions=False).post(
-            f"/analysis/{parent_id}/stages/{stage.value}/retry"
-        )
+    with TestClient(application, raise_server_exceptions=False) as client:
 
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        responses = tuple(executor.map(retry, (RoleName.BULL, RoleName.BEAR)))
+        def retry(stage: RoleName) -> object:
+            start.wait(timeout=5)
+            return client.post(f"/analysis/{parent_id}/stages/{stage.value}/retry")
 
-    assert sorted(response.status_code for response in responses) == [202, 409]
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            responses = tuple(executor.map(retry, (RoleName.BULL, RoleName.BEAR)))
+
+    assert sorted(response.status_code for response in responses) == [202, 409], [
+        (response.status_code, response.text) for response in responses
+    ]
     conflict = next(response for response in responses if response.status_code == 409)
     assert conflict.json() == {"code": "state_conflict"}
     with tasks.engine.connect() as connection:

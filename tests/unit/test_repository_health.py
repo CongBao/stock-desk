@@ -50,9 +50,14 @@ REQUIRED_FILES = {
     ".github/workflows/ci.yml",
     ".github/workflows/codeql.yml",
     ".github/workflows/release.yml",
+    ".github/workflows/security.yml",
 }
 
 VERIFIED_ACTION_PINS = {
+    "actions/attest": (
+        "59d89421af93a897026c735860bf21b6eb4f7b26",
+        "v4.1.0",
+    ),
     "actions/checkout": (
         "9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
         "v7.0.0",
@@ -77,6 +82,10 @@ VERIFIED_ACTION_PINS = {
         "d31148d669074a8d0a63714ba94f3201e7020bc3",
         "v8.3.0",
     ),
+    "anchore/sbom-action": (
+        "e22c389904149dbc22b58101806040fa8d37a610",
+        "v0.24.0",
+    ),
     "github/codeql-action/analyze": (
         "54f647b7e1bb85c95cddabcd46b0c578ec92bc1a",
         "v4.36.3",
@@ -88,6 +97,14 @@ VERIFIED_ACTION_PINS = {
     "pnpm/action-setup": (
         "0ebf47130e4866e96fce0953f49152a61190b271",
         "v6.0.9",
+    ),
+    "actions/dependency-review-action": (
+        "2031cfc080254a8a887f58cffee85186f0e49e48",
+        "v4.9.0",
+    ),
+    "aquasecurity/trivy-action": (
+        "57a97c7e7821a5776cebc9bb87c984fa69cba8f1",
+        "0.35.0",
     ),
 }
 
@@ -300,6 +317,7 @@ def test_workflows_declare_the_expected_github_triggers() -> None:
         "ci.yml": {"push", "pull_request"},
         "codeql.yml": {"push", "pull_request", "schedule"},
         "release.yml": {"push"},
+        "security.yml": {"push", "pull_request"},
     }
     loaded_triggers: dict[str, dict[str, Any]] = {}
 
@@ -311,6 +329,350 @@ def test_workflows_declare_the_expected_github_triggers() -> None:
         assert set(triggers) == expected_triggers[workflow_path.name]
 
     assert loaded_triggers["release.yml"] == {"push": {"tags": ["v*"]}}
+
+
+def test_security_workflow_fails_closed_on_dependencies_sbom_and_image_cves() -> None:
+    workflow = _load_github_actions_yaml(_read(".github/workflows/security.yml"))
+    serialized = _read(".github/workflows/security.yml")
+    assert "pull_request_target" not in serialized
+    assert "secrets." not in serialized
+    assert workflow["permissions"] == {"contents": "read"}
+
+    dependency_review = workflow["jobs"]["dependency-review"]
+    assert dependency_review["if"] == "github.event_name == 'pull_request'"
+    assert dependency_review["permissions"] == {"contents": "read"}
+    review_step = next(
+        step
+        for step in dependency_review["steps"]
+        if str(step.get("uses", "")).startswith("actions/dependency-review-action@")
+    )
+    assert review_step["with"]["fail-on-severity"] == "high"
+
+    audit = workflow["jobs"]["locked-audit"]
+    assert audit["permissions"] == {"contents": "read"}
+    audit_commands = "\n".join(str(step.get("run", "")) for step in audit["steps"])
+    assert "make security" in audit_commands
+
+    image = workflow["jobs"]["container-security"]
+    assert image["permissions"] == {"contents": "read"}
+    image_steps = image["steps"]
+    assert any(
+        str(step.get("uses", "")).startswith("anchore/sbom-action@")
+        and step["with"]["format"] == "spdx-json"
+        and step["with"]["output-file"] == "stock-desk-image.spdx.json"
+        and step["with"]["upload-artifact"] is False
+        and step["with"]["upload-release-assets"] is False
+        for step in image_steps
+    )
+    trivy_steps = [
+        step
+        for step in image_steps
+        if str(step.get("uses", "")).startswith("aquasecurity/trivy-action@")
+    ]
+    assert [step["name"] for step in trivy_steps] == [
+        "Report all high and critical image CVEs",
+        "Reject fixable high and critical image CVEs",
+    ]
+    report, gate = trivy_steps
+    assert report["with"] == {
+        "image-ref": "stock-desk:security",
+        "format": "json",
+        "output": "stock-desk-image-vulnerabilities.json",
+        "severity": "CRITICAL,HIGH",
+        "ignore-unfixed": False,
+        "exit-code": 0,
+    }
+    assert gate["with"] == {
+        "image-ref": "stock-desk:security",
+        "format": "table",
+        "severity": "CRITICAL,HIGH",
+        "ignore-unfixed": True,
+        "exit-code": 1,
+    }
+    vulnerability_upload = next(
+        step
+        for step in image_steps
+        if step.get("name") == "Upload image vulnerability report"
+    )
+    assert vulnerability_upload["with"] == {
+        "name": "stock-desk-image-vulnerabilities",
+        "path": "stock-desk-image-vulnerabilities.json",
+        "if-no-files-found": "error",
+        "retention-days": 30,
+    }
+    assert image_steps.index(report) < image_steps.index(vulnerability_upload)
+    assert image_steps.index(vulnerability_upload) < image_steps.index(gate)
+
+
+def test_tag_release_generates_and_attests_sbom_and_artifacts() -> None:
+    release = _load_github_actions_yaml(_read(".github/workflows/release.yml"))
+    verify = release["jobs"]["verify"]
+    assert verify["permissions"] == {"contents": "read"}
+    steps = verify["steps"]
+    names = [step.get("name") for step in steps]
+    archive_index = names.index("Prepare release archives")
+    sbom_index = names.index("Generate release SBOM")
+    checksums_index = names.index("Prepare checksummed assets")
+    upload_index = names.index("Upload verified release assets for attestation")
+    assert archive_index < sbom_index < checksums_index < upload_index
+    assert not any("Attest" in str(name) for name in names)
+    sbom = steps[sbom_index]
+    assert str(sbom["uses"]).startswith("anchore/sbom-action@")
+    assert sbom["with"]["path"] == "dist"
+    assert sbom["with"]["format"] == "spdx-json"
+    assert sbom["with"]["output-file"] == "dist/stock-desk.spdx.json"
+    assert sbom["with"]["upload-artifact"] is False
+    assert sbom["with"]["upload-release-assets"] is False
+
+    attest = release["jobs"]["attest"]
+    assert set(attest["needs"]) == {
+        "verify",
+        "verify-windows-installer",
+        "verify-macos-installer",
+    }
+    assert attest["permissions"] == {
+        "attestations": "write",
+        "contents": "read",
+        "id-token": "write",
+    }
+    for job_name, job in release["jobs"].items():
+        if job_name == "attest":
+            continue
+        permissions = job.get("permissions", {})
+        assert "attestations" not in permissions
+        assert "id-token" not in permissions
+    attest_steps = attest["steps"]
+    attest_names = [step.get("name") for step in attest_steps]
+    assert attest_names == [
+        "Download verified release assets",
+        "Download verified native installer assets",
+        "Verify release asset checksums",
+        "Verify native assets and prepare complete checksums",
+        "Attest release provenance",
+        "Attest release SBOM",
+        "Attest Windows installer SBOM",
+        "Attest macOS x86_64 installer SBOM",
+        "Attest macOS arm64 installer SBOM",
+        "Upload attested release assets",
+    ]
+    provenance = attest_steps[attest_names.index("Attest release provenance")]
+    assert str(provenance["uses"]).startswith("actions/attest@")
+    provenance_subjects = provenance["with"]["subject-path"].splitlines()
+    assert provenance_subjects == [
+        "release-assets/*.whl",
+        "release-assets/*.tar.gz",
+        "release-assets/*.exe",
+        "release-assets/*.dmg",
+    ]
+    sbom_attestation = attest_steps[attest_names.index("Attest release SBOM")]
+    assert str(sbom_attestation["uses"]).startswith("actions/attest@")
+    assert sbom_attestation["with"] == {
+        "subject-path": "release-assets/*.{whl,tar.gz}",
+        "sbom-path": "release-assets/stock-desk.spdx.json",
+    }
+    for platform, suffix in (
+        ("Windows", "windows-x86_64.exe"),
+        ("macOS x86_64", "macos-x86_64.dmg"),
+        ("macOS arm64", "macos-arm64.dmg"),
+    ):
+        installer_attestation = attest_steps[
+            attest_names.index(f"Attest {platform} installer SBOM")
+        ]
+        assert str(installer_attestation["uses"]).startswith("actions/attest@")
+        assert installer_attestation["with"] == {
+            "subject-path": f"release-assets/*-{suffix}",
+            "sbom-path": f"release-assets/stock-desk-{suffix.rsplit('.', 1)[0]}.sbom.spdx.json",
+        }
+
+    native_verification = attest_steps[
+        attest_names.index("Verify native assets and prepare complete checksums")
+    ]["run"]
+    assert 'test "${#installers[@]}" -eq 3' in native_verification
+    assert 'sha256sum -c "$sidecar"' in native_verification
+    assert "SHA256SUMS.complete" in native_verification
+    assert "! -name '*.sha256'" not in native_verification
+    assert "! -name 'SHA256SUMS'" not in native_verification
+    assert "wc -l < SHA256SUMS.complete" in native_verification
+
+    codeql = release["jobs"]["codeql"]
+    assert codeql["permissions"] == {
+        "contents": "read",
+        "security-events": "write",
+    }
+    assert codeql["strategy"]["matrix"]["language"] == [
+        "python",
+        "javascript-typescript",
+    ]
+    assert [step.get("name") for step in codeql["steps"]] == [
+        "Check out source",
+        "Initialize CodeQL",
+        "Analyze",
+    ]
+    assert any(
+        str(step.get("uses", "")).startswith("github/codeql-action/analyze@")
+        for step in codeql["steps"]
+    )
+
+    container = release["jobs"]["container"]
+    trivy_steps = [
+        step
+        for step in container["steps"]
+        if str(step.get("uses", "")).startswith("aquasecurity/trivy-action@")
+    ]
+    assert [step["name"] for step in trivy_steps] == [
+        "Report all high and critical release image CVEs",
+        "Reject fixable high and critical release image CVEs",
+    ]
+    report, gate = trivy_steps
+    assert report["with"] == {
+        "image-ref": "stock-desk-runtime:local",
+        "format": "json",
+        "output": "stock-desk-release-image-vulnerabilities.json",
+        "severity": "CRITICAL,HIGH",
+        "ignore-unfixed": False,
+        "exit-code": 0,
+    }
+    assert gate["with"] == {
+        "image-ref": "stock-desk-runtime:local",
+        "format": "table",
+        "severity": "CRITICAL,HIGH",
+        "ignore-unfixed": True,
+        "exit-code": 1,
+    }
+    vulnerability_upload = next(
+        step
+        for step in container["steps"]
+        if step.get("name") == "Upload release image vulnerability report"
+    )
+    assert vulnerability_upload["with"] == {
+        "name": "stock-desk-release-image-vulnerabilities",
+        "path": "stock-desk-release-image-vulnerabilities.json",
+        "if-no-files-found": "error",
+        "retention-days": 30,
+    }
+    assert container["steps"].index(report) < container["steps"].index(
+        vulnerability_upload
+    )
+    assert container["steps"].index(vulnerability_upload) < container["steps"].index(
+        gate
+    )
+
+    publish = release["jobs"]["release"]
+    assert set(publish["needs"]) == {
+        "verify",
+        "attest",
+        "codeql",
+        "container",
+        "verify-windows-installer",
+        "verify-macos-installer",
+    }
+    download = next(
+        step
+        for step in publish["steps"]
+        if step.get("name") == "Download attested release assets"
+    )
+    assert download["with"]["name"] == "release-assets-attested"
+
+
+def test_release_job_dependency_graph_is_acyclic_and_preserves_trust_order() -> None:
+    release = _load_github_actions_yaml(_read(".github/workflows/release.yml"))
+    jobs = release["jobs"]
+
+    dependencies: dict[str, set[str]] = {}
+    for job_name, job in jobs.items():
+        raw_needs = job.get("needs", [])
+        if isinstance(raw_needs, str):
+            raw_needs = [raw_needs]
+        dependencies[job_name] = set(raw_needs)
+        assert dependencies[job_name] <= set(jobs), (
+            f"{job_name} references unknown dependencies: "
+            f"{dependencies[job_name] - set(jobs)}"
+        )
+
+    assert dependencies["build-installers"] == {"verify"}
+    assert dependencies["verify-windows-installer"] == {"build-installers"}
+    assert dependencies["verify-macos-installer"] == {"build-installers"}
+    assert dependencies["attest"] == {
+        "verify",
+        "verify-windows-installer",
+        "verify-macos-installer",
+    }
+    assert "attest" in dependencies["release"]
+
+    visited: set[str] = set()
+    active: set[str] = set()
+
+    def visit(job_name: str) -> None:
+        assert job_name not in active, f"release dependency cycle includes {job_name}"
+        if job_name in visited:
+            return
+        active.add(job_name)
+        for dependency in dependencies[job_name]:
+            visit(dependency)
+        active.remove(job_name)
+        visited.add(job_name)
+
+    for job_name in jobs:
+        visit(job_name)
+
+    assert visited == set(jobs)
+
+
+def test_release_publishes_only_the_attested_immutable_asset_directory() -> None:
+    release = _load_github_actions_yaml(_read(".github/workflows/release.yml"))
+    publish = release["jobs"]["release"]
+    steps = publish["steps"]
+
+    assert [step.get("name") for step in steps] == [
+        "Download attested release assets",
+        "Verify release asset checksums",
+        "Verify complete release asset checksums",
+        "Create GitHub release",
+    ]
+    download = steps[0]
+    assert download["with"] == {
+        "name": "release-assets-attested",
+        "path": "release-assets",
+    }
+    assert steps[1]["working-directory"] == "release-assets"
+    assert steps[1]["run"] == "sha256sum -c SHA256SUMS"
+    assert steps[2]["working-directory"] == "release-assets"
+    assert "sha256sum -c SHA256SUMS.complete" in steps[2]["run"]
+    assert (
+        steps[3]["run"] == 'gh release create "$GITHUB_REF_NAME" release-assets/* '
+        '--verify-tag --generate-notes --title "Stock Desk $GITHUB_REF_NAME"'
+    )
+
+
+def test_compose_services_use_read_only_least_privilege_runtime() -> None:
+    compose = _load_yaml("compose.yaml")
+    shared = compose["x-stock-desk-service"]
+    assert shared["read_only"] is True
+    assert shared["cap_drop"] == ["ALL"]
+    assert shared["cap_add"] == ["CHOWN", "SETGID", "SETUID"]
+    assert shared["security_opt"] == ["no-new-privileges:true"]
+    assert shared["tmpfs"] == ["/tmp:rw,noexec,nosuid,nodev,size=64m"]
+    mounts = {mount["target"]: mount for mount in shared["volumes"]}
+    assert set(mounts) == {"/app/data", "/app/tdx"}
+    assert "/app/logs" not in mounts
+    assert mounts["/app/data"] == {
+        "type": "bind",
+        "source": "./data",
+        "target": "/app/data",
+        "read_only": False,
+    }
+    assert mounts["/app/tdx"]["read_only"] is True
+    assert compose["services"]["api"]["healthcheck"]["test"][0] == "CMD"
+    worker_health = compose["services"]["worker"]["healthcheck"]["test"]
+    assert worker_health[:3] == ["CMD", "python", "-c"]
+    assert "stock_desk.tasks.worker" in worker_health[3]
+
+    dockerfile = _read("Dockerfile")
+    runtime = dockerfile.split(" AS runtime", maxsplit=1)[1]
+    assert "COPY --from=uv-bin" not in runtime
+    assert "COPY --from=python-builder /app/.venv" in runtime
+    assert "USER 10001:10001" in runtime
+    assert "dpkg --purge --force-remove-essential perl-base" in runtime
 
 
 def test_all_workflow_actions_use_verified_immutable_release_pins() -> None:
@@ -346,6 +708,12 @@ def test_workflows_have_least_permissions_timeouts_and_bounded_concurrency() -> 
     assert "security-events: write" in codeql
     assert "javascript-typescript" in codeql
     assert "python" in codeql
+
+
+def test_python_ci_timeout_covers_the_measured_suite_and_followup_gates() -> None:
+    workflow = _load_github_actions_yaml(_read(".github/workflows/ci.yml"))
+
+    assert 40 <= workflow["jobs"]["python"]["timeout-minutes"] <= 45
 
 
 def test_codeql_excludes_only_nonproduction_adversarial_tests() -> None:
@@ -456,6 +824,7 @@ def test_make_test_enforces_coverage_and_writes_reports() -> None:
         "--ignore=tests/acceptance/test_formula_consistency.py",
         "--ignore=tests/acceptance/test_backtest_semantics.py",
         "--ignore=tests/performance/test_single_backtest.py",
+        "--ignore=tests/performance/test_v1_budgets.py",
         "pnpm test",
     ):
         assert required in test_recipe
@@ -495,7 +864,7 @@ def test_ci_uploads_coverage_reports_and_release_uses_canonical_test() -> None:
         next(
             step
             for step in python_steps
-            if step.get("name") == "Benchmark cached ten-year chart query"
+            if step.get("name") == "Verify legacy cached chart correctness"
         )["run"]
         == "make benchmark"
     )
@@ -511,7 +880,7 @@ def test_ci_uploads_coverage_reports_and_release_uses_canonical_test() -> None:
         next(
             step
             for step in python_steps
-            if step.get("name") == "Benchmark cached ten-year formula preview"
+            if step.get("name") == "Verify legacy formula preview correctness"
         )["run"]
         == "make benchmark-formula"
     )
@@ -527,7 +896,7 @@ def test_ci_uploads_coverage_reports_and_release_uses_canonical_test() -> None:
         next(
             step
             for step in python_steps
-            if step.get("name") == "Benchmark ten-year single-stock backtest"
+            if step.get("name") == "Verify legacy single-backtest correctness"
         )["run"]
         == "make benchmark-backtest"
     )
@@ -550,17 +919,10 @@ def test_ci_uploads_coverage_reports_and_release_uses_canonical_test() -> None:
     release_gates = next(
         step for step in release_steps if step.get("name") == "Run release gates"
     )
-    commands = [line.strip() for line in release_gates["run"].splitlines()]
-    assert commands[0] == "make test"
-    assert "make acceptance" in commands
-    assert "make acceptance-formula" in commands
-    assert "make acceptance-backtest" in commands
-    assert "make benchmark" in commands
-    assert "make benchmark-formula" in commands
-    assert "make benchmark-backtest" in commands
-    assert "make e2e-market" in commands
-    assert "make e2e-formula" in commands
-    assert "make e2e-backtest" in commands
+    command = str(release_gates["run"])
+    assert "scripts/verify_release.py" in command
+    assert "--candidate" in command
+    assert "--target-performance" in command
 
 
 def test_security_target_audits_only_locked_production_dependencies() -> None:
@@ -569,6 +931,8 @@ def test_security_target_audits_only_locked_production_dependencies() -> None:
         "\n\n", maxsplit=1
     )[0]
     assert security_recipe.splitlines() == [
+        "\tuv run --frozen pytest -W error tests/security -q",
+        "\tuv run --frozen bandit -q -ll -r src scripts",
         "\tuv audit --locked --no-dev",
         "\tpnpm install --lockfile-only --frozen-lockfile --ignore-scripts",
         "\tpnpm audit --prod --audit-level high",
@@ -610,28 +974,25 @@ def test_ci_and_release_run_the_canonical_dependency_audit_gate() -> None:
     release_gates = next(
         step for step in release_steps if step.get("name") == "Run release gates"
     )
-    commands = [line.strip() for line in release_gates["run"].splitlines()]
-    assert commands.count("make security") == 1
+    command = str(release_gates["run"])
+    assert command.count("scripts/verify_release.py") == 1
+    assert '"security"' in _read("scripts/verify_release.py")
 
 
-def test_readmes_document_networked_dependency_audits() -> None:
-    english = _read("README.md")
-    chinese = _read("README.zh-CN.md")
-    for content in (english, chinese):
-        assert "make security" in content
-        assert "OSV" in content
-        assert "npm registry" in content
-    assert "network access" in english.casefold()
-    assert "manifests match their lockfiles" in english
-    assert "网络访问" in chinese
-    assert "清单与锁文件一致" in chinese
+def test_contributing_guide_documents_networked_dependency_audits() -> None:
+    contributing = _read("CONTRIBUTING.md")
+    assert "make security" in contributing
+    assert "OSV" in contributing
+    assert "npm registry" in contributing
+    assert "network access" in contributing.casefold()
+    assert "manifests match their lockfiles" in contributing
 
 
 def test_ci_and_release_gate_the_chromium_end_to_end_slice() -> None:
     ci_workflow = _load_github_actions_yaml(_read(".github/workflows/ci.yml"))
     e2e = ci_workflow["jobs"]["e2e"]
     assert e2e["permissions"] == {"contents": "read"}
-    assert 1 <= e2e["timeout-minutes"] <= 20
+    assert 30 <= e2e["timeout-minutes"] <= 35
     ci_e2e = "\n".join(
         str(step.get("run", "")) for step in e2e["steps"] if isinstance(step, dict)
     )
@@ -644,20 +1005,21 @@ def test_ci_and_release_gate_the_chromium_end_to_end_slice() -> None:
         "make e2e-formula",
         "make e2e-backtest",
         "make e2e-analysis",
+        "make e2e-task-center",
     ):
         assert required in ci_e2e
 
     release = _read(".github/workflows/release.yml")
+    release_workflow = _load_github_actions_yaml(release)
+    assert release_workflow["jobs"]["verify"]["steps"][0]["with"] == {"fetch-depth": 0}
     assert "uv sync --frozen --all-groups --extra providers" in release
     assert "git fetch --no-tags origin main:refs/remotes/origin/main" in release
     assert (
         'git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main' in release
     )
     assert "pnpm exec playwright install --with-deps chromium" in release
-    assert "make e2e-foundation" in release
-    assert "make e2e-market" in release
-    assert "make e2e-formula" in release
-    assert "make e2e-backtest" in release
+    assert "scripts/verify_release.py" in release
+    assert "--candidate --target-performance" in release
     assert "contents: write" in release
     assert 'tags:\n      - "v*"' in release
 
@@ -673,12 +1035,47 @@ def test_release_builds_final_artifacts_only_after_all_source_gates() -> None:
     assert gate_index < build_index < verify_index
 
     gate_commands = str(steps[gate_index]["run"])
-    assert "make e2e-foundation" in gate_commands
-    assert "make e2e-market" in gate_commands
-    assert "make e2e-formula" in gate_commands
-    assert "make e2e-backtest" in gate_commands
+    assert "scripts/verify_release.py" in gate_commands
+    assert "--candidate" in gate_commands
     assert "make build" not in gate_commands
     assert steps[build_index]["run"] == "make build"
+
+
+def test_release_workflow_uses_candidate_gate_and_always_uploads_its_report() -> None:
+    workflow = _load_github_actions_yaml(_read(".github/workflows/release.yml"))
+    steps = workflow["jobs"]["verify"]["steps"]
+    gate = next(step for step in steps if step.get("name") == "Run release gates")
+    command = str(gate["run"])
+
+    assert 'release_version="${GITHUB_REF_NAME#v}"' in command
+    assert (
+        'uv run --frozen python scripts/verify_release.py "$release_version" '
+        "--candidate --target-performance "
+        "--report test-results/release/candidate.json"
+    ) in command.replace("\n", " ")
+
+    evidence = next(
+        step
+        for step in steps
+        if step.get("name") == "Upload release performance evidence"
+    )
+    assert evidence["if"] == "always()"
+    assert "test-results/release/candidate.json" in evidence["with"]["path"]
+
+    installer_steps = workflow["jobs"]["build-installers"]["steps"]
+    native_builds = [
+        step
+        for step in installer_steps
+        if step.get("name") in {"Build Windows installer", "Build macOS installer"}
+    ]
+    assert len(native_builds) == 2
+    assert all(
+        step["env"]["STOCK_DESK_SOURCE_REVISION"] == "${{ github.sha }}"
+        for step in native_builds
+    )
+    build_script = _read("scripts/build_installer.py")
+    assert '"source_revision"' in build_script
+    assert '"source_fingerprint"' in build_script
 
 
 def test_e2e_is_a_root_script_without_changing_the_make_contract() -> None:
@@ -692,6 +1089,8 @@ def test_e2e_is_a_root_script_without_changing_the_make_contract() -> None:
     assert "gracefulShutdown" in playwright
     assert 'signal: "SIGTERM"' in playwright
     assert "scripts/e2e_dev.py" in playwright
+    assert 'process.env.STOCK_DESK_PERFORMANCE_MODE === "1"' in playwright
+    assert "performanceMode ? 300_000 : 120_000" in playwright
     foundation_e2e = _read("web/e2e/foundation.spec.ts")
     health_probe = "request.get('/api/health')"
     task_creation = "request.post('/api/tasks'"
@@ -711,9 +1110,15 @@ def test_e2e_is_a_root_script_without_changing_the_make_contract() -> None:
         "acceptance-formula",
         "acceptance-backtest",
         "acceptance-analysis",
+        "acceptance-domain-contracts",
+        "acceptance-full-journey",
         "benchmark",
         "benchmark-formula",
         "benchmark-backtest",
+        "performance",
+        "performance-reference",
+        "performance-target",
+        "performance-regressions",
         "bootstrap",
         "check-public-tree",
         "dev",
@@ -723,6 +1128,8 @@ def test_e2e_is_a_root_script_without_changing_the_make_contract() -> None:
         "e2e-formula",
         "e2e-backtest",
         "e2e-analysis",
+        "e2e-task-center",
+        "e2e-accessibility",
         "test",
         "lint",
         "typecheck",
@@ -744,13 +1151,14 @@ def test_stage_two_formula_gates_extend_every_release_surface() -> None:
     assert re.search(
         r"^acceptance-formula:\n\tuv run --frozen pytest -W error "
         r"tests/acceptance/test_formula_consistency\.py "
-        r"tests/acceptance/test_macd_formula_flow\.py$",
+        r"tests/acceptance/test_macd_formula_flow\.py "
+        r"tests/acceptance/test_formula_editing_assistance\.py$",
         makefile,
         re.MULTILINE,
     )
     assert re.search(
         r"^benchmark-formula:\n\tuv run --frozen pytest -W error "
-        r"tests/performance/test_formula_preview\.py --benchmark-only$",
+        r"tests/performance/test_formula_preview\.py -q$",
         makefile,
         re.MULTILINE,
     )
@@ -763,7 +1171,7 @@ def test_stage_two_formula_gates_extend_every_release_surface() -> None:
     release_check = re.search(r"^release-check:\s*(.+)$", makefile, re.MULTILINE)
     assert release_check is not None
     dependencies = release_check.group(1).split()
-    for target in ("acceptance-formula", "benchmark-formula", "e2e-formula"):
+    for target in ("acceptance-formula", "performance-regressions", "e2e-formula"):
         assert target in dependencies
 
     ci = _load_github_actions_yaml(_read(".github/workflows/ci.yml"))
@@ -781,12 +1189,15 @@ def test_stage_two_formula_gates_extend_every_release_surface() -> None:
         assert command in ci_commands
 
     release = _read(".github/workflows/release.yml")
+    candidate = _read("scripts/verify_release.py")
     for command in (
         "make acceptance-formula",
-        "make benchmark-formula",
+        "make performance-regressions",
         "make e2e-formula",
     ):
-        assert command in release
+        target = command.removeprefix("make ")
+        assert f'"{target}"' in candidate
+    assert "scripts/verify_release.py" in release
 
 
 def test_stage_three_backtest_gates_extend_every_release_surface() -> None:
@@ -799,7 +1210,7 @@ def test_stage_three_backtest_gates_extend_every_release_surface() -> None:
     )
     assert re.search(
         r"^benchmark-backtest:\n\tuv run --frozen pytest -W error "
-        r"tests/performance/test_single_backtest\.py --benchmark-only$",
+        r"tests/performance/test_single_backtest\.py -q$",
         makefile,
         re.MULTILINE,
     )
@@ -812,7 +1223,7 @@ def test_stage_three_backtest_gates_extend_every_release_surface() -> None:
     release_check = re.search(r"^release-check:\s*(.+)$", makefile, re.MULTILINE)
     assert release_check is not None
     dependencies = release_check.group(1).split()
-    for target in ("acceptance-backtest", "benchmark-backtest", "e2e-backtest"):
+    for target in ("acceptance-backtest", "performance-regressions", "e2e-backtest"):
         assert target in dependencies
 
     ci = _load_github_actions_yaml(_read(".github/workflows/ci.yml"))
@@ -823,13 +1234,21 @@ def test_stage_three_backtest_gates_extend_every_release_surface() -> None:
         if isinstance(step, dict)
     )
     release = _read(".github/workflows/release.yml")
+    candidate = _read("scripts/verify_release.py")
     for command in (
         "make acceptance-backtest",
         "make benchmark-backtest",
         "make e2e-backtest",
     ):
         assert command in ci_commands
-        assert command in release
+    for command in (
+        "make acceptance-backtest",
+        "make performance-regressions",
+        "make e2e-backtest",
+    ):
+        target = command.removeprefix("make ")
+        assert f'"{target}"' in candidate
+    assert "scripts/verify_release.py" in release
 
 
 def test_stage_four_analysis_gates_extend_every_release_surface() -> None:
@@ -843,7 +1262,8 @@ def test_stage_four_analysis_gates_extend_every_release_surface() -> None:
     )
     assert re.search(
         r"^e2e-analysis:\n\tpnpm exec playwright test "
-        r"web/e2e/analysis\.spec\.ts --project=chromium$",
+        r"web/e2e/analysis\.spec\.ts "
+        r"web/e2e/model-provider-matrix\.spec\.ts --project=chromium$",
         makefile,
         re.MULTILINE,
     )
@@ -861,9 +1281,44 @@ def test_stage_four_analysis_gates_extend_every_release_surface() -> None:
         if isinstance(step, dict)
     )
     release = _read(".github/workflows/release.yml")
+    candidate = _read("scripts/verify_release.py")
     for command in ("make acceptance-analysis", "make e2e-analysis"):
         assert command in ci_commands
-        assert command in release
+        target = command.removeprefix("make ")
+        assert f'"{target}"' in candidate
+    assert "scripts/verify_release.py" in release
+
+
+def test_task_center_e2e_gate_extends_every_release_surface() -> None:
+    makefile = _read("Makefile")
+    assert re.search(
+        r"^e2e-task-center:\n\tpnpm exec playwright test "
+        r"web/e2e/task-center\.spec\.ts --project=chromium$",
+        makefile,
+        re.MULTILINE,
+    )
+    e2e = re.search(r"^e2e:\s*(.+)$", makefile, re.MULTILINE)
+    assert e2e is not None
+    assert "e2e-task-center" in e2e.group(1).split()
+    release_check = re.search(r"^release-check:\s*(.+)$", makefile, re.MULTILINE)
+    assert release_check is not None
+    assert "e2e-task-center" in release_check.group(1).split()
+
+    ci = _load_github_actions_yaml(_read(".github/workflows/ci.yml"))
+    ci_commands = [
+        str(step.get("run", ""))
+        for step in ci["jobs"]["e2e"]["steps"]
+        if isinstance(step, dict)
+    ]
+    assert ci_commands.count("make e2e-task-center") == 1
+
+    release = _load_github_actions_yaml(_read(".github/workflows/release.yml"))
+    release_steps = release["jobs"]["verify"]["steps"]
+    release_gates = next(
+        step for step in release_steps if step.get("name") == "Run release gates"
+    )
+    assert "scripts/verify_release.py" in str(release_gates["run"])
+    assert '"e2e-task-center"' in _read("scripts/verify_release.py")
 
 
 def test_dependabot_covers_all_package_ecosystems_weekly() -> None:
@@ -916,55 +1371,38 @@ def test_sdist_uses_an_explicit_source_only_allowlist() -> None:
     }
 
 
-def test_readmes_match_commands_and_describe_current_release_limits() -> None:
+def test_readmes_are_concise_product_entries_with_detailed_guide_links() -> None:
     english = _read("README.md")
     chinese = _read("README.zh-CN.md")
-    shared_facts = (
-        ">=3.12,<3.13",
-        "pnpm 11",
-        "make bootstrap",
-        "make dev",
-        "docker compose up --build --wait",
-        "make release-check",
-        "http://localhost:5173",
-        "http://localhost:8000/api/health",
-        "http://localhost:8000/docs",
-        "/market",
-        "/formulas",
-        "/backtests",
-        "/analysis",
-        "/tasks",
-        "/settings",
-        "demo.double",
-        "STOCK_DESK_MASTER_KEY",
-        "make acceptance",
-        "make benchmark",
-        "make acceptance-formula",
-        "make benchmark-formula",
-        "make acceptance-backtest",
-        "make benchmark-backtest",
-        "make e2e-market",
-        "make e2e-formula",
-        "make e2e-backtest",
-        "make e2e-analysis",
-    )
-    for fact in shared_facts:
-        assert fact in english
-        assert fact in chinese
-
     for content in (english, chinese):
-        assert "Stage 0" in content
-        assert "Stage 1" in content
-        assert "Stage 2" in content
-        assert "Stage 4" in content
-        assert "Apache-2.0" in content
-        assert "Docker" in content
-        assert "uv" in content
-        assert "Node.js" in content
+        assert len(content.splitlines()) <= 120
+        for shared_fact in (
+            "https://github.com/CongBao/stock-desk/wiki",
+            "CONTRIBUTING.md",
+            "SECURITY.md",
+            "SUPPORT.md",
+            "LICENSE",
+            "docker compose up --build --wait",
+            "STOCK_DESK_MASTER_KEY",
+        ):
+            assert shared_fact in content
         assert (
             "not investment advice" in content.casefold() or "不构成投资建议" in content
         )
         assert "cache" in content.casefold() or "缓存" in content
+
+    assert english.splitlines()[0] == "[简体中文](README.zh-CN.md)"
+    assert chinese.splitlines()[0] == "[English](README.md)"
+
+    contributing = _read("CONTRIBUTING.md")
+    for detailed_fact in (
+        ">=3.12,<3.13",
+        "pnpm 11",
+        "make bootstrap",
+        "make dev",
+        "make release-check",
+    ):
+        assert detailed_fact in contributing
 
 
 def test_security_and_support_use_the_right_reporting_channels() -> None:
@@ -982,12 +1420,28 @@ def test_security_and_support_use_the_right_reporting_channels() -> None:
 def test_changelog_roadmap_and_architecture_match_current_release_scope() -> None:
     changelog = _read("CHANGELOG.md")
     unreleased = re.search(
-        r"## \[Unreleased\](?P<body>.*?)## \[0\.5\.0\]",
+        r"## \[Unreleased\](?P<body>.*?)## \[1\.0\.0\] - 2026-07-08",
         changelog,
         re.DOTALL,
     )
     assert unreleased is not None
-    assert unreleased.group("body").strip() == ""
+    unreleased_body = unreleased.group("body")
+    assert "Nothing yet" in unreleased_body
+    final_release_section = re.search(
+        r"## \[1\.0\.0\] - 2026-07-08(?P<body>.*?)## \[0\.5\.0\]",
+        changelog,
+        re.DOTALL,
+    )
+    assert final_release_section is not None
+    final_release_body = final_release_section.group("body")
+    for fact in (
+        "stage 5",
+        "source-free windows",
+        "2/3/5-second",
+        "responsive",
+        "github wiki",
+    ):
+        assert fact in final_release_body.casefold()
     release_section = re.search(
         r"## \[0\.5\.0\] - 2026-07-08(?P<body>.*?)## \[0\.4\.0\]",
         changelog,
@@ -1014,10 +1468,22 @@ def test_changelog_roadmap_and_architecture_match_current_release_scope() -> Non
     roadmap = _read("ROADMAP.md")
     for stage in range(6):
         assert f"| {stage} —" in roadmap
-    assert len(re.findall(r"\|\s+Complete\s+\|", roadmap)) == 5
+    assert len(re.findall(r"\|\s+Complete\s+\|", roadmap)) == 6
     assert len(re.findall(r"\|\s+In verification\s+\|", roadmap)) == 0
     assert len(re.findall(r"\|\s+Current\s+\|", roadmap)) == 0
-    assert len(re.findall(r"\|\s+Planned\s+\|", roadmap)) == 1
+    assert len(re.findall(r"\|\s+Planned\s+\|", roadmap)) == 0
+
+    release_notes = _read("docs/releases/v1.0.0.md")
+    for fact in (
+        "Windows x86_64",
+        "macOS x86_64",
+        "macOS arm64",
+        "checksums",
+        "SBOM",
+        "rollback",
+        "not investment advice",
+    ):
+        assert fact.casefold() in release_notes.casefold()
 
     architecture = _read("docs/architecture.md")
     for boundary in ("FastAPI", "worker", "SQLite", "security", "trust boundary"):
@@ -1043,7 +1509,7 @@ def test_release_workflow_is_tag_only_and_scopes_write_permission() -> None:
     )
     assert "gh release create" in release
     assert "GH_REPO: ${{ github.repository }}" in release
-    assert "sha256sum -- *.whl *.tar.gz > SHA256SUMS" in release
+    assert "sha256sum -- *.whl *.tar.gz *.json > SHA256SUMS" in release
     assert "${GITHUB_REF_NAME#v}" in release
     assert (
         "from scripts.verify_release import check_changelog, check_versions" in release
@@ -1071,7 +1537,9 @@ def test_tag_release_verifies_built_artifacts_before_packaging_and_upload() -> N
         if step.get("name") == "Prepare checksummed assets"
     )
     upload_step = next(
-        step for step in verify_steps if step.get("name") == "Upload release assets"
+        step
+        for step in verify_steps
+        if step.get("name") == "Upload verified release assets for attestation"
     )
 
     assert build_step["run"] == "make build"
@@ -1110,7 +1578,7 @@ def test_release_checksum_manifest_is_flat_and_verified_before_publish() -> None
         command for command in prepare_commands if command.startswith("sha256sum")
     ]
 
-    assert checksum_commands == ["sha256sum -- *.whl *.tar.gz > SHA256SUMS"]
+    assert checksum_commands == ["sha256sum -- *.whl *.tar.gz *.json > SHA256SUMS"]
     assert all("dist/" not in command for command in checksum_commands)
     assert prepare_commands.index("cd dist") < prepare_commands.index(
         checksum_commands[0]
@@ -1132,8 +1600,244 @@ def test_release_checksum_manifest_is_flat_and_verified_before_publish() -> None
     assert checksum_step["run"] == "sha256sum -c SHA256SUMS"
     assert release_steps.index(checksum_step) < create_step_index
 
+    native_checksum_step = next(
+        step
+        for step in release_steps
+        if step.get("name") == "Verify complete release asset checksums"
+    )
+    native_commands = native_checksum_step["run"]
+    assert "-eq 3" in native_commands
+    assert "-eq 4" in native_commands
+    assert "SHA256SUMS.complete" in native_commands
+    assert "wc -l < SHA256SUMS.complete" in native_commands
+    for pattern in ("*.exe", "*.dmg", "*.sbom.spdx.json"):
+        assert pattern in native_commands
+    assert release_steps.index(native_checksum_step) < create_step_index
+
 
 def test_codeowners_covers_source_web_docs_tests_and_automation() -> None:
     codeowners = _read(".github/CODEOWNERS")
     for pattern in ("/src/", "/web/", "/docs/", "/tests/", "/.github/"):
         assert f"{pattern} @CongBao" in codeowners
+
+
+def test_performance_chart_timer_includes_the_bounded_interaction_handshake() -> None:
+    source = _read("web/e2e/performance.spec.ts")
+
+    assert "async function proveChartInteractionHandshake" in source
+    handshake_start = source.index("async function proveChartInteractionHandshake")
+    handshake_end = source.index("\nasync function chartAction", handshake_start)
+    handshake = source[handshake_start:handshake_end]
+    assert "重置图表缩放" not in handshake
+    assert "page.mouse.wheel" in handshake
+    assert "page.mouse.down" in handshake
+    for action in ("chartAction", "warmChartAction"):
+        start = source.index(f"async function {action}")
+        end = source.index("\nasync function ", start + 1)
+        body = source[start:end]
+        assert body.index("await proveChartInteractionHandshake") < body.index(
+            "const wall ="
+        )
+        assert body.index("await proveChartInteractionHandshake") < body.index(
+            "await sampler.finish"
+        )
+
+
+def test_performance_pid_identity_is_scoped_to_each_timed_sample() -> None:
+    source = _read("web/e2e/performance.spec.ts")
+
+    assert "const processIdentities = new ProcessIdentityTracker()" not in source
+    sampler_start = source.index("class RssSampler")
+    sampler_end = source.index("\nasync function forbidExternalNetwork", sampler_start)
+    sampler = source[sampler_start:sampler_end]
+    assert "const identities = new ProcessIdentityTracker(rootRoles)" in sampler
+    assert "processTreeSnapshot(roots, identities)" in sampler
+    assert "processTreeSnapshot(this.roots, this.identities)" in sampler
+
+
+def test_performance_rss_sampling_does_not_saturate_the_target_runner() -> None:
+    source = _read("web/e2e/performance.spec.ts")
+    sampler_start = source.index("class RssSampler")
+    sampler_end = source.index("\nasync function forbidExternalNetwork", sampler_start)
+    sampler = source[sampler_start:sampler_end]
+
+    assert "const RSS_SAMPLE_INTERVAL_MS = 500;" in source
+    assert sampler.count("}, RSS_SAMPLE_INTERVAL_MS);") == 2
+    assert "}, 50);" not in sampler
+
+
+def test_pool_navigation_interactivity_uses_rendered_spa_and_long_task_evidence() -> (
+    None
+):
+    source = _read("web/e2e/performance.spec.ts")
+    start = source.index(
+        "await beginLongTaskWindow(page);\n  await page.getByRole('link', { name: '任务' })"
+    )
+    end = source.index("\n  await beginLongTaskWindow(page);", start + 1)
+    navigation = source[start:end]
+
+    assert "navigationStarted" not in navigation
+    assert "taskCenterVisible" in navigation
+    assert "runPageVisible" in navigation
+    assert "progressVisible" in navigation
+    assert (
+        "interactive: taskCenterVisible && runPageVisible && progressVisible"
+        in navigation
+    )
+    assert "long_task_count: await endLongTaskWindow(page)" in navigation
+
+
+def test_performance_target_ci_is_explicit_and_requirement_is_verified() -> None:
+    workflow = _load_github_actions_yaml(_read(".github/workflows/ci.yml"))
+    assert workflow["jobs"]["python"]["steps"][0]["with"] == {"fetch-depth": 0}
+    e2e = workflow["jobs"]["e2e"]
+    assert e2e["runs-on"] == "ubuntu-24.04"
+    stable_source_sha = (
+        "${{ github.event_name == 'pull_request' && "
+        "github.event.pull_request.head.sha || github.sha }}"
+    )
+    checkout_step = next(
+        step for step in e2e["steps"] if step.get("name") == "Check out source"
+    )
+    assert checkout_step["with"] == {
+        "repository": (
+            "${{ github.event.pull_request.head.repo.full_name || github.repository }}"
+        ),
+        "ref": stable_source_sha,
+    }
+    target_step = next(
+        step
+        for step in e2e["steps"]
+        if step.get("name") == "Measure Ubuntu x64 4-core/16GB target baseline"
+    )
+    assert target_step["env"]["STOCK_DESK_SOURCE_REVISION"] == stable_source_sha
+    target_command = target_step["run"]
+    for required in (
+        "set -euo pipefail",
+        'test "$(git rev-parse HEAD)" = "$STOCK_DESK_SOURCE_REVISION"',
+        "test-results/performance/target-baseline.log",
+        "make performance-target 2>&1 | tee",
+    ):
+        assert required in target_command
+    import_step = next(
+        step
+        for step in e2e["steps"]
+        if step.get("name") == "Publish target baseline import notice"
+    )
+    assert import_step["if"] == "always()"
+    import_command = import_step["run"]
+    for required in (
+        "test-results/performance/target-baseline.json",
+        "test-results/performance/target-baseline.log",
+        "sha256sum",
+        "gzip -n -c",
+        "base64 -w0",
+        "::notice",
+        "chunk_size=2800",
+        "kind=",
+        "part=%s/%s",
+        "gzip_base64=",
+    ):
+        assert required in import_command
+    for required in (
+        'publish_evidence "test-results/performance/target-baseline.json"',
+        '"target_baseline" "Target performance JSON evidence"',
+        'publish_evidence "test-results/performance/target-baseline.log"',
+        '"measurement_log" "Target performance measurement log"',
+    ):
+        assert required in import_command
+    assert "elif [[ -f test-results/performance/target-baseline.log ]]" not in (
+        import_command
+    )
+
+    makefile = _read("Makefile")
+    target_recipe = makefile.split("\nperformance-target:\n", maxsplit=1)[1].split(
+        "\n\n", maxsplit=1
+    )[0]
+    assert "--evidence-kind target_baseline" in target_recipe
+
+    requirements = yaml.safe_load(_read("tests/acceptance/requirements.yml"))
+    records = {item["id"]: item for item in requirements["requirements"]}
+    for requirement_id in ("R-053",):
+        requirement = records[requirement_id]
+        assert requirement["status"] == "verified"
+        assert any(
+            evidence["state"] == "existing" and evidence["runner"] == "github-actions"
+            for evidence in requirement["evidence"]
+        )
+        assert not any(
+            evidence["state"] == "planned" for evidence in requirement["evidence"]
+        )
+
+
+def test_python_ci_publishes_bounded_junit_failure_diagnostics() -> None:
+    workflow = _load_github_actions_yaml(_read(".github/workflows/ci.yml"))
+    steps = workflow["jobs"]["python"]["steps"]
+    test_index = next(
+        index for index, step in enumerate(steps) if step.get("name") == "Test Python"
+    )
+    notice_index = next(
+        index
+        for index, step in enumerate(steps)
+        if step.get("name") == "Publish Python test failure notice"
+    )
+    notice = steps[notice_index]
+
+    assert notice_index == test_index + 1
+    assert notice["if"] == "failure()"
+    command = notice["run"]
+    for required in (
+        "python-test-results.xml",
+        "python-test-failures.json",
+        "failures[:10]",
+        "text[-12_000:]",
+        "sha256sum",
+        "gzip -n -c",
+        "base64 -w0",
+        "chunk_size=2800",
+        "title=Python test failure evidence",
+        "kind=junit_failure_summary",
+        "part=%s/%s",
+    ):
+        assert required in command
+
+
+def test_python_ci_provisions_the_locked_node_and_pnpm_test_runtime() -> None:
+    workflow = _load_github_actions_yaml(_read(".github/workflows/ci.yml"))
+    python_job = workflow["jobs"]["python"]
+    assert python_job["timeout-minutes"] == 45
+    steps = python_job["steps"]
+    by_name = {step.get("name"): (index, step) for index, step in enumerate(steps)}
+    test_index = by_name["Test Python"][0]
+    pnpm_index, pnpm = by_name["Set up pnpm"]
+    node_index, node = by_name["Set up Node.js"]
+
+    assert pnpm_index < node_index < test_index
+    assert pnpm["uses"] == (
+        "pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271"
+    )
+    assert pnpm["with"]["version"] == "11.7.0"
+    assert pnpm["with"]["run_install"] is False
+    assert node["uses"] == (
+        "actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e"
+    )
+    assert node["with"]["node-version"] == "24"
+
+
+def test_accessibility_and_responsive_suite_is_a_release_gate() -> None:
+    workflow = _load_github_actions_yaml(_read(".github/workflows/ci.yml"))
+    e2e_steps = workflow["jobs"]["e2e"]["steps"]
+    responsive_step = next(
+        step
+        for step in e2e_steps
+        if step.get("name") == "Test accessible responsive workspaces"
+    )
+    assert responsive_step["run"] == "make e2e-accessibility"
+
+    makefile = _read("Makefile")
+    recipe = makefile.split("\ne2e-accessibility:\n", maxsplit=1)[1].split(
+        "\n\n", maxsplit=1
+    )[0]
+    assert "web/e2e/accessibility.spec.ts" in recipe
+    assert "web/e2e/responsive.spec.ts" in recipe
+    assert "e2e-accessibility" in makefile.split("\nrelease-check:", maxsplit=1)[1]

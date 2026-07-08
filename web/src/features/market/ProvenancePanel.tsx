@@ -15,6 +15,7 @@ const providerLabels: Readonly<Record<string, string>> = {
   baostock: 'BaoStock',
   eastmoney: '东方财富',
   tdx_local: '通达信本地',
+  stock_desk_demo: 'Stock Desk 合成演示 · CC0-1.0',
   tushare: 'Tushare',
 };
 

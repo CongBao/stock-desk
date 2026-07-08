@@ -36,9 +36,13 @@ it('uses the global context drawer only at the 1200px tablet breakpoint', () => 
 });
 
 it('uses a compact vertical rail instead of horizontally clipped navigation', () => {
+  expect(theme).toContain('--collapsed-rail-width: 80px');
   expect(theme).toContain(".app-shell[data-navigation-collapsed='true'] {");
   expect(theme).toMatch(
-    /\.app-shell\[data-navigation-collapsed='true'\]\s*\{[^}]*grid-template-columns:\s*72px minmax\(0, 1fr\)/su,
+    /\.app-shell\[data-navigation-collapsed='true'\]\s*\{[^}]*grid-template-columns:\s*var\(--collapsed-rail-width\) minmax\(0, 1fr\)/su,
+  );
+  expect(theme).not.toMatch(
+    /data-navigation-collapsed='true'[^}]*grid-template-columns:\s*72px/su,
   );
   expect(theme).toContain("[data-navigation-collapsed='true'] .nav-label");
   const mobile = theme.slice(theme.indexOf('@media (max-width: 760px)'));
@@ -48,6 +52,15 @@ it('uses a compact vertical rail instead of horizontally clipped navigation', ()
   );
   expect(mobile).toMatch(
     /\.app-shell\[data-navigation-collapsed='false'\] \.navigation-rail\s*\{[^}]*position:\s*relative/su,
+  );
+});
+
+it('keeps short landscape navigation scrollable and truncates expanded labels safely', () => {
+  expect(theme).toMatch(
+    /\.primary-navigation\s*\{[^}]*min-height:\s*0[^}]*overflow-y:\s*auto[^}]*scrollbar-gutter:\s*stable/su,
+  );
+  expect(theme).toMatch(
+    /\.nav-label\s*\{[^}]*min-width:\s*0[^}]*overflow:\s*hidden[^}]*text-overflow:\s*ellipsis[^}]*white-space:\s*nowrap/su,
   );
 });
 
@@ -125,5 +138,9 @@ it('keeps the 390px collapsed rail single-column and reserves two columns for ma
   );
   expect(mobile).toMatch(
     /\[data-navigation-collapsed='false'\] \.primary-navigation ul\s*\{[^}]*grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\)/su,
+  );
+  expect(mobile).toMatch(/\.topbar-kicker\s*\{[^}]*display:\s*none/su);
+  expect(mobile).toMatch(
+    /\.topbar-product-name\s*\{[^}]*white-space:\s*nowrap/su,
   );
 });

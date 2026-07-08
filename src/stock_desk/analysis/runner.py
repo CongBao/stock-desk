@@ -724,7 +724,7 @@ class AnalysisRunner:
                 if exhausted:
                     return None
                 continue
-            self._repository.finish_attempt_success(
+            canonical_output = self._repository.finish_attempt_success(
                 claim,
                 run_id,
                 role.value,
@@ -733,7 +733,7 @@ class AnalysisRunner:
                 result.trace,
                 now=self._clock(),
             )
-            return result.output, result.trace
+            return canonical_output, result.trace
         return None
 
     def _raise_if_cancel_requested(self, claim: TaskClaim) -> None:

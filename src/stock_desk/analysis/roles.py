@@ -22,6 +22,7 @@ from pydantic import (
 from stock_desk.analysis.evidence import Claim, EvidenceItem
 from stock_desk.analysis.rating import RatingProposal
 from stock_desk.analysis.snapshot import ResearchSectionKind, Sha256Digest
+from stock_desk.security.redaction import clean_active_secrets
 
 
 MAX_ROLE_OUTPUT_BYTES: Final = 65_536
@@ -122,6 +123,41 @@ class RoleOutput(_FrozenRoleModel):
 class RoleOutputValidationError(ValueError):
     def __init__(self, *_unsafe_context: object) -> None:
         super().__init__("model role output is invalid")
+
+
+def clean_role_output_active_secrets(output: RoleOutput) -> RoleOutput:
+    """Redact configured credentials from model-controlled role text."""
+    payload = output.model_dump(mode="json")
+    payload["summary"] = _clean_model_text(payload["summary"])
+    claims = payload["claims"]
+    if type(claims) is not list:
+        raise RoleOutputValidationError()
+    for claim in claims:
+        if type(claim) is not dict or "text" not in claim:
+            raise RoleOutputValidationError()
+        claim["text"] = _clean_model_text(claim["text"])
+    proposal = payload.get("proposal")
+    if proposal is not None:
+        if type(proposal) is not dict or "confidence_explanation" not in proposal:
+            raise RoleOutputValidationError()
+        proposal["confidence_explanation"] = _clean_model_text(
+            proposal["confidence_explanation"]
+        )
+    try:
+        return RoleOutput.model_validate_json(
+            json.dumps(payload, allow_nan=False, ensure_ascii=False)
+        )
+    except (TypeError, ValueError):
+        raise RoleOutputValidationError() from None
+
+
+def _clean_model_text(value: object) -> str:
+    if type(value) is not str:
+        raise RoleOutputValidationError()
+    cleaned = clean_active_secrets(value)
+    if type(cleaned) is not str:
+        raise RoleOutputValidationError()
+    return cleaned
 
 
 @dataclass(frozen=True, slots=True)

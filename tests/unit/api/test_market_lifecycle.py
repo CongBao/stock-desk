@@ -27,7 +27,8 @@ def test_health_and_task_routes_do_not_initialize_market_root(tmp_path: Path) ->
     assert not data_dir.exists()
     with TestClient(application) as client:
         assert client.get("/api/health").status_code == 200
-        assert not data_dir.exists()
+        assert (data_dir / ".stock-desk-services").is_dir()
+        assert not (data_dir / "market").exists()
         assert client.get("/api/tasks").status_code == 200
         assert database_path.exists()
         assert not (data_dir / "market").exists()
