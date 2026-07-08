@@ -964,7 +964,9 @@ requirements:
     owning_stage: 5
     status: mapped
     evidence:
-      - {state: planned, runner: pytest, kind: integration, path: tests/acceptance/test_installers.py, selector: "tests/acceptance/test_installers.py::test_clean_windows_and_macos_first_launch", assertion: "Clean runner jobs will install each release artifact and verify first-launch browser behavior without development tools."}
+      - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_installed_distribution.py, selector: "tests/acceptance/test_installed_distribution.py::test_distribution_contract_covers_all_native_release_artifacts", assertion: "The release contract builds Windows x86_64 and macOS x86_64/arm64 artifacts, then requires source-free verification jobs for every supported target."}
+      - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_installed_distribution.py, selector: "tests/acceptance/test_installed_distribution.py::test_install_verification_jobs_do_not_checkout_or_expose_development_path", assertion: "Clean-runner verification installs each native artifact without a source checkout or development PATH and exercises first launch in the private browser workstation."}
+      - {state: existing, runner: pytest, kind: integration, path: tests/acceptance/test_installed_distribution.py, selector: "tests/acceptance/test_installed_distribution.py::test_distribution_runs_without_source_or_development_tools", assertion: "A source-free frozen distribution starts the API and worker, executes Formula and AkShare subprocess paths, and preserves state without Python, Node, Docker, or compiler tools."}
       - state: manual
         runner: manual
         kind: manual
