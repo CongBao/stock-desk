@@ -32,6 +32,7 @@ from stock_desk.analysis.roles import (
     ROLE_SECTION_KINDS,
     RoleName,
     RoleOutput,
+    clean_role_output_active_secrets,
     validate_role_output,
 )
 from stock_desk.analysis.snapshot import (
@@ -247,11 +248,13 @@ class AnalysisWorkflow:
             from stock_desk.analysis.roles import RoleOutputValidationError
 
             raise RoleOutputValidationError()
-        output = validate_role_output(
-            response.content,
-            expected_role=prepared.role,
-            snapshot_id=prepared.snapshot_id,
-            allowed_evidence=prepared.allowed_evidence,
+        output = clean_role_output_active_secrets(
+            validate_role_output(
+                response.content,
+                expected_role=prepared.role,
+                snapshot_id=prepared.snapshot_id,
+                allowed_evidence=prepared.allowed_evidence,
+            )
         )
         trace = WorkflowStageTrace(
             role=prepared.role,
