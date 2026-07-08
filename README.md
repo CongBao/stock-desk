@@ -16,13 +16,29 @@ release. The verified artifact naming contract is:
 - macOS Intel: `stock-desk-<version>-macos-x86_64.dmg`
 - macOS Apple silicon: `stock-desk-<version>-macos-arm64.dmg`
 
-Download the matching installer, `.sha256` checksum, target manifest, SBOM, and
-provenance from that version's release assets. This README does not link to an
-unpublished release. Verify the checksum and provenance before installation;
-then run the Windows per-user installer or copy the macOS application from the
-DMG into Applications. First launch starts the bundled API and worker on a
-random loopback port and opens the browser. It needs no source checkout, Python,
-Node.js, or pnpm.
+The downloadable release assets are the installer, its `.sha256` checksum, the
+target `.json` manifest, and the target `.sbom.spdx.json` SBOM. Provenance is a
+GitHub attestation fetched through the GitHub API, not another downloadable
+release file. After checking the checksum and manifest, verify the installer
+attestation with an authenticated GitHub CLI:
+
+```bash
+gh attestation verify INSTALLER_PATH \
+  --repo CongBao/stock-desk \
+  --signer-workflow CongBao/stock-desk/.github/workflows/release.yml
+gh attestation verify INSTALLER_PATH \
+  --repo CongBao/stock-desk \
+  --signer-workflow CongBao/stock-desk/.github/workflows/release.yml \
+  --predicate-type https://spdx.dev/Document/v2.3
+```
+
+The first command verifies SLSA provenance; the second verifies the SPDX SBOM
+attestation associated with the same installer.
+
+This README does not link to an unpublished release. Run the Windows per-user
+installer or copy the macOS application from the DMG into Applications. First
+launch starts the bundled API and worker on a random loopback port and opens the
+browser. It needs no source checkout, Python, Node.js, or pnpm.
 
 For Linux or a private server, use the loopback-only container deployment. Keep
 port 8000 private; use a trusted tunnel rather than exposing this unauthenticated
@@ -73,9 +89,10 @@ Stage 3 backtests, and Stage 4 evidence-linked analysis.
   Ollama provider in `/analysis`; preflight evidence before starting the
   nine-stage analysis. Ratings are suppressed when critical evidence is
   insufficient. See [model providers](docs/model-providers.md).
-- **Backup and restore:** create a verified application snapshot before an
-  upgrade and restore it only with coordinated process shutdown. See
-  [backup and restore](docs/backup-and-restore.md).
+- **Backup and restore:** the documented CLI is for source/container POSIX
+  operations and is not bundled in the native installers. Native Windows does
+  not support the complete workflow in this release. See
+  [backup and restore](docs/backup-and-restore.md) before an upgrade.
 
 ## Documentation
 

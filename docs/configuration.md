@@ -1,13 +1,45 @@
 # Configuration
 
-Stock Desk reads variables with the `STOCK_DESK_` prefix from the environment
-and an optional local `.env` file. Environment variables override file values.
-Do not commit `.env` or place secrets in command history, screenshots, or issue
-reports.
+Stock Desk has three deployment profiles. Native installers own their private
+per-user configuration automatically. Source development and Compose read
+`STOCK_DESK_` environment variables and an optional `.env`; environment values
+override file values. Never commit `.env`, keys, credentials, data, or backups.
 
-## Native development
+## Native installers
 
-Install locked dependencies, copy the sample file, and generate a Fernet key:
+The source-free Windows and macOS applications require no Python, Node.js,
+source checkout, or operator-managed `.env`. On first launch, the frozen parent
+launcher creates an OS-private per-user data tree and generates a Fernet key at
+`config/master.key` within that tree:
+
+| Platform | Per-user data directory |
+| --- | --- |
+| Windows | `%LOCALAPPDATA%\stock-desk` |
+| macOS | `~/Library/Application Support/stock-desk` |
+
+The data directory contains `stock-desk.db`, market objects, `config/master.key`,
+`logs/stock-desk.log`, and runtime coordination under `runtime/`. POSIX modes or
+Windows ACLs restrict the directories and key to the current user. The launcher
+passes the generated key, database, data, and bundled web paths directly to its
+API and worker children; users do not set `STOCK_DESK_MASTER_KEY` for this
+profile.
+
+Each launch reserves a random available port on `127.0.0.1`, starts one API child
+and one worker child, writes the current port to `runtime/runtime.json`, and opens
+the browser. The port is intentionally not 8000 and may change on the next
+launch. One desktop instance is allowed per user.
+
+Protect the whole per-user directory and back up `config/master.key` separately
+from encrypted data. Losing the key makes saved provider ciphertext unreadable.
+The native installers do not bundle the source-tree backup/restore operator CLI.
+The complete workflow is unsupported on native Windows filesystems in this
+release unless a later release adds and verifies a frozen native command. See
+[backup and restore](backup-and-restore.md).
+
+## Source development
+
+Source development requires Python `>=3.12,<3.13`, uv, Node.js, and pnpm. Install
+locked dependencies, copy the sample file, and generate a Fernet key:
 
 ```bash
 make bootstrap
@@ -15,28 +47,34 @@ cp .env.example .env
 uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
 
-Set the generated value as `STOCK_DESK_MASTER_KEY`, then start the supervised
-API, worker, and Vite processes with `make dev`. Relative paths are resolved from
-the process working directory, so use one checkout and one data directory for all
-three processes.
+Set the result as `STOCK_DESK_MASTER_KEY`, then run `make dev`. The supervisor
+starts FastAPI on port 8000, the task worker, and Vite on port 5173. All children
+must use the same database and data directory.
 
 ## Container deployment
 
-Compose binds port 8000 to loopback and mounts the same `./data` directory into
-the API and worker:
+Compose runs separate API and worker containers over the same `./data` mount and
+publishes port 8000 only on host loopback:
 
 ```bash
 docker compose up --build --wait
 docker compose down --volumes --remove-orphans
 ```
 
-`STOCK_DESK_UID` and `STOCK_DESK_GID` override the non-root runtime identity;
-both must be nonzero. `STOCK_DESK_IMAGE` gives a checkout a distinct local image
-name. `STOCK_DESK_TDX_HOST_PATH` mounts a host TDX directory read-only at
-`/app/tdx`; enter `/app/tdx` in Settings. The host directory must contain the
-expected `vipdoc` tree.
+Provide `STOCK_DESK_MASTER_KEY` through the local environment or uncommitted
+`.env`; both containers must receive the same value. `STOCK_DESK_UID` and
+`STOCK_DESK_GID` override the non-root runtime identity and must be nonzero.
+`STOCK_DESK_IMAGE` supplies a distinct local image name.
+
+`STOCK_DESK_TDX_HOST_PATH` mounts a host TDX directory read-only at `/app/tdx`;
+enter `/app/tdx` in Settings. The host directory must contain `vipdoc`. Keep port
+8000 private and use a trusted tunnel for remote access; the service has no
+authentication or TLS.
 
 ## Application settings
+
+These variables configure source and container deployments. Native installers
+derive equivalent values from their private per-user directory instead.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
@@ -46,10 +84,9 @@ expected `vipdoc` tree.
 | `STOCK_DESK_MASTER_KEY` | unset | Fernet key required before encrypted provider credentials can be saved. |
 | `STOCK_DESK_WEB_DIST_DIR` | auto-detected | Optional compiled web asset directory for packaged serving. |
 
-The database URL and data directory describe one storage identity. Do not point
+The database URL and data directory identify one storage instance. Do not point
 API and worker at different values, copy a live SQLite file, or move one path
-without the other. Use the [backup and restore workflow](backup-and-restore.md)
-for migration or rollback.
+without the other.
 
 ## Container settings
 
@@ -60,20 +97,18 @@ for migration or rollback.
 | `STOCK_DESK_IMAGE` | local Compose default | Optional image name for parallel checkouts. |
 | `STOCK_DESK_TDX_HOST_PATH` | `./data/tdx` | Host TDX tree mounted read-only at `/app/tdx`. |
 
-Keep the data directory on one local filesystem for SQLite locking, atomic
-restore replacement, and directory synchronization semantics. Native Windows
-filesystems do not support the complete backup/restore workflow in this release.
+Keep database and market data on one local POSIX filesystem for SQLite locking,
+atomic restore replacement, and directory synchronization semantics.
 
 ## Provider credentials
 
-Configure market and model providers in `/settings` and `/analysis`, not in
-source files. Tushare tokens and remote model API keys are write-only: the API
-stores encrypted values and returns only masked status. DeepSeek-oriented and
-generic OpenAI-compatible endpoints must pass endpoint validation; local Ollama
-is intended for a local endpoint.
+In every profile, configure market and model providers in `/settings` and
+`/analysis`, not in source files. Tushare tokens and remote model API keys are
+write-only: the API stores encrypted values and returns only masked status.
+DeepSeek-oriented and generic OpenAI-compatible endpoints must pass endpoint
+validation; local Ollama is intended for a local endpoint.
 
-Provider availability still depends on installed locked extras, upstream
-permissions, network access, quotas, and licensing. A configured provider is not
-a guarantee that every instrument, period, fundamental field, announcement, or
-news item is available. Review [data sources](data-sources.md) and
-[model providers](model-providers.md).
+Provider availability still depends on bundled or locked extras, upstream
+permissions, network access, quotas, and licensing. A configured provider does
+not guarantee every instrument, period, field, announcement, or news item. See
+[data sources](data-sources.md) and [model providers](model-providers.md).
