@@ -16,7 +16,7 @@ from typing import Any
 
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 import pytest
 from sqlalchemy import Engine, event, func, insert, select
 
@@ -27,6 +27,8 @@ from stock_desk.api.settings import (
     SourceSettingsStorageError,
 )
 from stock_desk.config import Settings
+from stock_desk.analysis.snapshot import ResearchSectionKind
+from stock_desk.analysis.sources.routing import ResearchSourceRouter
 from stock_desk.main import create_app
 from stock_desk.market.providers.base import ProviderPermissionDenied
 from stock_desk.market.providers.base import (
@@ -562,6 +564,113 @@ def test_research_priorities_reject_sources_without_declared_capability(
 
     assert response.status_code == 422
     assert response.json() == {"code": "invalid_request", "issues": []}
+
+
+@pytest.mark.parametrize("category", tuple(DEFAULT_PRIORITIES))
+def test_public_source_priorities_reject_demo_provenance_in_every_category(
+    category: str,
+) -> None:
+    priorities = json.loads(json.dumps(DEFAULT_PRIORITIES))
+    priorities[category].append("stock_desk_demo")
+
+    with pytest.raises(ValidationError, match="not configurable"):
+        settings_module.SourcePriorities.model_validate(priorities)
+
+
+def test_public_settings_api_rejects_demo_provenance_without_persisting(
+    tmp_path: Path,
+) -> None:
+    priorities = json.loads(json.dumps(DEFAULT_PRIORITIES))
+    priorities["daily_bars"].append("stock_desk_demo")
+
+    with settings_api(tmp_path, master_key=None) as context:
+        response = context.client.put(
+            "/api/settings/sources",
+            json={"priorities": priorities, "tdx_path": None},
+        )
+        with context.engine.connect() as connection:
+            stored = connection.execute(
+                select(AppSetting.encrypted_value).where(
+                    AppSetting.key == PUBLIC_SOURCE_SETTINGS_KEY
+                )
+            ).scalar_one_or_none()
+
+    assert response.status_code == 422
+    assert response.json() == {"code": "invalid_request", "issues": []}
+    assert stored is None
+
+
+def test_public_settings_service_revalidates_constructed_models_before_write(
+    tmp_path: Path,
+) -> None:
+    priorities = settings_module.SourcePriorities()
+    unsafe_priorities = priorities.model_copy(
+        update={
+            "daily_bars": (
+                *priorities.daily_bars,
+                ProviderId.STOCK_DESK_DEMO,
+            )
+        }
+    )
+    unsafe_settings = settings_module.PublicSourceSettings().model_copy(
+        update={"priorities": unsafe_priorities}
+    )
+
+    with settings_api(tmp_path, master_key=None) as context:
+        with pytest.raises(ValueError, match="invalid"):
+            context.services.save_public(unsafe_settings)
+        with context.engine.connect() as connection:
+            stored = connection.execute(
+                select(AppSetting.encrypted_value).where(
+                    AppSetting.key == PUBLIC_SOURCE_SETTINGS_KEY
+                )
+            ).scalar_one_or_none()
+
+    assert stored is None
+
+
+def test_persisted_demo_provenance_is_normalized_before_status_and_routing(
+    tmp_path: Path,
+) -> None:
+    priorities = {
+        category: [*values, "stock_desk_demo"]
+        for category, values in DEFAULT_PRIORITIES.items()
+    }
+    stored = json.dumps(
+        {"priorities": priorities, "tdx_path": None},
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+    with settings_api(tmp_path, master_key=None) as context:
+        with context.engine.begin() as connection:
+            connection.execute(
+                insert(AppSetting).values(
+                    key=PUBLIC_SOURCE_SETTINGS_KEY,
+                    encrypted_value=stored,
+                    updated_at=FIXED_NOW,
+                )
+            )
+
+        response = context.client.get("/api/settings/sources")
+        snapshot = context.services.runtime_snapshot()
+        diagnostic = ResearchSourceRouter(
+            kind=ResearchSectionKind.FUNDAMENTALS,
+            priority=snapshot.priorities.fundamentals,
+            sources=(),
+        ).diagnostic_template()
+
+    assert response.status_code == 200
+    assert response.json()["priorities"] == DEFAULT_PRIORITIES
+    assert all(
+        ProviderId.STOCK_DESK_DEMO not in priority
+        for priority in snapshot.priorities.model_dump().values()
+    )
+    assert [candidate.source for candidate in diagnostic.ordered_candidates] == [
+        "tushare",
+        "akshare",
+    ]
 
 
 @pytest.mark.parametrize(

@@ -73,6 +73,14 @@ def supported_research_sources(
     )
 
 
+def _supports_research_kind(
+    source: ProviderId,
+    kind: ResearchSectionKind,
+) -> bool:
+    capability = RESEARCH_SOURCE_CAPABILITIES.get(source)
+    return capability is not None and capability.supports(kind)
+
+
 _MISSING_REASONS = {
     FailureReason.NO_PROVIDER: ResearchMissingReason.NO_PROVIDER,
     FailureReason.MISSING: ResearchMissingReason.MISSING,
@@ -169,7 +177,7 @@ class ResearchSourceRouter:
     def diagnostic_template(self) -> ResearchLoadDiagnostic:
         candidates: list[ResearchSourceCandidate] = []
         for position, source_id in enumerate(self._priority):
-            supported = RESEARCH_SOURCE_CAPABILITIES[source_id].supports(self.kind)
+            supported = _supports_research_kind(source_id, self.kind)
             source = self._sources.get(source_id)
             configured = source is not None and bool(
                 getattr(source, "configured", True)
@@ -222,8 +230,7 @@ class ResearchSourceRouter:
         selected: ResearchSection | None = None
         selected_position: int | None = None
         for position, source_id in enumerate(self._priority):
-            capability = RESEARCH_SOURCE_CAPABILITIES[source_id]
-            if not capability.supports(self.kind):
+            if not _supports_research_kind(source_id, self.kind):
                 candidates.append(
                     ResearchSourceCandidate(
                         source=source_id.value,

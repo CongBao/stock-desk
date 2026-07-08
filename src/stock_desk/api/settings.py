@@ -37,7 +37,11 @@ from stock_desk.market.diagnostics import (
     diagnose_source,
     unavailable_diagnostic,
 )
-from stock_desk.market.types import FailureReason, ProviderId
+from stock_desk.market.types import (
+    CONFIGURABLE_SOURCE_PROVIDER_IDS,
+    FailureReason,
+    ProviderId,
+)
 from stock_desk.security.secrets import (
     mask_secret,
     SecretConfigurationError,
@@ -135,6 +139,10 @@ class SourcePriorities(_SettingsModel):
             raise ValueError("source priority must be nonempty and bounded")
         if len(value) != len(frozenset(value)):
             raise ValueError("source priority cannot contain duplicates")
+        if not frozenset(value).issubset(CONFIGURABLE_SOURCE_PROVIDER_IDS):
+            raise ValueError(
+                "source priority contains a provider that is not configurable"
+            )
         return value
 
     @model_validator(mode="after")
@@ -344,6 +352,42 @@ def _canonical_legacy_public(settings: _LegacyV1PublicSourceSettings) -> str:
     return encoded
 
 
+def _normalize_stored_provenance_only_sources(stored: str) -> str | None:
+    """Remove the one historically accepted provenance-only source from canonical JSON."""
+    try:
+        decoded = json.loads(stored)
+        if (
+            json.dumps(
+                decoded,
+                allow_nan=False,
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            != stored
+        ):
+            return None
+    except (TypeError, ValueError):
+        return None
+    if type(decoded) is not dict:
+        return stored
+    priorities = decoded.get("priorities")
+    if type(priorities) is not dict:
+        return stored
+    for field_name, order in priorities.items():
+        if type(order) is list:
+            priorities[field_name] = [
+                source for source in order if source != ProviderId.STOCK_DESK_DEMO.value
+            ]
+    return json.dumps(
+        decoded,
+        allow_nan=False,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
 class SourceSettingsServices:
     """One database-bound boundary for public settings, secrets, and diagnostics."""
 
@@ -472,18 +516,21 @@ class SourceSettingsServices:
             or len(stored.encode("utf-8")) > _PUBLIC_SETTINGS_MAX_BYTES
         ):
             raise PublicSettingsCorrupt("Stored source settings are invalid")
+        normalized = _normalize_stored_provenance_only_sources(stored)
+        if normalized is None:
+            raise PublicSettingsCorrupt("Stored source settings are invalid")
         try:
-            decoded = PublicSourceSettings.model_validate_json(stored)
+            decoded = PublicSourceSettings.model_validate_json(normalized)
         except Exception:
             decoded = None
-        if decoded is not None and _canonical_public(decoded) == stored:
+        if decoded is not None and _canonical_public(decoded) == normalized:
             return decoded
 
         try:
-            legacy = _LegacyV1PublicSourceSettings.model_validate_json(stored)
+            legacy = _LegacyV1PublicSourceSettings.model_validate_json(normalized)
         except Exception:
             raise PublicSettingsCorrupt("Stored source settings are invalid") from None
-        if _canonical_legacy_public(legacy) != stored:
+        if _canonical_legacy_public(legacy) != normalized:
             raise PublicSettingsCorrupt("Stored source settings are invalid")
         try:
             priorities = SourcePriorities.model_validate(
@@ -506,15 +553,17 @@ class SourceSettingsServices:
     def _save_public_locked(
         self, value: PublicSourceSettings | Mapping[str, Any]
     ) -> PublicSourceSettings:
-        if isinstance(value, PublicSourceSettings):
-            validated = value
-        else:
-            try:
-                validated = PublicSourceSettings.model_validate_json(
-                    json.dumps(value, allow_nan=False)
-                )
-            except Exception as error:
-                raise ValueError("Public source settings are invalid") from error
+        serialized: object = (
+            value.model_dump(mode="json")
+            if isinstance(value, PublicSourceSettings)
+            else value
+        )
+        try:
+            validated = PublicSourceSettings.model_validate_json(
+                json.dumps(serialized, allow_nan=False)
+            )
+        except Exception as error:
+            raise ValueError("Public source settings are invalid") from error
         encoded = _canonical_public(validated)
         now = self._clock()
         statement = sqlite_insert(AppSetting).values(
