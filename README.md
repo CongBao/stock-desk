@@ -152,9 +152,7 @@ Never commit or share `.env`, tokens, model keys, `STOCK_DESK_MASTER_KEY`, local
 TDX paths, databases, backups, or downloaded market data. Review
 [SECURITY.md](SECURITY.md) before reporting a vulnerability.
 
-The current release does not provide real-time quotes, a dynamic screener,
-shared-capital portfolio simulation, personalized advice, target prices,
-position sizing, broker connectivity, or live/automatic trading.
+Not included in this release: real-time quotes, a dynamic screener, shared-capital portfolio simulation, personalized advice, target prices, position sizing, broker connectivity, or live/automatic trading.
 
 ## Contributing
 

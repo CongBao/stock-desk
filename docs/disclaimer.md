@@ -30,8 +30,8 @@ inputs and role instructions.
 
 Backtests are historical simulations, not forecasts. Results depend on data,
 formula semantics, date range, costs, execution assumptions, and survivorship or
-selection effects. Pool statistics are independent per-symbol trade samples, not
-a shared-capital portfolio return.
+selection effects. Pool statistics are independent per-symbol trade samples and
+never represent a shared-capital portfolio return.
 
 ## User responsibility
 
