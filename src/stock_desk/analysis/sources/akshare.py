@@ -122,15 +122,26 @@ def _launch_worker(
     result_path = Path(temporary.name)
     try:
         temporary.close()
-        process = subprocess.Popen(
+        worker_command = (
             (
+                sys.executable,
+                "--internal-akshare-worker",
+                operation,
+                encoded,
+                str(result_path),
+            )
+            if getattr(sys, "frozen", False)
+            else (
                 sys.executable,
                 "-m",
                 "stock_desk.analysis.sources._akshare_worker",
                 operation,
                 encoded,
                 str(result_path),
-            ),
+            )
+        )
+        process = subprocess.Popen(
+            worker_command,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,

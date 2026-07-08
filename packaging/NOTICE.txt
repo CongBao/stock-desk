@@ -1,0 +1,14 @@
+Stock Desk distribution notice
+==============================
+
+Stock Desk is licensed under the Apache License 2.0. The complete project
+license is bundled as legal/LICENSE.
+
+The one-folder application also contains third-party Python and JavaScript
+components. Their package metadata and license files remain in the bundle when
+provided upstream. Each release publishes a machine-readable SPDX SBOM next to
+the installer so recipients can identify the exact bundled components and
+their declared licenses.
+
+Stock Desk is a research tool, not investment advice. Market data and optional
+provider services remain subject to their respective terms.

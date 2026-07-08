@@ -54,6 +54,10 @@ REQUIRED_FILES = {
 }
 
 VERIFIED_ACTION_PINS = {
+    "actions/attest": (
+        "59d89421af93a897026c735860bf21b6eb4f7b26",
+        "v4.1.0",
+    ),
     "actions/checkout": (
         "9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
         "v7.0.0",
@@ -77,6 +81,10 @@ VERIFIED_ACTION_PINS = {
     "astral-sh/setup-uv": (
         "d31148d669074a8d0a63714ba94f3201e7020bc3",
         "v8.3.0",
+    ),
+    "anchore/sbom-action": (
+        "e22c389904149dbc22b58101806040fa8d37a610",
+        "v0.24.0",
     ),
     "github/codeql-action/analyze": (
         "54f647b7e1bb85c95cddabcd46b0c578ec92bc1a",
