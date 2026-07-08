@@ -65,7 +65,7 @@ jobs:
           make acceptance-backtest
           make acceptance-analysis
           make performance-regressions
-          make performance
+          make performance-target
           make lint
           make typecheck
           make public-tree

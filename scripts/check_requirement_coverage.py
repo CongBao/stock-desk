@@ -68,7 +68,7 @@ KINDS = {
 }
 STATUSES = {"mapped", "verified"}
 STATES = {"existing", "planned", "manual"}
-RUNNERS = {"pytest", "vitest", "playwright", "gate", "manual"}
+RUNNERS = {"pytest", "vitest", "playwright", "github-actions", "gate", "manual"}
 EVIDENCE_KINDS = {
     "acceptance",
     "integration",

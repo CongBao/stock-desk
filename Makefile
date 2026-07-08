@@ -1,4 +1,4 @@
-.PHONY: bootstrap dev test acceptance acceptance-formula acceptance-backtest acceptance-analysis benchmark benchmark-formula benchmark-backtest performance performance-regressions e2e e2e-foundation e2e-market e2e-formula e2e-backtest e2e-analysis e2e-task-center lint typecheck build smoke container-smoke public-tree check-public-tree security release-check
+.PHONY: bootstrap dev test acceptance acceptance-formula acceptance-backtest acceptance-analysis benchmark benchmark-formula benchmark-backtest performance performance-reference performance-target performance-regressions e2e e2e-foundation e2e-market e2e-formula e2e-backtest e2e-analysis e2e-task-center lint typecheck build smoke container-smoke public-tree check-public-tree security release-check
 
 bootstrap:
 	uv sync --frozen --all-groups --extra providers
@@ -34,9 +34,15 @@ benchmark-backtest:
 
 performance-regressions: benchmark benchmark-formula benchmark-backtest
 
-performance:
-	uv run --frozen python scripts/run_performance_baseline.py --fixture ten-year-a-share --compare tests/performance/baseline.json
+performance: performance-reference
+
+performance-reference:
+	uv run --frozen python scripts/run_performance_baseline.py --fixture full-a-scope-bounded-ten-year --evidence-kind reference --compare tests/performance/baseline.json
 	uv run --frozen pytest -W error tests/performance/test_v1_budgets.py -q
+
+performance-target:
+	uv run --frozen python scripts/run_performance_baseline.py --fixture full-a-scope-bounded-ten-year --evidence-kind target_baseline --output test-results/performance/target-baseline.json --compare tests/performance/baseline.json
+	STOCK_DESK_PERFORMANCE_RESULT=test-results/performance/target-baseline.json uv run --frozen pytest -W error tests/performance/test_v1_budgets.py -q
 
 e2e: e2e-foundation e2e-market e2e-formula e2e-backtest e2e-analysis e2e-task-center
 

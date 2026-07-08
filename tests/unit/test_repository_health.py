@@ -557,7 +557,7 @@ def test_ci_uploads_coverage_reports_and_release_uses_canonical_test() -> None:
     assert "make acceptance-formula" in commands
     assert "make acceptance-backtest" in commands
     assert "make performance-regressions" in commands
-    assert "make performance" in commands
+    assert "make performance-target" in commands
     assert "make e2e-market" in commands
     assert "make e2e-formula" in commands
     assert "make e2e-backtest" in commands
@@ -717,6 +717,8 @@ def test_e2e_is_a_root_script_without_changing_the_make_contract() -> None:
         "benchmark-formula",
         "benchmark-backtest",
         "performance",
+        "performance-reference",
+        "performance-target",
         "performance-regressions",
         "bootstrap",
         "check-public-tree",
@@ -1195,4 +1197,32 @@ def test_performance_chart_timer_includes_the_bounded_interaction_handshake() ->
         )
         assert body.index("await proveChartInteractionHandshake") < body.index(
             "await sampler.finish"
+        )
+
+
+def test_performance_target_ci_is_explicit_and_requirements_remain_mapped() -> None:
+    workflow = _load_github_actions_yaml(_read(".github/workflows/ci.yml"))
+    e2e = workflow["jobs"]["e2e"]
+    assert e2e["runs-on"] == "ubuntu-24.04"
+    target_step = next(
+        step
+        for step in e2e["steps"]
+        if step.get("name") == "Measure Ubuntu x64 4-core/16GB target baseline"
+    )
+    assert target_step["run"] == "make performance-target"
+
+    makefile = _read("Makefile")
+    target_recipe = makefile.split("\nperformance-target:\n", maxsplit=1)[1].split(
+        "\n\n", maxsplit=1
+    )[0]
+    assert "--evidence-kind target_baseline" in target_recipe
+
+    requirements = yaml.safe_load(_read("tests/acceptance/requirements.yml"))
+    records = {item["id"]: item for item in requirements["requirements"]}
+    for requirement_id in ("R-054", "R-055", "R-060"):
+        requirement = records[requirement_id]
+        assert requirement["status"] == "mapped"
+        assert any(
+            evidence["state"] == "planned" and evidence["runner"] == "github-actions"
+            for evidence in requirement["evidence"]
         )

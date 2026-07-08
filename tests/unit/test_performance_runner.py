@@ -19,12 +19,12 @@ def test_cli_accepts_paths_but_no_user_supplied_timing_values(tmp_path: Path) ->
     args = parse_args(
         [
             "--fixture",
-            "ten-year-a-share",
+            "full-a-scope-bounded-ten-year",
             "--output",
             str(tmp_path / "current.json"),
         ]
     )
-    assert args.fixture == "ten-year-a-share"
+    assert args.fixture == "full-a-scope-bounded-ten-year"
     assert args.evidence_kind == "reference"
     assert parse_args(["--evidence-kind", "target_baseline"]).evidence_kind == (
         "target_baseline"

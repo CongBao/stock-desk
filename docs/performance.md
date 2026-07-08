@@ -1,11 +1,12 @@
-# Performance release gate
+# Performance reference and target gate
 
-Stock Desk v1 applies the 2/3/5-second requirements to end-user actions on a
-network-forbidden, cached, synthetic workload. The gate is not a vendor-data
-benchmark and must not be used to make comparative hardware or data-provider
-claims.
+Stock Desk v1 measures the 2/3/5-second requirements on a network-forbidden,
+cached, CC0 synthetic workload. Results are not vendor-data benchmarks. A local
+run on faster hardware is a `reference`; only a qualifying GitHub-hosted Ubuntu
+x64 standard runner can emit `target_baseline` evidence for the ordinary
+4-CPU/16GB requirement.
 
-## Reproduce the gate
+## Reproduce a local reference
 
 Install the locked Python and Web dependencies plus Playwright Chromium, then
 run from the repository root:
@@ -14,101 +15,101 @@ run from the repository root:
 uv sync --frozen --all-groups --extra providers
 pnpm install --frozen-lockfile
 pnpm exec playwright install chromium
-make performance
+make performance-reference
 ```
 
-`make performance` runs Playwright with retries disabled. The runner generates
-and seeds the fixture through `InstrumentRepository`, `MarketLake`,
-`ExecutionStatusLake`, `FormulaRepository`, and the normal backtest worker. It
-writes `test-results/performance/current.json` atomically, validates that file,
-and compares correctness hashes with `tests/performance/baseline.json`.
-`test-results/` is ignored and is uploaded by CI together with Playwright
-traces. The CLI accepts paths and the fixed fixture name only; it has no timing
-override. A baseline cannot be recorded from an external raw result or a
-skipped browser run.
+`make performance` is an alias for `make performance-reference`. The runner
+seeds normal repositories and the real backtest worker, blocks non-loopback
+browser traffic, writes `test-results/performance/current.json` atomically, and
+compares semantic correctness hashes with `tests/performance/baseline.json`.
+The committed baseline is a faster-host reference, not ordinary-machine proof.
 
-To produce a candidate baseline, first commit every implementation change so
-the worktree is clean, then run:
+To replace that reference, first commit every implementation change so the
+worktree is clean, then run:
 
 ```bash
 uv run --frozen python scripts/run_performance_baseline.py \
-  --fixture ten-year-a-share --record-baseline
+  --fixture full-a-scope-bounded-ten-year --evidence-kind reference --record-baseline
 ```
 
-Recording refuses a dirty tree, a stale fixture digest, undersized effective
-hardware, or any failing schema/correctness/budget gate. Review the JSON before
-committing it. Do not edit summaries by hand.
+The command has no timing injection or raw-browser-output override. Recording
+refuses dirty Git state, an invalid/current-checkout SHA, stale fixture content,
+unavailable tools, undersized hardware, or any failed schema, correctness, or
+budget gate.
 
-## Fixed workload and timing boundaries
+## Target baseline in GitHub Actions
 
-`tests/fixtures/performance/ten-year-a-share.json` is visibly labelled CC0
-synthetic data with `network_policy: forbidden`. It stores generator metadata,
-not thousands of committed rows. The deterministic generator produces 2,632
-weekday daily bars, including 2,608 scoring sessions from 2016-01-01 through
-2025-12-31 and an earlier warm-up. Its canonical content digest is checked
-before seeding and again by the result gate.
+The CI target uses the pinned `ubuntu-24.04` x64 standard runner documented in
+[GitHub-hosted runner specifications](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
+and executes `make performance-target`. Evidence is accepted as
+`target_baseline` only when
+the measured environment reports all of the following:
 
-Every repeated metric contains at least 20 independent raw samples. Summary
-mean and nearest-rank p95 are recomputed from those samples:
+- GitHub Actions runner metadata, Linux, and `RUNNER_ARCH=X64`;
+- exactly four logical and four effective CPUs after affinity/quota limits;
+- nominal 16GB physical memory and at least 15 GiB usable memory;
+- the exact byte counts, hosted-image identifiers, repository, run ID, and run
+  attempt in the artifact.
 
-- Chart cold: a new Chromium context with empty browser/HTTP cache. Timing
-  starts when the user selects the cached security and ends only after the
-  ECharts `finished` event. Hover/crosshair, zoom, and drag must then work.
-- Chart warm: the same page, React tree, ECharts process, local services, and
-  browser cache after an untimed completed render. A same-page adjustment
-  switch and reselect starts the next sample; navigation/reload is excluded.
-- Formula cache-cold: each sample uses a different immutable, pre-seeded formula
-  version with identical source. Seeding is outside the timer. Timing ends only
-  after the main chart, subchart, BUY/SELL signals, summary, and ECharts
-  `finished` readiness are visible.
-- Single backtest fresh: each sample submits a new task. Timing includes submit,
-  claim, independent worker execution, report persistence, report fetch, and
-  visible conclusion readiness.
-- Pool UI: a production-repository-backed synthetic full-A preset is submitted
-  through the visible wizard. Eighteen progress-render windows, one SPA
-  navigation window, and the actual cancellation window are observed
-  separately. Every window must contain exactly zero browser Long Tasks over
-  50 ms and remain interactive. Authoritative worker progress must change and
-  the final task state must be `cancelled`.
+The workflow uploads `target-baseline-ubuntu-x64-4c16g`. R-054, R-055, and
+R-060 remain `mapped` until a passing artifact is reviewed and imported; merely
+adding the workflow or passing on a faster host does not verify them.
+
+## Fixed workload and raw windows
+
+`tests/fixtures/performance/full-a-scope-bounded-ten-year.json` stores compact generator
+metadata rather than committed bars. It defines 5,000 stable synthetic A-share
+instrument metadata rows and 40 bounded runnable symbols with ten-year data.
+The single-stock series contains 2,632 weekday bars, including 2,608 scoring
+sessions from 2016-01-01 through 2025-12-31 plus warm-up. This fixture tests a
+full-scope UI and asynchronous worker behavior; it does not claim 5,000-stock
+backtest throughput.
+
+Each summary uses exactly 20 raw measurements. They are not all independent:
+
+- Chart cold uses 20 new Chromium contexts with empty browser/HTTP cache. The
+  timer starts with cached-symbol selection and stops only after the active
+  ECharts generation emits `finished` and a bounded real hover/crosshair,
+  reset/zoom, and drag handshake succeeds.
+- Chart warm uses 20 adjustment windows on one shared warm page and the same
+  interaction-complete timing boundary. The page, React tree, ECharts instance,
+  browser cache, and local services are shared.
+- Formula cache-cold uses 20 distinct pre-seeded immutable formula versions.
+  Each timer covers preview action through main/subchart, BUY/SELL, summary,
+  and active-generation ECharts readiness.
+- Single backtest fresh uses 20 new tasks. Each timer covers submission, worker
+  claim/execution, report persistence/fetch, and visible conclusion readiness.
+- Pool UI uses 20 Long Task windows from one worker-backed pool task: 18 windows
+  each wait for a distinct rendered `processed/total/stage/failed` tuple and an
+  exact API match, followed by one SPA navigation window and one actual
+  cancellation window. Every window must contain zero Long Tasks over 50 ms.
 
 ## Evidence and trust rules
 
-For each timed sample the current file records wall time, local time, provider
-span count and duration, blocked external browser requests, start/peak/delta
-RSS for the declared process tree, a bounded process-role-set digest, and a normalized
-correctness hash. The top-level evidence records only redacted role labels; absolute
-commands and local paths are used for runtime assertions but are never persisted.
-The process roots cover the Playwright runner/browser and the
-supervisor, API, worker, and Vite service processes. The runner also records
-effective CPU affinity/cgroup quota, effective cgroup memory limit, physical
-memory, OS/architecture, Python/Node/tool versions, actual
-`browser.version()`, fixture rows/digest, UTC measurement time, Git SHA, and
-dirty state.
+Every timed sample records wall/local time, exact zero provider wait, immutable
+routing-attempt labels, blocked external requests, RSS start/peak/delta, and a
+canonical correctness hash. Object keys are recursively sorted before hashing;
+array order is preserved. The pool hash contains only the semantic formula
+checksum, membership digest, data digest, and terminal status—never random run,
+task, formula-version, or snapshot UUIDs.
 
-Provider wait is derived from the routed provenance manifest attempts; it is
-not inserted as a zero. The CC0 cached route must select `stock_desk_demo` with
-an empty attempt list, so its measured provider span count and summed external
-wait are both zero. Playwright separately blocks and counts every non-loopback
-HTTP(S) request. Any attempt fails the gate.
+The cached routing manifest has no duration field. Therefore the gate can prove
+only an empty attempt ledger: zero attempts gives exact zero calls and wait, and
+any nonempty attempt is rejected rather than assigned a fabricated duration.
+The separate cached-loading UI contract remains covered by
+`web/src/features/market/MarketChart.test.tsx`; this gate makes no unavailable
+nonzero provider-duration claim.
 
-The validator rejects fewer than 20 samples, NaN/negative values, mismatched
-mean or nearest-rank p95, stale digests, insufficient effective hardware,
-missing process-tree or provenance evidence, any Long Task, interaction
-failure, or changed chart/formula/backtest/pool correctness hashes.
+RSS is sampled through asynchronous `ps` calls on Linux/macOS. The timed Node
+loop never blocks on `execFileSync`, excludes the `ps` helper, detects PID
+command-identity changes, and persists the bounded role set and its digest only
+once. Windows performance measurement fails before browser startup; Windows
+product packaging remains a separate release concern.
 
-## Hardware normalization and interpretation
-
-The product requirement names an ordinary effective 4-core/16GB machine. The
-committed baseline records the host truthfully. A run qualifies when effective
-CPU is at least four cores and usable memory is at least 15 GiB (the bounded
-allowance for a nominal 16GB host after firmware/runner reservation) after
-affinity, CPU quota, and memory limits are applied. A faster host is not
-relabelled as 4-core/16GB;
-its actual model/count/limits remain in the evidence. The budgets are absolute
-release ceilings, not relative tolerances against the baseline.
-
-Timing includes local orchestration noise and is unsuitable for microbenchmark
-rankings. If a p95 fails, profile that path with a Playwright trace and the
-relevant Python/DuckDB/Polars tools before changing implementation. Never relax
-the budget, fixture, formula isolation, trade semantics, signal correctness, or
-provenance contract to make a run pass.
+The strict validator requires exact keys and primitive types, a real UTC
+datetime, clean 40-hex Git commit provenance, current-checkout object checks,
+finite CPU values, unique positive roots/PIDs, valid service-role relationships,
+real tool versions, recomputed role and semantic digests, exactly 20 raw windows,
+zero forbidden requests/Long Tasks, and stable correctness against the reference.
+The budgets remain absolute release ceilings and must never be relaxed to make a
+run pass.

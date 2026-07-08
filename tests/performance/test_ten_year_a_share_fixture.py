@@ -18,6 +18,8 @@ def test_fixture_is_deterministic_cc0_network_forbidden_and_ten_year_daily() -> 
     second = generate_fixture_bars(metadata)
 
     assert metadata.label == "SYNTHETIC PERFORMANCE FIXTURE — NOT VENDOR DATA"
+    assert metadata.fixture_id == "full-a-scope-bounded-ten-year"
+    assert FIXTURE_PATH.name == "full-a-scope-bounded-ten-year.json"
     assert metadata.license == "CC0-1.0"
     assert metadata.network_policy == "forbidden"
     assert metadata.source is ProviderId.STOCK_DESK_DEMO

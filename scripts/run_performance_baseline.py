@@ -51,8 +51,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--fixture",
-        choices=("ten-year-a-share",),
-        default="ten-year-a-share",
+        choices=("full-a-scope-bounded-ten-year",),
+        default="full-a-scope-bounded-ten-year",
     )
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--compare", type=Path)

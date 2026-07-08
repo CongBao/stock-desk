@@ -33,7 +33,9 @@ from stock_desk.market.types import (
 
 
 ROOT = Path(__file__).resolve().parents[2]
-FIXTURE_PATH = ROOT / "tests" / "fixtures" / "performance" / "ten-year-a-share.json"
+FIXTURE_PATH = (
+    ROOT / "tests" / "fixtures" / "performance" / "full-a-scope-bounded-ten-year.json"
+)
 MINIMUM_SAMPLE_COUNT = 20
 MINIMUM_EFFECTIVE_MEMORY_BYTES = 15 * 1024**3
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -48,7 +50,7 @@ class FixtureMetadata(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     schema_version: Literal["stock-desk-synthetic-performance-v1"]
-    fixture_id: Literal["ten-year-a-share"]
+    fixture_id: Literal["full-a-scope-bounded-ten-year"]
     label: Literal["SYNTHETIC PERFORMANCE FIXTURE — NOT VENDOR DATA"]
     license: Literal["CC0-1.0"]
     network_policy: Literal["forbidden"]
@@ -625,7 +627,7 @@ def validate_performance_result(
     if fixture["content_digest"] != expected_fixture_digest:
         raise PerformanceGateError("performance fixture digest is stale")
     if (
-        fixture["fixture_id"] != "ten-year-a-share"
+        fixture["fixture_id"] != "full-a-scope-bounded-ten-year"
         or fixture["network_policy"] != "forbidden"
     ):
         raise PerformanceGateError("performance fixture identity is invalid")

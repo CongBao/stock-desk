@@ -104,7 +104,7 @@ def _valid_result() -> dict[str, object]:
         "measured_at_utc": "2026-07-08T02:00:00Z",
         "git": {"sha": "a" * 40, "dirty": False},
         "fixture": {
-            "fixture_id": "ten-year-a-share",
+            "fixture_id": "full-a-scope-bounded-ten-year",
             "content_digest": "sha256:" + "a" * 64,
             "row_count": 2_609,
             "scoring_sessions": 2_609,

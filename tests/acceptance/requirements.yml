@@ -613,10 +613,11 @@ requirements:
     acceptance: On the recorded ordinary four-core and 16GB cached-data baseline, a common daily chart becomes zoomable, draggable, and crosshair-readable within two seconds, while external wait time is labelled separately.
     source_refs: [{capability: market-data-charting, requirement: market-interface-performance, scenario: open-cached-daily-chart}, {capability: market-data-charting, requirement: market-interface-performance, scenario: wait-for-external-data}]
     owning_stage: 1
-    status: verified
+    status: mapped
     evidence:
       - {state: existing, runner: pytest, kind: integration, path: tests/performance/test_chart_query.py, selector: "tests/performance/test_chart_query.py::test_legacy_cached_chart_query_preserves_payload_correctness", assertion: "The retired microbenchmark remains as a cached chart payload correctness regression and makes no release timing claim."}
-      - {state: existing, runner: playwright, kind: performance, path: web/e2e/performance.spec.ts, selector: "records aggregate 2/3/5 budgets and worker-backed UI responsiveness", assertion: "The aggregate browser gate measures 20 cold and same-page warm ECharts finished samples, then proves hover, zoom, drag, crosshair, provenance-derived zero external wait, and process-tree RSS on the recorded hardware baseline."}
+      - {state: existing, runner: playwright, kind: performance, path: web/e2e/performance.spec.ts, selector: "records aggregate 2/3/5 budgets and worker-backed UI responsiveness", assertion: "The browser gate collects 20 raw cold and same-page warm interaction-complete samples, provenance-ledger zero-call evidence, and asynchronous process-tree RSS as reference or target-shaped evidence; a faster-host reference does not verify the ordinary-machine requirement."}
+      - {state: planned, runner: github-actions, kind: performance, path: .github/workflows/ci.yml, selector: "Measure Ubuntu x64 4-core/16GB target baseline", assertion: "The pinned Ubuntu x64 standard-runner job must pass as target_baseline and its artifact must be imported before this requirement can become verified."}
   - id: R-055
     category: performance
     kind: performance
@@ -624,10 +625,11 @@ requirements:
     acceptance: On the recorded ordinary four-core and 16GB cached-data baseline, a valid formula over ten years of daily data updates main chart, subchart, and signals within three seconds.
     source_refs: [{capability: formula-system, requirement: formula-preview-performance, scenario: preview-ten-years-daily}]
     owning_stage: 2
-    status: verified
+    status: mapped
     evidence:
       - {state: existing, runner: pytest, kind: integration, path: tests/performance/test_formula_preview.py, selector: "tests/performance/test_formula_preview.py::test_legacy_macd_preview_preserves_output_correctness", assertion: "The retired microbenchmark remains as a MACD output correctness regression and makes no release timing claim."}
-      - {state: existing, runner: playwright, kind: performance, path: web/e2e/performance.spec.ts, selector: "records aggregate 2/3/5 budgets and worker-backed UI responsiveness", assertion: "The aggregate browser gate measures 20 cache-cold immutable formula versions through main chart, subchart, BUY/SELL output, and ECharts finished readiness."}
+      - {state: existing, runner: playwright, kind: performance, path: web/e2e/performance.spec.ts, selector: "records aggregate 2/3/5 budgets and worker-backed UI responsiveness", assertion: "The browser gate collects 20 raw cache-cold immutable formula-version windows through main chart, subchart, BUY/SELL output, and ECharts finished readiness without claiming faster-host reference timing as ordinary-machine proof."}
+      - {state: planned, runner: github-actions, kind: performance, path: .github/workflows/ci.yml, selector: "Measure Ubuntu x64 4-core/16GB target baseline", assertion: "The pinned Ubuntu x64 standard-runner job must pass as target_baseline and its artifact must be imported before this requirement can become verified."}
   - id: R-056
     category: market
     kind: architecture
@@ -682,11 +684,12 @@ requirements:
     acceptance: On the recorded ordinary four-core and 16GB cached-data baseline, one stock over ten years of daily data completes within five seconds, while all-A work runs asynchronously and leaves the interface responsive.
     source_refs: [{capability: backtesting-reporting, requirement: single-backtest-performance, scenario: run-ten-year-single-stock}, {capability: backtesting-reporting, requirement: single-backtest-performance, scenario: run-all-a-pool}]
     owning_stage: 3
-    status: verified
+    status: mapped
     evidence:
       - {state: existing, runner: pytest, kind: integration, path: tests/performance/test_single_backtest.py, selector: "tests/performance/test_single_backtest.py::test_legacy_single_backtest_preserves_report_correctness", assertion: "The retired microbenchmark remains as a persisted report correctness regression and makes no release timing claim."}
       - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/backtest.spec.ts, selector: "held pool run reaches persisted terminal cancellation through the worker", assertion: "Existing browser evidence proves pool execution runs through the independent Worker and remains cancellable."}
-      - {state: existing, runner: playwright, kind: performance, path: web/e2e/performance.spec.ts, selector: "records aggregate 2/3/5 budgets and worker-backed UI responsiveness", assertion: "The aggregate gate measures 20 fresh worker-persisted reports and real full-A progress, SPA navigation, and cancellation windows with zero browser Long Tasks over 50 ms."}
+      - {state: existing, runner: playwright, kind: performance, path: web/e2e/performance.spec.ts, selector: "records aggregate 2/3/5 budgets and worker-backed UI responsiveness", assertion: "The browser gate collects 20 raw fresh worker-persisted report windows plus 20 UI windows from one 5,000-member-scope pool task, with rendered/API-matched progress, SPA navigation, cancellation, and zero Long Tasks; it remains reference evidence on faster hosts."}
+      - {state: planned, runner: github-actions, kind: performance, path: .github/workflows/ci.yml, selector: "Measure Ubuntu x64 4-core/16GB target baseline", assertion: "The pinned Ubuntu x64 standard-runner job must pass as target_baseline and its artifact must be imported before this requirement can become verified."}
   - id: R-061
     category: operations
     kind: operational
