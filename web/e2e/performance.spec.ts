@@ -1,4 +1,10 @@
-import { expect, test, type BrowserContext, type Page } from '@playwright/test';
+import {
+  expect,
+  test,
+  type BrowserContext,
+  type Page,
+  type Response,
+} from '@playwright/test';
 import { execFile } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
@@ -9,6 +15,7 @@ import {
   completedGenerationAfter,
   parseProcessRows,
   ProcessIdentityTracker,
+  ProgressResponseLedger,
   progressWindowsDemonstrateChange,
   providerEvidence,
   type RootExpectation,
@@ -666,6 +673,7 @@ function parseRenderedProgress(raw: string | null): ProgressState | null {
 async function observeMatchedProgress(
   page: Page,
   runId: string,
+  responses: ProgressResponseLedger,
   previousKey: string | null,
 ) {
   const progress = page.getByRole('region', { name: '运行进度' });
@@ -679,17 +687,8 @@ async function observeMatchedProgress(
         );
         if (rendered === null || progressKey(rendered) === previousKey)
           return '';
-        const response = await page.request.get(`/api/backtests/${runId}`);
-        if (!response.ok()) return '';
-        const overview = (await response.json()) as ProgressState;
-        const apiState = {
-          status: overview.status,
-          stage: overview.stage,
-          processed: overview.processed,
-          total: overview.total,
-          failed: overview.failed,
-        };
-        if (progressKey(rendered) !== progressKey(apiState)) return '';
+        const apiState = responses.match(runId, rendered);
+        if (apiState === null) return '';
         matched = { rendered_state: rendered, api_state: apiState };
         return progressKey(rendered);
       },
@@ -883,6 +882,28 @@ test('records aggregate 2/3/5 budgets and worker-backed UI responsiveness', asyn
   await expect(preflight).toContainText(/可运行 40 \/ 5000/u);
   const confirmation = preflight.getByRole('checkbox');
   if (await confirmation.isVisible()) await confirmation.check();
+  const progressResponses = new ProgressResponseLedger();
+  const progressResponseErrors: string[] = [];
+  const captureProgressResponse = (response: Response) => {
+    const match = /^\/api\/backtests\/([^/]+)$/u.exec(
+      new URL(response.url()).pathname,
+    );
+    if (
+      match === null ||
+      response.request().method() !== 'GET' ||
+      !response.ok()
+    ) {
+      return;
+    }
+    void response
+      .json()
+      .then((body: unknown) => {
+        if (!progressResponses.record(match[1] ?? '', body))
+          progressResponseErrors.push('invalid progress response');
+      })
+      .catch(() => progressResponseErrors.push('unreadable progress response'));
+  };
+  page.on('response', captureProgressResponse);
   const submissionPromise = page.waitForResponse(
     (response) =>
       new URL(response.url()).pathname === '/api/backtests' &&
@@ -916,6 +937,7 @@ test('records aggregate 2/3/5 budgets and worker-backed UI responsiveness', asyn
   const initialProgress = await observeMatchedProgress(
     page,
     poolSubmission.run_id,
+    progressResponses,
     null,
   );
   const initialProgressKey = progressKey(initialProgress.rendered_state);
@@ -925,6 +947,7 @@ test('records aggregate 2/3/5 budgets and worker-backed UI responsiveness', asyn
     const progressEvidence = await observeMatchedProgress(
       page,
       poolSubmission.run_id,
+      progressResponses,
       index < 2 ? requiredChangeFrom : null,
     );
     if (index < 2)
@@ -966,6 +989,7 @@ test('records aggregate 2/3/5 budgets and worker-backed UI responsiveness', asyn
   const navigationEvidence = await observeMatchedProgress(
     page,
     poolSubmission.run_id,
+    progressResponses,
     null,
   );
   poolSamples.push({
@@ -985,6 +1009,7 @@ test('records aggregate 2/3/5 budgets and worker-backed UI responsiveness', asyn
   const cancellationEvidence = await observeMatchedProgress(
     page,
     poolSubmission.run_id,
+    progressResponses,
     null,
   );
   const finalOverview = cancellationEvidence.api_state;
@@ -1011,6 +1036,8 @@ test('records aggregate 2/3/5 budgets and worker-backed UI responsiveness', asyn
     0,
   );
   expect(totalLongTasks).toBe(0);
+  expect(progressResponseErrors).toEqual([]);
+  page.off('response', captureProgressResponse);
   await context.close();
 
   const result = {

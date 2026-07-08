@@ -84,7 +84,9 @@ Each summary uses exactly 20 raw measurements. They are not all independent:
   claim/execution, report persistence/fetch, and visible conclusion readiness.
 - Pool UI uses 20 Long Task windows from one worker-backed pool task: 18 windows
   each record a rendered `processed/total/stage/failed` tuple and an exact API
-  match. Repeated snapshots are valid, but the windows must contain at least two
+  match from the successful page-response ledger. This avoids a second-request
+  race while proving the DOM tuple came from an authoritative API response.
+  Repeated snapshots are valid, but the windows must contain at least two
   distinct rendered states and show a change from the initial state. One SPA
   navigation window and one actual cancellation window follow. Every window
   must contain zero Long Tasks over 50 ms.

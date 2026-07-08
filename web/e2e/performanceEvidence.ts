@@ -26,6 +26,14 @@ export type RootExpectation = {
   readonly commandTokens?: readonly string[];
 };
 
+export type ProgressEvidenceState = {
+  readonly status: string;
+  readonly stage: string;
+  readonly processed: number;
+  readonly total: number;
+  readonly failed: number;
+};
+
 const PS_HELPER =
   /(?:^|\s)(?:\/\S*\/)?ps\s+-axo\s+pid=,ppid=,rss=,lstart=,command=(?:\s|$)/u;
 
@@ -241,6 +249,67 @@ export function completedGenerationAfter(
   return Number.isSafeInteger(generation) && generation > previousGeneration
     ? generation
     : null;
+}
+
+function progressEvidenceKey(state: ProgressEvidenceState): string {
+  return [
+    state.status,
+    state.stage,
+    state.processed,
+    state.total,
+    state.failed,
+  ].join('|');
+}
+
+function progressEvidenceState(value: unknown): ProgressEvidenceState | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const candidate = value as Record<string, unknown>;
+  const { status, stage, processed, total, failed } = candidate;
+  if (
+    typeof status !== 'string' ||
+    typeof stage !== 'string' ||
+    !Number.isInteger(processed) ||
+    !Number.isInteger(total) ||
+    !Number.isInteger(failed) ||
+    (processed as number) < 0 ||
+    (total as number) < 0 ||
+    (failed as number) < 0 ||
+    (failed as number) > (processed as number) ||
+    (processed as number) > (total as number)
+  ) {
+    return null;
+  }
+  return {
+    status,
+    stage,
+    processed: processed as number,
+    total: total as number,
+    failed: failed as number,
+  };
+}
+
+export class ProgressResponseLedger {
+  private readonly byRun = new Map<
+    string,
+    Map<string, ProgressEvidenceState>
+  >();
+
+  record(runId: string, value: unknown): boolean {
+    const state = progressEvidenceState(value);
+    if (!runId || state === null) return false;
+    const states =
+      this.byRun.get(runId) ?? new Map<string, ProgressEvidenceState>();
+    states.set(progressEvidenceKey(state), state);
+    this.byRun.set(runId, states);
+    return true;
+  }
+
+  match(
+    runId: string,
+    rendered: ProgressEvidenceState,
+  ): ProgressEvidenceState | null {
+    return this.byRun.get(runId)?.get(progressEvidenceKey(rendered)) ?? null;
+  }
 }
 
 export function providerEvidence(manifest: RoutingManifest) {

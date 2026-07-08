@@ -6,6 +6,7 @@ import {
   progressWindowsDemonstrateChange,
   ProcessIdentityTracker,
   parseProcessRows,
+  ProgressResponseLedger,
   providerEvidence,
   selectProcessTree,
 } from '../../e2e/performanceEvidence';
@@ -75,6 +76,25 @@ describe('canonical performance evidence', () => {
     expect(completedGenerationAfter(7, 'false', '8')).toBeNull();
     expect(completedGenerationAfter(7, 'true', 'not-an-integer')).toBeNull();
     expect(completedGenerationAfter(7, 'true', '8')).toBe(8);
+  });
+
+  it('matches rendered progress to an exact authoritative page response without a second request', () => {
+    const ledger = new ProgressResponseLedger();
+    const state = {
+      status: 'running',
+      stage: 'executing',
+      processed: 8,
+      total: 5000,
+      failed: 3,
+    };
+    expect(ledger.record('run-1', state)).toBe(true);
+    expect(ledger.record('run-1', { ...state, processed: Number.NaN })).toBe(
+      false,
+    );
+
+    expect(ledger.match('run-1', { ...state })).toEqual(state);
+    expect(ledger.match('run-1', { ...state, processed: 9 })).toBeNull();
+    expect(ledger.match('run-2', state)).toBeNull();
   });
 });
 
