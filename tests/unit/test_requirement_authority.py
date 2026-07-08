@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import re
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -60,4 +61,56 @@ def test_non_goal_ids_keep_the_authoritative_exclusion_order() -> None:
     )
     assert checker.AUTHORITATIVE_NON_GOAL_BEHAVIOR_KEYS["N-009"] == (
         "no_dynamic_market_screening"
+    )
+
+
+def test_public_requirement_artifacts_do_not_name_operator_specific_paths_or_keys() -> (
+    None
+):
+    private_key_basename = re.compile(
+        r"\bid_(?:ed25519|rsa|ecdsa)(?:_[A-Za-z0-9.-]+)?\b", re.IGNORECASE
+    )
+    canonical_checkout = re.compile(
+        r"(?:~|/Users/[^/]+)/Workspace/stock[-_]desk", re.IGNORECASE
+    )
+    public_artifacts = [MANIFEST, *sorted((ROOT / "tests").rglob("*.py"))]
+
+    for artifact in public_artifacts:
+        content = artifact.read_text(encoding="utf-8")
+        assert private_key_basename.search(content) is None, artifact
+        assert canonical_checkout.search(content) is None, artifact
+
+
+def test_market_provenance_and_schedule_require_exact_delivered_evidence() -> None:
+    checker = _load_checker()
+    matrix = checker.load_manifest(MANIFEST)
+    by_id = {item["id"]: item for item in matrix["requirements"]}
+
+    provenance = {
+        item.get("selector"): item["state"] for item in by_id["R-036"]["evidence"]
+    }
+    assert (
+        provenance[
+            "tests/contract/providers/test_provider_contract.py::"
+            "test_bar_contract_normalizes_schema_units_order_and_provenance"
+        ]
+        == "existing"
+    )
+    assert (
+        provenance[
+            "tests/unit/market/test_provenance_hashes.py::"
+            "test_manifest_preserves_upstream_provenance_but_excludes_fetched_at_from_hash"
+        ]
+        == "existing"
+    )
+
+    schedule = {
+        item.get("selector"): item["state"] for item in by_id["R-042"]["evidence"]
+    }
+    assert (
+        schedule[
+            "tests/acceptance/test_market_flow.py::"
+            "test_settings_route_worker_cache_api_and_schedule_flow_without_network"
+        ]
+        == "existing"
     )

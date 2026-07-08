@@ -460,6 +460,8 @@ requirements:
       - {state: existing, runner: pytest, kind: integration, path: tests/unit/market/test_provenance.py, selector: 'tests/unit/market/test_provenance.py::test_source_transition_requires_category_specific_boundary', assertion: A source transition must carry an explicit compatible boundary and reason before composition.}
       - {state: existing, runner: pytest, kind: contract, path: tests/unit/market/test_routing_security.py, selector: 'tests/unit/market/test_routing_security.py::test_router_attaches_transition_from_previous_manifest_to_current_success', assertion: Routing binds the previous manifest and exact transition boundary to the current successful normalized result.}
       - {state: existing, runner: pytest, kind: contract, path: tests/unit/market/test_provenance_transitions.py, selector: 'tests/unit/market/test_provenance_transitions.py::test_derive_source_transition_classifies_source_changes', assertion: Source transitions classify provider changes with the required reason and versioned provenance fields.}
+      - {state: existing, runner: pytest, kind: contract, path: tests/contract/providers/test_provider_contract.py, selector: 'tests/contract/providers/test_provider_contract.py::test_bar_contract_normalizes_schema_units_order_and_provenance', assertion: 'The cross-provider contract normalizes every period and adjustment into one bar schema while preserving source, fetched time, data cutoff, and adjustment provenance.'}
+      - {state: existing, runner: pytest, kind: contract, path: tests/unit/market/test_provenance_hashes.py, selector: 'tests/unit/market/test_provenance_hashes.py::test_manifest_preserves_upstream_provenance_but_excludes_fetched_at_from_hash', assertion: 'The routing manifest preserves upstream fetched time, cutoff, adjustment, source selection, and dataset identity and validates them against the normalized result.'}
   - id: R-037
     category: formula
     kind: architecture
@@ -547,6 +549,7 @@ requirements:
       - {state: existing, runner: pytest, kind: integration, path: tests/integration/market/test_update_failures.py, selector: 'tests/integration/market/test_update_failures.py::test_partial_routing_failure_is_safe_and_continues_next_symbol', assertion: A partially failed update commits successful datasets and persists source-specific failure details.}
       - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/market.spec.ts, selector: 'real local market workflow stays cached, traceable, and interactive', assertion: 'The market browser flow shows source cutoff, starts and cancels a manual update, saves a daily schedule, and retains it after reload.'}
       - {state: existing, runner: pytest, kind: integration, path: tests/integration/market/test_update_cancel.py, selector: 'tests/integration/market/test_update_cancel.py::test_cancel_between_symbols_keeps_current_success_and_skips_routing', assertion: Cancellation between symbols retains the current successful update and prevents routing any later symbol.}
+      - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_market_flow.py, selector: 'tests/acceptance/test_market_flow.py::test_settings_route_worker_cache_api_and_schedule_flow_without_network', assertion: 'The accepted offline flow saves an enabled daily schedule, lets the runtime claim its due occurrence, and proves that occurrence creates a market.update task.'}
   - id: R-043
     category: backtest
     kind: architecture
@@ -802,7 +805,7 @@ requirements:
     category: operations
     kind: operational
     behavior_key: dedicated_github_ssh_identity
-    acceptance: "GitHub connections use the dedicated id_ed25519_github SSH identity and restrict SSH to that identity file."
+    acceptance: "GitHub connections use an approved dedicated GitHub SSH identity and restrict SSH operations to that identity."
     source_refs: [{capability: delivery-governance, requirement: github-ssh-and-tag-signing, scenario: verify-remote-key-and-signed-tag}]
     owning_stage: 5
     status: mapped

@@ -491,7 +491,7 @@ def test_exact_schema_and_status_strength_are_enforced(
         ".superpowers/notes.md",
         "work/scratch.md",
         "/Users/example",
-        "/Users/example/Workspace/stock-desk",
+        "/Users/example/private-project",
         "/root",
         "/root/private/session/requirements.yml",
         "/home/example",
@@ -500,7 +500,7 @@ def test_exact_schema_and_status_strength_are_enforced(
         "/var/folders/example/session/requirements.yml",
         "C:\\Users\\example",
         "C:\\Users\\example\\private\\session\\requirements.yml",
-        "~/Workspace/stock-desk",
+        "~/private-project",
     ],
 )
 def test_publication_boundary_strings_are_rejected_recursively(
