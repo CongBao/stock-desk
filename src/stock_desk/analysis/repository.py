@@ -1621,7 +1621,7 @@ class AnalysisRepository:
         trace: WorkflowStageTrace,
         *,
         now: datetime,
-    ) -> AnalysisAttemptSnapshot:
+    ) -> RoleOutput:
         canonical_output = clean_role_output_active_secrets(
             RoleOutput.model_validate_json(output.model_dump_json())
         )
@@ -1678,7 +1678,7 @@ class AnalysisRepository:
             if changed != 1:
                 raise AnalysisConflict("analysis stage is not running")
             self._checkpoint_progress(connection, claim, run_id, now)
-        return _attempt_snapshot(row)
+        return canonical_output
 
     def finish_data_attempt_success(
         self,

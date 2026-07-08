@@ -45,6 +45,7 @@ from tests.security.test_prompt_injection import snapshot_data_block, technical_
 SECRET = "sk-security-boundary-plaintext"
 PROVIDER_RESPONSE_SECRET = "provider-response-secret-must-not-escape"
 ROTATED_REPORT_SECRET = "rotated-analysis-report-secret-must-not-escape"
+SIMILAR_NON_SECRET = "sk-security-boundary-plaintexx"
 MODEL_ID = "sha256:" + "a" * 64
 
 
@@ -80,6 +81,33 @@ class _LegacyDualSecretProvider(DeterministicProvider):
         first_claim["text"] = (
             f"ordinary claim {SECRET} and {ROTATED_REPORT_SECRET}; evidence remains"
         )
+        return ModelResponse(
+            provider=self.provider,
+            model=self.model,
+            content=content,
+            usage=ModelUsage(input_tokens=2, output_tokens=1, total_tokens=3),
+        )
+
+
+class _DependencySecretEchoProvider(DeterministicProvider):
+    def __init__(self, *, provider: str, model: str) -> None:
+        super().__init__(provider=provider, model=model)
+        self.requests: list[ModelRequest] = []
+
+    async def complete(self, request: ModelRequest) -> ModelResponse:
+        self.requests.append(request)
+        content = _valid_content(request)
+        if request.data_blocks[0]["role"] == "technical":
+            content["summary"] = (
+                f"ordinary dependency {SECRET}; similar {SIMILAR_NON_SECRET}; suffix"
+            )
+            claims = content["claims"]
+            assert isinstance(claims, list)
+            first_claim = claims[0]
+            assert isinstance(first_claim, dict)
+            first_claim["text"] = (
+                f"ordinary claim {SECRET}; similar {SIMILAR_NON_SECRET}; evidence"
+            )
         return ModelResponse(
             provider=self.provider,
             model=self.model,
@@ -330,6 +358,66 @@ def test_successful_model_secret_echo_is_redacted_before_analysis_persistence_an
     assert "ordinary suffix" in serialized
     assert "ordinary claim" in serialized
     assert "evidence remains" in serialized
+
+
+def test_successful_role_secret_echo_is_clean_before_all_dependency_requests(
+    tmp_path: Path,
+) -> None:
+    providers: list[_DependencySecretEchoProvider] = []
+
+    def provider_builder(execution: AnalysisExecutionConfig) -> ModelProvider:
+        provider = _DependencySecretEchoProvider(
+            provider=execution.provider,
+            model=execution.model,
+        )
+        providers.append(provider)
+        return provider
+
+    with _harness(tmp_path, provider_builder=provider_builder) as harness:
+        model = _configure_verified_model(
+            harness.client,
+            provider="openai_compatible",
+            base_url="https://models.example.com/v1",
+            model_name="dependency-security-chat",
+            api_key=SECRET,
+        )
+        submission = _submit(harness.client, cast(str, model["id"]), retries=0)
+        completed = harness.run_worker()
+        report_response = harness.client.get(
+            f"/api/analysis/{submission['run_id']}/report"
+        )
+        with cast(Engine, harness.engine).connect() as connection:
+            stage_payloads = tuple(
+                connection.execute(
+                    select(AnalysisStageRow.output_json).where(
+                        AnalysisStageRow.run_id == submission["run_id"],
+                        AnalysisStageRow.output_json.is_not(None),
+                    )
+                ).scalars()
+            )
+            report_payload = connection.execute(
+                select(AnalysisReportRow.report_json).where(
+                    AnalysisReportRow.run_id == submission["run_id"]
+                )
+            ).scalar_one()
+
+    assert getattr(completed, "status") == "succeeded"
+    assert report_response.status_code == 200
+    assert len(providers) == 1
+    requests = providers[0].requests
+    assert len(requests) == 5
+    request_payloads = tuple(request.model_dump_json() for request in requests)
+    assert all(SECRET not in payload for payload in request_payloads)
+    direct_dependency_payloads = tuple(
+        payload
+        for request, payload in zip(requests, request_payloads, strict=True)
+        if request.data_blocks[0]["role"] in {"bull", "bear"}
+    )
+    assert len(direct_dependency_payloads) == 2
+    assert all(SIMILAR_NON_SECRET in payload for payload in direct_dependency_payloads)
+    persisted = "\n".join((*stage_payloads, report_payload, report_response.text))
+    assert SECRET not in persisted
+    assert SIMILAR_NON_SECRET in persisted
 
 
 def test_model_rotation_scrubs_legacy_analysis_before_restart_and_first_api_read(
