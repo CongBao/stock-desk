@@ -6,6 +6,7 @@ import {
   progressWindowsDemonstrateChange,
   ProcessIdentityTracker,
   parseProcessRows,
+  portableCommandTokens,
   ProgressResponseLedger,
   providerEvidence,
   selectProcessTree,
@@ -95,6 +96,22 @@ describe('canonical performance evidence', () => {
     expect(ledger.match('run-1', { ...state })).toEqual(state);
     expect(ledger.match('run-1', { ...state, processed: 9 })).toBeNull();
     expect(ledger.match('run-2', state)).toBeNull();
+  });
+
+  it('persists portable service command tokens without weakening raw runtime matching', () => {
+    expect(
+      portableCommandTokens([
+        '/Users/operator/worktree/.venv/bin/python3',
+        '-m',
+        'uvicorn',
+      ]),
+    ).toEqual(['python3', '-m', 'uvicorn']);
+    expect(portableCommandTokens(['pnpm', '--dir', 'web', 'dev'])).toEqual([
+      'pnpm',
+      '--dir',
+      'web',
+      'dev',
+    ]);
   });
 });
 

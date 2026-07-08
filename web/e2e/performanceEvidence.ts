@@ -170,6 +170,15 @@ export function commandContainsDeclaredTokens(
   return false;
 }
 
+export function portableCommandTokens(
+  command: readonly string[],
+): readonly string[] {
+  const [executable, ...arguments_] = command;
+  if (executable === undefined) return [];
+  const basename = executable.replaceAll('\\', '/').split('/').at(-1);
+  return [basename ?? executable, ...arguments_];
+}
+
 export function commandMatchesRole(
   command: string,
   role: RuntimeRole,

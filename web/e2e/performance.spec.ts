@@ -14,6 +14,7 @@ import {
   canonicalDigest as digest,
   completedGenerationAfter,
   parseProcessRows,
+  portableCommandTokens,
   ProcessIdentityTracker,
   ProgressResponseLedger,
   progressWindowsDemonstrateChange,
@@ -1060,7 +1061,7 @@ test('records aggregate 2/3/5 budgets and worker-backed UI responsiveness', asyn
         .map((service) => ({
           pid: service.pid,
           role: serviceRole(service.command),
-          command: service.command,
+          command: portableCommandTokens(service.command),
         }))
         .sort((left, right) => left.pid - right.pid),
       sampled_process_roles: sampledProcessRoles,
