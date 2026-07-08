@@ -131,6 +131,34 @@ export function TaskCenterPage({
     }
   }, []);
 
+  const clearUnknownCancellation = useCallback((taskId: string) => {
+    if (cancelUnknownRef.current?.id !== taskId) return;
+    cancelUnknownRef.current = null;
+    setCancelUnknownId(null);
+    setCancelError(null);
+  }, []);
+
+  const reconcileUnknownCancellation = useCallback(
+    (snapshot: TaskView, refreshSequence?: number) => {
+      const unknown = cancelUnknownRef.current;
+      if (
+        unknown === null ||
+        unknown.id !== snapshot.id ||
+        (refreshSequence !== undefined &&
+          refreshSequence <= unknown.afterRefreshSequence)
+      )
+        return;
+      cancelUnknownRef.current = null;
+      setCancelUnknownId(null);
+      setCancelError(
+        snapshot.cancelRequested || !activeStatuses.has(snapshot.status)
+          ? null
+          : '取消请求未生效，可以重试。',
+      );
+    },
+    [],
+  );
+
   const refresh = useCallback((): Promise<void> => {
     if (refreshPromiseRef.current !== null) return refreshPromiseRef.current;
     const refreshSequence = ++refreshSequenceRef.current;
@@ -154,15 +182,12 @@ export function TaskCenterPage({
         setTasks(nextTasks);
         setHasLoadedTasks(true);
         const unknown = cancelUnknownRef.current;
-        if (
-          unknown !== null &&
-          refreshSequence > unknown.afterRefreshSequence &&
-          nextTasks.some((item) => item.id === unknown.id)
-        ) {
-          cancelUnknownRef.current = null;
-          setCancelUnknownId(null);
-          setCancelError(null);
-        }
+        const cancellationSnapshot =
+          unknown === null
+            ? undefined
+            : nextTasks.find((item) => item.id === unknown.id);
+        if (cancellationSnapshot !== undefined)
+          reconcileUnknownCancellation(cancellationSnapshot, refreshSequence);
         setListError(null);
         const nextSelectedId =
           selectedIdRef.current ?? nextTasks[0]?.id ?? null;
@@ -223,7 +248,7 @@ export function TaskCenterPage({
     });
     refreshPromiseRef.current = promise;
     return promise;
-  }, [api]);
+  }, [api, reconcileUnknownCancellation]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -275,11 +300,13 @@ export function TaskCenterPage({
       if (!mountedRef.current || controller.signal.aborted) return;
       if (taskResult.status === 'fulfilled') {
         commitTaskSnapshot(taskResult.value);
+        reconcileUnknownCancellation(taskResult.value, detailRefreshSequence);
       } else if (
         taskResult.reason instanceof TaskApiError &&
         taskResult.reason.kind === 'not_found' &&
         selectedIdRef.current === selectedId
       ) {
+        clearUnknownCancellation(selectedId);
         selectTask(null);
         setEvents([]);
         setEventsError(null);
@@ -299,8 +326,10 @@ export function TaskCenterPage({
     return () => controller.abort();
   }, [
     api,
+    clearUnknownCancellation,
     commitTaskSnapshot,
     detailRefreshSequence,
+    reconcileUnknownCancellation,
     selectTask,
     selectedId,
     selectedTask?.status,
@@ -369,13 +398,7 @@ export function TaskCenterPage({
             signal: controller.signal,
           });
           commitTaskSnapshot(latest);
-          cancelUnknownRef.current = null;
-          setCancelUnknownId(null);
-          setCancelError(
-            latest.cancelRequested || !activeStatuses.has(latest.status)
-              ? null
-              : '取消请求未生效，可以重试。',
-          );
+          reconcileUnknownCancellation(latest);
         } catch {
           setCancelError('取消结果未知。请先刷新任务状态，再决定是否重试。');
         }

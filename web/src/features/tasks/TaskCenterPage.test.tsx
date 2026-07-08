@@ -96,6 +96,75 @@ function renderPage(client = api()) {
   };
 }
 
+function detachedRecentTasks(): readonly TaskView[] {
+  return Array.from({ length: 100 }, (_, index) =>
+    task({
+      id: `00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
+      kind: 'analysis.run',
+      status: 'succeeded',
+      progress: 1,
+      updatedAt: '2026-07-08T00:00:04Z',
+      finishedAt: '2026-07-08T00:00:04Z',
+      durationMs: 3_000,
+      presentation: {
+        label: '智能分析',
+        stage: null,
+        processed: null,
+        total: null,
+        failed: null,
+        target: null,
+      },
+    }),
+  );
+}
+
+async function enterDetachedCancelUnknown() {
+  const selected = task();
+  const recent = detachedRecentTasks();
+  let detailResult: TaskView | TaskApiError = selected;
+  const client = api({
+    listTasks: vi
+      .fn(() => Promise.resolve(recent))
+      .mockResolvedValueOnce([selected]),
+    getTask: vi.fn(() =>
+      detailResult instanceof TaskApiError
+        ? Promise.reject(detailResult)
+        : Promise.resolve(detailResult),
+    ),
+    cancelTask: vi.fn(() => Promise.reject(new TaskApiError('network'))),
+  });
+  const user = userEvent.setup();
+  renderPage(client);
+  await screen.findByText('2 / 5');
+  await user.click(screen.getByRole('button', { name: '刷新任务' }));
+  const recentPanel = screen.getByRole('region', { name: '最近任务' });
+  await waitFor(() =>
+    expect(within(recentPanel).getAllByRole('button')).toHaveLength(100),
+  );
+  expect(
+    within(recentPanel).queryByRole('button', {
+      name: new RegExp(TASK_ID, 'u'),
+    }),
+  ).not.toBeInTheDocument();
+
+  detailResult = new TaskApiError('network');
+  const cancel = screen.getByRole('button', { name: '取消任务' });
+  await user.click(cancel);
+  expect(await screen.findByRole('alert')).toHaveTextContent('取消结果未知');
+  expect(cancel).toBeDisabled();
+  await user.click(cancel);
+  expect(client.cancelTask).toHaveBeenCalledTimes(1);
+
+  return {
+    client,
+    recentPanel,
+    setDetailResult: (value: TaskView | TaskApiError) => {
+      detailResult = value;
+    },
+    user,
+  };
+}
+
 afterEach(() => {
   vi.useRealTimers();
 });
@@ -205,25 +274,7 @@ it('keeps detached selected detail without pinning it into the latest 100', asyn
     updatedAt: '2026-07-08T00:00:03Z',
     presentation: { ...task().presentation, processed: 4 },
   });
-  const recent = Array.from({ length: 100 }, (_, index) =>
-    task({
-      id: `00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
-      kind: 'analysis.run',
-      status: 'succeeded',
-      progress: 1,
-      updatedAt: '2026-07-08T00:00:04Z',
-      finishedAt: '2026-07-08T00:00:04Z',
-      durationMs: 3_000,
-      presentation: {
-        label: '智能分析',
-        stage: null,
-        processed: null,
-        total: null,
-        failed: null,
-        target: null,
-      },
-    }),
-  );
+  const recent = detachedRecentTasks();
   const client = api();
   vi.mocked(client.listTasks)
     .mockResolvedValue(recent)
@@ -489,6 +540,79 @@ it('handles cancel conflicts safely and does not repeat ambiguous network POSTs'
   await waitFor(() =>
     expect(screen.getByRole('button', { name: '取消任务' })).toBeEnabled(),
   );
+});
+
+it('reconciles a detached unknown cancellation to an active retryable task', async () => {
+  const { client, recentPanel, setDetailResult, user } =
+    await enterDetachedCancelUnknown();
+  setDetailResult(
+    task({
+      progress: 0.5,
+      updatedAt: '2026-07-08T00:00:03Z',
+      presentation: { ...task().presentation, processed: 3 },
+    }),
+  );
+
+  await user.click(screen.getByRole('button', { name: '刷新任务' }));
+
+  await waitFor(() =>
+    expect(screen.getByRole('button', { name: '取消任务' })).toBeEnabled(),
+  );
+  expect(screen.getByRole('alert')).toHaveTextContent(
+    '取消请求未生效，可以重试。',
+  );
+  expect(client.cancelTask).toHaveBeenCalledTimes(1);
+  expect(within(recentPanel).getAllByRole('button')).toHaveLength(100);
+});
+
+it.each([
+  [
+    'requested',
+    task({
+      progress: 0.5,
+      cancelRequested: true,
+      updatedAt: '2026-07-08T00:00:03Z',
+      presentation: { ...task().presentation, processed: 3 },
+    }),
+  ],
+  [
+    'terminal',
+    task({
+      status: 'succeeded',
+      progress: 1,
+      updatedAt: '2026-07-08T00:00:05Z',
+      finishedAt: '2026-07-08T00:00:05Z',
+      durationMs: 4_000,
+      presentation: {
+        ...task().presentation,
+        stage: 'completed',
+        processed: 5,
+      },
+    }),
+  ],
+])(
+  'clears detached unknown cancellation after %s authority',
+  async (_case, latest) => {
+    const { setDetailResult, user } = await enterDetachedCancelUnknown();
+    setDetailResult(latest);
+
+    await user.click(screen.getByRole('button', { name: '刷新任务' }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument(),
+    );
+  },
+);
+
+it('clears detached unknown cancellation and selection after matching 404', async () => {
+  const { setDetailResult, user } = await enterDetachedCancelUnknown();
+  setDetailResult(new TaskApiError('not_found'));
+
+  await user.click(screen.getByRole('button', { name: '刷新任务' }));
+
+  expect(await screen.findByText('选择一个任务查看详情。')).toBeVisible();
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  expect(screen.getAllByText('所选任务已不存在')).toHaveLength(2);
 });
 
 it('announces lifecycle changes in one dedicated live region', async () => {
