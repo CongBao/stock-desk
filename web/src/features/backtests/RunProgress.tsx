@@ -18,7 +18,17 @@ const stageLabels: Readonly<Record<string, string>> = {
 
 export function RunProgress({ run }: { readonly run: BacktestOverview }) {
   return (
-    <section className="run-progress" aria-labelledby="run-progress-heading">
+    <section
+      className="run-progress"
+      aria-labelledby="run-progress-heading"
+      data-rendered-progress={[
+        run.status,
+        run.stage,
+        run.processed,
+        run.total,
+        run.failed,
+      ].join('|')}
+    >
       <div role="status" aria-live="polite">
         <span className="status-badge" data-status={run.status}>
           {labels[run.status] ?? '未知状态'}

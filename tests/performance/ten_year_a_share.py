@@ -60,6 +60,8 @@ class FixtureMetadata(BaseModel):
     warmup_start: date
     scoring_start: date
     scoring_end: date
+    scope_instrument_count: Literal[5000]
+    runnable_symbol_count: Literal[40]
     row_count: int
     scoring_sessions: int
     wave_period: int
@@ -225,6 +227,35 @@ def _mapping(value: object, label: str) -> dict[str, Any]:
     return value
 
 
+def _exact_mapping(
+    value: object, label: str, expected_keys: set[str]
+) -> dict[str, Any]:
+    result = _mapping(value, label)
+    if set(result) != expected_keys:
+        raise PerformanceGateError(f"{label} must have exact keys")
+    return result
+
+
+def _text(value: object, label: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or value != value.strip()
+        or value.lower() == "unavailable"
+    ):
+        raise PerformanceGateError(f"{label} must be a real nonempty value")
+    return value
+
+
+def _integer(value: object, label: str, *, minimum: int = 0) -> int:
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise PerformanceGateError(f"{label} must be an integer")
+    if value < minimum:
+        adjective = "positive" if minimum == 1 else "non-negative"
+        raise PerformanceGateError(f"{label} must be {adjective}")
+    return value
+
+
 def _finite_non_negative(value: object, label: str) -> float:
     if not isinstance(value, (int, float)) or isinstance(value, bool):
         raise PerformanceGateError(f"{label} must be finite and non-negative")
@@ -234,127 +265,298 @@ def _finite_non_negative(value: object, label: str) -> float:
     return result
 
 
-def _validate_timed_metric(name: str, metric: dict[str, Any]) -> None:
-    raw_samples = metric.get("samples")
-    if not isinstance(raw_samples, list) or len(raw_samples) < MINIMUM_SAMPLE_COUNT:
-        raise PerformanceGateError(f"{name} requires at least 20 raw samples")
-    walls: list[float] = []
-    correctness = metric.get("correctness_hash")
+def _validate_progress_state(value: object, label: str) -> dict[str, Any]:
+    state = _exact_mapping(
+        value, label, {"status", "stage", "processed", "total", "failed"}
+    )
+    status = _text(state["status"], f"{label} status")
+    stage = _text(state["stage"], f"{label} stage")
+    processed = _integer(state["processed"], f"{label} processed")
+    total = _integer(state["total"], f"{label} total", minimum=1)
+    failed = _integer(state["failed"], f"{label} failed")
+    if failed > processed or processed > total:
+        raise PerformanceGateError(f"{label} progress counts are inconsistent")
+    if status == "cancelled" and stage != "cancelled":
+        raise PerformanceGateError(f"{label} cancelled stage is inconsistent")
+    return state
+
+
+def _validate_timed_metric(name: str, value: object) -> None:
+    metric = _exact_mapping(
+        value,
+        name,
+        {
+            "samples",
+            "mean_seconds",
+            "p95_seconds",
+            "budget_seconds",
+            "correctness_hash",
+        },
+    )
+    raw_samples = metric["samples"]
+    if not isinstance(raw_samples, list) or len(raw_samples) != MINIMUM_SAMPLE_COUNT:
+        raise PerformanceGateError(f"{name} requires exactly 20 raw samples")
+    correctness = metric["correctness_hash"]
     if not _is_digest(correctness):
         raise PerformanceGateError(f"{name} correctness hash is invalid")
+    walls: list[float] = []
+    sample_keys = {
+        "wall_seconds",
+        "local_seconds",
+        "external_wait_seconds",
+        "provider_span_count",
+        "provider_spans",
+        "blocked_external_request_count",
+        "rss_start_bytes",
+        "rss_peak_bytes",
+        "rss_delta_bytes",
+        "correctness_hash",
+    }
     for index, raw_sample in enumerate(raw_samples):
-        sample = _mapping(raw_sample, f"{name} sample {index}")
-        wall = _finite_non_negative(sample.get("wall_seconds"), f"{name} wall time")
-        local = _finite_non_negative(sample.get("local_seconds"), f"{name} local time")
+        sample = _exact_mapping(raw_sample, f"{name} sample {index}", sample_keys)
+        wall = _finite_non_negative(sample["wall_seconds"], f"{name} wall time")
+        local = _finite_non_negative(sample["local_seconds"], f"{name} local time")
         external = _finite_non_negative(
-            sample.get("external_wait_seconds"), f"{name} external wait"
+            sample["external_wait_seconds"], f"{name} external wait"
         )
-        spans = sample.get("provider_span_count")
-        if not isinstance(spans, int) or isinstance(spans, bool) or spans < 0:
-            raise PerformanceGateError(f"{name} provider-span count is missing")
-        raw_spans = sample.get("provider_spans")
+        spans = _integer(sample["provider_span_count"], f"{name} provider-span count")
+        raw_spans = sample["provider_spans"]
         if not isinstance(raw_spans, list):
-            raise PerformanceGateError(f"{name} provider-span evidence is missing")
-        measured_wait = 0.0
-        for raw_span in raw_spans:
-            span = _mapping(raw_span, f"{name} provider span")
-            if not isinstance(span.get("source"), str) or not isinstance(
-                span.get("decision"), str
-            ):
-                raise PerformanceGateError(f"{name} provider-span evidence is invalid")
-            measured_wait += _finite_non_negative(
-                span.get("elapsed_seconds"), f"{name} provider span wait"
-            )
-        if spans != len(raw_spans) or not math.isclose(
-            external, measured_wait, rel_tol=0, abs_tol=1e-12
-        ):
+            raise PerformanceGateError(f"{name} provider-span evidence must be a list")
+        if raw_spans or spans:
             raise PerformanceGateError(
-                f"{name} provider-span summary does not match measured evidence"
+                f"{name} provider duration unavailable; cached gate requires zero attempts"
             )
+        if external != 0:
+            raise PerformanceGateError(f"{name} external wait must be exact zero")
         if external > wall or local > wall + 1e-9:
             raise PerformanceGateError(f"{name} local/external time exceeds wall time")
-        if external != 0 or spans != 0:
-            raise PerformanceGateError(
-                f"{name} network-forbidden cache observed provider-span external wait"
+        if (
+            _integer(
+                sample["blocked_external_request_count"],
+                f"{name} blocked external requests",
             )
-        blocked = sample.get("blocked_external_request_count")
-        if not isinstance(blocked, int) or isinstance(blocked, bool) or blocked != 0:
-            raise PerformanceGateError(
-                f"{name} browser attempted a forbidden external request"
-            )
-        start = sample.get("rss_start_bytes")
-        peak = sample.get("rss_peak_bytes")
-        delta = sample.get("rss_delta_bytes")
-        if not all(
-            isinstance(item, int) and not isinstance(item, bool)
-            for item in (start, peak, delta)
+            != 0
         ):
-            raise PerformanceGateError(f"{name} process-tree RSS fields are missing")
-        assert (
-            isinstance(start, int) and isinstance(peak, int) and isinstance(delta, int)
-        )
-        if start < 0 or peak < start or delta != peak - start:
+            raise PerformanceGateError(f"{name} attempted a forbidden external request")
+        start = _integer(sample["rss_start_bytes"], f"{name} RSS start")
+        peak = _integer(sample["rss_peak_bytes"], f"{name} RSS peak")
+        delta = _integer(sample["rss_delta_bytes"], f"{name} RSS delta")
+        if peak < start or delta != peak - start:
             raise PerformanceGateError(
                 f"{name} process-tree RSS values are inconsistent"
             )
-        if not _is_digest(sample.get("rss_process_set_digest")):
-            raise PerformanceGateError(f"{name} process-tree role digest is missing")
-        if sample.get("correctness_hash") != correctness:
+        if sample["correctness_hash"] != correctness:
             raise PerformanceGateError(
                 f"{name} correctness hash changed across samples"
             )
         walls.append(wall)
     expected_mean = sum(walls) / len(walls)
     expected_p95 = nearest_rank_p95(walls)
-    supplied_mean = _finite_non_negative(metric.get("mean_seconds"), f"{name} mean")
-    supplied_p95 = _finite_non_negative(metric.get("p95_seconds"), f"{name} p95")
+    supplied_mean = _finite_non_negative(metric["mean_seconds"], f"{name} mean")
+    supplied_p95 = _finite_non_negative(metric["p95_seconds"], f"{name} p95")
     if not math.isclose(supplied_mean, expected_mean, rel_tol=0, abs_tol=1e-12):
         raise PerformanceGateError(f"{name} mean does not match raw samples")
     if not math.isclose(supplied_p95, expected_p95, rel_tol=0, abs_tol=1e-12):
         raise PerformanceGateError(f"{name} p95 does not match raw samples")
-    budget = _finite_non_negative(metric.get("budget_seconds"), f"{name} budget")
+    budget = _finite_non_negative(metric["budget_seconds"], f"{name} budget")
     if supplied_p95 > budget:
         raise PerformanceGateError(f"{name} p95 exceeds its absolute budget")
 
 
-def _validate_environment(environment: dict[str, Any]) -> None:
-    required_text = (
+def _validate_environment(value: object, evidence_kind: str) -> None:
+    environment = _exact_mapping(
+        value,
+        "environment",
+        {
+            "os",
+            "arch",
+            "cpu_model",
+            "logical_cpu_count",
+            "effective_cpu_count",
+            "memory_bytes",
+            "effective_memory_bytes",
+            "python_version",
+            "node_version",
+            "browser_version",
+            "tool_versions",
+            "runner",
+        },
+    )
+    for key in (
         "os",
         "arch",
         "cpu_model",
         "python_version",
         "node_version",
         "browser_version",
+    ):
+        _text(environment[key], f"environment {key}")
+    logical = _integer(environment["logical_cpu_count"], "logical CPU count", minimum=1)
+    effective = _finite_non_negative(
+        environment["effective_cpu_count"], "effective CPU count"
     )
-    if any(
-        not isinstance(environment.get(key), str) or not environment[key]
-        for key in required_text
-    ):
-        raise PerformanceGateError("environment metadata is incomplete")
-    logical = environment.get("logical_cpu_count")
-    effective = environment.get("effective_cpu_count")
-    memory = environment.get("memory_bytes")
-    effective_memory = environment.get("effective_memory_bytes")
-    if (
-        not isinstance(logical, int)
-        or logical < 4
-        or not isinstance(effective, (int, float))
-        or effective < 4
-    ):
+    if logical < 4 or effective < 4:
         raise PerformanceGateError("baseline requires at least four effective CPUs")
-    if (
-        not isinstance(memory, int)
-        or not isinstance(effective_memory, int)
-        or min(memory, effective_memory) < MINIMUM_EFFECTIVE_MEMORY_BYTES
-    ):
+    memory = _integer(environment["memory_bytes"], "physical memory bytes", minimum=1)
+    effective_memory = _integer(
+        environment["effective_memory_bytes"], "effective memory bytes", minimum=1
+    )
+    if min(memory, effective_memory) < MINIMUM_EFFECTIVE_MEMORY_BYTES:
         raise PerformanceGateError(
             "baseline requires nominal 16GB memory (at least 15GiB usable)"
         )
+    versions = _exact_mapping(
+        environment["tool_versions"],
+        "tool versions",
+        {"duckdb", "playwright", "pnpm"},
+    )
+    for key, version in versions.items():
+        _text(version, f"tool version {key}")
+    runner = _exact_mapping(
+        environment["runner"],
+        "runner",
+        {
+            "provider",
+            "os",
+            "arch",
+            "name",
+            "image_os",
+            "image_version",
+            "repository",
+            "run_id",
+            "run_attempt",
+        },
+    )
+    for key in ("provider", "os", "arch", "name"):
+        _text(runner[key], f"runner {key}")
+    for key in ("image_os", "image_version", "repository", "run_id", "run_attempt"):
+        if runner[key] is not None:
+            _text(runner[key], f"runner {key}")
+    if evidence_kind == "target_baseline":
+        if effective != 4 or logical != 4:
+            raise PerformanceGateError("target baseline requires exactly four CPUs")
+        if memory > 17 * 1024**3:
+            raise PerformanceGateError("target baseline requires nominal 16GB memory")
+        if (
+            runner["provider"] != "github_actions"
+            or runner["os"] != "Linux"
+            or runner["arch"] != "X64"
+            or any(
+                runner[key] is None
+                for key in (
+                    "image_os",
+                    "image_version",
+                    "repository",
+                    "run_id",
+                    "run_attempt",
+                )
+            )
+        ):
+            raise PerformanceGateError(
+                "target baseline requires GitHub Ubuntu x64 runner metadata"
+            )
+
+
+def _validate_pool(value: object) -> None:
+    pool = _exact_mapping(
+        value,
+        "pool_ui",
+        {
+            "samples",
+            "long_task_count",
+            "observed_progress_states",
+            "worker_claim_observed",
+            "cancel_status",
+            "semantic_evidence",
+            "correctness_hash",
+        },
+    )
+    semantic = _exact_mapping(
+        pool["semantic_evidence"],
+        "pool semantic evidence",
+        {
+            "formula_checksum",
+            "pool_membership_digest",
+            "pool_data_digest",
+            "terminal_status",
+        },
+    )
+    for key in ("formula_checksum", "pool_membership_digest", "pool_data_digest"):
+        if not _is_digest(semantic[key]):
+            raise PerformanceGateError(f"pool semantic {key} is invalid")
     if (
-        not isinstance(environment.get("tool_versions"), dict)
-        or not environment["tool_versions"]
+        semantic["terminal_status"] != "cancelled"
+        or pool["cancel_status"] != "cancelled"
     ):
-        raise PerformanceGateError("environment tool versions are incomplete")
+        raise PerformanceGateError("pool cancellation status is invalid")
+    correctness = _canonical_digest(semantic)
+    if pool["correctness_hash"] != correctness:
+        raise PerformanceGateError("pool semantic correctness hash is mismatched")
+    progress_states = pool["observed_progress_states"]
+    if not isinstance(progress_states, list) or len(progress_states) != 18:
+        raise PerformanceGateError(
+            "pool_ui requires exactly 18 rendered progress states"
+        )
+    progress_keys: list[str] = []
+    for index, state in enumerate(progress_states):
+        checked = _validate_progress_state(state, f"pool progress state {index}")
+        progress_keys.append(json.dumps(checked, sort_keys=True, separators=(",", ":")))
+    if len(set(progress_keys)) != 18:
+        raise PerformanceGateError(
+            "pool rendered progress states must change in every window"
+        )
+    if pool["worker_claim_observed"] is not True:
+        raise PerformanceGateError("pool worker claim was not observed")
+    samples = pool["samples"]
+    if not isinstance(samples, list) or len(samples) != MINIMUM_SAMPLE_COUNT:
+        raise PerformanceGateError("pool_ui requires exactly 20 raw windows")
+    kinds: list[str] = []
+    total_long_tasks = 0
+    for index, raw_sample in enumerate(samples):
+        sample = _exact_mapping(
+            raw_sample,
+            f"pool_ui sample {index}",
+            {
+                "long_task_count",
+                "interaction_kind",
+                "interactive",
+                "rendered_state",
+                "api_state",
+                "correctness_hash",
+            },
+        )
+        count = _integer(sample["long_task_count"], "pool Long Task count")
+        if count != 0:
+            raise PerformanceGateError("pool Long Task count must be exactly zero")
+        total_long_tasks += count
+        kind = sample["interaction_kind"]
+        if kind not in {"progress", "navigation", "cancel"}:
+            raise PerformanceGateError("pool interaction kind is invalid")
+        kinds.append(kind)
+        if sample["interactive"] is not True:
+            raise PerformanceGateError("pool interaction did not remain interactive")
+        rendered = _validate_progress_state(
+            sample["rendered_state"], "rendered progress"
+        )
+        api = _validate_progress_state(sample["api_state"], "API progress")
+        if rendered != api:
+            raise PerformanceGateError("pool rendered/API progress evidence mismatched")
+        if index < 18 and rendered != progress_states[index]:
+            raise PerformanceGateError(
+                "pool rendered progress state ordering mismatched"
+            )
+        if sample["correctness_hash"] != correctness:
+            raise PerformanceGateError("pool correctness hash changed")
+    if kinds != ["progress"] * 18 + ["navigation", "cancel"]:
+        raise PerformanceGateError(
+            "pool must contain 18 progress, navigation, and cancel windows"
+        )
+    if pool["long_task_count"] != total_long_tasks:
+        raise PerformanceGateError("pool aggregate Long Task count is mismatched")
+    final_state = _mapping(samples[-1], "pool cancellation sample")["rendered_state"]
+    if _mapping(final_state, "pool final state").get("status") != "cancelled":
+        raise PerformanceGateError("pool final rendered state is not cancelled")
 
 
 def validate_performance_result(
@@ -363,122 +565,163 @@ def validate_performance_result(
     expected_fixture_digest: str,
     baseline: object | None = None,
 ) -> None:
-    result = _mapping(raw, "performance result")
-    if result.get("schema_version") != "stock-desk-performance-v1":
+    result = _exact_mapping(
+        raw,
+        "performance result",
+        {
+            "schema_version",
+            "evidence_kind",
+            "measured_at_utc",
+            "git",
+            "fixture",
+            "environment",
+            "process_tree",
+            "definitions",
+            "metrics",
+        },
+    )
+    if result["schema_version"] != "stock-desk-performance-v1":
         raise PerformanceGateError("unsupported performance result schema")
-    measured_at = result.get("measured_at_utc")
-    if not isinstance(measured_at, str) or not measured_at.endswith("Z"):
-        raise PerformanceGateError("measurement UTC timestamp is missing")
-    git = _mapping(result.get("git"), "git")
+    evidence_kind = result["evidence_kind"]
+    if evidence_kind not in {"reference", "target_baseline"}:
+        raise PerformanceGateError("performance evidence kind is invalid")
+    measured_at = result["measured_at_utc"]
     if (
-        not isinstance(git.get("sha"), str)
+        not isinstance(measured_at, str)
+        or "T" not in measured_at
+        or not measured_at.endswith("Z")
+    ):
+        raise PerformanceGateError("measurement must be a real UTC datetime")
+    try:
+        parsed_at = datetime.fromisoformat(measured_at.removesuffix("Z") + "+00:00")
+    except ValueError as error:
+        raise PerformanceGateError("measurement must be a real UTC datetime") from error
+    if parsed_at.tzinfo is None or parsed_at.utcoffset() != timedelta(0):
+        raise PerformanceGateError("measurement must be a real UTC datetime")
+    git = _exact_mapping(result["git"], "git", {"sha", "dirty"})
+    if (
+        not isinstance(git["sha"], str)
         or len(git["sha"]) != 40
         or any(character not in "0123456789abcdef" for character in git["sha"])
-        or not isinstance(git.get("dirty"), bool)
     ):
-        raise PerformanceGateError("git measurement metadata is invalid")
-    fixture = _mapping(result.get("fixture"), "fixture")
-    if fixture.get("content_digest") != expected_fixture_digest:
+        raise PerformanceGateError(
+            "git SHA must be 40 lowercase hexadecimal characters"
+        )
+    if git["dirty"] is not False:
+        raise PerformanceGateError("baseline evidence requires a clean git checkout")
+    fixture = _exact_mapping(
+        result["fixture"],
+        "fixture",
+        {
+            "fixture_id",
+            "content_digest",
+            "row_count",
+            "scoring_sessions",
+            "scope_instrument_count",
+            "runnable_symbol_count",
+            "network_policy",
+        },
+    )
+    if fixture["content_digest"] != expected_fixture_digest:
         raise PerformanceGateError("performance fixture digest is stale")
     if (
-        fixture.get("network_policy") != "forbidden"
-        or not isinstance(fixture.get("row_count"), int)
-        or fixture.get("scoring_sessions", 0) < 2_400
+        fixture["fixture_id"] != "ten-year-a-share"
+        or fixture["network_policy"] != "forbidden"
     ):
-        raise PerformanceGateError("performance fixture metadata is invalid")
-    _validate_environment(_mapping(result.get("environment"), "environment"))
-    process_tree = _mapping(result.get("process_tree"), "process_tree")
-    roots = process_tree.get("declared_roots")
-    services = process_tree.get("declared_services")
-    roles = process_tree.get("sampled_process_roles")
+        raise PerformanceGateError("performance fixture identity is invalid")
+    _integer(fixture["row_count"], "fixture row count", minimum=2400)
+    _integer(fixture["scoring_sessions"], "fixture scoring sessions", minimum=2400)
     if (
-        not isinstance(roots, list)
-        or len(roots) < 5
-        or not isinstance(services, list)
-        or len(services) < 3
-        or not isinstance(roles, list)
+        fixture["scope_instrument_count"] != 5000
+        or fixture["runnable_symbol_count"] != 40
+    ):
+        raise PerformanceGateError("performance fixture scope is invalid")
+    _validate_environment(result["environment"], evidence_kind)
+    process_tree = _exact_mapping(
+        result["process_tree"],
+        "process tree",
+        {
+            "declared_roots",
+            "declared_services",
+            "sampled_process_roles",
+            "role_set_digest",
+        },
+    )
+    roots = process_tree["declared_roots"]
+    if not isinstance(roots, list) or len(roots) < 5:
+        raise PerformanceGateError("process roots are incomplete")
+    checked_roots = [_integer(item, "process root", minimum=1) for item in roots]
+    if len(set(checked_roots)) != len(checked_roots):
+        raise PerformanceGateError("process roots must be unique")
+    services = process_tree["declared_services"]
+    if not isinstance(services, list) or len(services) != 3:
+        raise PerformanceGateError("declared services are incomplete")
+    service_roles: set[str] = set()
+    service_pids: set[int] = set()
+    for index, raw_service in enumerate(services):
+        service = _exact_mapping(raw_service, f"service {index}", {"pid", "role"})
+        pid = _integer(service["pid"], "service PID", minimum=1)
+        role = _text(service["role"], "service role")
+        if pid not in checked_roots:
+            raise PerformanceGateError("service PID must be a declared root")
+        service_pids.add(pid)
+        service_roles.add(role)
+    if len(service_pids) != 3 or service_roles != {"api", "worker", "web"}:
+        raise PerformanceGateError("service PID/role relationships are invalid")
+    roles = process_tree["sampled_process_roles"]
+    if (
+        not isinstance(roles, list)
+        or roles != sorted(set(roles))
         or not {"api", "worker", "web", "browser", "playwright"}.issubset(set(roles))
-    ):
-        raise PerformanceGateError(
-            "declared process tree does not cover all runtime roles"
+        or not set(roles).issubset(
+            {"api", "worker", "web", "browser", "playwright", "formula-child"}
         )
-    definitions = _mapping(result.get("definitions"), "definitions")
-    for key in (
-        "chart_cold",
-        "chart_warm",
-        "formula_cache_cold",
-        "single_backtest_fresh",
     ):
-        if not isinstance(definitions.get(key), str) or not definitions[key]:
-            raise PerformanceGateError("warm/cold definitions are incomplete")
-    metrics = _mapping(result.get("metrics"), "metrics")
+        raise PerformanceGateError("sampled process roles are invalid")
+    if process_tree["role_set_digest"] != _canonical_digest(roles):
+        raise PerformanceGateError("process role-set digest is mismatched")
+    definitions = _exact_mapping(
+        result["definitions"],
+        "definitions",
+        {
+            "chart_cold",
+            "chart_warm",
+            "formula_cache_cold",
+            "single_backtest_fresh",
+            "pool_ui",
+        },
+    )
+    for key, definition in definitions.items():
+        _text(definition, f"definition {key}")
+    metrics = _exact_mapping(
+        result["metrics"],
+        "metrics",
+        {"chart_cold", "chart_warm", "formula_preview", "single_backtest", "pool_ui"},
+    )
     for name in ("chart_cold", "chart_warm", "formula_preview", "single_backtest"):
-        _validate_timed_metric(name, _mapping(metrics.get(name), name))
-    pool = _mapping(metrics.get("pool_ui"), "pool_ui")
-    pool_samples = pool.get("samples")
-    if not isinstance(pool_samples, list) or len(pool_samples) < MINIMUM_SAMPLE_COUNT:
-        raise PerformanceGateError("pool_ui requires at least 20 raw samples")
-    correctness = pool.get("correctness_hash")
-    progress_states = pool.get("observed_progress_states")
-    if (
-        not isinstance(progress_states, list)
-        or len(set(progress_states)) < 2
-        or pool.get("worker_claim_observed") is not True
-        or pool.get("cancel_status") != "cancelled"
-    ):
-        raise PerformanceGateError(
-            "pool_ui did not prove changing worker progress and real cancellation"
-        )
-    total_long_tasks = 0
-    interaction_kinds: set[str] = set()
-    for item in pool_samples:
-        sample = _mapping(item, "pool_ui sample")
-        count = sample.get("long_task_count")
-        if not isinstance(count, int) or isinstance(count, bool) or count < 0:
-            raise PerformanceGateError("pool_ui Long Task count is invalid")
-        total_long_tasks += count
-        if count != 0:
-            raise PerformanceGateError("pool_ui Long Task count must be exactly zero")
-        interaction = sample.get("interaction_kind")
-        if interaction not in {"progress", "navigation", "cancel"}:
-            raise PerformanceGateError("pool_ui interaction kind is invalid")
-        interaction_kinds.add(interaction)
-        if sample.get("interactive") is not True:
-            raise PerformanceGateError(
-                "pool_ui interactions did not remain interactive"
-            )
-        if sample.get("correctness_hash") != correctness:
-            raise PerformanceGateError("pool_ui correctness hash changed")
-    if pool.get("long_task_count") != total_long_tasks:
-        raise PerformanceGateError("pool_ui aggregate Long Task count is mismatched")
-    if interaction_kinds != {"progress", "navigation", "cancel"}:
-        raise PerformanceGateError(
-            "pool_ui must measure progress, navigation, and cancel windows"
-        )
+        _validate_timed_metric(name, metrics[name])
+    _validate_pool(metrics["pool_ui"])
     if baseline is not None:
-        baseline_result = _mapping(baseline, "baseline")
         validate_performance_result(
-            baseline_result,
-            expected_fixture_digest=expected_fixture_digest,
+            baseline, expected_fixture_digest=expected_fixture_digest
         )
-        baseline_fixture = _mapping(baseline_result.get("fixture"), "baseline fixture")
-        if baseline_fixture.get("content_digest") != expected_fixture_digest:
-            raise PerformanceGateError("baseline fixture digest is stale")
-        baseline_metrics = _mapping(baseline_result.get("metrics"), "baseline metrics")
-        if baseline_result.get("definitions") != result.get("definitions"):
+        baseline_result = _mapping(baseline, "baseline")
+        baseline_metrics = _mapping(baseline_result["metrics"], "baseline metrics")
+        if baseline_result["definitions"] != result["definitions"]:
             raise PerformanceGateError("warm/cold definitions changed from baseline")
-        for name in ("chart_cold", "chart_warm", "formula_preview", "single_backtest"):
-            current_hash = _mapping(metrics.get(name), name).get("correctness_hash")
-            baseline_hash = _mapping(baseline_metrics.get(name), name).get(
-                "correctness_hash"
-            )
-            if current_hash != baseline_hash:
+        for name in (
+            "chart_cold",
+            "chart_warm",
+            "formula_preview",
+            "single_backtest",
+            "pool_ui",
+        ):
+            if (
+                _mapping(metrics[name], name)["correctness_hash"]
+                != _mapping(baseline_metrics[name], f"baseline {name}")[
+                    "correctness_hash"
+                ]
+            ):
                 raise PerformanceGateError(
                     f"{name} correctness hash changed from baseline"
                 )
-        if _mapping(metrics.get("pool_ui"), "pool_ui").get(
-            "correctness_hash"
-        ) != _mapping(baseline_metrics.get("pool_ui"), "baseline pool_ui").get(
-            "correctness_hash"
-        ):
-            raise PerformanceGateError("pool_ui correctness hash changed from baseline")

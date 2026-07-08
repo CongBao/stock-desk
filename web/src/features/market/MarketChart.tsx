@@ -533,6 +533,13 @@ type MarketChartProps = {
   readonly isLoading?: boolean;
 };
 
+type RenderGeneration = {
+  readonly generation: number;
+  readonly bars: readonly MarketBar[];
+  readonly formula: FormulaChartLayer | undefined;
+  readonly option: EChartsCoreOption;
+};
+
 export function MarketChart({
   bars,
   errorMessage,
@@ -544,8 +551,14 @@ export function MarketChart({
   const containerRef = useRef<HTMLDivElement>(null);
   const instanceRef = useRef<EChartsType | null>(null);
   const barsRef = useRef(bars);
-  const pendingReadinessRef = useRef({ bars, formula });
+  const nextGenerationRef = useRef(0);
+  const activeRenderRef = useRef<RenderGeneration | null>(null);
+  const queuedRenderRef = useRef<RenderGeneration | null>(null);
+  const issueRenderRef = useRef<((render: RenderGeneration) => void) | null>(
+    null,
+  );
   const [finishedFor, setFinishedFor] = useState<{
+    readonly generation: number;
     readonly bars: readonly MarketBar[] | undefined;
     readonly formula: FormulaChartLayer | undefined;
   } | null>(null);
@@ -583,7 +596,35 @@ export function MarketChart({
       const next = dataZoomRange(event);
       if (next !== null) setZoom(next);
     };
-    const handleFinished = () => setFinishedFor(pendingReadinessRef.current);
+    const issueRender = (render: RenderGeneration) => {
+      activeRenderRef.current = render;
+      chart.setOption(render.option, {
+        lazyUpdate: true,
+        notMerge: true,
+      });
+      const zoomOptions = render.option.dataZoom as readonly {
+        readonly start?: number;
+        readonly end?: number;
+      }[];
+      setZoom({
+        start: zoomOptions[0]?.start ?? 0,
+        end: zoomOptions[0]?.end ?? 100,
+      });
+    };
+    issueRenderRef.current = issueRender;
+    const handleFinished = () => {
+      const completed = activeRenderRef.current;
+      if (completed === null) return;
+      activeRenderRef.current = null;
+      setFinishedFor({
+        generation: completed.generation,
+        bars: completed.bars,
+        formula: completed.formula,
+      });
+      const queued = queuedRenderRef.current;
+      queuedRenderRef.current = null;
+      if (queued !== null) issueRender(queued);
+    };
     chart.on('updateAxisPointer', handleAxisPointer);
     chart.on('dataZoom', handleDataZoom);
     chart.on('finished', handleFinished);
@@ -594,30 +635,34 @@ export function MarketChart({
       chart.off('updateAxisPointer', handleAxisPointer);
       chart.off('dataZoom', handleDataZoom);
       chart.off('finished', handleFinished);
+      activeRenderRef.current = null;
+      queuedRenderRef.current = null;
+      issueRenderRef.current = null;
       chart.dispose();
       instanceRef.current = null;
     };
   }, [hasBars]);
 
   useEffect(() => {
-    if (!hasBars || instanceRef.current === null || bars === undefined) return;
+    if (!hasBars || instanceRef.current === null || bars === undefined) {
+      queuedRenderRef.current = null;
+      setFinishedFor(null);
+      return;
+    }
     const option =
       formula === undefined
         ? buildMarketChartOption(bars)
         : buildFormulaMarketChartOption(bars, formula);
-    pendingReadinessRef.current = { bars, formula };
-    instanceRef.current.setOption(option as EChartsCoreOption, {
-      lazyUpdate: true,
-      notMerge: true,
-    });
-    const zoomOptions = option.dataZoom as readonly {
-      readonly start?: number;
-      readonly end?: number;
-    }[];
-    setZoom({
-      start: zoomOptions[0]?.start ?? 0,
-      end: zoomOptions[0]?.end ?? 100,
-    });
+    const render: RenderGeneration = {
+      generation: nextGenerationRef.current + 1,
+      bars,
+      formula,
+      option,
+    };
+    nextGenerationRef.current = render.generation;
+    setFinishedFor(null);
+    if (activeRenderRef.current === null) issueRenderRef.current?.(render);
+    else queuedRenderRef.current = render;
   }, [bars, formula, hasBars]);
 
   return (

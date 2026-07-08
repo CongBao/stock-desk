@@ -23,6 +23,8 @@ def test_fixture_is_deterministic_cc0_network_forbidden_and_ten_year_daily() -> 
     assert metadata.source is ProviderId.STOCK_DESK_DEMO
     assert metadata.scoring_start == date(2016, 1, 1)
     assert metadata.scoring_end == date(2026, 1, 1)
+    assert metadata.scope_instrument_count == 5_000
+    assert metadata.runnable_symbol_count == 40
     assert len(first.bars) >= 2_400
     assert first == second
     assert metadata.row_count == len(first.bars)
@@ -35,3 +37,5 @@ def test_fixture_file_contains_metadata_not_a_committed_giant_dataset() -> None:
     assert "bars" not in raw
     assert FIXTURE_PATH.stat().st_size < 8_192
     assert Path(raw["generator"]) == Path("tests/performance/ten_year_a_share.py")
+    assert raw["scope_instrument_count"] == 5_000
+    assert raw["runnable_symbol_count"] == 40

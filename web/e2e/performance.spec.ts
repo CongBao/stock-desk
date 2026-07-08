@@ -1,13 +1,22 @@
 import { expect, test, type BrowserContext, type Page } from '@playwright/test';
-import { execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { execFile } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
+import {
+  canonicalDigest as digest,
+  parseProcessRows,
+  ProcessIdentityTracker,
+  providerEvidence,
+  selectProcessTree,
+  type RoutingManifest,
+} from './performanceEvidence';
+
 const SAMPLE_COUNT = 20;
 const OUTPUT = process.env['STOCK_DESK_PERFORMANCE_RAW_OUTPUT'];
 const PROCESS_FILE = process.env['STOCK_DESK_PERFORMANCE_PROCESS_FILE'];
+const FIXTURE_FILE = process.env['STOCK_DESK_PERFORMANCE_FIXTURE'];
 const LOOPBACK = new Set(['127.0.0.1', 'localhost', '::1']);
 
 type TimedSample = {
@@ -18,21 +27,13 @@ type TimedSample = {
   provider_spans: readonly {
     source: string;
     decision: string;
-    elapsed_seconds: number;
   }[];
   blocked_external_request_count: number;
   rss_start_bytes: number;
   rss_peak_bytes: number;
   rss_delta_bytes: number;
-  rss_process_set_digest: string;
   correctness_hash: string;
 };
-
-function digest(value: unknown): string {
-  return `sha256:${createHash('sha256')
-    .update(JSON.stringify(value))
-    .digest('hex')}`;
-}
 
 function processRoles(commands: readonly string[]): string[] {
   const roles = new Set<string>();
@@ -64,39 +65,31 @@ function aggregate(samples: readonly TimedSample[], budget: number) {
   };
 }
 
-function processTreeSnapshot(roots: readonly number[]) {
-  const rows = execFileSync('ps', ['-axo', 'pid=,ppid=,rss=,command='], {
-    encoding: 'utf8',
-  })
-    .trim()
-    .split('\n')
-    .flatMap((line) => {
-      const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(.+)$/u.exec(line);
-      return match === null
-        ? []
-        : [
-            {
-              pid: Number(match[1]),
-              parent: Number(match[2]),
-              rss: Number(match[3]),
-              command: match[4] ?? '',
-            },
-          ];
-    });
-  const descendants = new Set<number>(roots);
-  let changed = true;
-  while (changed) {
-    changed = false;
-    for (const row of rows) {
-      if (descendants.has(row.parent) && !descendants.has(row.pid)) {
-        descendants.add(row.pid);
-        changed = true;
-      }
-    }
-  }
-  const selected = rows.filter((row) => descendants.has(row.pid));
+const processIdentities = new ProcessIdentityTracker();
+
+function processList(): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      'ps',
+      ['-axo', 'pid=,ppid=,rss=,command='],
+      { encoding: 'utf8' },
+      (error, stdout) => {
+        if (error !== null) {
+          reject(new Error('process-list command failed', { cause: error }));
+        } else resolve(stdout);
+      },
+    );
+  });
+}
+
+async function processTreeSnapshot(roots: readonly number[]) {
+  const selected = selectProcessTree(
+    roots,
+    parseProcessRows(await processList()),
+  );
+  processIdentities.observe(selected);
   return {
-    rssBytes: selected.reduce((sum, row) => sum + row.rss, 0) * 1024,
+    rssBytes: selected.reduce((sum, row) => sum + row.rssBytes, 0),
     commands: [...new Set(selected.map((row) => row.command))].sort(),
   };
 }
@@ -104,34 +97,59 @@ function processTreeSnapshot(roots: readonly number[]) {
 class RssSampler {
   readonly start: number;
   peak: number;
-  private readonly commands = new Set<string>();
-  private timer: ReturnType<typeof setInterval> | undefined;
+  private timer: ReturnType<typeof setTimeout> | undefined;
+  private inFlight: Promise<void> = Promise.resolve();
+  private running = false;
+  private failure: Error | undefined;
 
-  constructor(private readonly roots: readonly number[]) {
-    const snapshot = processTreeSnapshot(roots);
+  private constructor(
+    private readonly roots: readonly number[],
+    snapshot: Awaited<ReturnType<typeof processTreeSnapshot>>,
+  ) {
     this.start = snapshot.rssBytes;
     this.peak = this.start;
-    snapshot.commands.forEach((command) => this.commands.add(command));
+  }
+
+  static async create(roots: readonly number[]): Promise<RssSampler> {
+    return new RssSampler(roots, await processTreeSnapshot(roots));
   }
 
   begin() {
-    this.timer = setInterval(() => {
-      const snapshot = processTreeSnapshot(this.roots);
-      this.peak = Math.max(this.peak, snapshot.rssBytes);
-      snapshot.commands.forEach((command) => this.commands.add(command));
+    this.running = true;
+    const sample = async () => {
+      try {
+        const snapshot = await processTreeSnapshot(this.roots);
+        this.peak = Math.max(this.peak, snapshot.rssBytes);
+      } catch (error) {
+        this.failure =
+          error instanceof Error
+            ? error
+            : new Error('RSS sampling failed with a non-Error value');
+        this.running = false;
+      } finally {
+        if (this.running) {
+          this.timer = setTimeout(() => {
+            this.inFlight = sample();
+          }, 50);
+        }
+      }
+    };
+    this.timer = setTimeout(() => {
+      this.inFlight = sample();
     }, 50);
   }
 
-  finish() {
-    if (this.timer !== undefined) clearInterval(this.timer);
-    const snapshot = processTreeSnapshot(this.roots);
+  async finish() {
+    this.running = false;
+    if (this.timer !== undefined) clearTimeout(this.timer);
+    await this.inFlight;
+    if (this.failure !== undefined) throw this.failure;
+    const snapshot = await processTreeSnapshot(this.roots);
     this.peak = Math.max(this.peak, snapshot.rssBytes);
-    snapshot.commands.forEach((command) => this.commands.add(command));
     return {
       rss_start_bytes: this.start,
       rss_peak_bytes: this.peak,
       rss_delta_bytes: this.peak - this.start,
-      rss_process_set_digest: digest(processRoles([...this.commands])),
     };
   }
 }
@@ -153,32 +171,37 @@ async function forbidExternalNetwork(context: BrowserContext) {
   return counter;
 }
 
-type RoutingManifest = {
-  selected_source: string;
-  attempts: readonly {
-    source: string;
-    decision: string;
-  }[];
-};
-
-function providerEvidence(manifest: RoutingManifest) {
-  const providerSpans = manifest.attempts.map((attempt) => ({
-    source: attempt.source,
-    decision: attempt.decision,
-    // The fixture contract forbids provider attempts in measured spans. A
-    // non-empty list fails below rather than inventing an unavailable duration.
-    elapsed_seconds: Number.NaN,
-  }));
-  expect(manifest.selected_source).toBe('stock_desk_demo');
-  expect(providerSpans).toEqual([]);
-  return {
-    provider_spans: providerSpans,
-    provider_span_count: providerSpans.length,
-    external_wait_seconds: providerSpans.reduce(
-      (sum, span) => sum + span.elapsed_seconds,
-      0,
-    ),
+async function proveChartInteractionHandshake(
+  page: Page,
+  chart: ReturnType<Page['locator']>,
+) {
+  const canvas = chart.locator('canvas');
+  const readout = page.getByRole('status', { name: '当前 K 线 OHLCV' });
+  const zoom = page.getByRole('status', { name: '图表缩放范围' });
+  const box = await canvas.boundingBox();
+  expect(box).not.toBeNull();
+  if (box === null) throw new Error('chart canvas has no interaction bounds');
+  const poll: { timeout: number; intervals: number[] } = {
+    timeout: 350,
+    intervals: [10, 20, 30],
   };
+
+  const beforeReadout = await readout.textContent();
+  await page.mouse.move(box.x + box.width * 0.35, box.y + 120);
+  await expect.poll(() => readout.textContent(), poll).not.toBe(beforeReadout);
+
+  await page.getByRole('button', { name: '重置图表缩放' }).click();
+  await expect.poll(() => zoom.textContent(), poll).toContain('0%–100%');
+  await page.mouse.move(box.x + box.width * 0.5, box.y + 120);
+  await page.mouse.wheel(0, -500);
+  await expect.poll(() => zoom.textContent(), poll).not.toContain('0%–100%');
+
+  const beforeDrag = await zoom.textContent();
+  await page.mouse.move(box.x + box.width * 0.7, box.y + 120);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width * 0.5, box.y + 120, { steps: 2 });
+  await page.mouse.up();
+  await expect.poll(() => zoom.textContent(), poll).not.toBe(beforeDrag);
 }
 
 async function chartAction(
@@ -187,7 +210,7 @@ async function chartAction(
   roots: readonly number[],
 ) {
   const blockedBefore = network.blockedExternalRequests;
-  const sampler = new RssSampler(roots);
+  const sampler = await RssSampler.create(roots);
   const started = performance.now();
   sampler.begin();
   const responsePromise = page.waitForResponse((response) => {
@@ -214,40 +237,20 @@ async function chartAction(
   };
   const chart = page.locator('[data-chart-ready="true"]');
   await expect(chart).toBeVisible();
+  await proveChartInteractionHandshake(page, chart);
   const wall = (performance.now() - started) / 1000;
-  const rss = sampler.finish();
-  const blockedAtReady = network.blockedExternalRequests - blockedBefore;
-  const canvas = chart.locator('canvas');
-  const readout = page.getByRole('status', { name: '当前 K 线 OHLCV' });
-  const zoom = page.getByRole('status', { name: '图表缩放范围' });
-  const beforeReadout = await readout.textContent();
-  const beforeZoom = await zoom.textContent();
-  const box = await canvas.boundingBox();
-  expect(box).not.toBeNull();
-  if (box !== null) {
-    await page.mouse.move(box.x + box.width * 0.35, box.y + 120);
-    await expect.poll(() => readout.textContent()).not.toBe(beforeReadout);
-    await page.getByRole('button', { name: '重置图表缩放' }).click();
-    await expect(zoom).toContainText('0%–100%');
-    await page.mouse.move(box.x + box.width * 0.5, box.y + 120);
-    await page.mouse.wheel(0, -500);
-    await expect.poll(() => zoom.textContent()).not.toBe(beforeZoom);
-    const beforeDrag = await zoom.textContent();
-    await page.mouse.move(box.x + box.width * 0.7, box.y + 120);
-    await page.mouse.down();
-    await page.mouse.move(box.x + box.width * 0.5, box.y + 120);
-    await page.mouse.up();
-    await expect.poll(() => zoom.textContent()).not.toBe(beforeDrag);
-  }
+  const rss = await sampler.finish();
+  const blockedDuringMeasurement =
+    network.blockedExternalRequests - blockedBefore;
   expect(body.bars.length).toBeGreaterThanOrEqual(2400);
-  expect(blockedAtReady).toBe(0);
+  expect(blockedDuringMeasurement).toBe(0);
   expect(network.blockedExternalRequests - blockedBefore).toBe(0);
   const provider = providerEvidence(body.routing_manifest);
   return {
     wall_seconds: wall,
     local_seconds: wall,
     ...provider,
-    blocked_external_request_count: blockedAtReady,
+    blocked_external_request_count: blockedDuringMeasurement,
     ...rss,
     correctness_hash: digest({
       bars: body.bars,
@@ -276,7 +279,7 @@ async function warmChartAction(
   await expect(page.locator('[data-chart-ready="true"]')).toBeVisible();
 
   const blockedBefore = network.blockedExternalRequests;
-  const sampler = new RssSampler(roots);
+  const sampler = await RssSampler.create(roots);
   const started = performance.now();
   sampler.begin();
   const responsePromise = page.waitForResponse((response) => {
@@ -296,37 +299,19 @@ async function warmChartAction(
   };
   const chart = page.locator('[data-chart-ready="true"]');
   await expect(chart).toBeVisible();
+  await proveChartInteractionHandshake(page, chart);
   const wall = (performance.now() - started) / 1000;
-  const rss = sampler.finish();
-  const blockedAtReady = network.blockedExternalRequests - blockedBefore;
-  const canvas = chart.locator('canvas');
-  const readout = page.getByRole('status', { name: '当前 K 线 OHLCV' });
-  const zoom = page.getByRole('status', { name: '图表缩放范围' });
-  const beforeReadout = await readout.textContent();
-  const box = await canvas.boundingBox();
-  expect(box).not.toBeNull();
-  if (box !== null) {
-    await page.mouse.move(box.x + box.width * 0.35, box.y + 120);
-    await expect.poll(() => readout.textContent()).not.toBe(beforeReadout);
-    await page.getByRole('button', { name: '重置图表缩放' }).click();
-    await expect(zoom).toContainText('0%–100%');
-    await page.mouse.move(box.x + box.width * 0.5, box.y + 120);
-    await page.mouse.wheel(0, -500);
-    await expect.poll(() => zoom.textContent()).not.toContain('0%–100%');
-    const beforeDrag = await zoom.textContent();
-    await page.mouse.down();
-    await page.mouse.move(box.x + box.width * 0.4, box.y + 120);
-    await page.mouse.up();
-    await expect.poll(() => zoom.textContent()).not.toBe(beforeDrag);
-  }
+  const rss = await sampler.finish();
+  const blockedDuringMeasurement =
+    network.blockedExternalRequests - blockedBefore;
   expect(body.bars.length).toBeGreaterThanOrEqual(2400);
-  expect(blockedAtReady).toBe(0);
+  expect(blockedDuringMeasurement).toBe(0);
   expect(network.blockedExternalRequests - blockedBefore).toBe(0);
   return {
     wall_seconds: wall,
     local_seconds: wall,
     ...providerEvidence(body.routing_manifest),
-    blocked_external_request_count: blockedAtReady,
+    blocked_external_request_count: blockedDuringMeasurement,
     ...rss,
     correctness_hash: digest({
       bars: body.bars,
@@ -352,7 +337,7 @@ async function formulaAction(
   roots: readonly number[],
 ) {
   const blockedBefore = network.blockedExternalRequests;
-  const sampler = new RssSampler(roots);
+  const sampler = await RssSampler.create(roots);
   const started = performance.now();
   sampler.begin();
   const responsePromise = page.waitForResponse((response) => {
@@ -380,7 +365,7 @@ async function formulaAction(
   await expect(page.getByText(/[1-9]\d* 个买点/u)).toBeVisible();
   await expect(page.getByText(/[1-9]\d* 个卖点/u)).toBeVisible();
   const wall = (performance.now() - started) / 1000;
-  const rss = sampler.finish();
+  const rss = await sampler.finish();
   expect(body.bars.length).toBeGreaterThanOrEqual(2400);
   expect(network.blockedExternalRequests - blockedBefore).toBe(0);
   const provider = providerEvidence(body.routing_manifest);
@@ -428,7 +413,7 @@ async function backtestAction(
   cachedManifestId: string,
 ) {
   const blockedBefore = network.blockedExternalRequests;
-  const sampler = new RssSampler(roots);
+  const sampler = await RssSampler.create(roots);
   const started = performance.now();
   sampler.begin();
   const submission = await page.request.post('/api/backtests', {
@@ -466,7 +451,7 @@ async function backtestAction(
   await page.goto(`/backtests/${submitted.run_id}`);
   await expect(page.getByRole('heading', { name: '回测结论' })).toBeVisible();
   const wall = (performance.now() - started) / 1000;
-  const rss = sampler.finish();
+  const rss = await sampler.finish();
   expect(network.blockedExternalRequests - blockedBefore).toBe(0);
   const symbolsResponse = await page.request.get(
     `/api/backtests/${submitted.run_id}/symbols?limit=100`,
@@ -574,6 +559,82 @@ async function endLongTaskWindow(page: Page): Promise<number> {
   return durations.filter((duration) => duration > 50).length;
 }
 
+type ProgressState = {
+  readonly status: string;
+  readonly stage: string;
+  readonly processed: number;
+  readonly total: number;
+  readonly failed: number;
+};
+
+function progressKey(state: ProgressState): string {
+  return [
+    state.status,
+    state.stage,
+    state.processed,
+    state.total,
+    state.failed,
+  ].join('|');
+}
+
+function parseRenderedProgress(raw: string | null): ProgressState | null {
+  if (raw === null) return null;
+  const [status, stage, processedRaw, totalRaw, failedRaw, ...extra] =
+    raw.split('|');
+  const processed = Number(processedRaw);
+  const total = Number(totalRaw);
+  const failed = Number(failedRaw);
+  if (
+    extra.length !== 0 ||
+    status === undefined ||
+    stage === undefined ||
+    !Number.isInteger(processed) ||
+    !Number.isInteger(total) ||
+    !Number.isInteger(failed)
+  ) {
+    throw new Error('rendered progress tuple is malformed');
+  }
+  return { status, stage, processed, total, failed };
+}
+
+async function observeMatchedProgress(
+  page: Page,
+  runId: string,
+  previousKey: string | null,
+) {
+  const progress = page.getByRole('region', { name: '运行进度' });
+  let matched:
+    { rendered_state: ProgressState; api_state: ProgressState } | undefined;
+  await expect
+    .poll(
+      async () => {
+        const rendered = parseRenderedProgress(
+          await progress.getAttribute('data-rendered-progress'),
+        );
+        if (rendered === null || progressKey(rendered) === previousKey)
+          return '';
+        const response = await page.request.get(`/api/backtests/${runId}`);
+        if (!response.ok()) return '';
+        const overview = (await response.json()) as ProgressState;
+        const apiState = {
+          status: overview.status,
+          stage: overview.stage,
+          processed: overview.processed,
+          total: overview.total,
+          failed: overview.failed,
+        };
+        if (progressKey(rendered) !== progressKey(apiState)) return '';
+        matched = { rendered_state: rendered, api_state: apiState };
+        return progressKey(rendered);
+      },
+      { timeout: 12_000, intervals: [25, 50, 100, 200] },
+    )
+    .not.toBe('');
+  if (matched === undefined)
+    throw new Error('rendered/API progress did not match');
+  return matched;
+}
+
 test('records aggregate 2/3/5 budgets and worker-backed UI responsiveness', async ({
   browser,
 }) => {
@@ -586,6 +647,21 @@ test('records aggregate 2/3/5 budgets and worker-backed UI responsiveness', asyn
     PROCESS_FILE,
     'runner must provide STOCK_DESK_PERFORMANCE_PROCESS_FILE',
   ).toBeTruthy();
+  expect(
+    FIXTURE_FILE,
+    'runner must provide STOCK_DESK_PERFORMANCE_FIXTURE',
+  ).toBeTruthy();
+  const fixtureEvidence = JSON.parse(
+    readFileSync(FIXTURE_FILE ?? '', 'utf8'),
+  ) as {
+    content_digest: string;
+    scope_instrument_count: number;
+    runnable_symbol_count: number;
+  };
+  expect(fixtureEvidence).toMatchObject({
+    scope_instrument_count: 5_000,
+    runnable_symbol_count: 40,
+  });
   const processEvidence = JSON.parse(
     readFileSync(PROCESS_FILE ?? '', 'utf8'),
   ) as {
@@ -594,12 +670,17 @@ test('records aggregate 2/3/5 budgets and worker-backed UI responsiveness', asyn
     service_processes: { pid: number; command: string[] }[];
   };
   const roots = [
-    process.pid,
-    process.ppid,
-    processEvidence.supervisor_pid,
-    ...processEvidence.service_pids,
-  ];
-  const declaredProcessTree = processTreeSnapshot(roots);
+    ...new Set([
+      process.pid,
+      process.ppid,
+      processEvidence.supervisor_pid,
+      ...processEvidence.service_pids,
+    ]),
+  ]
+    .filter((pid) => Number.isInteger(pid) && pid > 0)
+    .sort((left, right) => left - right);
+  const declaredProcessTree = await processTreeSnapshot(roots);
+  const sampledProcessRoles = processRoles(declaredProcessTree.commands);
   for (const required of ['uvicorn', 'scripts.e2e_dev --worker', 'vite']) {
     expect(
       declaredProcessTree.commands.some((command) =>
@@ -669,18 +750,54 @@ test('records aggregate 2/3/5 budgets and worker-backed UI responsiveness', asyn
   const poolSelect = page.locator('.backtest-step select');
   const poolValue = await poolSelect
     .locator('option')
-    .filter({ hasText: 'Performance Full A (CC0 synthetic)' })
+    .filter({
+      hasText: 'Perf Full-A Scope: 5000 metadata / 40 runnable (CC0)',
+    })
     .getAttribute('value');
   expect(poolValue).not.toBeNull();
   await poolSelect.selectOption(poolValue ?? '');
+  const poolDetailResponse = await page.request.get(
+    `/api/market/pools/${encodeURIComponent(poolValue ?? '')}`,
+  );
+  expect(poolDetailResponse.ok()).toBe(true);
+  const poolDetail = (await poolDetailResponse.json()) as {
+    members: readonly {
+      ordinal: number;
+      symbol: string;
+      name: string;
+      instrument_kind: string;
+      listing_status: string;
+    }[];
+    provenance: { instrument_dataset_version: string };
+  };
+  expect(poolDetail.members).toHaveLength(5_000);
+  const poolMembershipDigest = digest(poolDetail.members);
+  const poolDataDigest = digest({
+    fixture_content_digest: fixtureEvidence.content_digest,
+    instrument_dataset_version:
+      poolDetail.provenance.instrument_dataset_version,
+    runnable_symbol_count: fixtureEvidence.runnable_symbol_count,
+  });
   await page.getByRole('button', { name: '下一步' }).click();
   await page.getByLabel('开始日期（上海时区，含）').fill('2016-01-01');
   await page.getByLabel('结束日期（上海时区，不含）').fill('2026-01-01');
   await page.getByRole('button', { name: '下一步' }).click();
   await page.getByRole('button', { name: '下一步' }).click();
+  const preflightResponsePromise = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === '/api/backtests/preflight' &&
+      response.request().method() === 'POST',
+  );
   await page.getByRole('button', { name: '运行预检' }).click();
+  const preflightResponse = await preflightResponsePromise;
+  expect(preflightResponse.ok()).toBe(true);
+  const preflightEvidence = (await preflightResponse.json()) as {
+    formula: { formula_checksum: string };
+    scope: { total: number; runnable: number };
+  };
+  expect(preflightEvidence.scope).toMatchObject({ total: 5_000, runnable: 40 });
   const preflight = page.getByLabel('服务端预检结果');
-  await expect(preflight).toContainText(/可运行 [1-9]\d* \/ 12/u);
+  await expect(preflight).toContainText(/可运行 40 \/ 5000/u);
   const confirmation = preflight.getByRole('checkbox');
   if (await confirmation.isVisible()) await confirmation.check();
   const submissionPromise = page.waitForResponse(
@@ -695,11 +812,13 @@ test('records aggregate 2/3/5 budgets and worker-backed UI responsiveness', asyn
     snapshot_id: string;
   };
   await expect(page).toHaveURL(`/backtests/${poolSubmission.run_id}`);
-  const observedProgressStates: string[] = [];
+  const observedProgressStates: ProgressState[] = [];
   const poolSamples: {
     long_task_count: number;
     interaction_kind: 'progress' | 'navigation' | 'cancel';
     interactive: boolean;
+    rendered_state: ProgressState;
+    api_state: ProgressState;
     correctness_hash: string;
   }[] = [];
   await expect
@@ -711,19 +830,21 @@ test('records aggregate 2/3/5 budgets and worker-backed UI responsiveness', asyn
       return overview.status;
     })
     .toBe('running');
+  const initialProgress = await observeMatchedProgress(
+    page,
+    poolSubmission.run_id,
+    null,
+  );
+  let previousProgressKey = progressKey(initialProgress.rendered_state);
   for (let index = 0; index < SAMPLE_COUNT - 2; index += 1) {
     await beginLongTaskWindow(page);
-    const overviewResponse = await page.request.get(
-      `/api/backtests/${poolSubmission.run_id}`,
+    const progressEvidence = await observeMatchedProgress(
+      page,
+      poolSubmission.run_id,
+      previousProgressKey,
     );
-    const overview = (await overviewResponse.json()) as {
-      status: string;
-      stage: string;
-      processed: number;
-    };
-    observedProgressStates.push(
-      `${overview.status}:${overview.stage}:${String(overview.processed)}`,
-    );
+    previousProgressKey = progressKey(progressEvidence.rendered_state);
+    observedProgressStates.push(progressEvidence.rendered_state);
     const cancelVisible = await page
       .getByRole('button', { name: '取消回测' })
       .isVisible();
@@ -734,42 +855,32 @@ test('records aggregate 2/3/5 budgets and worker-backed UI responsiveness', asyn
     poolSamples.push({
       long_task_count: await endLongTaskWindow(page),
       interaction_kind: 'progress',
-      interactive: overviewResponse.ok() && cancelVisible && progressVisible,
+      interactive: cancelVisible && progressVisible,
+      ...progressEvidence,
       correctness_hash: '',
     });
   }
-  await expect
-    .poll(
-      async () => {
-        const response = await page.request.get(
-          `/api/backtests/${poolSubmission.run_id}`,
-        );
-        const overview = (await response.json()) as {
-          status: string;
-          stage: string;
-          processed: number;
-        };
-        observedProgressStates.push(
-          `${overview.status}:${overview.stage}:${String(overview.processed)}`,
-        );
-        return new Set(
-          observedProgressStates.map((value) => value.split(':').at(-1)),
-        ).size;
-      },
-      { timeout: 10_000 },
-    )
-    .toBeGreaterThan(1);
+  expect(new Set(observedProgressStates.map(progressKey)).size).toBe(
+    SAMPLE_COUNT - 2,
+  );
   await beginLongTaskWindow(page);
   const navigationStarted = performance.now();
   await page.getByRole('link', { name: '任务' }).click();
   await expect(page.getByRole('heading', { name: '任务中心' })).toBeVisible();
   await page.goBack();
   await expect(page.getByRole('heading', { name: '回测运行' })).toBeVisible();
+  const navigationEvidence = await observeMatchedProgress(
+    page,
+    poolSubmission.run_id,
+    previousProgressKey,
+  );
+  previousProgressKey = progressKey(navigationEvidence.rendered_state);
   const navigationInteractive = performance.now() - navigationStarted < 1000;
   poolSamples.push({
     long_task_count: await endLongTaskWindow(page),
     interaction_kind: 'navigation',
     interactive: navigationInteractive,
+    ...navigationEvidence,
     correctness_hash: '',
   });
   await beginLongTaskWindow(page);
@@ -779,26 +890,27 @@ test('records aggregate 2/3/5 budgets and worker-backed UI responsiveness', asyn
   await expect(
     page.locator('.run-progress .status-badge[data-status="cancelled"]'),
   ).toBeVisible({ timeout: 45_000 });
-  const finalOverviewResponse = await page.request.get(
-    `/api/backtests/${poolSubmission.run_id}`,
+  const cancellationEvidence = await observeMatchedProgress(
+    page,
+    poolSubmission.run_id,
+    previousProgressKey,
   );
-  const finalOverview = (await finalOverviewResponse.json()) as {
-    status: string;
-  };
+  const finalOverview = cancellationEvidence.api_state;
   expect(finalOverview.status).toBe('cancelled');
-  observedProgressStates.push(
-    `${finalOverview.status}:terminal:${String(observedProgressStates.length)}`,
-  );
   poolSamples.push({
     long_task_count: await endLongTaskWindow(page),
     interaction_kind: 'cancel',
     interactive: finalOverview.status === 'cancelled',
+    ...cancellationEvidence,
     correctness_hash: '',
   });
-  const poolCorrectness = digest({
-    snapshot_id: poolSubmission.snapshot_id,
-    status: finalOverview.status,
-  });
+  const poolSemanticEvidence = {
+    formula_checksum: preflightEvidence.formula.formula_checksum,
+    pool_membership_digest: poolMembershipDigest,
+    pool_data_digest: poolDataDigest,
+    terminal_status: finalOverview.status,
+  };
+  const poolCorrectness = digest(poolSemanticEvidence);
   for (const sample of poolSamples) {
     sample.correctness_hash = poolCorrectness;
   }
@@ -820,6 +932,8 @@ test('records aggregate 2/3/5 budgets and worker-backed UI responsiveness', asyn
         'one distinct pre-seeded immutable formula version per sample; timer starts at preview action and ends at ECharts finished with main/subchart/BUY/SELL visible',
       single_backtest_fresh:
         'new submitted task per sample; timer starts at POST submit and ends after worker-persisted report is visible',
+      pool_ui:
+        '20 raw windows from one worker-backed pool task: 18 changing rendered/API-matched progress windows, one SPA navigation window, and one actual cancellation window',
     },
     process_tree: {
       declared_roots: roots,
@@ -831,7 +945,8 @@ test('records aggregate 2/3/5 budgets and worker-backed UI responsiveness', asyn
             ? 'worker'
             : 'web',
       })),
-      sampled_process_roles: processRoles(declaredProcessTree.commands),
+      sampled_process_roles: sampledProcessRoles,
+      role_set_digest: digest(sampledProcessRoles),
     },
     metrics: {
       chart_cold: aggregate(chartCold, 2),
@@ -841,11 +956,12 @@ test('records aggregate 2/3/5 budgets and worker-backed UI responsiveness', asyn
       pool_ui: {
         samples: poolSamples,
         long_task_count: totalLongTasks,
-        observed_progress_states: [...new Set(observedProgressStates)],
-        worker_claim_observed: observedProgressStates.some((value) =>
-          value.startsWith('running:'),
+        observed_progress_states: observedProgressStates,
+        worker_claim_observed: observedProgressStates.some(
+          (value) => value.status === 'running',
         ),
         cancel_status: finalOverview.status,
+        semantic_evidence: poolSemanticEvidence,
         correctness_hash: poolSamples[0]?.correctness_hash,
       },
     },

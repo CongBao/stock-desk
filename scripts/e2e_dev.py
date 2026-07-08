@@ -125,23 +125,28 @@ def _seed(data_dir: Path) -> None:
             performance_fixture = generate_fixture_bars(performance_metadata)
             lake.write(performance_fixture.routed)
             status_lake.write(_routed_status(performance_fixture.routed))
-            performance_symbols = tuple(
+            scope_symbols = tuple(
                 DemoSymbol(
-                    symbol=f"600{100 + index:03d}.SH",
-                    name=f"Performance Synthetic {index + 1:02d} (CC0)",
+                    symbol=f"{601_000 + index:06d}.SH",
+                    name=f"Performance Full-A Scope {index + 1:04d} (CC0)",
                     wave_phase=index,
                 )
-                for index in range(8)
+                for index in range(
+                    performance_metadata.scope_instrument_count - len(fixture.symbols)
+                )
             )
             augmented_fixture = fixture.model_copy(
-                update={"symbols": (*fixture.symbols, *performance_symbols)}
+                update={"symbols": (*fixture.symbols, *scope_symbols)}
             )
             instruments.ingest(_routed_instruments(augmented_fixture))
             pools.publish_full_a(
                 preset_key="performance-all-a",
-                display_name="Performance Full A (CC0 synthetic)",
+                display_name="Perf Full-A Scope: 5000 metadata / 40 runnable (CC0)",
             )
-            for item in performance_symbols:
+            runnable_extras = scope_symbols[
+                : performance_metadata.runnable_symbol_count - 1
+            ]
+            for item in runnable_extras:
                 generated = generate_fixture_bars(
                     performance_metadata.model_copy(update={"symbol": item.symbol})
                 )

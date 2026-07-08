@@ -368,7 +368,7 @@ it('initializes, resizes, resets, and disposes the tree-shaken chart instance', 
   expect(chartMocks.dispose).toHaveBeenCalledOnce();
 });
 
-it('reports readiness only after ECharts finished and resets it for changed data', () => {
+it('serializes delayed ECharts generations so A cannot mark queued B ready', () => {
   let finishedHandler: ((event: unknown) => void) | undefined;
   chartMocks.on.mockImplementation(
     (eventName: string, handler: (event: unknown) => void) => {
@@ -382,20 +382,33 @@ it('reports readiness only after ECharts finished and resets it for changed data
 
   expect(chart).toHaveAttribute('data-chart-ready', 'false');
   expect(chart).toHaveAttribute('aria-busy', 'true');
+  const nextBars = bars.map((bar) => ({ ...bar }));
+  rerender(<MarketChart bars={nextBars} />);
+  expect(chart).toHaveAttribute('data-chart-ready', 'false');
+
+  // B is queued while A is still the active ECharts render.
+  expect(chartMocks.setOption).toHaveBeenCalledTimes(1);
+  act(() => finishedHandler?.({}));
+
+  // A completed, which starts B, but only B's own event may mark B ready.
+  expect(chartMocks.setOption).toHaveBeenCalledTimes(2);
+  expect(chart).toHaveAttribute('data-chart-ready', 'false');
+  expect(chart).toHaveAttribute('aria-busy', 'true');
   act(() => finishedHandler?.({}));
   expect(chart).toHaveAttribute('data-chart-ready', 'true');
   expect(chart).toHaveAttribute('aria-busy', 'false');
-
-  rerender(<MarketChart bars={bars.map((bar) => ({ ...bar }))} />);
-  expect(chart).toHaveAttribute('data-chart-ready', 'false');
-  act(() => finishedHandler?.({}));
-  expect(chart).toHaveAttribute('data-chart-ready', 'true');
 
   unmount();
   expect(chartMocks.off).toHaveBeenCalledWith('finished', expect.any(Function));
 });
 
 it('keeps the cached canvas and chart instance through a background error and recovery', () => {
+  let finishedHandler: ((event: unknown) => void) | undefined;
+  chartMocks.on.mockImplementation(
+    (eventName: string, handler: (event: unknown) => void) => {
+      if (eventName === 'finished') finishedHandler = handler;
+    },
+  );
   const { rerender, unmount } = render(<MarketChart bars={bars} />);
   const canvas = screen.getByRole('img', {
     name: '600000.SH K 线与成交量交互图',
@@ -418,6 +431,8 @@ it('keeps the cached canvas and chart instance through a background error and re
     screen.getByRole('img', { name: '600000.SH K 线与成交量交互图' }),
   ).toBe(canvas);
   expect(chartMocks.init).toHaveBeenCalledOnce();
+  expect(chartMocks.setOption).toHaveBeenCalledOnce();
+  act(() => finishedHandler?.({}));
   expect(chartMocks.setOption).toHaveBeenCalledTimes(2);
 
   unmount();

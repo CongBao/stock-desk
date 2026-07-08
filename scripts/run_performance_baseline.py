@@ -12,9 +12,11 @@ import argparse
 from collections.abc import Sequence
 from datetime import datetime, timezone
 import json
+import math
 import os
 from pathlib import Path
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -54,6 +56,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--compare", type=Path)
+    parser.add_argument(
+        "--evidence-kind",
+        choices=("reference", "target_baseline"),
+        default="reference",
+    )
     parser.add_argument(
         "--record-baseline",
         action="store_true",
@@ -196,6 +203,21 @@ def collect_environment(*, browser_version: str) -> dict[str, object]:
         "python_version": platform.python_version(),
         "node_version": _command_output(("node", "--version")),
         "browser_version": browser_version,
+        "runner": {
+            "provider": (
+                "github_actions"
+                if os.environ.get("GITHUB_ACTIONS") == "true"
+                else "local"
+            ),
+            "os": os.environ.get("RUNNER_OS", platform.system()),
+            "arch": os.environ.get("RUNNER_ARCH", platform.machine()),
+            "name": os.environ.get("RUNNER_NAME", platform.node() or "local"),
+            "image_os": os.environ.get("ImageOS"),
+            "image_version": os.environ.get("ImageVersion"),
+            "repository": os.environ.get("GITHUB_REPOSITORY"),
+            "run_id": os.environ.get("GITHUB_RUN_ID"),
+            "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
+        },
         "tool_versions": {
             "duckdb": _command_output(
                 (
@@ -224,8 +246,17 @@ def _git_is_dirty() -> bool:
     return bool(completed.stdout.strip())
 
 
-def _git_sha() -> str:
-    return _command_output(("git", "rev-parse", "HEAD"), "")
+def _verified_git_sha() -> str:
+    candidate = _command_output(("git", "rev-parse", "HEAD"), "")
+    if re.fullmatch(r"[0-9a-f]{40}", candidate) is None:
+        raise BaselineRecordingError("git SHA is unavailable or malformed")
+    object_type = _command_output(("git", "cat-file", "-t", candidate), "")
+    current = _command_output(("git", "rev-parse", "HEAD"), "")
+    if object_type != "commit":
+        raise BaselineRecordingError("git SHA is not a commit object")
+    if current != candidate:
+        raise BaselineRecordingError("git SHA is not the current checkout")
+    return candidate
 
 
 def _run_browser_measurement(output: Path) -> None:
@@ -260,15 +291,58 @@ def _load_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _qualifying_environment(result: dict[str, Any]) -> bool:
-    environment = result.get("environment")
+def _qualifying_environment(environment: dict[str, Any], evidence_kind: str) -> bool:
+    effective_cpu = environment.get("effective_cpu_count")
+    physical_memory = environment.get("memory_bytes")
+    effective_memory = environment.get("effective_memory_bytes")
+    if (
+        not isinstance(effective_cpu, (int, float))
+        or isinstance(effective_cpu, bool)
+        or not math.isfinite(float(effective_cpu))
+        or effective_cpu < 4
+        or not isinstance(physical_memory, int)
+        or isinstance(physical_memory, bool)
+        or not isinstance(effective_memory, int)
+        or isinstance(effective_memory, bool)
+        or min(physical_memory, effective_memory) < MINIMUM_EFFECTIVE_MEMORY_BYTES
+    ):
+        return False
+    if evidence_kind == "reference":
+        return True
+    runner = environment.get("runner")
     return (
-        isinstance(environment, dict)
-        and isinstance(environment.get("effective_cpu_count"), (int, float))
-        and environment["effective_cpu_count"] >= 4
-        and isinstance(environment.get("effective_memory_bytes"), int)
-        and environment["effective_memory_bytes"] >= MINIMUM_EFFECTIVE_MEMORY_BYTES
+        evidence_kind == "target_baseline"
+        and effective_cpu == 4
+        and physical_memory <= 17 * 1024**3
+        and isinstance(runner, dict)
+        and runner.get("provider") == "github_actions"
+        and runner.get("os") == "Linux"
+        and runner.get("arch") == "X64"
     )
+
+
+def _ensure_supported_platform() -> None:
+    if sys.platform == "win32":
+        _fail("performance command is unsupported on Windows")
+    if sys.platform not in {"darwin", "linux"}:
+        _fail(f"performance command is unsupported on {sys.platform}")
+
+
+def _require_real_tool_versions(environment: dict[str, object]) -> None:
+    versions = environment.get("tool_versions")
+    if not isinstance(versions, dict) or set(versions) != {
+        "duckdb",
+        "playwright",
+        "pnpm",
+    }:
+        _fail("performance tool versions are incomplete before browser start")
+    if any(
+        not isinstance(value, str)
+        or not value.strip()
+        or value.strip().lower() == "unavailable"
+        for value in versions.values()
+    ):
+        _fail("performance tool version is unavailable before browser start")
 
 
 def _fail(message: str) -> NoReturn:
@@ -277,6 +351,14 @@ def _fail(message: str) -> NoReturn:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
+    _ensure_supported_platform()
+    preflight_environment = collect_environment(browser_version="preflight")
+    _require_real_tool_versions(preflight_environment)
+    if not _qualifying_environment(preflight_environment, args.evidence_kind):
+        _fail(
+            f"{args.evidence_kind} hardware/runner preflight failed before browser start"
+        )
+    preflight_sha = _verified_git_sha()
     fixture = load_fixture_metadata()
     generated = generate_fixture_bars(fixture)
     if generated.content_digest != fixture.content_digest:
@@ -298,13 +380,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     result["measured_at_utc"] = (
         datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     )
-    result["git"] = {"sha": _git_sha(), "dirty": _git_is_dirty()}
-    result["environment"] = collect_environment(browser_version=browser_version)
+    measured_sha = _verified_git_sha()
+    if measured_sha != preflight_sha:
+        _fail("git checkout changed during performance measurement")
+    result["git"] = {"sha": measured_sha, "dirty": _git_is_dirty()}
+    result["environment"] = {
+        **preflight_environment,
+        "browser_version": browser_version,
+    }
+    result["evidence_kind"] = args.evidence_kind
     result["fixture"] = {
         "fixture_id": fixture.fixture_id,
         "content_digest": fixture.content_digest,
         "row_count": fixture.row_count,
         "scoring_sessions": fixture.scoring_sessions,
+        "scope_instrument_count": fixture.scope_instrument_count,
+        "runnable_symbol_count": fixture.runnable_symbol_count,
         "network_policy": fixture.network_policy,
     }
 
@@ -325,7 +416,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             dirty=_git_is_dirty(),
             digest_matches=result["fixture"]["content_digest"]
             == fixture.content_digest,
-            hardware_qualifies=_qualifying_environment(result),
+            hardware_qualifies=_qualifying_environment(
+                result["environment"], args.evidence_kind
+            ),
             gate_passed=gate_passed,
         )
         atomic_write_json(OFFICIAL_BASELINE, result)

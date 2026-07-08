@@ -1180,3 +1180,19 @@ def test_codeowners_covers_source_web_docs_tests_and_automation() -> None:
     codeowners = _read(".github/CODEOWNERS")
     for pattern in ("/src/", "/web/", "/docs/", "/tests/", "/.github/"):
         assert f"{pattern} @CongBao" in codeowners
+
+
+def test_performance_chart_timer_includes_the_bounded_interaction_handshake() -> None:
+    source = _read("web/e2e/performance.spec.ts")
+
+    assert "async function proveChartInteractionHandshake" in source
+    for action in ("chartAction", "warmChartAction"):
+        start = source.index(f"async function {action}")
+        end = source.index("\nasync function ", start + 1)
+        body = source[start:end]
+        assert body.index("await proveChartInteractionHandshake") < body.index(
+            "const wall ="
+        )
+        assert body.index("await proveChartInteractionHandshake") < body.index(
+            "await sampler.finish"
+        )

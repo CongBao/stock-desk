@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+import scripts.run_performance_baseline as runner
+
 from scripts.run_performance_baseline import (
     BaselineRecordingError,
     atomic_write_json,
@@ -23,6 +25,10 @@ def test_cli_accepts_paths_but_no_user_supplied_timing_values(tmp_path: Path) ->
         ]
     )
     assert args.fixture == "ten-year-a-share"
+    assert args.evidence_kind == "reference"
+    assert parse_args(["--evidence-kind", "target_baseline"]).evidence_kind == (
+        "target_baseline"
+    )
 
     with pytest.raises(SystemExit):
         parse_args(["--chart-cold-seconds", "0.001"])
@@ -71,3 +77,63 @@ def test_baseline_recording_refuses_a_failing_gate() -> None:
             hardware_qualifies=True,
             gate_passed=False,
         )
+
+
+def test_performance_command_rejects_windows_before_browser_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    browser_started = False
+
+    def browser(_output: Path) -> None:
+        nonlocal browser_started
+        browser_started = True
+
+    monkeypatch.setattr(runner.sys, "platform", "win32")
+    monkeypatch.setattr(runner, "_run_browser_measurement", browser)
+
+    with pytest.raises(SystemExit, match="unsupported.*Windows"):
+        runner.main([])
+
+    assert browser_started is False
+
+
+def test_target_hardware_is_exact_four_cpu_nominal_sixteen_gb() -> None:
+    environment = {
+        "effective_cpu_count": 4.0,
+        "memory_bytes": 16 * 1024**3,
+        "effective_memory_bytes": 15 * 1024**3,
+        "runner": {
+            "provider": "github_actions",
+            "os": "Linux",
+            "arch": "X64",
+        },
+    }
+
+    assert runner._qualifying_environment(environment, "target_baseline") is True
+    environment["effective_cpu_count"] = 14.0
+    assert runner._qualifying_environment(environment, "target_baseline") is False
+    assert runner._qualifying_environment(environment, "reference") is True
+    environment["effective_cpu_count"] = 4.0
+    environment["memory_bytes"] = 24 * 1024**3
+    assert runner._qualifying_environment(environment, "target_baseline") is False
+
+
+def test_verified_git_sha_requires_the_current_commit_object(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    responses = iter(["a" * 40, "commit", "a" * 40])
+    monkeypatch.setattr(
+        runner,
+        "_command_output",
+        lambda _command, default="unavailable": next(responses),
+    )
+    assert runner._verified_git_sha() == "a" * 40
+
+    mismatch = iter(["a" * 40, "commit", "b" * 40])
+    monkeypatch.setattr(
+        runner,
+        "_command_output",
+        lambda _command, default="unavailable": next(mismatch),
+    )
+    with pytest.raises(BaselineRecordingError, match="current checkout"):
+        runner._verified_git_sha()

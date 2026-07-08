@@ -6,6 +6,7 @@ import { ApiError } from '../../shared/api/client';
 import { BacktestRunPage } from './BacktestRunPage';
 import { backtestPollDelay } from './backtestPolling';
 import type { BacktestApi, BacktestOverview } from './backtestApi';
+import { RunProgress } from './RunProgress';
 
 const running: BacktestOverview = {
   createdAt: '2026-07-07T00:00:00Z',
@@ -92,6 +93,15 @@ it('polls overview and append-only logs with bounded backoff, then stops termina
     await new Promise((resolve) => window.setTimeout(resolve, 20));
   });
   expect(getRun).toHaveBeenCalledTimes(runCalls);
+});
+
+it('exposes the exact rendered progress tuple for browser evidence', () => {
+  render(<RunProgress run={running} />);
+
+  expect(screen.getByRole('region', { name: '运行进度' })).toHaveAttribute(
+    'data-rendered-progress',
+    'running|executing|1|10|0',
+  );
 });
 
 it('backs off at 500ms, 1s, 2s, then caps at 5s', () => {

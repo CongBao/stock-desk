@@ -152,7 +152,7 @@ def test_performance_seed_is_opt_in_and_default_demo_is_unchanged(
                 .get_preset("performance-all-a")
                 .members
             )
-            == 12
+            == 5_000
         )
         assert (
             sum(

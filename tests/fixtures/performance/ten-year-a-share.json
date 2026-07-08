@@ -12,8 +12,10 @@
   "warmup_start": "2015-12-01",
   "scoring_start": "2016-01-01",
   "scoring_end": "2026-01-01",
+  "scope_instrument_count": 5000,
+  "runnable_symbol_count": 40,
   "row_count": 2632,
   "scoring_sessions": 2608,
   "wave_period": 40,
-  "content_digest": "sha256:626695d5ae62929654b0970b479f34777498de98665bcc4c667aca20f6317918"
+  "content_digest": "sha256:9863ae96292ec1285d18490af83aaa7823fdd5a7dedf725f9ee64b139f7a6e7b"
 }
