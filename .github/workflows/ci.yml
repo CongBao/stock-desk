@@ -227,17 +227,29 @@ jobs:
       - name: Test accessible responsive workspaces
         run: make e2e-accessibility
       - name: Measure Ubuntu x64 4-core/16GB target baseline
-        run: make performance-target
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p test-results/performance
+          make performance-target 2>&1 | tee test-results/performance/target-baseline.log
       - name: Publish target baseline import notice
-        if: success()
+        if: always()
         shell: bash
         run: |
           set -euo pipefail
-          baseline=test-results/performance/target-baseline.json
-          digest=$(sha256sum "$baseline" | cut -d' ' -f1)
-          payload=$(gzip -n -c "$baseline" | base64 -w0)
-          printf '::notice file=%s,title=Target baseline import payload::sha256=%s;gzip_base64=%s\n' \
-            "$baseline" "$digest" "$payload"
+          if [[ -f test-results/performance/target-baseline.json ]]; then
+            evidence=test-results/performance/target-baseline.json
+            kind=target_baseline
+          elif [[ -f test-results/performance/target-baseline.log ]]; then
+            evidence=test-results/performance/target-baseline.log
+            kind=failure_log
+          else
+            exit 0
+          fi
+          digest=$(sha256sum "$evidence" | cut -d' ' -f1)
+          payload=$(gzip -n -c "$evidence" | base64 -w0)
+          printf '::notice file=%s,title=Target performance evidence payload::kind=%s;sha256=%s;gzip_base64=%s\n' \
+            "$evidence" "$kind" "$digest" "$payload"
       - name: Upload Playwright and performance evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

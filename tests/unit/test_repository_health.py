@@ -1677,20 +1677,28 @@ def test_performance_target_ci_is_explicit_and_requirements_remain_mapped() -> N
         for step in e2e["steps"]
         if step.get("name") == "Measure Ubuntu x64 4-core/16GB target baseline"
     )
-    assert target_step["run"] == "make performance-target"
+    target_command = target_step["run"]
+    for required in (
+        "set -o pipefail",
+        "test-results/performance/target-baseline.log",
+        "make performance-target 2>&1 | tee",
+    ):
+        assert required in target_command
     import_step = next(
         step
         for step in e2e["steps"]
         if step.get("name") == "Publish target baseline import notice"
     )
-    assert import_step["if"] == "success()"
+    assert import_step["if"] == "always()"
     import_command = import_step["run"]
     for required in (
         "test-results/performance/target-baseline.json",
+        "test-results/performance/target-baseline.log",
         "sha256sum",
         "gzip -n -c",
         "base64 -w0",
         "::notice",
+        "kind=",
         "gzip_base64=",
     ):
         assert required in import_command
