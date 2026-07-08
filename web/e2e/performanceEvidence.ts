@@ -110,7 +110,17 @@ export function commandMatchesRole(
   const lower = command.toLowerCase();
   if (role === 'api') return lower.includes('uvicorn');
   if (role === 'worker') return lower.includes('scripts.e2e_dev --worker');
-  if (role === 'web') return lower.includes('vite');
+  if (role === 'web') {
+    if (lower.includes('vite')) return true;
+    const tokens = lower.split(/\s+/u);
+    const directory = tokens.indexOf('--dir');
+    return (
+      directory > 0 &&
+      tokens.slice(0, directory).some((token) => token.includes('pnpm')) &&
+      tokens[directory + 1] === 'web' &&
+      tokens[directory + 2] === 'dev'
+    );
+  }
   if (role === 'supervisor') {
     return (
       lower.includes('scripts/e2e_dev.py') || lower.includes('scripts.e2e_dev')

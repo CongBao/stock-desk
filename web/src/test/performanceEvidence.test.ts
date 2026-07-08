@@ -112,4 +112,30 @@ describe('process-tree evidence', () => {
       ]),
     ).toThrow(/expected api role/u);
   });
+
+  it('recognizes the recorded pnpm web-dev launcher as the web service root', () => {
+    const tracker = new ProcessIdentityTracker(new Map([[10, 'web']]));
+
+    expect(() =>
+      tracker.observe([
+        {
+          pid: 10,
+          parent: 1,
+          rssBytes: 1,
+          command: 'node pnpm --dir web dev',
+        },
+      ]),
+    ).not.toThrow();
+
+    expect(() =>
+      new ProcessIdentityTracker(new Map([[11, 'web']])).observe([
+        {
+          pid: 11,
+          parent: 1,
+          rssBytes: 1,
+          command: 'node pnpm dev',
+        },
+      ]),
+    ).toThrow(/expected web role/u);
+  });
 });
