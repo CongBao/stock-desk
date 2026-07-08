@@ -242,7 +242,7 @@ async function proveChartInteractionHandshake(
 
   const beforeZoom = await zoom.textContent();
   await page.mouse.move(box.x + box.width * 0.5, box.y + 120);
-  await page.mouse.wheel(0, -500);
+  await page.mouse.wheel(0, 500);
   await expect.poll(() => zoom.textContent(), poll).not.toBe(beforeZoom);
   const zoomedAt = performance.now();
 
