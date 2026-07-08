@@ -391,7 +391,6 @@ def test_reviewed_non_release_evidence_is_existing_and_precisely_scoped(
 def test_only_unfinished_release_and_performance_evidence_remains_planned(
     matrix: dict[str, object],
 ) -> None:
-    by_id = {item["id"]: item for item in matrix["requirements"]}
     planned = {
         item["id"]: {
             evidence.get("selector")
