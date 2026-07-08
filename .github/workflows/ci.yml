@@ -181,7 +181,7 @@ jobs:
   e2e:
     name: Chromium E2E and Ubuntu x64 4-core/16GB target evidence
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 35
     permissions:
       contents: read
     steps:

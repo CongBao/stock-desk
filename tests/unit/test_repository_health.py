@@ -992,7 +992,7 @@ def test_ci_and_release_gate_the_chromium_end_to_end_slice() -> None:
     ci_workflow = _load_github_actions_yaml(_read(".github/workflows/ci.yml"))
     e2e = ci_workflow["jobs"]["e2e"]
     assert e2e["permissions"] == {"contents": "read"}
-    assert 1 <= e2e["timeout-minutes"] <= 20
+    assert 30 <= e2e["timeout-minutes"] <= 35
     ci_e2e = "\n".join(
         str(step.get("run", "")) for step in e2e["steps"] if isinstance(step, dict)
     )
@@ -1087,6 +1087,7 @@ def test_e2e_is_a_root_script_without_changing_the_make_contract() -> None:
     assert "gracefulShutdown" in playwright
     assert 'signal: "SIGTERM"' in playwright
     assert "scripts/e2e_dev.py" in playwright
+    assert 'process.env.STOCK_DESK_PERFORMANCE_MODE === "1"' in playwright
     assert "performanceMode ? 300_000 : 120_000" in playwright
     foundation_e2e = _read("web/e2e/foundation.spec.ts")
     health_probe = "request.get('/api/health')"
