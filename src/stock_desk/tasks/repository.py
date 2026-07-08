@@ -34,6 +34,9 @@ from stock_desk.tasks.models import (
     TaskEventLevel,
     TaskEventSnapshot,
     TaskMetricsSnapshot,
+    TaskEventPresentationSnapshot,
+    TaskPresentationSnapshot,
+    TaskPresentationTarget,
     TaskSnapshot,
     TaskStatus,
 )
@@ -62,6 +65,18 @@ _ANALYSIS_TASK_KIND = "analysis.run"
 _LEASED_TASK_KINDS = frozenset({_BACKTEST_TASK_KIND, _ANALYSIS_TASK_KIND})
 _DEFAULT_LEASE_DURATION = timedelta(minutes=2)
 _MAX_LEASE_DURATION = timedelta(hours=1)
+_PRESENTATION_STAGES = frozenset(
+    {"queued", "executing", "completed", "failed", "cancelled"}
+)
+_EVENT_LABELS = {
+    "task.created": "任务已创建",
+    "task.claimed": "任务已开始",
+    "task.progressed": "任务进度已更新",
+    "task.cancel_requested": "已请求取消",
+    "task.cancelled": "任务已取消",
+    "task.succeeded": "任务已完成",
+    "task.failed": "任务失败",
+}
 
 
 def _utc_now() -> datetime:
@@ -482,6 +497,178 @@ class TaskRepository:
         if row is None:
             raise TaskNotFound(f"Task {task_id} was not found")
         return _snapshot(row)
+
+    def presentation(self, task: TaskSnapshot) -> TaskPresentationSnapshot:
+        """Return the only browser-displayable task domain projection.
+
+        Raw task JSON is deliberately excluded. Backtest counts come from the
+        constrained domain row, not from task payload/result/error values.
+        """
+
+        if task.kind == _BACKTEST_TASK_KIND:
+            from stock_desk.backtest.models import BacktestRunRow
+
+            statement = select(
+                BacktestRunRow.id,
+                BacktestRunRow.stage,
+                BacktestRunRow.processed,
+                BacktestRunRow.total,
+                BacktestRunRow.failed_count,
+            ).where(BacktestRunRow.task_id == task.id)
+            with self._engine.connect() as connection:
+                row = connection.execute(statement).one_or_none()
+            if row is not None:
+                run_id = cast(str, row[0])
+                stage = cast(str, row[1])
+                processed = int(row[2])
+                total = int(row[3])
+                failed = int(row[4])
+                if (
+                    stage in _PRESENTATION_STAGES
+                    and 0 <= failed <= processed <= total <= 10_000
+                ):
+                    try:
+                        _validated_uuid(run_id, field_name="backtest run id")
+                    except TaskValidationError:
+                        pass
+                    else:
+                        return TaskPresentationSnapshot(
+                            label="股票池回测",
+                            stage=cast(Any, stage),
+                            processed=processed,
+                            total=total,
+                            failed=failed,
+                            target=TaskPresentationTarget(
+                                type="backtest_run", id=run_id
+                            ),
+                        )
+            return TaskPresentationSnapshot(
+                label="股票池回测",
+                stage=None,
+                processed=None,
+                total=None,
+                failed=None,
+                target=None,
+            )
+        if task.kind == _ANALYSIS_TASK_KIND:
+            return TaskPresentationSnapshot(
+                label="智能分析",
+                stage=None,
+                processed=None,
+                total=None,
+                failed=None,
+                target=None,
+            )
+        if task.kind in {"market.update", "market.catalog.update"}:
+            return TaskPresentationSnapshot(
+                label="数据更新",
+                stage=None,
+                processed=None,
+                total=None,
+                failed=None,
+                target=None,
+            )
+        return TaskPresentationSnapshot(
+            label="后台任务",
+            stage=None,
+            processed=None,
+            total=None,
+            failed=None,
+            target=None,
+        )
+
+    def event_presentation(
+        self,
+        task_event: TaskEventSnapshot,
+        *,
+        task_kind: str | None = None,
+    ) -> TaskEventPresentationSnapshot:
+        label = _EVENT_LABELS.get(task_event.event_name, "任务事件")
+        stage: str | None = None
+        processed: int | None = None
+        total: int | None = None
+        failed: int | None = None
+        detail = task_event.detail
+        raw_stage = detail.get("stage")
+        raw_processed = detail.get("processed")
+        raw_total = detail.get("total")
+        raw_failed = detail.get("failed")
+        if task_event.event_name == "task.progressed" and task_kind is None:
+            with self._engine.connect() as connection:
+                task_kind = connection.execute(
+                    select(TaskRun.kind).where(TaskRun.id == task_event.task_id)
+                ).scalar_one_or_none()
+        if (
+            task_event.event_name == "task.progressed"
+            and task_kind == _BACKTEST_TASK_KIND
+            and isinstance(raw_stage, str)
+            and raw_stage in _PRESENTATION_STAGES
+            and type(raw_processed) is int
+            and type(raw_total) is int
+            and type(raw_failed) is int
+            and 0 <= raw_failed <= raw_processed <= raw_total <= 10_000
+        ):
+            stage = raw_stage
+            processed = raw_processed
+            total = raw_total
+            failed = raw_failed
+            label = "已处理回测标的"
+        return TaskEventPresentationSnapshot(
+            label=cast(Any, label),
+            stage=cast(Any, stage),
+            processed=processed,
+            total=total,
+            failed=failed,
+        )
+
+    def append_progress_event_in_transaction(
+        self,
+        connection: Connection,
+        task_id: str,
+        *,
+        progress: float,
+        stage: str,
+        processed: int,
+        total: int,
+        failed: int,
+        now: datetime,
+    ) -> None:
+        """Append a bounded progress event inside an owning domain transaction."""
+
+        if connection.closed or not connection.in_transaction():
+            raise TaskValidationError(
+                "Task progress event requires an active transaction connection"
+            )
+        if connection_database_identity(connection) != self._database_identity:
+            raise TaskValidationError(
+                "Task transaction connection targets a different database"
+            )
+        if (
+            stage not in _PRESENTATION_STAGES
+            or isinstance(progress, bool)
+            or not isinstance(progress, (int, float))
+            or not math.isfinite(progress)
+            or not 0 <= float(progress) <= 1
+            or type(processed) is not int
+            or type(total) is not int
+            or type(failed) is not int
+            or not 0 <= failed <= processed <= total <= 10_000
+        ):
+            raise TaskValidationError("Task progress event is invalid")
+        _append_event(
+            connection,
+            task_id=task_id,
+            event_name="task.progressed",
+            level="info",
+            progress=float(progress),
+            detail={
+                "stage": stage,
+                "processed": processed,
+                "total": total,
+                "failed": failed,
+            },
+            occurred_at=_validated_aware_utc(now, field_name="progress event time"),
+        )
 
     def list_recent(self, *, limit: int = 50) -> list[TaskSnapshot]:
         if not 1 <= limit <= 100:

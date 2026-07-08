@@ -152,6 +152,70 @@ def test_task_events_metrics_correlation_and_duration_api(tmp_path: Path) -> Non
         assert succeeded_body["duration_ms"] >= 0
         assert queued_response.json()["correlation_id"] == queued.id
         assert queued_response.json()["duration_ms"] is None
+        assert succeeded_body["presentation"] == {
+            "label": "后台任务",
+            "stage": None,
+            "processed": None,
+            "total": None,
+            "failed": None,
+            "target": None,
+        }
+        assert events[-1]["presentation"] == {
+            "label": "任务失败",
+            "stage": None,
+            "processed": None,
+            "total": None,
+            "failed": None,
+        }
+    finally:
+        engine.dispose()
+
+
+def test_task_presentation_never_copies_arbitrary_stored_json(tmp_path: Path) -> None:
+    repository, engine = _injected_repository(tmp_path)
+    try:
+        created = repository.create(
+            "unknown.secret.kind", {"label": "PAYLOAD-SENTINEL"}
+        )
+        assert repository.claim_next("worker") is not None
+        repository.set_progress(
+            created.id,
+            0.5,
+            {
+                "stage": "executing",
+                "processed": 1,
+                "total": 2,
+                "failed": 0,
+                "private": "EVENT-SENTINEL",
+            },
+        )
+        repository.fail(
+            created.id,
+            {"message": "ERROR-SENTINEL", "run_id": "RESULT-SENTINEL"},
+        )
+
+        with TestClient(create_app(task_repository=repository)) as client:
+            task_body = client.get(f"/api/tasks/{created.id}").json()
+            event_bodies = client.get(f"/api/tasks/{created.id}/events").json()
+
+        assert task_body["presentation"] == {
+            "label": "后台任务",
+            "stage": None,
+            "processed": None,
+            "total": None,
+            "failed": None,
+            "target": None,
+        }
+        assert [event["presentation"]["label"] for event in event_bodies] == [
+            "任务已创建",
+            "任务已开始",
+            "任务进度已更新",
+            "任务失败",
+        ]
+        assert "SENTINEL" not in repr(
+            [task_body["presentation"]]
+            + [event["presentation"] for event in event_bodies]
+        )
     finally:
         engine.dispose()
 

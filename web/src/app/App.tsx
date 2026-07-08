@@ -11,11 +11,11 @@ import { MarketPage } from '../features/market/MarketPage';
 import { BacktestRunPage } from '../features/backtests/BacktestRunPage';
 import { BacktestWorkspacePage } from '../features/backtests/BacktestWorkspacePage';
 import { DataSourcesPage } from '../features/settings/DataSourcesPage';
+import { TaskCenterPage } from '../features/tasks/TaskCenterPage';
 import { useSystemStatus } from '../shared/api/useSystemStatus';
 import { ContextPanel } from './ContextPanel';
 import { AppIcon } from './AppIcon';
 import { NotFoundPage } from './NotFoundPage';
-import { PlannedPage } from './PlannedPage';
 import { RouteEffects } from './RouteEffects';
 import { appRoutes } from './routes';
 import { useWorkspaceStore } from './store';
@@ -102,7 +102,7 @@ function NavigationRail({ collapsed, onToggle }: NavigationRailProps) {
       </nav>
 
       <div className="rail-footer">
-        <span className="version-label">v0.5.0 · Intelligent Analysis</span>
+        <span className="version-label">v1.0.0 · Task Center</span>
         <span>本地优先 · 个人使用</span>
       </div>
     </div>
@@ -121,6 +121,10 @@ function WorkspaceShell() {
       ? window.matchMedia('(max-width: 1200px)').matches
       : false,
   );
+  const workspaceKicker =
+    location.pathname === '/tasks'
+      ? 'STOCK DESK / TASK CENTER'
+      : 'STOCK DESK / MARKET DATA';
 
   useEffect(() => {
     if (typeof window.matchMedia !== 'function') {
@@ -154,7 +158,9 @@ function WorkspaceShell() {
               ? 'backtests'
               : location.pathname === '/analysis'
                 ? 'analysis'
-                : 'default'
+                : location.pathname === '/tasks'
+                  ? 'tasks'
+                  : 'default'
         }
       >
         <NavigationRail
@@ -168,7 +174,7 @@ function WorkspaceShell() {
               {isNavigationCollapsed ? (
                 <h1 className="topbar-product-name">stock-desk</h1>
               ) : null}
-              <span className="topbar-kicker">STOCK DESK / MARKET DATA</span>
+              <span className="topbar-kicker">{workspaceKicker}</span>
               <span
                 className="topbar-state"
                 data-state={systemStatus.overall}
@@ -228,8 +234,10 @@ function WorkspaceShell() {
                     >
                       <AnalysisPage />
                     </Suspense>
+                  ) : route.path === '/tasks' ? (
+                    <TaskCenterPage />
                   ) : (
-                    <PlannedPage route={route} />
+                    <NotFoundPage />
                   )
                 }
               />

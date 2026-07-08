@@ -45,14 +45,29 @@ const healthyResponse = {
 };
 
 const completedTask = {
-  id: 'task-1',
+  id: '11111111-1111-4111-8111-111111111111',
+  correlation_id: '11111111-1111-4111-8111-111111111111',
   kind: 'demo.double',
   status: 'succeeded',
   progress: 1,
+  cancel_requested: false,
+  worker_id: null,
   created_at: '2026-07-05T08:00:00Z',
   updated_at: '2026-07-05T08:00:01Z',
   finished_at: '2026-07-05T08:00:01Z',
+  started_at: '2026-07-05T08:00:00Z',
+  duration_ms: 1000,
   result: { value: 42 },
+  payload: {},
+  error: null,
+  presentation: {
+    label: '后台任务',
+    stage: null,
+    processed: null,
+    total: null,
+    failed: null,
+    target: null,
+  },
 };
 
 const disabledDailySchedule = {
@@ -178,7 +193,7 @@ it('shows the product identity and all primary navigation items', () => {
   renderApp();
 
   expect(screen.getByText('stock-desk')).toBeInTheDocument();
-  expect(screen.getByText('v0.5.0 · Intelligent Analysis')).toBeInTheDocument();
+  expect(screen.getByText('v1.0.0 · Task Center')).toBeInTheDocument();
   for (const label of [
     '行情',
     '自定义公式',
@@ -279,6 +294,54 @@ it('routes analysis to the real intelligent-analysis workspace', async () => {
     'data-workspace',
     'analysis',
   );
+});
+
+it('routes tasks to the real v1 task workspace without planned copy', async () => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn((input: RequestInfo | URL) => {
+      const url = requestUrl(input);
+      if (url.endsWith('/tasks?limit=100'))
+        return Promise.resolve(jsonResponse([]));
+      if (url.endsWith('/tasks/metrics')) {
+        return Promise.resolve(
+          jsonResponse({
+            total: 0,
+            by_status: {
+              queued: 0,
+              running: 0,
+              succeeded: 0,
+              failed: 0,
+              cancelled: 0,
+            },
+            failure_count: 0,
+            completed_count: 0,
+            average_duration_ms: null,
+            min_duration_ms: null,
+            max_duration_ms: null,
+          }),
+        );
+      }
+      if (url.endsWith('/health'))
+        return Promise.resolve(jsonResponse(healthyResponse));
+      if (url.endsWith('/tasks?limit=5'))
+        return Promise.resolve(jsonResponse([]));
+      return Promise.resolve(jsonResponse([]));
+    }),
+  );
+
+  renderApp(['/tasks']);
+
+  expect(
+    await screen.findByRole('heading', { level: 2, name: '任务中心' }),
+  ).toBeVisible();
+  expect(screen.queryByText('PLANNED WORKSPACE')).not.toBeInTheDocument();
+  expect(screen.queryByText(/能力按阶段交付/u)).not.toBeInTheDocument();
+  expect(document.querySelector('.app-shell')).toHaveAttribute(
+    'data-workspace',
+    'tasks',
+  );
+  expect(screen.getAllByText('v1.0.0 · Task Center')).toHaveLength(2);
 });
 
 it('supports direct refresh of a dynamic backtest run route', async () => {
@@ -500,7 +563,7 @@ it('reports healthy only after both live endpoints pass strict decoding', async 
   ).toBeInTheDocument();
 });
 
-it('shows strictly decoded recent task state and result context', async () => {
+it('shows strictly decoded recent task state without raw result context', async () => {
   installHealthyFetch([completedTask]);
 
   renderApp();
@@ -508,14 +571,14 @@ it('shows strictly decoded recent task state and result context', async () => {
   const task = await screen.findByRole('listitem', {
     name: /demo\.double.*已成功/,
   });
-  expect(task).toHaveTextContent('demo.double');
+  expect(task).toHaveTextContent('后台任务');
   expect(task).toHaveTextContent('已成功');
   expect(task).toHaveTextContent('进度 100%');
-  expect(task).toHaveTextContent('结果：42');
+  expect(task).not.toHaveTextContent('结果：42');
   expect(task).toHaveAccessibleName(/demo\.double.*已成功/);
 });
 
-it('renders an explicit empty result without confusing it with a missing result', async () => {
+it('does not render an explicit raw empty result', async () => {
   installHealthyFetch([{ ...completedTask, result: { value: null } }]);
 
   renderApp();
@@ -523,7 +586,7 @@ it('renders an explicit empty result without confusing it with a missing result'
   const task = await screen.findByRole('listitem', {
     name: /demo\.double.*已成功/,
   });
-  expect(task).toHaveTextContent('结果：空');
+  expect(task).not.toHaveTextContent('结果：');
 });
 
 it('labels a running task as unfinished without inventing a result', async () => {
@@ -558,7 +621,7 @@ it.each([{ nested: true }, ['nested']])(
     const task = await screen.findByRole('listitem', {
       name: /demo\.double.*已成功/,
     });
-    expect(task).toHaveTextContent('demo.double');
+    expect(task).toHaveTextContent('后台任务');
     expect(task).not.toHaveTextContent('结果：');
     expect(
       await screen.findByText('系统正常', { exact: true }),

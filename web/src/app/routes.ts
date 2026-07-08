@@ -54,9 +54,10 @@ export const appRoutes = [
     path: '/tasks',
     icon: 'tasks',
     title: '任务中心',
-    release: 'v0.1.0',
-    summary: '查看本地长任务的生命周期与执行状态。',
-    description: '基础任务状态将在本阶段后续任务接入，完整能力随版本推进。',
+    release: 'v1.0.0',
+    summary: '查看本地长任务的安全进度、生命周期与执行状态。',
+    description:
+      '筛选最近任务、查看股票池进度和安全事件，并取消排队或运行中的任务。',
   },
   {
     label: '设置',

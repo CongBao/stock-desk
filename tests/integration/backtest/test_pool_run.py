@@ -170,6 +170,27 @@ def test_partial_preset_freezes_runnable_and_gap_in_pool_order(tmp_path: Path) -
             failure_reason="missing_signal_data",
             now=first_claim.snapshot.updated_at,
         )
+        progress_events = [
+            event
+            for event in tasks.list_events(submitted.task_id)
+            if event.event_name == "task.progressed"
+        ]
+        assert len(progress_events) == 1
+        assert progress_events[0].detail == {
+            "stage": "executing",
+            "processed": 1,
+            "total": 2,
+            "failed": 1,
+        }
+        presentation = tasks.presentation(tasks.get(submitted.task_id))
+        assert presentation.label == "股票池回测"
+        assert presentation.stage == "executing"
+        assert presentation.processed == 1
+        assert presentation.total == 2
+        assert presentation.failed == 1
+        assert presentation.target is not None
+        assert presentation.target.type == "backtest_run"
+        assert presentation.target.id == submitted.run_id
         reclaimed = tasks.claim_next(
             "recovery-pool-worker", now=first_claim.lease_expires_at
         )
