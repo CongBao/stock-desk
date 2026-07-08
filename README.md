@@ -53,8 +53,12 @@ credentials.
 
 ## Core workflows
 
+The released path is Stage 0 foundation, Stage 1 market data, Stage 2 formulas,
+Stage 3 backtests, and Stage 4 evidence-linked analysis.
+
 - **Tasks:** `/tasks` shows durable progress, events, cancellation, failures,
-  and recovery diagnostics for market, backtest, and analysis work.
+  and recovery diagnostics for market, backtest, and analysis work. The
+  `demo.double` task is a lightweight API/worker diagnostic.
 - **Market:** configure a source in `/settings`, refresh the instrument catalog,
   update a symbol or frozen pool, then inspect cache-only daily, weekly, or
   60-minute charts with provenance. See [data sources](docs/data-sources.md).
@@ -84,11 +88,40 @@ credentials.
 - [Changelog](CHANGELOG.md), [roadmap](ROADMAP.md), and
   [support](SUPPORT.md)
 
+Interactive API documentation is available at
+[http://localhost:8000/docs](http://localhost:8000/docs) while the API is
+running.
+
 Run the public documentation contract locally with:
 
 ```bash
 uv run --frozen python scripts/verify_docs.py
 ```
+
+The focused acceptance, performance-regression, browser, security, and complete
+release commands are:
+
+```bash
+make acceptance
+make acceptance-formula
+make acceptance-backtest
+make benchmark
+make benchmark-formula
+make benchmark-backtest
+make e2e-market
+make e2e-formula
+make e2e-backtest
+make e2e-analysis
+make e2e-task-center
+make security
+make release-check
+```
+
+`make security` requires network access. It audits locked Python dependencies
+with OSV and JavaScript production dependencies through the npm registry after
+verifying that manifests match their lockfiles. `make release-check` also
+requires Docker and runs the broader release gate; see
+[CONTRIBUTING.md](CONTRIBUTING.md) before using it.
 
 ## Safety and scope
 

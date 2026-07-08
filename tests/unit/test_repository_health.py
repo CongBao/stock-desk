@@ -1338,7 +1338,9 @@ def test_changelog_roadmap_and_architecture_match_current_release_scope() -> Non
         re.DOTALL,
     )
     assert unreleased is not None
-    assert unreleased.group("body").strip() == ""
+    unreleased_body = unreleased.group("body")
+    assert "public documentation contract" in unreleased_body
+    assert "without declaring a later release" in unreleased_body
     release_section = re.search(
         r"## \[0\.5\.0\] - 2026-07-08(?P<body>.*?)## \[0\.4\.0\]",
         changelog,

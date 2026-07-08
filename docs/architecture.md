@@ -1,7 +1,7 @@
 # Architecture
 
 Stock Desk is a local-first modular monolith. One Python package owns the HTTP
-API, migrations, durable tasks, market storage, formula and backtest engines,
+API, migrations, durable tasks, market storage, formula engine, backtest engine,
 analysis workflow, configuration, and security utilities. A separate React
 application provides the browser workspace.
 
@@ -47,8 +47,8 @@ required for the supported single-host deployment.
   multi-role workflow. Missing critical evidence suppresses the rating.
 - `stock_desk.storage` owns SQLAlchemy and Alembic coordination;
   `stock_desk.security` owns encrypted local secrets and log redaction.
-- `web` owns the responsive market, formula, backtest, analysis, tasks, and
-  settings workspaces; `stock_desk.web` serves its compiled assets.
+- `web` owns the responsive market, Formula Studio, backtest, analysis, tasks,
+  and settings workspaces; `stock_desk.web` serves its compiled assets.
 
 Analysis cannot submit formulas, backtests, broker actions, target prices, or
 position sizes. Backtest pool output is a set of independent per-symbol trade
@@ -83,8 +83,9 @@ on loopback; a remote or shared deployment needs a different security design.
 The browser, API, worker, `.env`, master key, database, and market lake are inside
 the local trust boundary. Market/model providers, provider responses, external
 research text, archives, and pasted formulas are untrusted. Inputs are bounded,
-formula execution is constrained, model endpoints are validated, and mixed or
-corrupt provenance fails closed.
+formula execution is constrained, model endpoints are validated, external text
+is treated as potential prompt injection, and mixed or corrupt provenance fails
+closed.
 
 Secrets are encrypted before local persistence and masked across HTTP and normal
 diagnostics. Encryption does not protect a host compromised together with its

@@ -125,9 +125,13 @@ def _read(path: Path) -> str:
 
 
 def _headings(document: str) -> set[str]:
-    return {
-        heading.strip().rstrip("#").strip() for heading in _HEADING.findall(document)
-    }
+    headings: set[str] = set()
+    for raw_heading in _HEADING.findall(document):
+        heading = raw_heading.strip().rstrip("#").strip()
+        if heading.startswith("[") and "]" in heading:
+            heading = heading[1 : heading.index("]")]
+        headings.add(heading)
+    return headings
 
 
 def _relative_link_failures(

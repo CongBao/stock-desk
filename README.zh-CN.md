@@ -44,7 +44,10 @@ API 健康检查位于
 
 ## 核心工作流
 
-- **任务：** `/tasks` 展示行情、回测和分析任务的持久化进度、事件、取消、失败与恢复诊断。
+已发布路径依次为 Stage 0 基础、Stage 1 行情、Stage 2 公式、Stage 3 回测和 Stage 4 证据关联分析。
+
+- **任务：** `/tasks` 展示行情、回测和分析任务的持久化进度、事件、取消、失败与恢复诊断；
+  `demo.double` 可用于轻量 API/worker 诊断。
 - **行情：** 在 `/settings` 配置数据源，刷新证券目录，更新单只证券或固定股票池，再查看带来源证明的
   本地缓存日线、周线或 60 分钟图。参阅[数据源说明](docs/data-sources.md)。
 - **公式：** 在 `/formulas` 校验受控的通达信兼容表达式并保存不可变版本，再对固定行情快照运行预览。
@@ -65,11 +68,36 @@ API 健康检查位于
 - [无障碍](docs/accessibility.md)与[性能方法](docs/performance.md)
 - [变更日志](CHANGELOG.md)、[路线图](ROADMAP.md)与[支持方式](SUPPORT.md)
 
+API 运行时可打开交互文档：
+[http://localhost:8000/docs](http://localhost:8000/docs)。
+
 在本地运行公共文档契约：
 
 ```bash
 uv run --frozen python scripts/verify_docs.py
 ```
+
+聚焦的验收、性能回归、浏览器、安全和完整发布命令如下：
+
+```bash
+make acceptance
+make acceptance-formula
+make acceptance-backtest
+make benchmark
+make benchmark-formula
+make benchmark-backtest
+make e2e-market
+make e2e-formula
+make e2e-backtest
+make e2e-analysis
+make e2e-task-center
+make security
+make release-check
+```
+
+`make security` 需要网络访问：它通过 OSV 审计锁定的 Python 依赖，并通过 npm registry
+审计 JavaScript 生产依赖，且会先确认清单与锁文件一致。`make release-check` 还需要 Docker，
+并会运行更完整的发布门禁；执行前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ## 安全与范围
 
