@@ -91,7 +91,8 @@ def _normalized_export_json(value: object) -> object:
 def canonical_export_sha256(database: Path) -> str:
     """Digest stable logical content while normalizing generated identities."""
     export: dict[str, object] = {}
-    with sqlite3.connect(database) as connection:
+    uri = f"file:{database.resolve()}?mode=ro&immutable=1"
+    with sqlite3.connect(uri, uri=True) as connection:
         existing = {
             str(row[0])
             for row in connection.execute(
