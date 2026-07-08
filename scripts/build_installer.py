@@ -17,6 +17,10 @@ from typing import Final
 
 ROOT: Final = Path(__file__).resolve().parent.parent
 VERSION_PATTERN: Final = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(?:[a-zA-Z0-9.-]+)?")
+INNO_SETUP_VERSION: Final = "6.7.3"
+INNO_SETUP_PACKAGE_SHA256: Final = (
+    "9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732"
+)
 
 
 def _host_target() -> tuple[str, str]:
@@ -51,18 +55,29 @@ def _write_checksum(artifact: Path) -> Path:
 
 def _find_inno_compiler() -> Path:
     configured = os.environ.get("INNO_SETUP_COMPILER")
-    candidates = [
-        Path(configured) if configured else None,
-        Path(os.environ.get("ProgramFiles(x86)", "")) / "Inno Setup 6" / "ISCC.exe",
-        Path(os.environ.get("ProgramFiles", "")) / "Inno Setup 6" / "ISCC.exe",
-    ]
-    for candidate in candidates:
-        if candidate is not None and candidate.is_file():
-            return candidate
-    discovered = shutil.which("ISCC.exe")
-    if discovered:
-        return Path(discovered)
-    raise RuntimeError("Inno Setup 6 compiler was not found")
+    if configured and (compiler := Path(configured)).is_file():
+        return compiler
+    raise RuntimeError("verified Inno Setup 6 compiler was not configured")
+
+
+def _verify_inno_compiler(compiler: Path) -> dict[str, str]:
+    package_digest = os.environ.get("STOCK_DESK_INNO_SETUP_PACKAGE_SHA256")
+    if package_digest != INNO_SETUP_PACKAGE_SHA256:
+        raise RuntimeError("Inno Setup package digest was not verified")
+    completed = subprocess.run(  # noqa: S603 -- configured, digest-bound compiler
+        [os.fspath(compiler), "/?"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    output = f"{completed.stdout}\n{completed.stderr}"
+    if completed.returncode != 0 or INNO_SETUP_VERSION not in output:
+        raise RuntimeError(f"expected Inno Setup compiler version {INNO_SETUP_VERSION}")
+    return {
+        "compiler_sha256": _sha256(compiler),
+        "package_sha256": package_digest,
+        "version": INNO_SETUP_VERSION,
+    }
 
 
 def _sign_windows(artifact: Path) -> None:
@@ -95,8 +110,13 @@ def _sign_windows(artifact: Path) -> None:
         )
 
 
-def _build_windows(version: str, bundle_dir: Path, output_dir: Path) -> Path:
-    compiler = _find_inno_compiler()
+def _build_windows(
+    version: str,
+    bundle_dir: Path,
+    output_dir: Path,
+    *,
+    compiler: Path,
+) -> Path:
     _run(
         [
             os.fspath(compiler),
@@ -203,8 +223,16 @@ def build_installer(version: str, *, output_dir: Path) -> tuple[Path, Path]:
         env=environment,
         check=True,
     )
+    build_provenance: dict[str, object] = {}
     if os_name == "windows":
-        artifact = _build_windows(version, pyinstaller_dist / "stock-desk", output_dir)
+        compiler = _find_inno_compiler()
+        build_provenance["inno_setup"] = _verify_inno_compiler(compiler)
+        artifact = _build_windows(
+            version,
+            pyinstaller_dist / "stock-desk",
+            output_dir,
+            compiler=compiler,
+        )
     else:
         artifact = _build_macos(version, architecture, pyinstaller_dist, output_dir)
     checksum = _write_checksum(artifact)
@@ -214,6 +242,7 @@ def build_installer(version: str, *, output_dir: Path) -> tuple[Path, Path]:
             {
                 "architecture": architecture,
                 "artifact": artifact.name,
+                "build_provenance": build_provenance,
                 "os": os_name,
                 "sha256": _sha256(artifact),
                 "signed": bool(

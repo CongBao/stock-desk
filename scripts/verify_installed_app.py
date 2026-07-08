@@ -16,6 +16,15 @@ from urllib.request import urlopen
 
 
 STARTUP_TIMEOUT_SECONDS: Final = 90.0
+V050_SCHEMA_REVISION: Final = "0009_analysis_model_configs"
+CURRENT_SCHEMA_REVISION: Final = "0010_parent_active_retry"
+DISTRIBUTION_TASK_ID: Final = "00000000-0000-4000-8000-000000000500"
+_EXPECTED_DISTRIBUTION_TASK: Final = (
+    "distribution.fixture",
+    "succeeded",
+    '{"input":21}',
+    '{"output":42}',
+)
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -118,6 +127,38 @@ def _start(
     )
 
 
+def _read_distribution_fixture(database: Path) -> tuple[str, tuple[object, ...]]:
+    with sqlite3.connect(database) as connection:
+        revisions = connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchall()
+        task = connection.execute(
+            "SELECT kind, status, payload_json, result_json FROM task_run WHERE id = ?",
+            (DISTRIBUTION_TASK_ID,),
+        ).fetchone()
+    if len(revisions) != 1:
+        raise RuntimeError("distribution fixture has an ambiguous schema revision")
+    if task is None:
+        raise RuntimeError("representative v0.5.0 data was not preserved")
+    return str(revisions[0][0]), task
+
+
+def _assert_historical_fixture(database: Path) -> None:
+    revision, task = _read_distribution_fixture(database)
+    if revision != V050_SCHEMA_REVISION:
+        raise RuntimeError("v0.5.0 fixture schema revision is not authentic")
+    if task != _EXPECTED_DISTRIBUTION_TASK:
+        raise RuntimeError("representative v0.5.0 fixture data is invalid")
+
+
+def _assert_migrated_fixture(database: Path) -> None:
+    revision, task = _read_distribution_fixture(database)
+    if revision != CURRENT_SCHEMA_REVISION:
+        raise RuntimeError("installed database schema revision is not current")
+    if task != _EXPECTED_DISTRIBUTION_TASK:
+        raise RuntimeError("representative v0.5.0 data was not preserved")
+
+
 def _stop_and_wait(
     command: Path,
     process: subprocess.Popen[bytes],
@@ -156,6 +197,7 @@ def verify_installed_app(
         database.parent.mkdir(parents=True, exist_ok=True)
         with sqlite3.connect(database) as connection:
             connection.executescript(fixture_sql.read_text(encoding="utf-8"))
+        _assert_historical_fixture(database)
     with tempfile.TemporaryDirectory(prefix="stock-desk-installed-") as directory:
         unrelated_cwd = Path(directory)
         _verify_frozen_internal_dispatch(command, environment, unrelated_cwd)
@@ -164,15 +206,7 @@ def verify_installed_app(
         _assert_browser_document(first_record)
         data_dir = Path(str(first_record["data_dir"]))
         if fixture_sql is not None:
-            with sqlite3.connect(data_dir / "stock-desk.db") as connection:
-                fixture_marker = connection.execute(
-                    "SELECT release_version FROM distribution_fixture"
-                ).fetchone()
-                migrated_revision = connection.execute(
-                    "SELECT version_num FROM alembic_version"
-                ).fetchone()
-            if fixture_marker != ("0.5.0",) or migrated_revision is None:
-                raise RuntimeError("v0.5.0 fixture was not preserved and migrated")
+            _assert_migrated_fixture(data_dir / "stock-desk.db")
         sentinel = data_dir / "installer-persistence.txt"
         sentinel.write_text("persistent\n", encoding="utf-8")
         _stop_and_wait(command, first, environment)
@@ -187,6 +221,8 @@ def verify_installed_app(
                 or not sentinel.is_file()
             ):
                 raise RuntimeError("same-version restart did not preserve user data")
+            if fixture_sql is not None:
+                _assert_migrated_fixture(data_dir / "stock-desk.db")
             _assert_browser_document(second_record)
         finally:
             _stop_and_wait(command, second, environment)

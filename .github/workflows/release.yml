@@ -278,7 +278,21 @@ jobs:
       - name: Install Inno Setup
         if: runner.os == 'Windows'
         shell: pwsh
-        run: choco install innosetup --no-progress --yes
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = '6.7.3'
+          $expected = '9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732'
+          $installer = Join-Path $env:RUNNER_TEMP "innosetup-$version.exe"
+          $installDir = Join-Path $env:RUNNER_TEMP "inno-setup-$version"
+          Invoke-WebRequest -Uri 'https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe' -OutFile $installer
+          $actual = (Get-FileHash -Algorithm SHA256 $installer).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) { throw "Inno Setup package digest mismatch: $actual" }
+          & $installer /VERYSILENT /SUPPRESSMSGBOXES /NORESTART "/DIR=$installDir"
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup installation failed: $LASTEXITCODE" }
+          $compiler = Join-Path $installDir 'ISCC.exe'
+          if (-not (Test-Path -LiteralPath $compiler -PathType Leaf)) { throw 'ISCC.exe is missing' }
+          "INNO_SETUP_COMPILER=$compiler" >> $env:GITHUB_ENV
+          "STOCK_DESK_INNO_SETUP_PACKAGE_SHA256=$expected" >> $env:GITHUB_ENV
       - name: Configure optional macOS signing and notarization
         if: runner.os == 'macOS'
         shell: bash
@@ -546,6 +560,36 @@ jobs:
       - name: Verify release asset checksums
         working-directory: release-assets
         run: sha256sum -c SHA256SUMS
+      - name: Verify native assets and prepare complete checksums
+        working-directory: release-assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t installers < <(find . -maxdepth 1 -type f \( -name '*.exe' -o -name '*.dmg' \) -printf '%f\n' | sort)
+          mapfile -t sidecars < <(find . -maxdepth 1 -type f \( -name '*.exe.sha256' -o -name '*.dmg.sha256' \) -printf '%f\n' | sort)
+          test "${#installers[@]}" -eq 3
+          test "${#sidecars[@]}" -eq "${#installers[@]}"
+          for artifact in "${installers[@]}"; do
+            sidecar="$artifact.sha256"
+            test -f "$sidecar"
+            test "$(wc -l < "$sidecar")" -eq 1
+            read -r digest listed < "$sidecar"
+            [[ "$digest" =~ ^[0-9a-f]{64}$ ]]
+            test "$listed" = "$artifact"
+            sha256sum -c "$sidecar"
+          done
+          mapfile -t manifests < <(find . -maxdepth 1 -type f -name 'stock-desk-*.json' ! -name '*.sbom.spdx.json' -printf '%f\n' | sort)
+          mapfile -t sboms < <(find . -maxdepth 1 -type f -name '*.sbom.spdx.json' -printf '%f\n' | sort)
+          test "${#manifests[@]}" -eq 3
+          test "${#sboms[@]}" -eq 3
+          find . -maxdepth 1 -type f \
+            ! -name '*.sha256' \
+            ! -name 'SHA256SUMS' \
+            ! -name 'SHA256SUMS.complete' \
+            -printf '%f\0' \
+            | sort -z \
+            | xargs -0 sha256sum > SHA256SUMS.complete
+          sha256sum -c SHA256SUMS.complete
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

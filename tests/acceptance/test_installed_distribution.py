@@ -76,6 +76,48 @@ def test_release_workflow_generates_checksums_sbom_and_provenance() -> None:
     assert "pull_request" not in workflow_text
 
 
+def test_windows_compiler_is_immutable_verified_and_recorded_in_provenance() -> None:
+    workflow_text = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+    build_script = (ROOT / "scripts" / "build_installer.py").read_text(encoding="utf-8")
+
+    assert "choco install innosetup" not in workflow_text
+    assert "is-6_7_3/innosetup-6.7.3.exe" in workflow_text
+    assert (
+        "9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732"
+        in workflow_text
+    )
+    assert "Get-FileHash" in workflow_text
+    assert "STOCK_DESK_INNO_SETUP_PACKAGE_SHA256" in workflow_text
+    assert '"build_provenance"' in build_script
+    assert '"compiler_sha256"' in build_script
+
+
+def test_release_verifies_native_sidecars_and_builds_complete_manifest() -> None:
+    workflow = _workflow()
+    release_steps = workflow["jobs"]["release"]["steps"]
+    native_step = next(
+        step
+        for step in release_steps
+        if step.get("name") == "Verify native assets and prepare complete checksums"
+    )
+    create_index = next(
+        index
+        for index, step in enumerate(release_steps)
+        if step.get("name") == "Create GitHub release"
+    )
+    commands = native_step["run"]
+
+    assert "*.exe.sha256" in commands
+    assert "*.dmg.sha256" in commands
+    assert 'test "$listed" = "$artifact"' in commands
+    assert 'sha256sum -c "$sidecar"' in commands
+    assert "*.exe" in commands and "*.dmg" in commands
+    assert "*.json" in commands and "*.sbom.spdx.json" in commands
+    assert "SHA256SUMS.complete" in commands
+    assert "sha256sum -c SHA256SUMS.complete" in commands
+    assert release_steps.index(native_step) < create_index
+
+
 def test_pyinstaller_bundle_declares_assets_migrations_and_legal_notices() -> None:
     spec = (ROOT / "packaging" / "stock-desk.spec").read_text(encoding="utf-8")
 

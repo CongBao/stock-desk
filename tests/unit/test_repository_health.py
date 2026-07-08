@@ -1381,6 +1381,19 @@ def test_release_checksum_manifest_is_flat_and_verified_before_publish() -> None
     assert checksum_step["run"] == "sha256sum -c SHA256SUMS"
     assert release_steps.index(checksum_step) < create_step_index
 
+    native_checksum_step = next(
+        step
+        for step in release_steps
+        if step.get("name") == "Verify native assets and prepare complete checksums"
+    )
+    native_commands = native_checksum_step["run"]
+    assert 'test "$listed" = "$artifact"' in native_commands
+    assert 'sha256sum -c "$sidecar"' in native_commands
+    assert "SHA256SUMS.complete" in native_commands
+    for pattern in ("*.exe", "*.dmg", "stock-desk-*.json", "*.sbom.spdx.json"):
+        assert pattern in native_commands
+    assert release_steps.index(native_checksum_step) < create_step_index
+
 
 def test_codeowners_covers_source_web_docs_tests_and_automation() -> None:
     codeowners = _read(".github/CODEOWNERS")

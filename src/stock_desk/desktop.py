@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-import getpass
 from importlib.metadata import PackageNotFoundError, version as package_version
 import json
 import logging
@@ -78,17 +77,70 @@ def expected_platform_data_dir(
 
 def _windows_acl_command(path: Path, *, directory: bool) -> tuple[str, ...]:
     system_root = os.environ.get("SystemRoot", r"C:\Windows")
-    icacls = Path(system_root) / "System32" / "icacls.exe"
-    user_domain = os.environ.get("USERDOMAIN")
-    user_name = os.environ.get("USERNAME") or getpass.getuser()
-    principal = f"{user_domain}\\{user_name}" if user_domain else user_name
-    grant = f"{principal}:(OI)(CI)F" if directory else f"{principal}:F"
+    powershell = (
+        Path(system_root) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    )
+    inheritance = (
+        "[System.Security.AccessControl.InheritanceFlags]::ContainerInherit "
+        "-bor [System.Security.AccessControl.InheritanceFlags]::ObjectInherit"
+        if directory
+        else "[System.Security.AccessControl.InheritanceFlags]::None"
+    )
+    security_type = "DirectorySecurity" if directory else "FileSecurity"
+    script = f"""
+$ErrorActionPreference = 'Stop'
+$target = $args[0]
+$current = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+$system = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-18')
+$administrators = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
+$required = @($current, $system, $administrators)
+$acl = [System.Security.AccessControl.{security_type}]::new()
+$acl.SetOwner($current)
+$acl.SetAccessRuleProtection($true, $false)
+$inheritance = {inheritance}
+$propagation = [System.Security.AccessControl.PropagationFlags]::None
+foreach ($sid in $required) {{
+    $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+        $sid,
+        [System.Security.AccessControl.FileSystemRights]::FullControl,
+        $inheritance,
+        $propagation,
+        [System.Security.AccessControl.AccessControlType]::Allow
+    )
+    [void]$acl.AddAccessRule($rule)
+}}
+Set-Acl -LiteralPath $target -AclObject $acl
+$actual = Get-Acl -LiteralPath $target
+if (-not $actual.AreAccessRulesProtected) {{ throw 'ACL inheritance remains enabled' }}
+$allowed = @{{}}
+foreach ($sid in $required) {{ $allowed[$sid.Value] = $false }}
+$rules = @($actual.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
+foreach ($rule in $rules) {{
+    $sid = $rule.IdentityReference.Value
+    if (-not $allowed.ContainsKey($sid)) {{ throw "Unexpected ACL principal: $sid" }}
+    if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) {{
+        throw "Unexpected ACL deny rule: $sid"
+    }}
+    $full = [System.Security.AccessControl.FileSystemRights]::FullControl
+    if (($rule.FileSystemRights -band $full) -ne $full) {{
+        throw "ACL principal lacks full control: $sid"
+    }}
+    $allowed[$sid] = $true
+}}
+foreach ($sid in $required) {{
+    if (-not $allowed[$sid.Value]) {{ throw "Required ACL principal is missing: $($sid.Value)" }}
+}}
+""".strip()
     return (
-        os.fspath(icacls),
+        os.fspath(powershell),
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        script,
         os.fspath(path),
-        "/inheritance:r",
-        "/grant:r",
-        grant,
     )
 
 
