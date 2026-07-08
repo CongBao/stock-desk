@@ -46,6 +46,34 @@ def test_atomic_writer_never_leaves_a_partial_file(tmp_path: Path) -> None:
     assert list(destination.parent.glob(".*.tmp")) == []
 
 
+def test_browser_measurement_clears_stale_run_evidence_before_playwright(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_output = tmp_path / "browser-raw.json"
+    process_output = tmp_path / "processes.json"
+    raw_output.write_text("stale", encoding="utf-8")
+    process_output.write_text("stale", encoding="utf-8")
+    observed: dict[str, object] = {}
+
+    def run(_command: object, **kwargs: object) -> None:
+        observed["raw_exists"] = raw_output.exists()
+        observed["process_exists"] = process_output.exists()
+        environment = kwargs["env"]
+        assert isinstance(environment, dict)
+        observed["process_file"] = environment["STOCK_DESK_PERFORMANCE_PROCESS_FILE"]
+
+    monkeypatch.setattr(runner.subprocess, "run", run)
+
+    runner._run_browser_measurement(raw_output)
+
+    assert observed == {
+        "raw_exists": False,
+        "process_exists": False,
+        "process_file": str(process_output.resolve()),
+    }
+
+
 @pytest.mark.parametrize(
     ("dirty", "digest_matches", "hardware_qualifies", "reason"),
     [

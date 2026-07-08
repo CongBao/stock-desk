@@ -267,15 +267,15 @@ def _verified_git_sha() -> str:
 
 
 def _run_browser_measurement(output: Path) -> None:
+    process_output = output.parent / "processes.json"
     output.parent.mkdir(parents=True, exist_ok=True)
     output.unlink(missing_ok=True)
+    process_output.unlink(missing_ok=True)
     environment = os.environ.copy()
     environment["STOCK_DESK_PERFORMANCE_RAW_OUTPUT"] = str(output.resolve())
     environment["STOCK_DESK_PERFORMANCE_FIXTURE"] = str(FIXTURE_PATH.resolve())
     environment["STOCK_DESK_PERFORMANCE_MODE"] = "1"
-    environment["STOCK_DESK_PERFORMANCE_PROCESS_FILE"] = str(
-        (output.parent / "processes.json").resolve()
-    )
+    environment["STOCK_DESK_PERFORMANCE_PROCESS_FILE"] = str(process_output.resolve())
     subprocess.run(
         [
             "pnpm",
