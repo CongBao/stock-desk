@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import base64
 from pathlib import Path
+import struct
+import zlib
 
 import pytest
 
@@ -154,6 +155,8 @@ Supervised source processes.
 
 Separate API and worker containers.
 
+The native packaged runtime does not self-mutate, but its user-writable install location can be changed by the user.
+
 ## Modules and boundaries
 
 Ports and adapters.
@@ -165,6 +168,16 @@ Local data directory.
 ## Trust and security
 
 Localhost by default.
+""",
+    "docs/backup-and-restore.md": """# Backup, restore, upgrade, and rollback
+
+## Deployment support
+
+Record the Compose image digest, immutable source commit, or exact macOS installer artifact.
+
+## Upgrade and rollback procedure
+
+Restore each deployment with its recorded identity.
 """,
     "docs/configuration.md": """# Configuration
 
@@ -330,12 +343,35 @@ Return to the task center and retry.
         (root / f"{stem}.zh-CN.md").write_text(chinese, encoding="utf-8")
 
 
+def _png_bytes(width: int, height: int, *, varied: bool) -> bytes:
+    def chunk(kind: bytes, payload: bytes) -> bytes:
+        checksum = zlib.crc32(kind + payload) & 0xFFFFFFFF
+        return (
+            struct.pack(">I", len(payload))
+            + kind
+            + payload
+            + struct.pack(">I", checksum)
+        )
+
+    rows = bytearray()
+    for y in range(height):
+        rows.append(0)
+        for x in range(width):
+            value = (x * 7 + y * 13) % 256 if varied else 128
+            rows.extend((value, (value * 3) % 256, (value * 5) % 256))
+    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", header)
+        + chunk(b"IDAT", zlib.compress(bytes(rows), level=9))
+        + chunk(b"IEND", b"")
+    )
+
+
 def _finalize_wiki(root: Path) -> None:
     image_dir = root / "images"
     image_dir.mkdir()
-    png = base64.b64decode(
-        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
-    )
+    png = _png_bytes(640, 360, varied=True)
     for stem in REQUIRED_WIKI_PAGES:
         if stem == "Home":
             continue
@@ -482,6 +518,36 @@ def test_repository_contract_requires_native_topology_and_attestation_guidance(
         assert any(expected in failure for failure in failures), expected
 
 
+def test_repository_contract_requires_mode_specific_rollback_and_native_writability(
+    tmp_path: Path,
+) -> None:
+    _write_repository(tmp_path)
+    removals = {
+        "docs/backup-and-restore.md": (
+            "Compose image digest",
+            "immutable source commit",
+            "exact macOS installer artifact",
+        ),
+        "docs/architecture.md": ("user-writable install location",),
+    }
+    for relative_path, snippets in removals.items():
+        path = tmp_path / relative_path
+        document = path.read_text(encoding="utf-8")
+        for snippet in snippets:
+            document = document.replace(snippet, "removed")
+        path.write_text(document, encoding="utf-8")
+
+    failures = verify_repository(tmp_path)
+
+    for expected in (
+        "Compose image digest",
+        "immutable source commit",
+        "exact macOS installer artifact",
+        "user-writable install location",
+    ):
+        assert any(expected in failure for failure in failures), expected
+
+
 def test_wiki_staging_requires_complete_pairs_and_procedural_sections(
     tmp_path: Path,
 ) -> None:
@@ -587,8 +653,7 @@ def test_final_wiki_rejects_symlinks_path_escapes_and_invalid_images(
         "images/linked.png" in failure and "symlink" in failure for failure in failures
     )
     assert any(
-        "images/invalid.png" in failure and "invalid image" in failure
-        for failure in failures
+        "images/invalid.png" in failure and "decode" in failure for failure in failures
     )
     assert any(
         "images/directory.png" in failure and "not a regular image" in failure
@@ -611,6 +676,118 @@ def test_final_wiki_rejects_placeholder_and_internal_publishable_path_names(
 
     assert any("images/SCREENSHOT_PLACEHOLDER.png" in failure for failure in failures)
     assert any("openspec/private.png" in failure for failure in failures)
+
+
+def test_final_wiki_rejects_every_unsupported_regular_path_before_filtering(
+    tmp_path: Path,
+) -> None:
+    _write_wiki(tmp_path)
+    _finalize_wiki(tmp_path)
+    (tmp_path / "attachment.pdf").write_bytes(b"%PDF harmless")
+    (tmp_path / "notes.txt").write_text(
+        "SCREENSHOT_PLACEHOLDER openspec/private.md",
+        encoding="utf-8",
+    )
+    git_metadata = tmp_path / ".git" / "ignored.txt"
+    git_metadata.parent.mkdir()
+    git_metadata.write_text("SCREENSHOT_PLACEHOLDER", encoding="utf-8")
+
+    failures = verify_wiki(tmp_path, final=True)
+
+    assert any(
+        "attachment.pdf" in failure and "unsupported" in failure for failure in failures
+    )
+    assert any(
+        "notes.txt" in failure and "unsupported" in failure for failure in failures
+    )
+    assert any(
+        "notes.txt" in failure and "placeholder" in failure.lower()
+        for failure in failures
+    )
+    assert any(
+        "notes.txt" in failure and "openspec/" in failure for failure in failures
+    )
+    assert not any(".git/ignored.txt" in failure for failure in failures)
+
+
+def test_final_wiki_requires_fully_decoded_useful_raster_screenshots(
+    tmp_path: Path,
+) -> None:
+    _write_wiki(tmp_path)
+    _finalize_wiki(tmp_path)
+    image_dir = tmp_path / "images"
+    fake = image_dir / "fake.png"
+    fake.write_bytes(b"\x89PNG\r\n\x1a\nnot-a-decoded-image")
+    tiny = image_dir / "tiny.png"
+    tiny.write_bytes(_png_bytes(1, 1, varied=False))
+    svg = image_dir / "fake.svg"
+    svg.write_text("<svg xmlns='http://www.w3.org/2000/svg'></svg>", encoding="utf-8")
+    page = tmp_path / "Backtesting.md"
+    document = page.read_text(encoding="utf-8")
+    document = document.replace("images/Backtesting.png", "images/fake.png")
+    document += "\n![Tiny](images/tiny.png)\n![Vector](images/fake.svg)\n"
+    page.write_text(document, encoding="utf-8")
+
+    failures = verify_wiki(tmp_path, final=True)
+
+    assert any(
+        "images/fake.png" in failure and "decode" in failure for failure in failures
+    )
+    assert any(
+        "images/tiny.png" in failure and "dimensions" in failure for failure in failures
+    )
+    assert any(
+        "images/fake.svg" in failure and "unsupported" in failure
+        for failure in failures
+    )
+    assert any(
+        "Backtesting.md" in failure and "real screenshot" in failure
+        for failure in failures
+    )
+
+
+def test_ast_link_policy_covers_reference_html_autolink_and_nested_parentheses(
+    tmp_path: Path,
+) -> None:
+    _write_wiki(tmp_path)
+    _finalize_wiki(tmp_path)
+    page = tmp_path / "guides" / "rendered-links.md"
+    page.parent.mkdir()
+    page.write_text(
+        """# Rendered links
+
+[Reference][missing-reference]
+
+![Reference image][missing-image]
+
+<a href="../escaped.html">escaped HTML</a>
+
+<img src="images/missing-html.png" alt="missing HTML image">
+
+<ftp://example.com/private>
+
+[Nested](missing_(guide).md)
+
+[missing-reference]: missing_(reference).md
+[missing-image]: images/missing_(reference).png
+""",
+        encoding="utf-8",
+    )
+
+    failures = verify_wiki(tmp_path, final=True)
+
+    for target in (
+        "missing_(reference).md",
+        "images/missing_(reference).png",
+        "../escaped.html",
+        "images/missing-html.png",
+        "ftp://example.com/private",
+        "missing_(guide).md",
+    ):
+        assert any(
+            "guides/rendered-links.md" in failure and target in failure
+            for failure in failures
+        ), target
 
 
 def test_wiki_backup_commands_require_posix_source_or_container_scope(

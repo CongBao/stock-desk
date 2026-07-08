@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
+from html.parser import HTMLParser
 import os
 from pathlib import Path
 import re
 import subprocess
 import sys
+from typing import Literal
 from urllib.parse import unquote, urlsplit
+import warnings
+
+from markdown_it import MarkdownIt
+from markdown_it.token import Token
+from PIL import Image, UnidentifiedImageError
 
 
 REQUIRED_PUBLIC_DOCUMENTS = (
@@ -17,6 +25,7 @@ REQUIRED_PUBLIC_DOCUMENTS = (
     "CHANGELOG.md",
     "ROADMAP.md",
     "docs/architecture.md",
+    "docs/backup-and-restore.md",
     "docs/configuration.md",
     "docs/troubleshooting.md",
     "docs/disclaimer.md",
@@ -46,6 +55,10 @@ REQUIRED_SECTIONS = {
         "Modules and boundaries",
         "Data and storage",
         "Trust and security",
+    ),
+    "docs/backup-and-restore.md": (
+        "Deployment support",
+        "Upgrade and rollback procedure",
     ),
     "docs/configuration.md": (
         "Native installers",
@@ -127,6 +140,12 @@ REQUIRED_PUBLIC_SNIPPETS = {
         "parent launcher",
         "127.0.0.1",
         "random",
+        "user-writable install location",
+    ),
+    "docs/backup-and-restore.md": (
+        "Compose image digest",
+        "immutable source commit",
+        "exact macOS installer artifact",
     ),
     "docs/configuration.md": (
         "Native installers",
@@ -155,14 +174,40 @@ WIKI_PLACEHOLDER_PATTERNS = (
     "replace after integrated release-candidate capture",
 )
 
-IMAGE_SUFFIXES = frozenset({".gif", ".jpeg", ".jpg", ".png", ".svg", ".webp"})
+APPROVED_RASTER_SUFFIXES = frozenset({".jpeg", ".jpg", ".png", ".webp"})
+PUBLISHABLE_SUFFIXES = frozenset({".md", *APPROVED_RASTER_SUFFIXES})
+ALLOWED_LINK_SCHEMES = frozenset({"http", "https", "mailto", "tel"})
+MIN_SCREENSHOT_WIDTH = 320
+MIN_SCREENSHOT_HEIGHT = 180
 
 _HEADING = re.compile(r"^#{1,6}\s+(.+?)\s*$", re.MULTILINE)
-_LINK = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
-_IMAGE_LINK = re.compile(r"!\[[^\]]+\]\(([^)]+)\)")
 _FENCED_SHELL = re.compile(
     r"^```(?:bash|sh|shell)\s*\n(.*?)^```\s*$", re.MULTILINE | re.DOTALL
 )
+
+_MARKDOWN = MarkdownIt("gfm-like", {"html": True})
+
+
+@dataclass(frozen=True, slots=True)
+class RenderedTarget:
+    kind: Literal["link", "image"]
+    target: str
+
+
+class _RenderedHTMLTargets(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.targets: list[RenderedTarget] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = {name.casefold(): value for name, value in attrs}
+        normalized_tag = tag.casefold()
+        if normalized_tag == "a" and attributes.get("href"):
+            self.targets.append(RenderedTarget("link", attributes["href"] or ""))
+        elif normalized_tag == "img" and attributes.get("src"):
+            self.targets.append(RenderedTarget("image", attributes["src"] or ""))
+
+
 _MAKE_TARGET = re.compile(r"^([A-Za-z0-9][A-Za-z0-9_.-]*):(?:\s|$)", re.MULTILINE)
 _MAKE_COMMAND = re.compile(r"(?:^|[;&|]\s*|\s)make\s+([A-Za-z0-9_.-]+)")
 _SCRIPT_COMMAND = re.compile(
@@ -184,60 +229,85 @@ def _headings(document: str) -> set[str]:
     return headings
 
 
-def _relative_link_failures(
-    repo_root: Path, relative_path: str, document: str
-) -> list[str]:
-    failures: list[str] = []
-    source = repo_root / relative_path
-    for raw_target in _LINK.findall(document):
-        target = raw_target.strip().split(maxsplit=1)[0].strip("<>")
-        parts = urlsplit(target)
-        if parts.scheme or parts.netloc or target.startswith(("#", "mailto:", "tel:")):
-            continue
-        decoded_path = unquote(parts.path)
-        if not decoded_path:
-            continue
-        destination = (source.parent / decoded_path).resolve()
-        try:
-            destination.relative_to(repo_root.resolve())
-        except ValueError:
-            failures.append(
-                f"{relative_path}: relative link escapes the repository: {target}"
-            )
-            continue
-        if not destination.exists():
-            failures.append(f"{relative_path}: broken relative link: {target}")
-    return failures
+def _rendered_targets(document: str) -> tuple[RenderedTarget, ...]:
+    rendered: list[RenderedTarget] = []
+
+    def visit(tokens: list[Token]) -> None:
+        for token in tokens:
+            if token.type == "link_open":
+                target = token.attrGet("href")
+                if isinstance(target, str) and target:
+                    rendered.append(RenderedTarget("link", target))
+            elif token.type == "image":
+                target = token.attrGet("src")
+                if isinstance(target, str) and target:
+                    rendered.append(RenderedTarget("image", target))
+            elif token.type in {"html_block", "html_inline"}:
+                parser = _RenderedHTMLTargets()
+                parser.feed(token.content)
+                parser.close()
+                rendered.extend(parser.targets)
+            if token.children:
+                visit(token.children)
+
+    visit(_MARKDOWN.parse(document))
+    return tuple(rendered)
 
 
-def _wiki_image_link_failures(
-    root: Path, relative_path: str, document: str
+def _local_destination(root: Path, source: Path, target: str) -> Path | None:
+    parts = urlsplit(target)
+    if parts.scheme or parts.netloc or target.startswith("#"):
+        return None
+    decoded_path = unquote(parts.path)
+    if not decoded_path:
+        return None
+    return (source.parent / decoded_path).resolve()
+
+
+def _rendered_target_failures(
+    root: Path,
+    relative_path: str,
+    targets: tuple[RenderedTarget, ...],
 ) -> list[str]:
     failures: list[str] = []
     source = root / relative_path
-    for raw_target in _IMAGE_LINK.findall(document):
-        target = raw_target.strip().split(maxsplit=1)[0].strip("<>")
+    resolved_root = root.resolve()
+    for rendered in targets:
+        target = rendered.target
         parts = urlsplit(target)
         if parts.scheme or parts.netloc:
-            failures.append(
-                f"{relative_path}: external image cannot be verified: {target}"
-            )
+            if rendered.kind == "image":
+                failures.append(
+                    f"{relative_path}: external image cannot be verified: {target}"
+                )
+            elif parts.scheme.casefold() not in ALLOWED_LINK_SCHEMES:
+                failures.append(
+                    f"{relative_path}: unsupported rendered link scheme: {target}"
+                )
             continue
-        decoded_path = unquote(parts.path)
-        destination = (source.parent / decoded_path).resolve()
+        if target.startswith("#"):
+            continue
+        destination = _local_destination(root, source, target)
+        if destination is None:
+            continue
         try:
-            destination.relative_to(root.resolve())
+            destination.relative_to(resolved_root)
         except ValueError:
-            continue
-        if not destination.is_file():
             failures.append(
-                f"{relative_path}: image is not a regular image file: {target}"
+                f"{relative_path}: rendered {rendered.kind} escapes the publication root: {target}"
             )
             continue
-        if destination.suffix.casefold() not in IMAGE_SUFFIXES or not _valid_image(
-            destination
-        ):
-            failures.append(f"{relative_path}: invalid image link: {target}")
+        if rendered.kind == "image":
+            if not destination.is_file():
+                failures.append(
+                    f"{relative_path}: image is not a regular image file: {target}"
+                )
+            elif destination.suffix.casefold() not in APPROVED_RASTER_SUFFIXES:
+                failures.append(
+                    f"{relative_path}: unsupported rendered image type: {target}"
+                )
+        elif not destination.exists():
+            failures.append(f"{relative_path}: broken rendered link: {target}")
     return failures
 
 
@@ -295,25 +365,45 @@ def _required_settings(repo_root: Path) -> set[str]:
     return settings
 
 
-def _valid_image(path: Path) -> bool:
+def _raster_failure(path: Path) -> str | None:
+    expected_formats = {
+        ".jpeg": "JPEG",
+        ".jpg": "JPEG",
+        ".png": "PNG",
+        ".webp": "WEBP",
+    }
+    expected_format = expected_formats.get(path.suffix.casefold())
+    if expected_format is None:
+        return "unsupported raster type"
     try:
-        payload = path.read_bytes()
-    except OSError:
-        return False
-    suffix = path.suffix.casefold()
-    if suffix == ".png":
-        return payload.startswith(b"\x89PNG\r\n\x1a\n")
-    if suffix in {".jpg", ".jpeg"}:
-        return payload.startswith(b"\xff\xd8\xff")
-    if suffix == ".gif":
-        return payload.startswith((b"GIF87a", b"GIF89a"))
-    if suffix == ".webp":
-        return (
-            len(payload) >= 12 and payload[:4] == b"RIFF" and payload[8:12] == b"WEBP"
-        )
-    if suffix == ".svg":
-        return b"<svg" in payload[:4096].lower()
-    return False
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(path) as candidate:
+                if candidate.format != expected_format:
+                    return "decoded format does not match the filename"
+                candidate.verify()
+            with Image.open(path) as decoded:
+                decoded.load()
+                width, height = decoded.size
+                if width < MIN_SCREENSHOT_WIDTH or height < MIN_SCREENSHOT_HEIGHT:
+                    return (
+                        "screenshot dimensions are too small "
+                        f"({width}x{height}; minimum "
+                        f"{MIN_SCREENSHOT_WIDTH}x{MIN_SCREENSHOT_HEIGHT})"
+                    )
+                sample = decoded.convert("RGB").resize((64, 36))
+                colors = sample.getcolors(maxcolors=(64 * 36) + 1)
+                if colors is not None and len(colors) < 4:
+                    return "screenshot content is visually trivial"
+    except (
+        Image.DecompressionBombError,
+        Image.DecompressionBombWarning,
+        OSError,
+        UnidentifiedImageError,
+        ValueError,
+    ) as error:
+        return f"image decode failed: {type(error).__name__}"
+    return None
 
 
 def _wiki_publishable_paths(
@@ -327,30 +417,50 @@ def _wiki_publishable_paths(
         if ".git" in relative.parts:
             continue
         relative_text = relative.as_posix()
+        relative_casefolded = relative_text.casefold()
+        for blocked in WIKI_FORBIDDEN_REFERENCES:
+            if blocked.casefold() in relative_casefolded:
+                failures.append(
+                    f"{relative_text}: forbidden public-boundary path: {blocked}"
+                )
+        if final and any(
+            placeholder in relative_casefolded
+            for placeholder in WIKI_PLACEHOLDER_PATTERNS
+        ):
+            failures.append(
+                f"{relative_text}: placeholder path blocks final Wiki publication"
+            )
         if path.is_symlink():
             failures.append(f"{relative_text}: symlink is not publishable")
             continue
         if not path.is_file():
             continue
         suffix = path.suffix.casefold()
-        is_publishable = suffix == ".md" or suffix in IMAGE_SUFFIXES
-        if not is_publishable:
+        try:
+            payload = path.read_bytes()
+        except OSError:
+            failures.append(f"{relative_text}: publication file is unreadable")
             continue
+        payload_casefolded = payload.lower()
         for blocked in WIKI_FORBIDDEN_REFERENCES:
-            if blocked.casefold() in relative_text.casefold():
+            if blocked.casefold().encode("utf-8") in payload_casefolded:
                 failures.append(
-                    f"{relative_text}: forbidden public-boundary path: {blocked}"
+                    f"{relative_text}: forbidden public-boundary content: {blocked}"
                 )
-        if final and any(
-            placeholder in relative_text.casefold()
-            for placeholder in WIKI_PLACEHOLDER_PATTERNS
-        ):
-            failures.append(
-                f"{relative_text}: placeholder path blocks final Wiki publication"
-            )
+        if final:
+            for placeholder in WIKI_PLACEHOLDER_PATTERNS:
+                if placeholder.encode("utf-8") in payload_casefolded:
+                    failures.append(
+                        f"{relative_text}: placeholder content blocks final Wiki publication: {placeholder}"
+                    )
+            if suffix not in PUBLISHABLE_SUFFIXES:
+                failures.append(
+                    f"{relative_text}: unsupported Wiki publication file type"
+                )
+                continue
         if suffix == ".md":
             markdown.append(path)
-        elif suffix in IMAGE_SUFFIXES:
+        elif suffix in APPROVED_RASTER_SUFFIXES:
             images.append(path)
     return markdown, images, failures
 
@@ -384,7 +494,9 @@ def verify_repository(repo_root: Path) -> list[str]:
     for path in public_paths:
         relative_path = path.relative_to(root).as_posix()
         document = documents.get(relative_path, _read(path))
-        failures.extend(_relative_link_failures(root, relative_path, document))
+        failures.extend(
+            _rendered_target_failures(root, relative_path, _rendered_targets(document))
+        )
         failures.extend(_command_failures(root, relative_path, document))
         for blocked in FORBIDDEN_PUBLIC_REFERENCES:
             if blocked in document:
@@ -439,6 +551,7 @@ def verify_wiki(wiki_root: Path, *, final: bool) -> list[str]:
     )
     failures.extend(path_failures)
     documents: dict[str, str] = {}
+    rendered_targets: dict[str, tuple[RenderedTarget, ...]] = {}
     for path in markdown_paths:
         relative_path = path.relative_to(root).as_posix()
         try:
@@ -447,9 +560,9 @@ def verify_wiki(wiki_root: Path, *, final: bool) -> list[str]:
             failures.append(f"{relative_path}: Markdown is unreadable")
             continue
         documents[relative_path] = document
-        failures.extend(_relative_link_failures(root, relative_path, document))
-        if final:
-            failures.extend(_wiki_image_link_failures(root, relative_path, document))
+        targets = _rendered_targets(document)
+        rendered_targets[relative_path] = targets
+        failures.extend(_rendered_target_failures(root, relative_path, targets))
         for blocked in WIKI_FORBIDDEN_REFERENCES:
             if blocked in document:
                 failures.append(
@@ -465,8 +578,10 @@ def verify_wiki(wiki_root: Path, *, final: bool) -> list[str]:
 
     for path in image_paths:
         relative_path = path.relative_to(root).as_posix()
-        if final and not _valid_image(path):
-            failures.append(f"{relative_path}: invalid image blocks final publication")
+        if final:
+            image_failure = _raster_failure(path)
+            if image_failure is not None:
+                failures.append(f"{relative_path}: {image_failure}")
 
     checklist = documents.get("PUBLISHING-CHECKLIST.md")
     if final and checklist is not None:
@@ -516,16 +631,25 @@ def verify_wiki(wiki_root: Path, *, final: bool) -> list[str]:
                 failures.append(
                     f"{path.name}: staging page must carry a SCREENSHOT_PLACEHOLDER marker"
                 )
-            if final and not any(
-                urlsplit(target.strip().split(maxsplit=1)[0].strip("<>"))
-                .path.casefold()
-                .endswith(tuple(IMAGE_SUFFIXES))
-                and urlsplit(
-                    target.strip().split(maxsplit=1)[0].strip("<>")
-                ).path.startswith("images/")
-                for target in _IMAGE_LINK.findall(document)
-            ):
-                failures.append(f"{path.name}: final page is missing a real screenshot")
+            if final:
+                has_real_screenshot = False
+                for rendered in rendered_targets.get(path.name, ()):
+                    if rendered.kind != "image":
+                        continue
+                    destination = _local_destination(root, path, rendered.target)
+                    if destination is None:
+                        continue
+                    if not rendered.target.startswith("images/"):
+                        continue
+                    if destination.suffix.casefold() not in APPROVED_RASTER_SUFFIXES:
+                        continue
+                    if destination.is_file() and _raster_failure(destination) is None:
+                        has_real_screenshot = True
+                        break
+                if not has_real_screenshot:
+                    failures.append(
+                        f"{path.name}: final page is missing a real screenshot"
+                    )
 
     for relative_path, document in documents.items():
         if (
