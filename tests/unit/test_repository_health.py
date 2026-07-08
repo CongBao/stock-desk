@@ -1085,7 +1085,8 @@ def test_stage_two_formula_gates_extend_every_release_surface() -> None:
     assert re.search(
         r"^acceptance-formula:\n\tuv run --frozen pytest -W error "
         r"tests/acceptance/test_formula_consistency\.py "
-        r"tests/acceptance/test_macd_formula_flow\.py$",
+        r"tests/acceptance/test_macd_formula_flow\.py "
+        r"tests/acceptance/test_formula_editing_assistance\.py$",
         makefile,
         re.MULTILINE,
     )
@@ -1195,7 +1196,8 @@ def test_stage_four_analysis_gates_extend_every_release_surface() -> None:
     )
     assert re.search(
         r"^e2e-analysis:\n\tpnpm exec playwright test "
-        r"web/e2e/analysis\.spec\.ts --project=chromium$",
+        r"web/e2e/analysis\.spec\.ts "
+        r"web/e2e/model-provider-matrix\.spec\.ts --project=chromium$",
         makefile,
         re.MULTILINE,
     )
