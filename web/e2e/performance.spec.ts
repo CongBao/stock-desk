@@ -7,19 +7,21 @@ import {
 } from '@playwright/test';
 import { execFile } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
 import {
   canonicalDigest as digest,
   completedGenerationAfter,
   parseProcessRows,
+  parseProcProcessRow,
   portableCommandTokens,
   ProcessIdentityTracker,
   ProgressResponseLedger,
   progressWindowsDemonstrateChange,
   providerEvidence,
   type RootExpectation,
+  type ProcessRow,
   selectProcessTree,
   type RoutingManifest,
 } from './performanceEvidence';
@@ -117,14 +119,45 @@ function processList(): Promise<string> {
   });
 }
 
+async function linuxProcessRows(): Promise<ProcessRow[]> {
+  const entries = await readdir('/proc', { withFileTypes: true });
+  const rows = await Promise.all(
+    entries
+      .filter((entry) => entry.isDirectory() && /^\d+$/u.test(entry.name))
+      .map(async (entry) => {
+        const pid = Number(entry.name);
+        const root = `/proc/${entry.name}`;
+        try {
+          const [stat, status, cmdline] = await Promise.all([
+            readFile(`${root}/stat`, 'utf8'),
+            readFile(`${root}/status`, 'utf8'),
+            readFile(`${root}/cmdline`, 'utf8'),
+          ]);
+          return parseProcProcessRow(pid, stat, status, cmdline);
+        } catch (error) {
+          const code =
+            typeof error === 'object' && error !== null && 'code' in error
+              ? String(error.code)
+              : '';
+          if (['EACCES', 'ENOENT', 'EPERM', 'ESRCH'].includes(code))
+            return null;
+          throw error;
+        }
+      }),
+  );
+  return rows.filter((row): row is ProcessRow => row !== null);
+}
+
+async function processRows(): Promise<ProcessRow[]> {
+  if (process.platform === 'linux') return linuxProcessRows();
+  return parseProcessRows(await processList());
+}
+
 async function processTreeSnapshot(
   roots: readonly number[],
   identities?: ProcessIdentityTracker,
 ) {
-  const selected = selectProcessTree(
-    roots,
-    parseProcessRows(await processList()),
-  );
+  const selected = selectProcessTree(roots, await processRows());
   identities?.observe(selected);
   return {
     rssBytes: selected.reduce((sum, row) => sum + row.rssBytes, 0),

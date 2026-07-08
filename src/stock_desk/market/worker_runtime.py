@@ -68,6 +68,9 @@ from stock_desk.tasks.repository import TaskRepository
 from stock_desk.tasks.worker import ClaimedTaskHandler, TaskWorker, demo_double
 
 
+_IDLE_TASK_POLL_SECONDS = 0.1
+
+
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -469,7 +472,7 @@ class ProductionMarketWorker:
         while not stop_event.is_set():
             completed = self.run_once()
             if completed is None:
-                stop_event.wait(1.0)
+                stop_event.wait(_IDLE_TASK_POLL_SECONDS)
 
     def close(self) -> None:
         with self._close_lock:

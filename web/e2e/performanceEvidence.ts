@@ -57,6 +57,53 @@ export function parseProcessRows(output: string): ProcessRow[] {
     });
 }
 
+export function parseProcProcessRow(
+  pid: number,
+  stat: string,
+  status: string,
+  cmdline: string,
+): ProcessRow {
+  const commandEnd = stat.lastIndexOf(') ');
+  const commandStart = stat.indexOf('(');
+  if (commandStart < 1 || commandEnd <= commandStart) {
+    throw new Error('proc stat output is malformed');
+  }
+  const reportedPid = Number(stat.slice(0, commandStart).trim());
+  const fields = stat
+    .slice(commandEnd + 2)
+    .trim()
+    .split(/\s+/u);
+  const parent = Number(fields[1]);
+  const startTicks = fields[19];
+  const rssMatch = /^VmRSS:\s+(\d+)\s+kB$/mu.exec(status);
+  if (
+    reportedPid !== pid ||
+    !Number.isSafeInteger(parent) ||
+    parent < 0 ||
+    startTicks === undefined ||
+    !/^\d+$/u.test(startTicks) ||
+    rssMatch === null
+  ) {
+    throw new Error('proc process output is malformed');
+  }
+  const rssKilobytes = Number(rssMatch[1]);
+  if (!Number.isSafeInteger(rssKilobytes) || rssKilobytes < 0) {
+    throw new Error('proc process RSS is malformed');
+  }
+  const command = cmdline
+    .split('\0')
+    .filter((token) => token.length > 0)
+    .join(' ');
+  const fallback = stat.slice(commandStart + 1, commandEnd);
+  return {
+    pid,
+    parent,
+    rssBytes: rssKilobytes * 1024,
+    startedAt: `linux-ticks:${startTicks}`,
+    command: command || `[${fallback}]`,
+  };
+}
+
 export function selectProcessTree(
   roots: readonly number[],
   rows: readonly ProcessRow[],

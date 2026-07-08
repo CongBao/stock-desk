@@ -6,6 +6,7 @@ import {
   progressWindowsDemonstrateChange,
   ProcessIdentityTracker,
   parseProcessRows,
+  parseProcProcessRow,
   portableCommandTokens,
   ProgressResponseLedger,
   providerEvidence,
@@ -143,6 +144,23 @@ describe('process-tree evidence', () => {
         command: '/usr/bin/chromium --headless',
       },
     ]);
+  });
+
+  it('parses Linux proc identity and RSS without spawning a sampling helper', () => {
+    expect(
+      parseProcProcessRow(
+        321,
+        `321 (node worker) S 12 ${Array.from({ length: 17 }, () => 0).join(' ')} 987654 0 0`,
+        'Name:\tnode\nVmRSS:\t  2048 kB\n',
+        '/usr/bin/node\u0000-m\u0000scripts.e2e_dev\u0000--worker\u0000',
+      ),
+    ).toEqual({
+      pid: 321,
+      parent: 12,
+      rssBytes: 2_097_152,
+      startedAt: 'linux-ticks:987654',
+      command: '/usr/bin/node -m scripts.e2e_dev --worker',
+    });
   });
 
   it('rejects a changed command within the same process incarnation', () => {

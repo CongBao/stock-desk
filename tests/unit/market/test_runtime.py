@@ -33,6 +33,29 @@ from tests.unit.market.providers.tdx_test_helpers import (
 )
 
 
+class _OneIdleWait:
+    def __init__(self) -> None:
+        self.waits: list[float] = []
+
+    def is_set(self) -> bool:
+        return bool(self.waits)
+
+    def wait(self, timeout: float) -> bool:
+        self.waits.append(timeout)
+        return True
+
+
+def test_production_worker_checks_new_tasks_within_interactive_latency() -> None:
+    runtime = object.__new__(ProductionMarketWorker)
+    runtime.scheduler = type("Scheduler", (), {"tick": lambda _self: None})()
+    runtime.worker = type("Worker", (), {"run_once": lambda _self: None})()
+    stop = _OneIdleWait()
+
+    runtime.run_forever(stop)  # type: ignore[arg-type]
+
+    assert stop.waits == [0.1]
+
+
 class _Provider:
     def __init__(self, name: ProviderId, closed: list[ProviderId]) -> None:
         self.name = name
