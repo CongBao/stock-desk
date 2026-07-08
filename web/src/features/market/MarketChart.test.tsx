@@ -170,6 +170,7 @@ it('batches direction-specific volume bars into overlapping large series', () =>
   const volumeSeries = option.series.slice(1);
 
   expect(volumeSeries).toHaveLength(3);
+  expect(volumeSeries.some((series) => 'stack' in series)).toBe(false);
   expect(volumeSeries).toMatchObject([
     {
       name: '成交量·上涨',

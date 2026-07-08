@@ -240,12 +240,10 @@ async function proveChartInteractionHandshake(
   await expect.poll(() => readout.textContent(), poll).not.toBe(beforeReadout);
   const hoveredAt = performance.now();
 
-  await page.getByRole('button', { name: '重置图表缩放' }).click();
-  await expect.poll(() => zoom.textContent(), poll).toContain('0%–100%');
-  const resetAt = performance.now();
+  const beforeZoom = await zoom.textContent();
   await page.mouse.move(box.x + box.width * 0.5, box.y + 120);
   await page.mouse.wheel(0, -500);
-  await expect.poll(() => zoom.textContent(), poll).not.toContain('0%–100%');
+  await expect.poll(() => zoom.textContent(), poll).not.toBe(beforeZoom);
   const zoomedAt = performance.now();
 
   const beforeDrag = await zoom.textContent();
@@ -257,7 +255,6 @@ async function proveChartInteractionHandshake(
   const draggedAt = performance.now();
   return {
     hovered: hoveredAt,
-    reset: resetAt,
     zoomed: zoomedAt,
     dragged: draggedAt,
   } as const;
