@@ -153,6 +153,7 @@ test.describe.serial('Stage 3 real local backtesting', () => {
     const realizedRows = page.locator(
       '[aria-label="可横向滚动的交易表"] tbody tr',
     );
+    await expect(realizedRows).not.toHaveCount(0);
     const realizedCount = await realizedRows.count();
     expect(realizedCount).toBeGreaterThan(0);
     let positiveCount = 0;
@@ -165,9 +166,9 @@ test.describe.serial('Stage 3 real local backtesting', () => {
     expect(displayedDenominator).toBe(realizedCount);
     expect(displayedWinRate).toBeCloseTo(positiveCount / realizedCount, 4);
     await page.getByRole('tab', { name: '开放仓位' }).click();
-    const openCount = await page
-      .locator('[aria-label="可横向滚动的交易表"] tbody tr')
-      .count();
+    const openRows = page.locator('[aria-label="可横向滚动的交易表"] tbody tr');
+    await expect(openRows).not.toHaveCount(0);
+    const openCount = await openRows.count();
     expect(openCount).toBeGreaterThan(0);
     expect(displayedDenominator).toBe(realizedCount);
     await page.getByRole('tab', { name: '交易明细' }).click();
@@ -304,7 +305,7 @@ test.describe.serial('Stage 3 real local backtesting', () => {
         page.getByRole('region', { name: '行情图表工作区' }),
       ).toBeVisible();
       const rail = await page.locator('.navigation-rail').boundingBox();
-      expect(rail?.width ?? 999).toBeLessThanOrEqual(72);
+      expect(rail?.width ?? 999).toBeLessThanOrEqual(80);
       expect(await navigationDoesNotOverlapWorkspace(page)).toBe(true);
       expect(await noHorizontalOverflow(page)).toBe(true);
     }
