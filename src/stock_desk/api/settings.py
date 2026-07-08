@@ -50,6 +50,7 @@ from stock_desk.security.secrets import (
     SecretStore,
     SecretStorageError,
 )
+from stock_desk.security.persistence import scrub_persisted_secrets_in_transaction
 from stock_desk.security.redaction import LogSecretLease, scoped_log_redaction
 from stock_desk.storage.database import (
     DatabaseIdentity,
@@ -427,6 +428,7 @@ class SourceSettingsServices:
             raise SourceSettingsStorageError(
                 "Source settings storage is unavailable"
             ) from None
+        self._hydrate_configured_redaction()
 
     def __repr__(self) -> str:
         return "SourceSettingsServices(configured=True)"
@@ -668,11 +670,43 @@ class SourceSettingsServices:
         if request.token is not None:
             plaintext = request.token.get_secret_value()
             try:
-                self._secret_store().save_secret(
-                    _TUSHARE_SECRET_NAME,
-                    plaintext,
-                )
+                store = self._secret_store()
+                with self._checked_begin() as connection:
+                    previous = (
+                        store.read_secret_for_server_call_in_transaction(
+                            _TUSHARE_SECRET_NAME,
+                            connection,
+                        )
+                        if store.has_secret_in_transaction(
+                            _TUSHARE_SECRET_NAME, connection
+                        )
+                        else None
+                    )
+                    self._set_leased_token(previous)
+                    self._set_leased_token(plaintext)
+                    scrub_persisted_secrets_in_transaction(
+                        connection,
+                        tuple(
+                            value
+                            for value in (previous, plaintext)
+                            if value is not None
+                        ),
+                    )
+                    store.save_secret_in_transaction(
+                        _TUSHARE_SECRET_NAME,
+                        plaintext,
+                        connection,
+                    )
             except SecretStorageError:
+                self._poison()
+                raise SourceSettingsStorageError(
+                    "Source settings storage is unavailable"
+                ) from None
+            except SecureStorageUnavailable:
+                raise
+            except SourceSettingsStorageError:
+                raise
+            except Exception:
                 self._poison()
                 raise SourceSettingsStorageError(
                     "Source settings storage is unavailable"
@@ -680,6 +714,43 @@ class SourceSettingsServices:
             self._configuration_revision += 1
             self._set_leased_token(plaintext)
         return self.tushare_status()
+
+    def _hydrate_configured_redaction(self) -> None:
+        try:
+            store = SecretStore(
+                self._engine,
+                self._settings,
+                expected_database_identity=self._database_identity,
+            )
+        except SecretConfigurationError:
+            return
+        try:
+            with self._engine.begin() as connection:
+                if not store.has_secret_in_transaction(
+                    _TUSHARE_SECRET_NAME, connection
+                ):
+                    return
+                plaintext = store.read_secret_for_server_call_in_transaction(
+                    _TUSHARE_SECRET_NAME,
+                    connection,
+                )
+                self._set_leased_token(plaintext)
+                scrub_persisted_secrets_in_transaction(connection, (plaintext,))
+        except (SecretDecryptionError, SecretNotFoundError, SecretStorageError):
+            self._poison()
+            raise SourceSettingsStorageError(
+                "Source settings storage is unavailable"
+            ) from None
+        except SQLAlchemyError:
+            self._poison()
+            raise SourceSettingsStorageError(
+                "Source settings storage is unavailable"
+            ) from None
+        except Exception:
+            self._poison()
+            raise SourceSettingsStorageError(
+                "Source settings storage is unavailable"
+            ) from None
 
     def response(self) -> SourceSettingsResponse:
         with self._state_lock:

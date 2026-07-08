@@ -368,6 +368,7 @@ def _harness(
             engine=engine,
             provider_factory=resolved_builder,
         )
+    model_settings.close()
     catalog.close()
     engine.dispose()
 

@@ -42,6 +42,7 @@ from stock_desk.analysis.providers.ollama import OllamaProvider
 from stock_desk.analysis.providers.openai_compatible import OpenAICompatibleProvider
 from stock_desk.security.secrets import SecretStore, SecretStoreError, mask_secret
 from stock_desk.security.redaction import LogSecretLease
+from stock_desk.security.persistence import scrub_persisted_secrets_in_transaction
 from stock_desk.storage.database import DatabaseIdentity
 
 
@@ -261,6 +262,7 @@ class ModelSettingsService:
         self._redaction_values: tuple[str, ...] = ()
         self._redaction_lease = LogSecretLease()
         self._closed = False
+        self._hydrate_configured_redaction()
 
     def __repr__(self) -> str:
         return "ModelSettingsService(configured=True)"
@@ -289,6 +291,56 @@ class ModelSettingsService:
             combined = tuple(dict.fromkeys((*self._redaction_values, *normalized)))
             self._redaction_lease.replace(*combined)
             self._redaction_values = combined
+
+    def _hydrate_configured_redaction(self) -> None:
+        secret_store = self._secret_store
+        if secret_store is None:
+            return
+        try:
+            with self._catalog.transaction() as connection:
+                references: list[str] = []
+                after: ModelConfigListKey | None = None
+                while True:
+                    page = self._catalog.list_page_with_public_configs_in_transaction(
+                        connection,
+                        limit=100,
+                        after=after,
+                        include_disabled=True,
+                    )
+                    references.extend(
+                        config.secret_reference_id
+                        for item in page.items
+                        if (config := item.public_config).secret_reference_id
+                        is not None
+                    )
+                    if page.next_key is None:
+                        break
+                    after = page.next_key
+                unique = tuple(dict.fromkeys(references))
+                plaintext = secret_store.redaction_values_in_transaction(
+                    unique, connection
+                )
+                self._register_and_scrub(
+                    connection,
+                    *plaintext.values(),
+                )
+        except SecretStoreError:
+            return
+        except ModelSettingsError:
+            raise
+        except Exception:
+            raise ModelSettingsStorageError() from None
+
+    def _register_and_scrub(
+        self,
+        connection: Connection,
+        *values: str,
+    ) -> None:
+        normalized = tuple(dict.fromkeys(value for value in values if value))
+        if not normalized:
+            return
+        self._register_redaction_values(*normalized)
+        scrub_persisted_secrets_in_transaction(connection, normalized)
 
     def require_verified_execution(self, config_id: str) -> VerifiedModelExecution:
         try:
@@ -345,6 +397,7 @@ class ModelSettingsService:
                 if update.provider is not ModelProviderKind.OLLAMA:
                     assert update.api_key is not None
                     plaintext = update.api_key.get_secret_value()
+                    self._register_and_scrub(connection, plaintext)
                     secret_reference = self._save_fresh_secret(plaintext, connection)
                     masked = mask_secret(plaintext)
                     registered = (plaintext,)
@@ -387,8 +440,25 @@ class ModelSettingsService:
                 secret_reference: str | None = None
                 masked: str | None = None
                 if update.provider is not ModelProviderKind.OLLAMA:
+                    parent_plaintext: str | None = None
+                    if parent_public.secret_reference_id is not None:
+                        assert secret_store is not None
+                        parent_plaintext = (
+                            secret_store.read_secret_for_server_call_in_transaction(
+                                parent_public.secret_reference_id,
+                                connection,
+                            )
+                        )
                     if update.api_key is not None:
                         plaintext = update.api_key.get_secret_value()
+                        self._register_and_scrub(
+                            connection,
+                            *(
+                                value
+                                for value in (parent_plaintext, plaintext)
+                                if value
+                            ),
+                        )
                         secret_reference = self._save_fresh_secret(
                             plaintext, connection
                         )
@@ -412,6 +482,7 @@ class ModelSettingsService:
                                 secret_reference, connection
                             )
                         )
+                        self._register_and_scrub(connection, plaintext)
                         masked = mask_secret(plaintext)
                     registered = (plaintext,)
                 public_config = _public_config(update, secret_reference)

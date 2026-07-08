@@ -9,11 +9,17 @@ from typing import cast
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 import httpx2
+from pydantic import SecretStr
 import pytest
 from sqlalchemy import Engine, select
 
 from stock_desk.analysis.content_policy import ContentPolicyError
-from stock_desk.analysis.model_settings import ModelProviderFactory
+from stock_desk.analysis.model_catalog import AnalysisModelCatalog
+from stock_desk.analysis.model_config import ModelConfigUpdate, ModelProviderKind
+from stock_desk.analysis.model_settings import (
+    ModelProviderFactory,
+    ModelSettingsService,
+)
 from stock_desk.analysis.models import AnalysisReportRow, AnalysisStageRow
 from stock_desk.analysis.providers.base import (
     ModelProvider,
@@ -38,6 +44,7 @@ from tests.security.test_prompt_injection import snapshot_data_block, technical_
 
 SECRET = "sk-security-boundary-plaintext"
 PROVIDER_RESPONSE_SECRET = "provider-response-secret-must-not-escape"
+ROTATED_REPORT_SECRET = "rotated-analysis-report-secret-must-not-escape"
 MODEL_ID = "sha256:" + "a" * 64
 
 
@@ -52,6 +59,27 @@ class _SecretEchoProvider(DeterministicProvider):
         first_claim = claims[0]
         assert isinstance(first_claim, dict)
         first_claim["text"] = f"ordinary claim with key={SECRET}; evidence remains"
+        return ModelResponse(
+            provider=self.provider,
+            model=self.model,
+            content=content,
+            usage=ModelUsage(input_tokens=2, output_tokens=1, total_tokens=3),
+        )
+
+
+class _LegacyDualSecretProvider(DeterministicProvider):
+    async def complete(self, request: ModelRequest) -> ModelResponse:
+        content = _valid_content(request)
+        content["summary"] = (
+            f"ordinary legacy {SECRET}; rotated {ROTATED_REPORT_SECRET}; suffix"
+        )
+        claims = content["claims"]
+        assert isinstance(claims, list)
+        first_claim = claims[0]
+        assert isinstance(first_claim, dict)
+        first_claim["text"] = (
+            f"ordinary claim {SECRET} and {ROTATED_REPORT_SECRET}; evidence remains"
+        )
         return ModelResponse(
             provider=self.provider,
             model=self.model,
@@ -294,6 +322,98 @@ def test_successful_model_secret_echo_is_redacted_before_analysis_persistence_an
     assert f"Bearer {SECRET}" not in serialized
     assert "ordinary summary" in serialized
     assert "ordinary suffix" in serialized
+    assert "ordinary claim" in serialized
+    assert "evidence remains" in serialized
+
+
+def test_model_rotation_scrubs_legacy_analysis_before_restart_and_first_api_read(
+    tmp_path: Path,
+) -> None:
+    def provider_builder(execution: AnalysisExecutionConfig) -> ModelProvider:
+        return _LegacyDualSecretProvider(
+            provider=execution.provider,
+            model=execution.model,
+        )
+
+    with _harness(tmp_path, provider_builder=provider_builder) as harness:
+        unrelated = _configure_verified_model(
+            harness.client,
+            provider="openai_compatible",
+            base_url="https://models.example.com/v1",
+            model_name="unrelated-vendor-chat",
+            api_key="unrelated-analysis-provider-key",
+        )
+        submission = _submit(harness.client, cast(str, unrelated["id"]), retries=0)
+        completed = harness.run_worker()
+        engine = cast(Engine, harness.engine)
+        with engine.connect() as connection:
+            dirty = connection.execute(
+                select(AnalysisReportRow.report_json).where(
+                    AnalysisReportRow.run_id == submission["run_id"]
+                )
+            ).scalar_one()
+        assert SECRET in dirty
+        assert ROTATED_REPORT_SECRET in dirty
+
+        service = cast(
+            ModelSettingsService,
+            harness.client.app.state.model_settings_services_provider(),
+        )
+        secret_store = service._secret_store
+        assert secret_store is not None
+        parent = service.create(
+            "Legacy scrub v1",
+            ModelConfigUpdate(
+                provider=ModelProviderKind.OPENAI_COMPATIBLE,
+                base_url="https://models.example.com/v1",
+                model="legacy-scrub-v1",
+                api_key=SecretStr(SECRET),
+            ),
+        )
+        service.create_successor(
+            parent.id,
+            "Legacy scrub v2",
+            ModelConfigUpdate(
+                provider=ModelProviderKind.OPENAI_COMPATIBLE,
+                base_url="https://models.example.com/v1",
+                model="legacy-scrub-v2",
+                api_key=SecretStr(ROTATED_REPORT_SECRET),
+            ),
+        )
+        service.close()
+        restarted_catalog = AnalysisModelCatalog(engine)
+        restarted = ModelSettingsService(
+            catalog=restarted_catalog,
+            secret_store=secret_store,
+        )
+        try:
+            report_response = harness.client.get(
+                f"/api/analysis/{submission['run_id']}/report"
+            )
+            with engine.connect() as connection:
+                stage_payloads = tuple(
+                    connection.execute(
+                        select(AnalysisStageRow.output_json).where(
+                            AnalysisStageRow.run_id == submission["run_id"],
+                            AnalysisStageRow.output_json.is_not(None),
+                        )
+                    ).scalars()
+                )
+                report_payload = connection.execute(
+                    select(AnalysisReportRow.report_json).where(
+                        AnalysisReportRow.run_id == submission["run_id"]
+                    )
+                ).scalar_one()
+        finally:
+            restarted.close()
+            restarted_catalog.close()
+
+    assert getattr(completed, "status") == "succeeded"
+    assert report_response.status_code == 200
+    serialized = "\n".join((*stage_payloads, report_payload, report_response.text))
+    assert SECRET not in serialized
+    assert ROTATED_REPORT_SECRET not in serialized
+    assert "ordinary legacy" in serialized
     assert "ordinary claim" in serialized
     assert "evidence remains" in serialized
 

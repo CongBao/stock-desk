@@ -5,9 +5,12 @@ from dataclasses import replace
 from pathlib import Path
 
 from cryptography.fernet import Fernet
+from fastapi.testclient import TestClient
 import httpx2
 from pydantic import SecretStr
-from sqlalchemy import update
+import pytest
+from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 
 from stock_desk.analysis.model_catalog import AnalysisModelCatalog
 from stock_desk.analysis.model_config import (
@@ -22,11 +25,21 @@ from stock_desk.analysis.model_settings import (
 )
 from stock_desk.api.tasks import TaskEventResponse, TaskResponse
 from stock_desk.api.settings import SourceSettingsServices, TushareSourceUpdateRequest
-from stock_desk.backtest.models import BacktestLogRow, BacktestRunRow, BacktestSymbolRow
+from stock_desk.backtest.models import (
+    BacktestFailureRow,
+    BacktestGroupMetricRow,
+    BacktestLogRow,
+    BacktestRunRow,
+    BacktestSymbolRow,
+    BacktestTradeRow,
+)
 from stock_desk.config import Settings
+from stock_desk.main import create_app
+from stock_desk.market.worker_runtime import ProductionMarketWorker
 from stock_desk.security.redaction import scoped_log_redaction
 from stock_desk.security.secrets import SecretStore
 from stock_desk.storage.database import create_engine_for_url, migrate
+from stock_desk.storage.models import TaskEvent
 from stock_desk.tasks.repository import TaskRepository
 from tests.integration.backtest.test_export import (
     FINISHED,
@@ -369,3 +382,392 @@ def test_worker_model_provider_factory_holds_secret_redaction_until_close(
     finally:
         factory.close()
         engine.dispose()
+
+
+def _pollute_every_backtest_export_surface(
+    repository: object,
+    *,
+    active: str,
+    rotated: str,
+    ordinary: str,
+) -> None:
+    engine = repository._engine
+    with engine.begin() as connection:
+        trade = dict(
+            connection.execute(
+                select(BacktestTradeRow.payload_json).where(
+                    BacktestTradeRow.run_id == RUN_ID
+                )
+            )
+            .scalars()
+            .first()
+        )
+        group = dict(
+            connection.execute(
+                select(BacktestGroupMetricRow.payload_json).where(
+                    BacktestGroupMetricRow.run_id == RUN_ID
+                )
+            )
+            .scalars()
+            .first()
+        )
+        failure = dict(
+            connection.execute(
+                select(BacktestFailureRow.detail_json).where(
+                    BacktestFailureRow.run_id == RUN_ID
+                )
+            ).scalar_one()
+        )
+        log = dict(
+            connection.execute(
+                select(BacktestLogRow.detail_json).where(
+                    BacktestLogRow.run_id == RUN_ID
+                )
+            )
+            .scalars()
+            .first()
+        )
+        connection.execute(
+            update(BacktestTradeRow)
+            .where(BacktestTradeRow.run_id == RUN_ID)
+            .values(
+                payload_json={
+                    **trade,
+                    "credential": active,
+                    "rotated": rotated,
+                    "ordinary": ordinary,
+                }
+            )
+        )
+        connection.execute(
+            update(BacktestGroupMetricRow)
+            .where(BacktestGroupMetricRow.run_id == RUN_ID)
+            .values(
+                payload_json={
+                    **group,
+                    "credential": active,
+                    "rotated": rotated,
+                    "ordinary": ordinary,
+                }
+            )
+        )
+        connection.execute(
+            update(BacktestFailureRow)
+            .where(BacktestFailureRow.run_id == RUN_ID)
+            .values(
+                detail_json={
+                    **failure,
+                    "credential": active,
+                    "rotated": rotated,
+                    "ordinary": ordinary,
+                }
+            )
+        )
+        connection.execute(
+            update(BacktestLogRow)
+            .where(BacktestLogRow.run_id == RUN_ID)
+            .values(
+                message=f"logged {active}",
+                detail_json={
+                    **log,
+                    "rotated": rotated,
+                    "ordinary": ordinary,
+                },
+            )
+        )
+        connection.execute(
+            update(BacktestSymbolRow)
+            .where(BacktestSymbolRow.run_id == RUN_ID)
+            .values(status="succeeded")
+        )
+        connection.execute(
+            update(BacktestRunRow)
+            .where(BacktestRunRow.id == RUN_ID)
+            .values(
+                status="succeeded",
+                stage="completed",
+                processed=1,
+                finished_at=FINISHED,
+                updated_at=FINISHED,
+            )
+        )
+
+
+def _raw_export_rows(repository: object) -> str:
+    engine = repository._engine
+    with engine.connect() as connection:
+        return repr(
+            (
+                tuple(
+                    connection.execute(
+                        select(BacktestTradeRow.payload_json).where(
+                            BacktestTradeRow.run_id == RUN_ID
+                        )
+                    ).scalars()
+                ),
+                tuple(
+                    connection.execute(
+                        select(BacktestGroupMetricRow.payload_json).where(
+                            BacktestGroupMetricRow.run_id == RUN_ID
+                        )
+                    ).scalars()
+                ),
+                tuple(
+                    connection.execute(
+                        select(BacktestFailureRow.detail_json).where(
+                            BacktestFailureRow.run_id == RUN_ID
+                        )
+                    ).scalars()
+                ),
+                tuple(
+                    connection.execute(
+                        select(
+                            BacktestLogRow.message, BacktestLogRow.detail_json
+                        ).where(BacktestLogRow.run_id == RUN_ID)
+                    )
+                ),
+            )
+        )
+
+
+def test_model_restart_hydrates_and_scrubs_legacy_tasks_and_export_rows(
+    tmp_path: Path,
+) -> None:
+    repository = _completed_repository(tmp_path, complete=False)
+    _pollute_every_backtest_export_surface(
+        repository,
+        active=MODEL_ACTIVE_SECRET,
+        rotated=MODEL_ROTATED_SECRET,
+        ordinary="ordinary configured-model-active",
+    )
+    tasks = TaskRepository(repository._engine)
+    legacy = tasks.create(
+        "legacy.model.restart",
+        {
+            "active": MODEL_ACTIVE_SECRET,
+            "rotated": MODEL_ROTATED_SECRET,
+            "ordinary": "ordinary configured-model-active",
+        },
+    )
+    with repository._engine.begin() as connection:
+        connection.execute(
+            update(TaskEvent)
+            .where(TaskEvent.task_id == legacy.id)
+            .values(
+                detail_json={
+                    "active": MODEL_ACTIVE_SECRET,
+                    "rotated": MODEL_ROTATED_SECRET,
+                    "ordinary": "ordinary configured-model-active",
+                }
+            )
+        )
+    settings = Settings(
+        database_url=str(repository._engine.url),
+        data_dir=tmp_path,
+        master_key=SecretStr(Fernet.generate_key().decode("ascii")),
+    )
+    catalog = AnalysisModelCatalog(repository._engine)
+    service = ModelSettingsService(
+        catalog=catalog,
+        secret_store=SecretStore(repository._engine, settings),
+    )
+    parent = service.create(
+        "Restart remote v1",
+        ModelConfigUpdate(
+            provider=ModelProviderKind.OPENAI_COMPATIBLE,
+            base_url="https://models.example.com/v1",
+            model="restart-model-v1",
+            api_key=SecretStr(MODEL_ACTIVE_SECRET),
+        ),
+    )
+    service.create_successor(
+        parent.id,
+        "Restart remote v2",
+        ModelConfigUpdate(
+            provider=ModelProviderKind.OPENAI_COMPATIBLE,
+            base_url="https://models.example.com/v1",
+            model="restart-model-v2",
+            api_key=SecretStr(MODEL_ROTATED_SECRET),
+        ),
+    )
+    service.close()
+    catalog.close()
+
+    restarted_catalog = AnalysisModelCatalog(repository._engine)
+    restarted = ModelSettingsService(
+        catalog=restarted_catalog,
+        secret_store=SecretStore(repository._engine, settings),
+    )
+    try:
+        raw = (
+            repr(tasks.get(legacy.id))
+            + repr(tasks.list_events(legacy.id))
+            + _raw_export_rows(repository)
+        )
+        exports = b"\n".join(
+            _bytes(repository, section, format_)
+            for section in ("trades", "open", "groups", "failures", "logs")
+            for format_ in ("json", "csv")
+        )
+        with pytest.raises(IntegrityError, match="immutable"):
+            with repository._engine.begin() as connection:
+                connection.execute(
+                    update(BacktestTradeRow)
+                    .where(BacktestTradeRow.run_id == RUN_ID)
+                    .values(payload_json={"unsafe": "post-scrub mutation"})
+                )
+    finally:
+        restarted.close()
+        restarted_catalog.close()
+        repository._engine.dispose()
+
+    assert MODEL_ACTIVE_SECRET not in raw
+    assert MODEL_ROTATED_SECRET not in raw
+    assert MODEL_ACTIVE_SECRET.encode() not in exports
+    assert MODEL_ROTATED_SECRET.encode() not in exports
+    assert "ordinary configured-model-active" in raw
+
+
+def test_source_rotation_scrubs_old_token_before_close_and_restart(
+    tmp_path: Path,
+) -> None:
+    repository = _completed_repository(tmp_path, complete=False)
+    _pollute_every_backtest_export_surface(
+        repository,
+        active=MARKET_ACTIVE_SECRET,
+        rotated=MARKET_ROTATED_SECRET,
+        ordinary="ordinary configured-market-active",
+    )
+    tasks = TaskRepository(repository._engine)
+    legacy = tasks.create(
+        "legacy.source.rotation",
+        {
+            "old": MARKET_ACTIVE_SECRET,
+            "new": MARKET_ROTATED_SECRET,
+            "ordinary": "ordinary configured-market-active",
+        },
+    )
+    settings = Settings(
+        database_url=str(repository._engine.url),
+        data_dir=tmp_path,
+        master_key=SecretStr(Fernet.generate_key().decode("ascii")),
+    )
+    source = SourceSettingsServices(engine=repository._engine, settings=settings)
+    source.update_tushare(
+        TushareSourceUpdateRequest(token=SecretStr(MARKET_ACTIVE_SECRET))
+    )
+    source.update_tushare(
+        TushareSourceUpdateRequest(token=SecretStr(MARKET_ROTATED_SECRET))
+    )
+    source.close()
+
+    restarted = SourceSettingsServices(engine=repository._engine, settings=settings)
+    try:
+        raw_task = repr(tasks.get(legacy.id)) + _raw_export_rows(repository)
+        exports = b"\n".join(
+            _bytes(repository, section, format_)
+            for section in ("trades", "open", "groups", "failures", "logs")
+            for format_ in ("json", "csv")
+        )
+    finally:
+        restarted.close()
+        repository._engine.dispose()
+
+    assert MARKET_ACTIVE_SECRET not in raw_task
+    assert MARKET_ROTATED_SECRET not in raw_task
+    assert MARKET_ACTIVE_SECRET.encode() not in exports
+    assert MARKET_ROTATED_SECRET.encode() not in exports
+    assert "ordinary configured-market-active" in raw_task
+
+
+def test_application_startup_hydrates_model_secret_before_first_task_read(
+    tmp_path: Path,
+) -> None:
+    url = f"sqlite:///{tmp_path / 'startup-secret.db'}"
+    migrate(url)
+    engine = create_engine_for_url(url)
+    key = Fernet.generate_key().decode("ascii")
+    settings = Settings(
+        database_url=url,
+        data_dir=tmp_path,
+        master_key=SecretStr(key),
+    )
+    catalog = AnalysisModelCatalog(engine)
+    service = ModelSettingsService(
+        catalog=catalog,
+        secret_store=SecretStore(engine, settings),
+    )
+    service.create(
+        "Startup remote",
+        ModelConfigUpdate(
+            provider=ModelProviderKind.OPENAI_COMPATIBLE,
+            base_url="https://models.example.com/v1",
+            model="startup-model",
+            api_key=SecretStr(MODEL_ACTIVE_SECRET),
+        ),
+    )
+    service.close()
+    catalog.close()
+    tasks = TaskRepository(engine)
+    legacy = tasks.create(
+        "legacy.startup.secret",
+        {
+            "secret": MODEL_ACTIVE_SECRET,
+            "ordinary": "ordinary configured-model-active",
+        },
+    )
+    engine.dispose()
+
+    with TestClient(create_app(settings)) as client:
+        response = client.get(f"/api/tasks/{legacy.id}")
+
+    assert response.status_code == 200
+    assert MODEL_ACTIVE_SECRET not in response.text
+    assert "ordinary configured-model-active" in response.text
+
+
+def test_worker_startup_hydrates_model_secret_before_first_task_claim(
+    tmp_path: Path,
+) -> None:
+    url = f"sqlite:///{tmp_path / 'worker-startup-secret.db'}"
+    migrate(url)
+    engine = create_engine_for_url(url)
+    settings = Settings(
+        database_url=url,
+        data_dir=tmp_path,
+        master_key=SecretStr(Fernet.generate_key().decode("ascii")),
+    )
+    catalog = AnalysisModelCatalog(engine)
+    service = ModelSettingsService(
+        catalog=catalog,
+        secret_store=SecretStore(engine, settings),
+    )
+    service.create(
+        "Worker startup remote",
+        ModelConfigUpdate(
+            provider=ModelProviderKind.OPENAI_COMPATIBLE,
+            base_url="https://models.example.com/v1",
+            model="worker-startup-model",
+            api_key=SecretStr(MODEL_ACTIVE_SECRET),
+        ),
+    )
+    service.close()
+    catalog.close()
+    tasks = TaskRepository(engine)
+    legacy = tasks.create(
+        "legacy.worker.startup",
+        {
+            "secret": MODEL_ACTIVE_SECRET,
+            "ordinary": "ordinary configured-model-active",
+        },
+    )
+    engine.dispose()
+
+    worker = ProductionMarketWorker.open(settings)
+    try:
+        persisted = repr(worker.tasks.get(legacy.id))
+    finally:
+        worker.close()
+
+    assert MODEL_ACTIVE_SECRET not in persisted
+    assert "ordinary configured-model-active" in persisted

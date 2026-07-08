@@ -14,7 +14,10 @@ from sqlalchemy import Engine
 
 from stock_desk.analysis.model_catalog import AnalysisModelCatalog
 from stock_desk.analysis.data_service import ResearchDataService
-from stock_desk.analysis.model_settings import ModelProviderFactory
+from stock_desk.analysis.model_settings import (
+    ModelProviderFactory,
+    ModelSettingsService,
+)
 from stock_desk.analysis.providers.base import ModelProvider
 from stock_desk.analysis.repository import AnalysisExecutionConfig, AnalysisRepository
 from stock_desk.analysis.runtime import (
@@ -267,6 +270,7 @@ class ProductionMarketWorker:
         analysis_repository: AnalysisRepository,
         model_catalog: AnalysisModelCatalog,
         model_provider_factory: ModelProviderFactory | None = None,
+        model_settings_service: ModelSettingsService | None = None,
     ) -> None:
         self._engine = engine
         self.tasks = tasks
@@ -276,6 +280,7 @@ class ProductionMarketWorker:
         self.analysis_repository = analysis_repository
         self.model_catalog = model_catalog
         self._model_provider_factory = model_provider_factory
+        self._model_settings_service = model_settings_service
         self._close_lock = Lock()
         self._closed = False
 
@@ -297,6 +302,7 @@ class ProductionMarketWorker:
         source_settings: SourceSettingsServices | None = None
         model_catalog: AnalysisModelCatalog | None = None
         model_provider_factory: ModelProviderFactory | None = None
+        model_settings_service: ModelSettingsService | None = None
         try:
             tasks = TaskRepository(engine)
             source_settings = SourceSettingsServices(engine=engine, settings=settings)
@@ -364,18 +370,23 @@ class ProductionMarketWorker:
             )
             if any(identity != identities[0] for identity in identities[1:]):
                 raise ValueError("analysis worker database identities do not match")
+            try:
+                model_secrets: SecretStore | None = SecretStore(
+                    engine,
+                    settings,
+                    expected_database_identity=tasks.database_identity,
+                )
+            except SecretConfigurationError:
+                model_secrets = None
+            model_providers = ModelProviderFactory(secret_store=model_secrets)
+            model_provider_factory = model_providers
+            model_settings_service = ModelSettingsService(
+                catalog=model_catalog,
+                secret_store=model_secrets,
+                provider_factory=model_providers,
+            )
             resolved_analysis_handler = analysis_handler
             if resolved_analysis_handler is None:
-                try:
-                    model_secrets: SecretStore | None = SecretStore(
-                        engine,
-                        settings,
-                        expected_database_identity=tasks.database_identity,
-                    )
-                except SecretConfigurationError:
-                    model_secrets = None
-                model_providers = ModelProviderFactory(secret_store=model_secrets)
-                model_provider_factory = model_providers
                 resolved_analysis_provider_factory = (
                     analysis_provider_factory
                     if analysis_provider_factory is not None
@@ -408,6 +419,7 @@ class ProductionMarketWorker:
                 analysis_repository=analysis_repository,
                 model_catalog=model_catalog,
                 model_provider_factory=model_provider_factory,
+                model_settings_service=model_settings_service,
             )
         except BaseException:
             _best_effort_cleanup(
@@ -416,7 +428,9 @@ class ProductionMarketWorker:
                     for action in (
                         source_settings.close if source_settings is not None else None,
                         model_catalog.close if model_catalog is not None else None,
-                        model_provider_factory.close
+                        model_settings_service.close
+                        if model_settings_service is not None
+                        else model_provider_factory.close
                         if model_provider_factory is not None
                         else None,
                         engine.dispose,
@@ -448,7 +462,9 @@ class ProductionMarketWorker:
                 for action in (
                     self.source_settings.close,
                     self.model_catalog.close,
-                    self._model_provider_factory.close
+                    self._model_settings_service.close
+                    if self._model_settings_service is not None
+                    else self._model_provider_factory.close
                     if self._model_provider_factory is not None
                     else None,
                     self._engine.dispose,

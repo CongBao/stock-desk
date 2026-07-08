@@ -64,6 +64,7 @@ from stock_desk.security.secrets import (
     SecretStore,
     SecretStoreError,
 )
+from stock_desk.security.persistence import StartupSecretHydrator
 from stock_desk.tasks.repository import TaskRepository, TaskRepositoryError
 from stock_desk.web import install_web_routes
 
@@ -168,6 +169,7 @@ def create_app(
     analysis_service_lock = Lock()
     owned_analysis_preflight: AnalysisPreflightService | None = None
     analysis_preflight_lock = Lock()
+    owned_startup_secret_hydrator: StartupSecretHydrator | None = None
     shutdown_lock = Lock()
     active_lifespans = 0
 
@@ -440,9 +442,15 @@ def create_app(
         nonlocal owned_model_settings_service
         nonlocal owned_analysis_service
         nonlocal owned_analysis_preflight
+        nonlocal owned_startup_secret_hydrator
         with shutdown_lock:
             active_lifespans += 1
         try:
+            with shutdown_lock:
+                if owned_startup_secret_hydrator is None:
+                    owned_startup_secret_hydrator = StartupSecretHydrator.open(
+                        resolved_settings
+                    )
             yield
         finally:
             with shutdown_lock:
@@ -455,6 +463,7 @@ def create_app(
                     owned_source_settings_services,
                     owned_market_services,
                     owned_repository,
+                    owned_startup_secret_hydrator,
                 )
                 owned_repository = None
                 owned_market_services = None
@@ -468,6 +477,7 @@ def create_app(
                 owned_model_settings_service = None
                 owned_analysis_service = None
                 owned_analysis_preflight = None
+                owned_startup_secret_hydrator = None
             for resource in resources:
                 if resource is None:
                     continue
