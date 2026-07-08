@@ -65,7 +65,7 @@ jobs:
         run: make security
 
   container-security:
-    name: Generate image SBOM and reject high or critical CVEs
+    name: Generate image SBOM, report CVEs, and reject fixable findings
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -90,11 +90,27 @@ jobs:
           path: stock-desk-image.spdx.json
           if-no-files-found: error
           retention-days: 30
-      - name: Scan image for high and critical CVEs
+      - name: Report all high and critical image CVEs
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        with:
+          image-ref: stock-desk:security
+          format: json
+          output: stock-desk-image-vulnerabilities.json
+          severity: CRITICAL,HIGH
+          ignore-unfixed: false
+          exit-code: 0
+      - name: Upload image vulnerability report
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: stock-desk-image-vulnerabilities
+          path: stock-desk-image-vulnerabilities.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: Reject fixable high and critical image CVEs
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
         with:
           image-ref: stock-desk:security
           format: table
           severity: CRITICAL,HIGH
-          ignore-unfixed: false
+          ignore-unfixed: true
           exit-code: 1

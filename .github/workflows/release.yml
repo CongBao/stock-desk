@@ -169,13 +169,29 @@ jobs:
           docker compose build --pull
           docker compose up --wait --no-build
           make smoke
-      - name: Scan final release image for high and critical CVEs
+      - name: Report all high and critical release image CVEs
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        with:
+          image-ref: stock-desk-runtime:local
+          format: json
+          output: stock-desk-release-image-vulnerabilities.json
+          severity: CRITICAL,HIGH
+          ignore-unfixed: false
+          exit-code: 0
+      - name: Upload release image vulnerability report
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: stock-desk-release-image-vulnerabilities
+          path: stock-desk-release-image-vulnerabilities.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: Reject fixable high and critical release image CVEs
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
         with:
           image-ref: stock-desk-runtime:local
           format: table
           severity: CRITICAL,HIGH
-          ignore-unfixed: false
+          ignore-unfixed: true
           exit-code: 1
 
   attest:

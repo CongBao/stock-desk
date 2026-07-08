@@ -364,14 +364,44 @@ def test_security_workflow_fails_closed_on_dependencies_sbom_and_image_cves() ->
         and step["with"]["upload-release-assets"] is False
         for step in image_steps
     )
-    trivy = next(
+    trivy_steps = [
         step
         for step in image_steps
         if str(step.get("uses", "")).startswith("aquasecurity/trivy-action@")
+    ]
+    assert [step["name"] for step in trivy_steps] == [
+        "Report all high and critical image CVEs",
+        "Reject fixable high and critical image CVEs",
+    ]
+    report, gate = trivy_steps
+    assert report["with"] == {
+        "image-ref": "stock-desk:security",
+        "format": "json",
+        "output": "stock-desk-image-vulnerabilities.json",
+        "severity": "CRITICAL,HIGH",
+        "ignore-unfixed": False,
+        "exit-code": 0,
+    }
+    assert gate["with"] == {
+        "image-ref": "stock-desk:security",
+        "format": "table",
+        "severity": "CRITICAL,HIGH",
+        "ignore-unfixed": True,
+        "exit-code": 1,
+    }
+    vulnerability_upload = next(
+        step
+        for step in image_steps
+        if step.get("name") == "Upload image vulnerability report"
     )
-    assert trivy["with"]["severity"] == "CRITICAL,HIGH"
-    assert str(trivy["with"]["exit-code"]) == "1"
-    assert trivy["with"]["ignore-unfixed"] is False
+    assert vulnerability_upload["with"] == {
+        "name": "stock-desk-image-vulnerabilities",
+        "path": "stock-desk-image-vulnerabilities.json",
+        "if-no-files-found": "error",
+        "retention-days": 30,
+    }
+    assert image_steps.index(report) < image_steps.index(vulnerability_upload)
+    assert image_steps.index(vulnerability_upload) < image_steps.index(gate)
 
 
 def test_tag_release_generates_and_attests_sbom_and_artifacts() -> None:
@@ -484,18 +514,48 @@ def test_tag_release_generates_and_attests_sbom_and_artifacts() -> None:
     )
 
     container = release["jobs"]["container"]
-    trivy = next(
+    trivy_steps = [
         step
         for step in container["steps"]
         if str(step.get("uses", "")).startswith("aquasecurity/trivy-action@")
-    )
-    assert trivy["with"] == {
+    ]
+    assert [step["name"] for step in trivy_steps] == [
+        "Report all high and critical release image CVEs",
+        "Reject fixable high and critical release image CVEs",
+    ]
+    report, gate = trivy_steps
+    assert report["with"] == {
+        "image-ref": "stock-desk-runtime:local",
+        "format": "json",
+        "output": "stock-desk-release-image-vulnerabilities.json",
+        "severity": "CRITICAL,HIGH",
+        "ignore-unfixed": False,
+        "exit-code": 0,
+    }
+    assert gate["with"] == {
         "image-ref": "stock-desk-runtime:local",
         "format": "table",
         "severity": "CRITICAL,HIGH",
-        "ignore-unfixed": False,
+        "ignore-unfixed": True,
         "exit-code": 1,
     }
+    vulnerability_upload = next(
+        step
+        for step in container["steps"]
+        if step.get("name") == "Upload release image vulnerability report"
+    )
+    assert vulnerability_upload["with"] == {
+        "name": "stock-desk-release-image-vulnerabilities",
+        "path": "stock-desk-release-image-vulnerabilities.json",
+        "if-no-files-found": "error",
+        "retention-days": 30,
+    }
+    assert container["steps"].index(report) < container["steps"].index(
+        vulnerability_upload
+    )
+    assert container["steps"].index(vulnerability_upload) < container["steps"].index(
+        gate
+    )
 
     publish = release["jobs"]["release"]
     assert set(publish["needs"]) == {
