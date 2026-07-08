@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 import secrets
@@ -136,6 +137,21 @@ class ConnectionTestResult:
             raise ValueError("Connection test result is invalid")
 
 
+class _RedactingModelSecretReader:
+    def __init__(
+        self,
+        delegate: ModelSecretReader,
+        register: Callable[[str], None],
+    ) -> None:
+        self._delegate = delegate
+        self._register = register
+
+    def read_secret_for_server_call(self, name: str) -> str:
+        value = self._delegate.read_secret_for_server_call(name)
+        self._register(value)
+        return value
+
+
 class ModelProviderFactory:
     """Build the production provider adapter from immutable public config."""
 
@@ -149,6 +165,31 @@ class ModelProviderFactory:
         self._secret_store = secret_store
         self._transport = transport
         self._resolver = resolver
+        self._redaction_lock = RLock()
+        self._redaction_values: tuple[str, ...] = ()
+        self._redaction_lease = LogSecretLease()
+        self._closed = False
+        self._provider_secret_store = (
+            _RedactingModelSecretReader(secret_store, self._register_redaction_value)
+            if secret_store is not None
+            else None
+        )
+
+    def close(self) -> None:
+        with self._redaction_lock:
+            if self._closed:
+                return
+            self._closed = True
+            self._redaction_values = ()
+            self._redaction_lease.close()
+
+    def _register_redaction_value(self, value: str) -> None:
+        with self._redaction_lock:
+            if self._closed:
+                raise ModelSettingsStorageError()
+            combined = tuple(dict.fromkeys((*self._redaction_values, value)))
+            self._redaction_lease.replace(*combined)
+            self._redaction_values = combined
 
     def create(self, config: AnalysisModelPublicConfig) -> ModelProvider:
         if not isinstance(config, AnalysisModelPublicConfig):
@@ -175,13 +216,16 @@ class ModelProviderFactory:
         secret_reference = config.secret_reference_id
         if secret_reference is None:
             raise ModelSettingsValidationError()
+        provider_secret_store = self._provider_secret_store
+        if provider_secret_store is None:
+            raise ModelSettingsSecureStorageError()
         if config.provider is ModelProviderKind.DEEPSEEK:
             return cast(
                 ModelProvider,
                 DeepSeekProvider(
                     model=config.model,
                     base_url=config.base_url,
-                    secret_store=self._secret_store,
+                    secret_store=provider_secret_store,
                     secret_name=secret_reference,
                     transport=self._transport,
                     resolver=self._resolver,
@@ -192,7 +236,7 @@ class ModelProviderFactory:
             OpenAICompatibleProvider(
                 base_url=config.base_url,
                 model=config.model,
-                secret_store=self._secret_store,
+                secret_store=provider_secret_store,
                 secret_name=secret_reference,
                 transport=self._transport,
                 resolver=self._resolver,
@@ -232,6 +276,8 @@ class ModelSettingsService:
             self._closed = True
             self._redaction_values = ()
             self._redaction_lease.close()
+        if isinstance(self._provider_factory, ModelProviderFactory):
+            self._provider_factory.close()
 
     def _register_redaction_values(self, *values: str) -> None:
         normalized = tuple(value for value in values if value)

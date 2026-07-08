@@ -266,6 +266,7 @@ class ProductionMarketWorker:
         scheduler: MarketUpdateScheduler,
         analysis_repository: AnalysisRepository,
         model_catalog: AnalysisModelCatalog,
+        model_provider_factory: ModelProviderFactory | None = None,
     ) -> None:
         self._engine = engine
         self.tasks = tasks
@@ -274,6 +275,7 @@ class ProductionMarketWorker:
         self.scheduler = scheduler
         self.analysis_repository = analysis_repository
         self.model_catalog = model_catalog
+        self._model_provider_factory = model_provider_factory
         self._close_lock = Lock()
         self._closed = False
 
@@ -294,6 +296,7 @@ class ProductionMarketWorker:
         engine = create_engine_for_url(settings.database_url)
         source_settings: SourceSettingsServices | None = None
         model_catalog: AnalysisModelCatalog | None = None
+        model_provider_factory: ModelProviderFactory | None = None
         try:
             tasks = TaskRepository(engine)
             source_settings = SourceSettingsServices(engine=engine, settings=settings)
@@ -372,6 +375,7 @@ class ProductionMarketWorker:
                 except SecretConfigurationError:
                     model_secrets = None
                 model_providers = ModelProviderFactory(secret_store=model_secrets)
+                model_provider_factory = model_providers
                 resolved_analysis_provider_factory = (
                     analysis_provider_factory
                     if analysis_provider_factory is not None
@@ -403,6 +407,7 @@ class ProductionMarketWorker:
                 scheduler=scheduler,
                 analysis_repository=analysis_repository,
                 model_catalog=model_catalog,
+                model_provider_factory=model_provider_factory,
             )
         except BaseException:
             _best_effort_cleanup(
@@ -411,6 +416,9 @@ class ProductionMarketWorker:
                     for action in (
                         source_settings.close if source_settings is not None else None,
                         model_catalog.close if model_catalog is not None else None,
+                        model_provider_factory.close
+                        if model_provider_factory is not None
+                        else None,
                         engine.dispose,
                     )
                     if action is not None
@@ -435,10 +443,17 @@ class ProductionMarketWorker:
                 return
             self._closed = True
         _best_effort_cleanup(
-            (
-                self.source_settings.close,
-                self.model_catalog.close,
-                self._engine.dispose,
+            tuple(
+                action
+                for action in (
+                    self.source_settings.close,
+                    self.model_catalog.close,
+                    self._model_provider_factory.close
+                    if self._model_provider_factory is not None
+                    else None,
+                    self._engine.dispose,
+                )
+                if action is not None
             ),
             raise_first=True,
         )

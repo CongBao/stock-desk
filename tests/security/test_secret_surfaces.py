@@ -1,15 +1,25 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 from pathlib import Path
 
 from cryptography.fernet import Fernet
+import httpx2
 from pydantic import SecretStr
 from sqlalchemy import update
 
 from stock_desk.analysis.model_catalog import AnalysisModelCatalog
-from stock_desk.analysis.model_config import ModelConfigUpdate, ModelProviderKind
-from stock_desk.analysis.model_settings import ModelSettingsService
+from stock_desk.analysis.model_config import (
+    AnalysisModelPublicConfig,
+    MODEL_API_KEY_SECRET_NAME,
+    ModelConfigUpdate,
+    ModelProviderKind,
+)
+from stock_desk.analysis.model_settings import (
+    ModelProviderFactory,
+    ModelSettingsService,
+)
 from stock_desk.api.tasks import TaskEventResponse, TaskResponse
 from stock_desk.api.settings import SourceSettingsServices, TushareSourceUpdateRequest
 from stock_desk.backtest.models import BacktestLogRow, BacktestRunRow, BacktestSymbolRow
@@ -304,4 +314,58 @@ def test_market_token_never_leaves_masked_state_across_legacy_and_new_tasks(
         assert "kept" in rendered
     finally:
         service.close()
+        engine.dispose()
+
+
+def test_worker_model_provider_factory_holds_secret_redaction_until_close(
+    tmp_path: Path,
+) -> None:
+    url = f"sqlite:///{tmp_path / 'worker-model-secret.db'}"
+    migrate(url)
+    engine = create_engine_for_url(url)
+    store = SecretStore(
+        engine,
+        Settings(master_key=SecretStr(Fernet.generate_key().decode("ascii"))),
+    )
+    store.save_secret(MODEL_API_KEY_SECRET_NAME, MODEL_ACTIVE_SECRET)
+
+    async def resolve_public(_hostname: str, _port: int) -> tuple[str, ...]:
+        return ("93.184.216.34",)
+
+    factory = ModelProviderFactory(
+        secret_store=store,
+        transport=httpx2.MockTransport(
+            lambda _request: httpx2.Response(
+                200, json={"data": [{"id": "worker-model"}]}
+            )
+        ),
+        resolver=resolve_public,
+    )
+    tasks = TaskRepository(engine)
+    try:
+        provider = factory.create(
+            AnalysisModelPublicConfig(
+                provider=ModelProviderKind.OPENAI_COMPATIBLE,
+                base_url="https://models.example.com/v1",
+                model="worker-model",
+                temperature=0.1,
+                timeout_seconds=30.0,
+                max_output_tokens=2_048,
+                secret_reference_id=MODEL_API_KEY_SECRET_NAME,
+                api_key_configured=True,
+            )
+        )
+        result = asyncio.run(provider.test_connection(timeout_seconds=1.0))
+        assert result.connected is True
+        task = tasks.create(
+            "worker.model.output",
+            {"model_output": f"echoed {MODEL_ACTIVE_SECRET}", "ordinary": "kept"},
+        )
+
+        rendered = repr(task)
+        assert MODEL_ACTIVE_SECRET not in rendered
+        assert "ordinary" in rendered
+        assert "kept" in rendered
+    finally:
+        factory.close()
         engine.dispose()
