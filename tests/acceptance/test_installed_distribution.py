@@ -66,6 +66,44 @@ def test_install_verification_jobs_do_not_checkout_or_expose_development_path() 
         assert "playwright" in combined.lower()
 
 
+def test_windows_install_and_uninstall_prove_exit_codes_and_postconditions() -> None:
+    workflow = _workflow()
+    steps = workflow["jobs"]["verify-windows-installer"]["steps"]
+    install = next(
+        step
+        for step in steps
+        if step.get("name") == "Install and verify without development PATH"
+    )["run"]
+    uninstall = next(
+        step
+        for step in steps
+        if step.get("name") == "Uninstall without deleting user data"
+    )["run"]
+
+    assert "$installProcess = Start-Process" in install
+    assert "-Wait -PassThru" in install
+    assert "$installProcess.ExitCode -ne 0" in install
+
+    assert "$uninstallProcess = Start-Process" in uninstall
+    assert "-Wait -PassThru" in uninstall
+    assert "$uninstallProcess.ExitCode -ne 0" in uninstall
+    assert "$applicationDir = Join-Path" in uninstall
+    assert "$command = Join-Path $applicationDir 'stock-desk.exe'" in uninstall
+    assert "$uninstaller = Join-Path $applicationDir 'unins000.exe'" in uninstall
+    for path, message in (
+        ("$command", "application executable remains after uninstall"),
+        ("$uninstaller", "uninstaller remains after uninstall"),
+        ("$applicationDir", "application directory remains after uninstall"),
+    ):
+        assert (
+            f"if (Test-Path -LiteralPath {path}) {{ throw '{message}' }}" in uninstall
+        )
+    assert (
+        "if (-not (Test-Path -LiteralPath $persistence)) "
+        "{ throw 'user data was deleted' }"
+    ) in uninstall
+
+
 def test_release_workflow_generates_checksums_sbom_and_provenance() -> None:
     workflow_text = RELEASE_WORKFLOW.read_text(encoding="utf-8").lower()
 

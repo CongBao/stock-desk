@@ -405,7 +405,8 @@ jobs:
         run: |
           $installer = Get-ChildItem installer\*.exe | Select-Object -First 1
           $log = Join-Path $env:RUNNER_TEMP 'stock-desk-install.log'
-          Start-Process -FilePath $installer.FullName -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=$log" -Wait
+          $installProcess = Start-Process -FilePath $installer.FullName -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=$log" -Wait -PassThru
+          if ($installProcess.ExitCode -ne 0) { throw "installer failed with exit code $($installProcess.ExitCode)" }
           $command = Join-Path $env:LOCALAPPDATA 'Programs\Stock Desk\stock-desk.exe'
           $runtime = Join-Path $env:LOCALAPPDATA 'stock-desk\runtime\runtime.json'
           $systemPath = "$env:SystemRoot\System32;$env:SystemRoot"
@@ -434,9 +435,17 @@ jobs:
       - name: Uninstall without deleting user data
         shell: pwsh
         run: |
-          $uninstaller = Join-Path $env:LOCALAPPDATA 'Programs\Stock Desk\unins000.exe'
-          Start-Process -FilePath $uninstaller -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait
-          if (-not (Test-Path (Join-Path $env:LOCALAPPDATA 'stock-desk\installer-persistence.txt'))) { throw 'user data was deleted' }
+          $applicationDir = Join-Path $env:LOCALAPPDATA 'Programs\Stock Desk'
+          $command = Join-Path $applicationDir 'stock-desk.exe'
+          $uninstaller = Join-Path $applicationDir 'unins000.exe'
+          $persistence = Join-Path $env:LOCALAPPDATA 'stock-desk\installer-persistence.txt'
+          $uninstallProcess = Start-Process -FilePath $uninstaller -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait -PassThru
+          if ($uninstallProcess.ExitCode -ne 0) { throw "uninstaller failed with exit code $($uninstallProcess.ExitCode)" }
+          for ($attempt = 0; $attempt -lt 100 -and (Test-Path -LiteralPath $applicationDir); $attempt++) { Start-Sleep -Milliseconds 100 }
+          if (Test-Path -LiteralPath $command) { throw 'application executable remains after uninstall' }
+          if (Test-Path -LiteralPath $uninstaller) { throw 'uninstaller remains after uninstall' }
+          if (Test-Path -LiteralPath $applicationDir) { throw 'application directory remains after uninstall' }
+          if (-not (Test-Path -LiteralPath $persistence)) { throw 'user data was deleted' }
       - name: Upload Windows installer-logs and screenshot
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
