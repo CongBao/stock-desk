@@ -10,6 +10,7 @@ import {
   ProcessIdentityTracker,
   providerEvidence,
   selectProcessTree,
+  type RuntimeRole,
   type RoutingManifest,
 } from './performanceEvidence';
 
@@ -47,6 +48,13 @@ function processRoles(commands: readonly string[]): string[] {
     if (lower.includes('multiprocessing')) roles.add('formula-child');
   }
   return [...roles].sort();
+}
+
+function serviceRole(command: readonly string[]): 'api' | 'web' | 'worker' {
+  const joined = command.join(' ');
+  if (joined.includes('uvicorn')) return 'api';
+  if (joined.includes('--worker')) return 'worker';
+  return 'web';
 }
 
 function percentile95(values: readonly number[]): number {
@@ -112,8 +120,11 @@ class RssSampler {
     this.peak = this.start;
   }
 
-  static async create(roots: readonly number[]): Promise<RssSampler> {
-    const identities = new ProcessIdentityTracker();
+  static async create(
+    roots: readonly number[],
+    rootRoles: ReadonlyMap<number, RuntimeRole>,
+  ): Promise<RssSampler> {
+    const identities = new ProcessIdentityTracker(rootRoles);
     return new RssSampler(
       roots,
       identities,
@@ -215,9 +226,10 @@ async function chartAction(
   page: Page,
   network: { blockedExternalRequests: number },
   roots: readonly number[],
+  rootRoles: ReadonlyMap<number, RuntimeRole>,
 ) {
   const blockedBefore = network.blockedExternalRequests;
-  const sampler = await RssSampler.create(roots);
+  const sampler = await RssSampler.create(roots, rootRoles);
   const started = performance.now();
   sampler.begin();
   const responsePromise = page.waitForResponse((response) => {
@@ -271,6 +283,7 @@ async function warmChartAction(
   page: Page,
   network: { blockedExternalRequests: number },
   roots: readonly number[],
+  rootRoles: ReadonlyMap<number, RuntimeRole>,
 ) {
   const adjustment = page.getByRole('combobox', { name: '复权方式' });
   await Promise.all([
@@ -286,7 +299,7 @@ async function warmChartAction(
   await expect(page.locator('[data-chart-ready="true"]')).toBeVisible();
 
   const blockedBefore = network.blockedExternalRequests;
-  const sampler = await RssSampler.create(roots);
+  const sampler = await RssSampler.create(roots, rootRoles);
   const started = performance.now();
   sampler.begin();
   const responsePromise = page.waitForResponse((response) => {
@@ -342,9 +355,10 @@ async function formulaAction(
   page: Page,
   network: { blockedExternalRequests: number },
   roots: readonly number[],
+  rootRoles: ReadonlyMap<number, RuntimeRole>,
 ) {
   const blockedBefore = network.blockedExternalRequests;
-  const sampler = await RssSampler.create(roots);
+  const sampler = await RssSampler.create(roots, rootRoles);
   const started = performance.now();
   sampler.begin();
   const responsePromise = page.waitForResponse((response) => {
@@ -416,11 +430,12 @@ async function backtestAction(
   versionId: string,
   network: { blockedExternalRequests: number },
   roots: readonly number[],
+  rootRoles: ReadonlyMap<number, RuntimeRole>,
   cachedManifest: RoutingManifest,
   cachedManifestId: string,
 ) {
   const blockedBefore = network.blockedExternalRequests;
-  const sampler = await RssSampler.create(roots);
+  const sampler = await RssSampler.create(roots, rootRoles);
   const started = performance.now();
   sampler.begin();
   const submission = await page.request.post('/api/backtests', {
@@ -686,6 +701,15 @@ test('records aggregate 2/3/5 budgets and worker-backed UI responsiveness', asyn
   ]
     .filter((pid) => Number.isInteger(pid) && pid > 0)
     .sort((left, right) => left - right);
+  const rootRoles = new Map<number, RuntimeRole>([
+    [process.pid, 'playwright'],
+    [process.ppid, 'playwright'],
+    [processEvidence.supervisor_pid, 'supervisor'],
+    ...processEvidence.service_processes.map(
+      (service) => [service.pid, serviceRole(service.command)] as const,
+    ),
+  ]);
+  expect(rootRoles.size).toBe(roots.length);
   const declaredProcessTree = await processTreeSnapshot(roots);
   const sampledProcessRoles = processRoles(declaredProcessTree.commands);
   for (const required of ['uvicorn', 'scripts.e2e_dev --worker', 'vite']) {
@@ -706,7 +730,7 @@ test('records aggregate 2/3/5 budgets and worker-backed UI responsiveness', asyn
     const network = await forbidExternalNetwork(context);
     const page = await context.newPage();
     await page.goto('/market');
-    chartCold.push(await chartAction(page, network, roots));
+    chartCold.push(await chartAction(page, network, roots, rootRoles));
     await context.close();
   }
 
@@ -715,15 +739,15 @@ test('records aggregate 2/3/5 budgets and worker-backed UI responsiveness', asyn
   const page = await context.newPage();
   const chartWarm: TimedSample[] = [];
   await page.goto('/market');
-  await chartAction(page, network, roots);
+  await chartAction(page, network, roots, rootRoles);
   for (let index = 0; index < SAMPLE_COUNT; index += 1) {
-    chartWarm.push(await warmChartAction(page, network, roots));
+    chartWarm.push(await warmChartAction(page, network, roots, rootRoles));
   }
 
   const formulaSamples: TimedSample[] = [];
   for (let index = 0; index < SAMPLE_COUNT; index += 1) {
     await openFormula(page, index);
-    formulaSamples.push(await formulaAction(page, network, roots));
+    formulaSamples.push(await formulaAction(page, network, roots, rootRoles));
   }
 
   const versionId = await loadPerformanceFormulaVersion(page);
@@ -742,6 +766,7 @@ test('records aggregate 2/3/5 budgets and worker-backed UI responsiveness', asyn
         versionId,
         network,
         roots,
+        rootRoles,
         cachedBody.routing_manifest,
         cachedBody.manifest_record_id,
       ),
@@ -946,11 +971,7 @@ test('records aggregate 2/3/5 budgets and worker-backed UI responsiveness', asyn
       declared_roots: roots,
       declared_services: processEvidence.service_processes.map((service) => ({
         pid: service.pid,
-        role: service.command.includes('uvicorn')
-          ? 'api'
-          : service.command.includes('--worker')
-            ? 'worker'
-            : 'web',
+        role: serviceRole(service.command),
       })),
       sampled_process_roles: sampledProcessRoles,
       role_set_digest: digest(sampledProcessRoles),

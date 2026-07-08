@@ -65,7 +65,7 @@ describe('process-tree evidence', () => {
   });
 
   it('rejects a changed command identity for a reused PID', () => {
-    const tracker = new ProcessIdentityTracker();
+    const tracker = new ProcessIdentityTracker(new Map([[10, 'playwright']]));
     tracker.observe([
       { pid: 10, parent: 1, rssBytes: 1, command: 'node playwright' },
     ]);
@@ -78,5 +78,38 @@ describe('process-tree evidence', () => {
         { pid: 10, parent: 1, rssBytes: 2, command: 'python replacement' },
       ]),
     ).toThrow(/PID command identity changed/u);
+    expect(() => tracker.observe([])).toThrow(/declared root disappeared/u);
+  });
+
+  it('freezes identity anchors at the first snapshot and ignores later transient PID reuse', () => {
+    const tracker = new ProcessIdentityTracker(new Map([[10, 'playwright']]));
+    const root = {
+      pid: 10,
+      parent: 1,
+      rssBytes: 1,
+      command: 'node playwright',
+    };
+    tracker.observe([root]);
+    tracker.observe([
+      root,
+      { pid: 20, parent: 10, rssBytes: 1, command: 'transient child A' },
+    ]);
+
+    expect(() =>
+      tracker.observe([
+        root,
+        { pid: 20, parent: 10, rssBytes: 1, command: 'transient child B' },
+      ]),
+    ).not.toThrow();
+  });
+
+  it('requires every declared root to match its expected runtime role', () => {
+    const tracker = new ProcessIdentityTracker(new Map([[10, 'api']]));
+
+    expect(() =>
+      tracker.observe([
+        { pid: 10, parent: 1, rssBytes: 1, command: 'node playwright' },
+      ]),
+    ).toThrow(/expected api role/u);
   });
 });

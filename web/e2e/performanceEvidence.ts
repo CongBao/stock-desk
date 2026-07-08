@@ -17,6 +17,9 @@ export type ProcessRow = {
   readonly command: string;
 };
 
+export type RuntimeRole =
+  'api' | 'playwright' | 'supervisor' | 'web' | 'worker';
+
 const PS_HELPER =
   /(?:^|\s)(?:\/\S*\/)?ps\s+-axo\s+pid=,ppid=,rss=,command=(?:\s|$)/u;
 
@@ -57,17 +60,63 @@ export function selectProcessTree(
 }
 
 export class ProcessIdentityTracker {
-  private readonly commands = new Map<number, string>();
+  private anchors: ReadonlyMap<number, string> | undefined;
 
-  observe(rows: readonly ProcessRow[]): void {
-    for (const row of rows) {
-      const previous = this.commands.get(row.pid);
-      if (previous !== undefined && previous !== row.command) {
-        throw new Error(`PID command identity changed for ${row.pid}`);
-      }
-      this.commands.set(row.pid, row.command);
+  constructor(
+    private readonly expectedRoots: ReadonlyMap<number, RuntimeRole>,
+  ) {
+    if (expectedRoots.size === 0) {
+      throw new Error('declared root expectations cannot be empty');
     }
   }
+
+  observe(rows: readonly ProcessRow[]): void {
+    const byPid = new Map(rows.map((row) => [row.pid, row]));
+    if (this.anchors === undefined) {
+      const anchors = new Map<number, string>();
+      for (const [pid, role] of this.expectedRoots) {
+        const row = byPid.get(pid);
+        if (row === undefined) {
+          throw new Error(
+            `declared root ${pid} is missing from first snapshot`,
+          );
+        }
+        if (!commandMatchesRole(row.command, role)) {
+          throw new Error(
+            `declared root ${pid} does not match expected ${role} role`,
+          );
+        }
+        anchors.set(pid, row.command);
+      }
+      this.anchors = anchors;
+      return;
+    }
+    for (const [pid, command] of this.anchors) {
+      const row = byPid.get(pid);
+      if (row === undefined) {
+        throw new Error(`declared root disappeared during sample: ${pid}`);
+      }
+      if (row.command !== command) {
+        throw new Error(`PID command identity changed for ${pid}`);
+      }
+    }
+  }
+}
+
+export function commandMatchesRole(
+  command: string,
+  role: RuntimeRole,
+): boolean {
+  const lower = command.toLowerCase();
+  if (role === 'api') return lower.includes('uvicorn');
+  if (role === 'worker') return lower.includes('scripts.e2e_dev --worker');
+  if (role === 'web') return lower.includes('vite');
+  if (role === 'supervisor') {
+    return (
+      lower.includes('scripts/e2e_dev.py') || lower.includes('scripts.e2e_dev')
+    );
+  }
+  return lower.includes('playwright');
 }
 
 function canonicalize(value: unknown): unknown {

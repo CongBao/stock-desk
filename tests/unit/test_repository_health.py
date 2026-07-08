@@ -1207,7 +1207,7 @@ def test_performance_pid_identity_is_scoped_to_each_timed_sample() -> None:
     sampler_start = source.index("class RssSampler")
     sampler_end = source.index("\nasync function forbidExternalNetwork", sampler_start)
     sampler = source[sampler_start:sampler_end]
-    assert "const identities = new ProcessIdentityTracker()" in sampler
+    assert "const identities = new ProcessIdentityTracker(rootRoles)" in sampler
     assert "processTreeSnapshot(roots, identities)" in sampler
     assert "processTreeSnapshot(this.roots, this.identities)" in sampler
 
