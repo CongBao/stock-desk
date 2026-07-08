@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
-import pytest
 import yaml
 
 from scripts.verify_docs import (
@@ -151,13 +150,6 @@ def test_readme_commands_map_to_executed_release_evidence() -> None:
         assert f"--ignore={required}" not in test_recipe
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "planned final-RC evidence: remove this marker only after the public Wiki "
-        "and real release-candidate screenshots exist"
-    ),
-)
 def test_readmes_are_concise_reciprocal_and_install_verified() -> None:
     english, chinese = _readmes()
     for document in (english, chinese):

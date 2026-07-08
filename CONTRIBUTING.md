@@ -29,6 +29,10 @@ make build
 make public-tree
 ```
 
+`make security` is the canonical locked production-dependency audit. It needs
+network access to query OSV for Python packages and the npm registry for Web
+packages, and first checks that manifests match their lockfiles.
+
 For the complete release gate, Docker must be running. The command starts an isolated Compose stack for the smoke test and removes it on exit:
 
 ```bash

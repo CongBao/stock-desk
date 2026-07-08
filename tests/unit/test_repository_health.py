@@ -913,17 +913,13 @@ def test_ci_and_release_run_the_canonical_dependency_audit_gate() -> None:
     assert '"security"' in _read("scripts/verify_release.py")
 
 
-def test_readmes_document_networked_dependency_audits() -> None:
-    english = _read("README.md")
-    chinese = _read("README.zh-CN.md")
-    for content in (english, chinese):
-        assert "make security" in content
-        assert "OSV" in content
-        assert "npm registry" in content
-    assert "network access" in english.casefold()
-    assert "manifests match their lockfiles" in english
-    assert "网络访问" in chinese
-    assert "清单与锁文件一致" in chinese
+def test_contributing_guide_documents_networked_dependency_audits() -> None:
+    contributing = _read("CONTRIBUTING.md")
+    assert "make security" in contributing
+    assert "OSV" in contributing
+    assert "npm registry" in contributing
+    assert "network access" in contributing.casefold()
+    assert "manifests match their lockfiles" in contributing
 
 
 def test_ci_and_release_gate_the_chromium_end_to_end_slice() -> None:
@@ -1305,56 +1301,38 @@ def test_sdist_uses_an_explicit_source_only_allowlist() -> None:
     }
 
 
-def test_readmes_match_commands_and_describe_current_release_limits() -> None:
+def test_readmes_are_concise_product_entries_with_detailed_guide_links() -> None:
     english = _read("README.md")
     chinese = _read("README.zh-CN.md")
-    shared_facts = (
-        ">=3.12,<3.13",
-        "pnpm 11",
-        "make bootstrap",
-        "make dev",
-        "docker compose up --build --wait",
-        "make release-check",
-        "http://localhost:5173",
-        "http://localhost:8000/api/health",
-        "http://localhost:8000/docs",
-        "/market",
-        "/formulas",
-        "/backtests",
-        "/analysis",
-        "/tasks",
-        "/settings",
-        "demo.double",
-        "STOCK_DESK_MASTER_KEY",
-        "make acceptance",
-        "make benchmark",
-        "make acceptance-formula",
-        "make benchmark-formula",
-        "make acceptance-backtest",
-        "make benchmark-backtest",
-        "make e2e-market",
-        "make e2e-formula",
-        "make e2e-backtest",
-        "make e2e-analysis",
-        "make e2e-task-center",
-    )
-    for fact in shared_facts:
-        assert fact in english
-        assert fact in chinese
-
     for content in (english, chinese):
-        assert "Stage 0" in content
-        assert "Stage 1" in content
-        assert "Stage 2" in content
-        assert "Stage 4" in content
-        assert "Apache-2.0" in content
-        assert "Docker" in content
-        assert "uv" in content
-        assert "Node.js" in content
+        assert len(content.splitlines()) <= 120
+        for shared_fact in (
+            "https://github.com/CongBao/stock-desk/wiki",
+            "CONTRIBUTING.md",
+            "SECURITY.md",
+            "SUPPORT.md",
+            "LICENSE",
+            "docker compose up --build --wait",
+            "STOCK_DESK_MASTER_KEY",
+        ):
+            assert shared_fact in content
         assert (
             "not investment advice" in content.casefold() or "不构成投资建议" in content
         )
         assert "cache" in content.casefold() or "缓存" in content
+
+    assert english.splitlines()[0] == "[简体中文](README.zh-CN.md)"
+    assert chinese.splitlines()[0] == "[English](README.md)"
+
+    contributing = _read("CONTRIBUTING.md")
+    for detailed_fact in (
+        ">=3.12,<3.13",
+        "pnpm 11",
+        "make bootstrap",
+        "make dev",
+        "make release-check",
+    ):
+        assert detailed_fact in contributing
 
 
 def test_security_and_support_use_the_right_reporting_channels() -> None:
