@@ -135,6 +135,47 @@ def test_expired_leased_task_is_requeued_in_local_recovery_backup(
         ).fetchone() == ("queued", None, None, None)
 
 
+def test_expired_cancel_requested_task_is_terminal_in_local_recovery_backup(
+    tmp_path: Path,
+) -> None:
+    archive = _archive(tmp_path)
+    destination = tmp_path / "destination"
+    destination_url = _instance(destination)
+    repository = TaskRepository(create_engine_for_url(destination_url))
+    task = repository.create("backtest.run", {})
+    old = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    claimed = repository.claim_next(
+        "expired-worker",
+        now=old,
+        lease_duration=timedelta(seconds=1),
+    )
+    assert claimed is not None
+    repository.request_cancel(task.id)
+    repository.close()
+
+    result = restore_backup(
+        archive=archive,
+        database_url=destination_url,
+        data_dir=destination,
+        offline=True,
+    )
+
+    assert result.recovery_archive is not None
+    with zipfile.ZipFile(result.recovery_archive) as bundle:
+        recovery_database = tmp_path / "cancelled-recovery.db"
+        recovery_database.write_bytes(bundle.read("database/stock-desk.db"))
+    with sqlite3.connect(recovery_database) as connection:
+        restored = connection.execute(
+            "SELECT status, finished_at, claim_token, lease_expires_at "
+            "FROM task_run WHERE id = ?",
+            (task.id,),
+        ).fetchone()
+    assert restored is not None
+    assert restored[0] == "cancelled"
+    assert restored[1] is not None
+    assert restored[2:] == (None, None)
+
+
 @pytest.mark.parametrize("operation", ("api", "worker", "recovery"))
 def test_restore_lock_rejects_concurrent_service_or_recovery_process(
     tmp_path: Path,

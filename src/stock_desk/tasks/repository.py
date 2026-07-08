@@ -817,12 +817,126 @@ class TaskRepository:
             )
         return int(value or 0)
 
+    def _terminalize_expired_cancellations(
+        self,
+        connection: Connection,
+        *,
+        sampled_at: datetime,
+        transition_time: ColumnElement[datetime],
+    ) -> list[RowMapping]:
+        expired_cancellations = (
+            update(TaskRun)
+            .where(
+                TaskRun.kind.in_(_LEASED_TASK_KINDS),
+                TaskRun.status == "running",
+                TaskRun.cancel_requested.is_(True),
+                TaskRun.lease_expires_at.is_not(None),
+                TaskRun.lease_expires_at <= sampled_at,
+            )
+            .values(
+                status="cancelled",
+                result_json=None,
+                error_json=None,
+                updated_at=transition_time,
+                finished_at=transition_time,
+                claim_token=None,
+                lease_expires_at=None,
+                heartbeat_at=None,
+            )
+            .returning(TaskRun)
+        )
+        cancelled_rows = connection.execute(expired_cancellations).mappings().all()
+        if cancelled_rows:
+            from stock_desk.analysis.models import (
+                AnalysisAttemptRow,
+                AnalysisRunRow,
+                AnalysisStageRow,
+            )
+            from stock_desk.backtest.models import BacktestRunRow
+
+            cancelled_task_ids = tuple(row["id"] for row in cancelled_rows)
+            connection.execute(
+                update(BacktestRunRow)
+                .where(
+                    BacktestRunRow.task_id.in_(cancelled_task_ids),
+                    BacktestRunRow.status.in_(("queued", "running")),
+                )
+                .values(
+                    status="cancelled",
+                    stage="cancelled",
+                    updated_at=sampled_at,
+                    finished_at=sampled_at,
+                )
+            )
+            analysis_run_ids = tuple(
+                connection.execute(
+                    select(AnalysisRunRow.id).where(
+                        AnalysisRunRow.task_id.in_(cancelled_task_ids),
+                        AnalysisRunRow.status.in_(("queued", "running")),
+                    )
+                ).scalars()
+            )
+            if analysis_run_ids:
+                connection.execute(
+                    update(AnalysisAttemptRow)
+                    .where(
+                        AnalysisAttemptRow.run_id.in_(analysis_run_ids),
+                        AnalysisAttemptRow.status == "running",
+                    )
+                    .values(
+                        status="cancelled",
+                        error_json=None,
+                        retryable=None,
+                        backoff_seconds=None,
+                        finished_at=sampled_at,
+                    )
+                )
+                connection.execute(
+                    update(AnalysisStageRow)
+                    .where(
+                        AnalysisStageRow.run_id.in_(analysis_run_ids),
+                        AnalysisStageRow.status.in_(("pending", "running")),
+                    )
+                    .values(
+                        status="cancelled",
+                        failure_code=None,
+                        retryable=None,
+                        updated_at=sampled_at,
+                        finished_at=sampled_at,
+                    )
+                )
+                connection.execute(
+                    update(AnalysisRunRow)
+                    .where(
+                        AnalysisRunRow.id.in_(analysis_run_ids),
+                        AnalysisRunRow.status.in_(("queued", "running")),
+                    )
+                    .values(
+                        status="cancelled",
+                        current_stage=None,
+                        updated_at=sampled_at,
+                        finished_at=sampled_at,
+                    )
+                )
+        for cancelled_row in cancelled_rows:
+            cancelled = _snapshot(cancelled_row)
+            _append_event(
+                connection,
+                task_id=cancelled.id,
+                event_name="task.cancelled",
+                level="info",
+                progress=cancelled.progress,
+                detail={},
+                occurred_at=cancelled.updated_at,
+            )
+        return list(cancelled_rows)
+
     def requeue_expired_leases_for_offline_snapshot(
         self,
         *,
         now: datetime | None = None,
     ) -> int:
-        """Requeue abandoned leased tasks while the offline claim gate is held."""
+        """Resolve abandoned leased tasks while the offline claim gate is held."""
         sampled_at = (
             _utc_now()
             if now is None
@@ -849,6 +963,11 @@ class TaskRepository:
             .returning(TaskRun)
         )
         with self._engine.begin() as connection:
+            cancelled_rows = self._terminalize_expired_cancellations(
+                connection,
+                sampled_at=sampled_at,
+                transition_time=transition_time,
+            )
             rows = connection.execute(statement).mappings().all()
             for row in rows:
                 task = _snapshot(row)
@@ -861,7 +980,7 @@ class TaskRepository:
                     detail={"code": "offline_restore_expired_lease"},
                     occurred_at=task.updated_at,
                 )
-        return len(rows)
+        return len(rows) + len(cancelled_rows)
 
     def claim_next(
         self,
@@ -948,113 +1067,12 @@ class TaskRepository:
             )
             .returning(TaskRun)
         )
-        expired_cancellations = (
-            update(TaskRun)
-            .where(
-                TaskRun.kind.in_(_LEASED_TASK_KINDS),
-                TaskRun.status == "running",
-                TaskRun.cancel_requested.is_(True),
-                TaskRun.lease_expires_at.is_not(None),
-                TaskRun.lease_expires_at <= sampled_at,
-            )
-            .values(
-                status="cancelled",
-                result_json=None,
-                error_json=None,
-                updated_at=transition_time,
-                finished_at=transition_time,
-                claim_token=None,
-                lease_expires_at=None,
-                heartbeat_at=None,
-            )
-            .returning(TaskRun)
-        )
         with self._engine.begin() as connection:
-            cancelled_rows = connection.execute(expired_cancellations).mappings().all()
-            if cancelled_rows:
-                from stock_desk.backtest.models import BacktestRunRow
-                from stock_desk.analysis.models import (
-                    AnalysisAttemptRow,
-                    AnalysisRunRow,
-                    AnalysisStageRow,
-                )
-
-                cancelled_task_ids = tuple(row["id"] for row in cancelled_rows)
-
-                connection.execute(
-                    update(BacktestRunRow)
-                    .where(
-                        BacktestRunRow.task_id.in_(cancelled_task_ids),
-                        BacktestRunRow.status.in_(("queued", "running")),
-                    )
-                    .values(
-                        status="cancelled",
-                        stage="cancelled",
-                        updated_at=sampled_at,
-                        finished_at=sampled_at,
-                    )
-                )
-                analysis_run_ids = tuple(
-                    connection.execute(
-                        select(AnalysisRunRow.id).where(
-                            AnalysisRunRow.task_id.in_(cancelled_task_ids),
-                            AnalysisRunRow.status.in_(("queued", "running")),
-                        )
-                    ).scalars()
-                )
-                if analysis_run_ids:
-                    connection.execute(
-                        update(AnalysisAttemptRow)
-                        .where(
-                            AnalysisAttemptRow.run_id.in_(analysis_run_ids),
-                            AnalysisAttemptRow.status == "running",
-                        )
-                        .values(
-                            status="cancelled",
-                            error_json=None,
-                            retryable=None,
-                            backoff_seconds=None,
-                            finished_at=sampled_at,
-                        )
-                    )
-                    connection.execute(
-                        update(AnalysisStageRow)
-                        .where(
-                            AnalysisStageRow.run_id.in_(analysis_run_ids),
-                            AnalysisStageRow.status.in_(("pending", "running")),
-                        )
-                        .values(
-                            status="cancelled",
-                            failure_code=None,
-                            retryable=None,
-                            updated_at=sampled_at,
-                            finished_at=sampled_at,
-                        )
-                    )
-                    connection.execute(
-                        update(AnalysisRunRow)
-                        .where(
-                            AnalysisRunRow.id.in_(analysis_run_ids),
-                            AnalysisRunRow.status.in_(("queued", "running")),
-                        )
-                        .values(
-                            status="cancelled",
-                            current_stage=None,
-                            updated_at=sampled_at,
-                            finished_at=sampled_at,
-                        )
-                    )
-            for cancelled_row in cancelled_rows:
-                cancelled = _snapshot(cancelled_row)
-                _append_event(
-                    connection,
-                    task_id=cancelled.id,
-                    event_name="task.cancelled",
-                    level="info",
-                    progress=cancelled.progress,
-                    detail={},
-                    occurred_at=cancelled.updated_at,
-                )
+            self._terminalize_expired_cancellations(
+                connection,
+                sampled_at=sampled_at,
+                transition_time=transition_time,
+            )
             row = connection.execute(statement).mappings().one_or_none()
             if row is None:
                 return None
