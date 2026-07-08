@@ -1,4 +1,5 @@
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -10,7 +11,7 @@ from urllib.parse import unquote
 
 from alembic import command
 from alembic.config import Config
-from filelock import FileLock
+from filelock import FileLock, Timeout as FileLockTimeout
 from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.engine import Connection, URL, make_url
 from sqlalchemy.engine.interfaces import DBAPIConnection
@@ -264,6 +265,19 @@ def _run_alembic_command(
     process lock is additionally safe for writable file-backed SQLite databases;
     memory SQLite and server databases require coordination owned by their caller.
     """
+    with migration_lock(url):
+        operation(_alembic_config(url), revision)
+
+
+@contextmanager
+def migration_lock(
+    url: str,
+    *,
+    timeout_seconds: float = _MIGRATION_LOCK_TIMEOUT_SECONDS,
+) -> Iterator[None]:
+    """Hold the same process/file lock used by every migration operation."""
+    if timeout_seconds < 0:
+        raise ValueError("migration lock timeout must be nonnegative")
     parsed_url = make_url(url)
     lock_path: Path | None = None
     if (
@@ -275,12 +289,17 @@ def _run_alembic_command(
         database_path = _sqlite_database_path(parsed_url)
         lock_path = database_path.with_name(f"{database_path.name}.migrate.lock")
 
-    with _MIGRATION_THREAD_LOCK:
+    acquired = _MIGRATION_THREAD_LOCK.acquire(timeout=timeout_seconds)
+    if not acquired:
+        raise FileLockTimeout(str(lock_path or url))
+    try:
         if lock_path is None:
-            operation(_alembic_config(url), revision)
+            yield
             return
-        with FileLock(lock_path, timeout=_MIGRATION_LOCK_TIMEOUT_SECONDS):
-            operation(_alembic_config(url), revision)
+        with FileLock(lock_path, timeout=timeout_seconds):
+            yield
+    finally:
+        _MIGRATION_THREAD_LOCK.release()
 
 
 def migrate(url: str, revision: str = "head") -> None:

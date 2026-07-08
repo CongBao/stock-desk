@@ -1,8 +1,11 @@
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import json
 import math
+from pathlib import Path
 from types import MappingProxyType
+from threading import RLock
 from typing import Any, cast
 from uuid import UUID, uuid4
 
@@ -20,6 +23,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.engine import Connection, RowMapping
 from sqlalchemy.sql.elements import ColumnElement
+from filelock import FileLock, Timeout as FileLockTimeout
 
 from stock_desk.security.redaction import clean_active_secrets
 from stock_desk.storage.database import (
@@ -79,6 +83,7 @@ _EVENT_LABELS = {
     "task.succeeded": "任务已完成",
     "task.failed": "任务失败",
 }
+_CLAIM_GATE_THREAD_LOCK = RLock()
 
 
 def _utc_now() -> datetime:
@@ -768,7 +773,65 @@ class TaskRepository:
             max_duration_ms=optional_float(duration_row["max_duration_ms"]),
         )
 
+    @contextmanager
+    def hold_claim_gate(
+        self,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> Iterator[None]:
+        """Block new claims across threads and processes without blocking enqueue."""
+        if timeout_seconds is not None and timeout_seconds < 0:
+            raise TaskValidationError("Claim gate timeout must be nonnegative")
+        lock_path = (
+            Path(cast(str, self._database_identity[1])).with_name(
+                f"{Path(cast(str, self._database_identity[1])).name}.claim.lock"
+            )
+            if self._database_identity[0] == "sqlite-file"
+            else None
+        )
+        acquired = (
+            _CLAIM_GATE_THREAD_LOCK.acquire()
+            if timeout_seconds is None
+            else _CLAIM_GATE_THREAD_LOCK.acquire(timeout=timeout_seconds)
+        )
+        if not acquired:
+            raise FileLockTimeout(str(lock_path or "in-memory claim gate"))
+        try:
+            if lock_path is None:
+                yield
+                return
+            with FileLock(
+                lock_path,
+                timeout=-1 if timeout_seconds is None else timeout_seconds,
+            ):
+                yield
+        finally:
+            _CLAIM_GATE_THREAD_LOCK.release()
+
+    def running_task_count(self) -> int:
+        with self._engine.connect() as connection:
+            value = connection.scalar(
+                select(func.count()).select_from(TaskRun).where(
+                    TaskRun.status == "running"
+                )
+            )
+        return int(value or 0)
+
     def claim_next(
+        self,
+        worker_id: str,
+        *,
+        now: datetime | None = None,
+        lease_duration: timedelta = _DEFAULT_LEASE_DURATION,
+    ) -> TaskSnapshot | TaskClaim | None:
+        with self.hold_claim_gate():
+            return self._claim_next_without_gate(
+                worker_id,
+                now=now,
+                lease_duration=lease_duration,
+            )
+
+    def _claim_next_without_gate(
         self,
         worker_id: str,
         *,
