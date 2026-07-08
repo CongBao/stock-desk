@@ -48,7 +48,8 @@ REQUIRED_SECTIONS = {
         "Trust and security",
     ),
     "docs/configuration.md": (
-        "Native development",
+        "Native installers",
+        "Source development",
         "Container deployment",
         "Application settings",
         "Container settings",
@@ -284,7 +285,9 @@ def _valid_image(path: Path) -> bool:
     return False
 
 
-def _wiki_publishable_paths(root: Path) -> tuple[list[Path], list[Path], list[str]]:
+def _wiki_publishable_paths(
+    root: Path, *, final: bool
+) -> tuple[list[Path], list[Path], list[str]]:
     markdown: list[Path] = []
     images: list[Path] = []
     failures: list[str] = []
@@ -299,6 +302,21 @@ def _wiki_publishable_paths(root: Path) -> tuple[list[Path], list[Path], list[st
         if not path.is_file():
             continue
         suffix = path.suffix.casefold()
+        is_publishable = suffix == ".md" or suffix in IMAGE_SUFFIXES
+        if not is_publishable:
+            continue
+        for blocked in WIKI_FORBIDDEN_REFERENCES:
+            if blocked.casefold() in relative_text.casefold():
+                failures.append(
+                    f"{relative_text}: forbidden public-boundary path: {blocked}"
+                )
+        if final and any(
+            placeholder in relative_text.casefold()
+            for placeholder in WIKI_PLACEHOLDER_PATTERNS
+        ):
+            failures.append(
+                f"{relative_text}: placeholder path blocks final Wiki publication"
+            )
         if suffix == ".md":
             markdown.append(path)
         elif suffix in IMAGE_SUFFIXES:
@@ -385,7 +403,9 @@ def verify_wiki(wiki_root: Path, *, final: bool) -> list[str]:
     if not root.is_dir():
         return [f"Wiki root is not a directory: {root}"]
     failures: list[str] = []
-    markdown_paths, image_paths, path_failures = _wiki_publishable_paths(root)
+    markdown_paths, image_paths, path_failures = _wiki_publishable_paths(
+        root, final=final
+    )
     failures.extend(path_failures)
     documents: dict[str, str] = {}
     for path in markdown_paths:

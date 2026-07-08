@@ -591,6 +591,23 @@ def test_final_wiki_rejects_symlinks_path_escapes_and_invalid_images(
     )
 
 
+def test_final_wiki_rejects_placeholder_and_internal_publishable_path_names(
+    tmp_path: Path,
+) -> None:
+    _write_wiki(tmp_path)
+    _finalize_wiki(tmp_path)
+    png = (tmp_path / "images" / "Backtesting.png").read_bytes()
+    (tmp_path / "images" / "SCREENSHOT_PLACEHOLDER.png").write_bytes(png)
+    internal = tmp_path / "openspec" / "private.png"
+    internal.parent.mkdir()
+    internal.write_bytes(png)
+
+    failures = verify_wiki(tmp_path, final=True)
+
+    assert any("images/SCREENSHOT_PLACEHOLDER.png" in failure for failure in failures)
+    assert any("openspec/private.png" in failure for failure in failures)
+
+
 def test_wiki_backup_commands_require_posix_source_or_container_scope(
     tmp_path: Path,
 ) -> None:
