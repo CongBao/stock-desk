@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from stock_desk.security.redaction import clean_active_secrets
 from stock_desk.tasks.models import (
     TaskEventLevel,
     TaskEventSnapshot,
@@ -45,7 +46,10 @@ def _json_response_value(value: Any) -> Any:
 
 
 def _json_response_object(value: Mapping[str, Any]) -> dict[str, Any]:
-    return cast(dict[str, Any], _json_response_value(value))
+    cleaned = clean_active_secrets(value)
+    if not isinstance(cleaned, Mapping):
+        return {}
+    return cast(dict[str, Any], _json_response_value(cleaned))
 
 
 class CreateTaskRequest(BaseModel):

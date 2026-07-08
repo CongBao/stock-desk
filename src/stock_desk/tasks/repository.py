@@ -21,6 +21,7 @@ from sqlalchemy import (
 from sqlalchemy.engine import Connection, RowMapping
 from sqlalchemy.sql.elements import ColumnElement
 
+from stock_desk.security.redaction import clean_active_secrets
 from stock_desk.storage.database import (
     DatabaseIdentity,
     DatabaseIdentityError,
@@ -147,6 +148,15 @@ def _validated_json_object(
     if not isinstance(decoded, dict):
         raise _json_validation_error(field_name)
     return cast(dict[str, Any], decoded)
+
+
+def _redacted_json_object(
+    value: Mapping[str, Any], *, field_name: str
+) -> dict[str, Any]:
+    cleaned = clean_active_secrets(value)
+    if not isinstance(cleaned, Mapping):
+        raise _json_validation_error(field_name)
+    return _validated_json_object(cleaned, field_name=field_name)
 
 
 def _assign_json_value(
@@ -366,7 +376,7 @@ def _append_event(
     detail: Mapping[str, Any],
     occurred_at: datetime,
 ) -> None:
-    safe_detail = _validated_json_object(detail, field_name="event detail")
+    safe_detail = _redacted_json_object(detail, field_name="event detail")
     latest_event_time = _aware_utc(
         connection.execute(
             select(func.max(TaskEvent.occurred_at)).where(TaskEvent.task_id == task_id)
@@ -461,7 +471,7 @@ class TaskRepository:
             raise TaskValidationError("Task kind must contain 1 to 64 characters")
         validated_task_id = _validated_uuid(task_id, field_name="id")
         validated_now = _validated_aware_utc(now, field_name="enqueue time")
-        validated_payload = _validated_json_object(payload, field_name="payload")
+        validated_payload = _redacted_json_object(payload, field_name="payload")
         values = {
             "id": validated_task_id,
             "kind": kind,
@@ -1098,7 +1108,7 @@ class TaskRepository:
             raise TaskValidationError(
                 "Task transaction connection targets a different database"
             )
-        validated_result = _validated_json_object(result, field_name="result")
+        validated_result = _redacted_json_object(result, field_name="result")
         sampled_at = _validated_aware_utc(now, field_name="completion time")
         cancelling = TaskRun.cancel_requested.is_(True)
         statement = (
@@ -1170,7 +1180,7 @@ class TaskRepository:
             raise TaskValidationError(
                 "Task transaction connection targets a different database"
             )
-        validated_error = _validated_json_object(error, field_name="error")
+        validated_error = _redacted_json_object(error, field_name="error")
         sampled_at = _validated_aware_utc(now, field_name="failure time")
         cancelling = TaskRun.cancel_requested.is_(True)
         row = (
@@ -1237,7 +1247,7 @@ class TaskRepository:
             raise TaskValidationError(
                 "Task progress must be a finite number from 0 to 1"
             )
-        validated_detail = _validated_json_object(
+        validated_detail = _redacted_json_object(
             detail if detail is not None else {},
             field_name="progress detail",
         )
@@ -1284,7 +1294,7 @@ class TaskRepository:
         claim_token: str | None = None,
         now: datetime | None = None,
     ) -> TaskSnapshot:
-        validated_result = _validated_json_object(result, field_name="result")
+        validated_result = _redacted_json_object(result, field_name="result")
         sampled_at = (
             _utc_now()
             if now is None
@@ -1349,7 +1359,7 @@ class TaskRepository:
         claim_token: str | None = None,
         now: datetime | None = None,
     ) -> TaskSnapshot:
-        validated_error = _validated_json_object(error, field_name="error")
+        validated_error = _redacted_json_object(error, field_name="error")
         sampled_at = (
             _utc_now()
             if now is None

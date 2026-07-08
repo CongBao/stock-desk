@@ -471,6 +471,21 @@ def scoped_log_redaction(*secrets: str) -> Iterator[LogSecretLease]:
         lease.close()
 
 
+def clean_active_secrets(value: Any) -> Any:
+    """Sanitize a value with the process-wide union of configured secrets.
+
+    Logging is only one possible output surface. Persistence, HTTP and export
+    boundaries use this same immutable union snapshot so a secret registered by
+    a settings service cannot be copied into otherwise allowlisted fields.
+    """
+
+    with _LOG_REDACTION_LOCK:
+        active_filter = _ACTIVE_UNION_FILTER
+    if active_filter is None:
+        return value
+    return active_filter.redactor.clean(value)
+
+
 def _marker_candidates() -> Iterator[str]:
     for marker_range in _PRIVATE_USE_RANGES:
         for codepoint in marker_range:

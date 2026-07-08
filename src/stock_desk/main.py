@@ -450,6 +450,7 @@ def create_app(
                 if active_lifespans:
                     return
                 resources = (
+                    owned_model_settings_service,
                     owned_model_catalog,
                     owned_source_settings_services,
                     owned_market_services,

@@ -4,6 +4,7 @@ import asyncio
 from dataclasses import dataclass
 from datetime import datetime
 import secrets
+from threading import RLock
 from typing import cast
 
 import httpx2
@@ -39,6 +40,7 @@ from stock_desk.analysis.providers.deepseek import DeepSeekProvider
 from stock_desk.analysis.providers.ollama import OllamaProvider
 from stock_desk.analysis.providers.openai_compatible import OpenAICompatibleProvider
 from stock_desk.security.secrets import SecretStore, SecretStoreError, mask_secret
+from stock_desk.security.redaction import LogSecretLease
 from stock_desk.storage.database import DatabaseIdentity
 
 
@@ -211,6 +213,10 @@ class ModelSettingsService:
         self._provider_factory = provider_factory or ModelProviderFactory(
             secret_store=secret_store
         )
+        self._redaction_lock = RLock()
+        self._redaction_values: tuple[str, ...] = ()
+        self._redaction_lease = LogSecretLease()
+        self._closed = False
 
     def __repr__(self) -> str:
         return "ModelSettingsService(configured=True)"
@@ -218,6 +224,25 @@ class ModelSettingsService:
     @property
     def database_identity(self) -> DatabaseIdentity:
         return self._catalog.database_identity
+
+    def close(self) -> None:
+        with self._redaction_lock:
+            if self._closed:
+                return
+            self._closed = True
+            self._redaction_values = ()
+            self._redaction_lease.close()
+
+    def _register_redaction_values(self, *values: str) -> None:
+        normalized = tuple(value for value in values if value)
+        if not normalized:
+            return
+        with self._redaction_lock:
+            if self._closed:
+                return
+            combined = tuple(dict.fromkeys((*self._redaction_values, *normalized)))
+            self._redaction_lease.replace(*combined)
+            self._redaction_values = combined
 
     def require_verified_execution(self, config_id: str) -> VerifiedModelExecution:
         try:
@@ -249,7 +274,7 @@ class ModelSettingsService:
             )
         except SecretStoreError:
             raise ModelSettingsSecureStorageError() from None
-        del plaintext
+        self._register_redaction_values(plaintext)
         return execution
 
     def create(
@@ -266,6 +291,7 @@ class ModelSettingsService:
             raise ModelSettingsSecureStorageError()
         if update.provider is not ModelProviderKind.OLLAMA and update.api_key is None:
             raise ModelSettingsValidationError()
+        registered: tuple[str, ...] = ()
         try:
             with self._catalog.transaction() as connection:
                 secret_reference: str | None = None
@@ -275,6 +301,7 @@ class ModelSettingsService:
                     plaintext = update.api_key.get_secret_value()
                     secret_reference = self._save_fresh_secret(plaintext, connection)
                     masked = mask_secret(plaintext)
+                    registered = (plaintext,)
                 public_config = _public_config(update, secret_reference)
                 snapshot = self._catalog.create_in_transaction(
                     connection,
@@ -291,6 +318,7 @@ class ModelSettingsService:
             raise ModelSettingsConflict() from None
         except Exception:
             raise ModelSettingsStorageError() from None
+        self._register_redaction_values(*registered)
         return _safe_snapshot(snapshot, masked)
 
     def create_successor(
@@ -304,6 +332,7 @@ class ModelSettingsService:
         secret_store = self._secret_store
         if update.provider is not ModelProviderKind.OLLAMA and secret_store is None:
             raise ModelSettingsSecureStorageError()
+        registered: tuple[str, ...] = ()
         try:
             with self._catalog.transaction() as connection:
                 parent_public = self._catalog.get_public_config_in_transaction(
@@ -338,6 +367,7 @@ class ModelSettingsService:
                             )
                         )
                         masked = mask_secret(plaintext)
+                    registered = (plaintext,)
                 public_config = _public_config(update, secret_reference)
                 snapshot = self._catalog.create_in_transaction(
                     connection,
@@ -357,6 +387,7 @@ class ModelSettingsService:
             raise ModelSettingsConflict() from None
         except Exception:
             raise ModelSettingsStorageError() from None
+        self._register_redaction_values(*registered)
         return _safe_snapshot(snapshot, masked)
 
     def get(self, config_id: str) -> ModelSettingsSnapshot:
@@ -550,7 +581,9 @@ class ModelSettingsService:
         secret_store = self._secret_store
         if secret_store is None:
             raise ModelSettingsSecureStorageError()
-        return secret_store.masked_secrets_in_transaction(references, connection)
+        plaintext = secret_store.redaction_values_in_transaction(references, connection)
+        self._register_redaction_values(*plaintext.values())
+        return {name: mask_secret(value) for name, value in plaintext.items()}
 
     def _save_fresh_secret(
         self,

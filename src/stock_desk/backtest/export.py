@@ -13,6 +13,7 @@ from stock_desk.backtest.repository import (
     BacktestRepository,
 )
 from stock_desk.backtest.public_data import is_dangerous_key, public_text
+from stock_desk.security.redaction import clean_active_secrets
 
 
 EXPORT_SCHEMA_VERSION = "stock-desk-backtest-export-v1"
@@ -104,6 +105,7 @@ def _safe_json(value: object, *, section: str, key: str | None = None) -> object
 
 
 def _canonical_json(value: object) -> bytes:
+    value = clean_active_secrets(value)
     return json.dumps(
         value,
         allow_nan=False,
@@ -182,6 +184,10 @@ def _csv_text(value: object, *, trusted_numeric: bool = False) -> str:
         value = _canonical_json(value).decode("utf-8")
     if not isinstance(value, str):
         raise ValueError("CSV scalar is invalid")
+    cleaned = clean_active_secrets(value)
+    if not isinstance(cleaned, str):
+        raise ValueError("CSV scalar is invalid")
+    value = cleaned
     if trusted_numeric:
         return value
     stripped = value.lstrip(" \t\r\n\v\f")
