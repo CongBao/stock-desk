@@ -33,7 +33,7 @@ def _sha256(payload: bytes) -> str:
     return f"sha256:{hashlib.sha256(payload).hexdigest()}"
 
 
-def test_portable_backup_is_canonical_secret_free_and_catalog_bounded(
+def test_portable_backup_has_canonical_manifest_and_bounded_catalog(
     tmp_path: Path,
 ) -> None:
     data_dir = tmp_path / "data"

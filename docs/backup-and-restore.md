@@ -20,7 +20,9 @@ without publishing a partial archive; adjust it with `--drain-timeout`.
 Enqueues committed before the SQLite clone begins are present in that consistent
 snapshot; enqueues committed after it begins belong to the next backup.
 
-The ZIP64 archive has a canonical manifest and digest. It contains:
+The backup uses a verified ZIP64-capable container with a canonical manifest and
+digest. The container itself is not claimed to have one byte-for-byte canonical
+encoding. It contains:
 
 - the consistent SQLite clone;
 - the MarketLake ownership marker; and
@@ -49,15 +51,26 @@ uv run python scripts/restore.py /safe/path/desk.stockdesk-backup \
 ```
 
 `--offline` is mandatory for a non-empty destination and is an operator assertion;
-the tool cannot prove that a remote supervisor will not restart another process.
-An empty destination can be restored without it. After a successful restore,
+the tool cannot prevent an uncoordinated remote supervisor from manipulating the
+files directly. The packaged API and worker runtime register cross-process service
+markers and refuse to start while restore owns its lifecycle gate; restore refuses
+before creating its recovery backup if either service is active. An empty
+destination can be restored without `--offline`. After a successful restore,
 restart the API, workers, and scheduler as one coordinated service restart.
+
+While that lifecycle gate is held, restore also holds the migration and task-claim
+gates. Before the local recovery snapshot, an expired running lease is resolved:
+an ordinary abandoned task is requeued, while an expired task with cancellation
+already requested is terminalized as cancelled together with its backtest or
+analysis domain state. This keeps an abandoned lease from making offline restore
+wait forever and makes the recovery archive internally consistent.
 
 Before changing an owned destination component, restore performs all of these
 steps:
 
-1. validates entry paths, duplicates, types, counts, sizes, compression bounds,
-   the canonical manifest/digest, and every content hash;
+1. validates entry paths, duplicates, ZIP flags and attributes, types, counts,
+   compressed and expanded aggregate limits, compression ratios, the canonical
+   manifest/digest, and every content hash before extraction;
 2. creates a local `pre-restore-*.stockdesk-backup` under
    `.stock-desk-recovery/` for an existing instance, including encrypted secret
    rows but never the master key;
@@ -72,10 +85,14 @@ The whole data directory is never swapped. In particular, a TDX mount below
 `data/tdx`, exports, and other operator-owned paths remain in place.
 
 If power loss or a process crash interrupts component replacement, the packaged
-runtime checks the journal before starting. An unfinished replacement is rolled
-back; a committed replacement is finalized. A corrupt, missing-stage, or ambiguous
-journal makes startup refuse to run instead of guessing. With the application
-stopped, recovery can also be requested explicitly:
+runtime checks the journal before starting. The journal binds the archived
+manifest and the content identities of the original and installed database and
+MarketLake components. Recovery verifies regular-file, single-link, non-symlink,
+directory, marker, and content-hash expectations before every rollback or cleanup.
+An unfinished replacement is rolled back; a committed replacement is finalized.
+A corrupt, missing-stage, changed-component, or ambiguous journal state makes
+startup refuse to run instead of guessing. With the application stopped, recovery
+can also be requested explicitly:
 
 ```bash
 uv run python scripts/restore.py --data-dir /path/to/data --recover-only
@@ -116,9 +133,10 @@ pre-upgrade archive because it shares the destination's failure domain.
 - Filesystem atomic rename and directory `fsync` semantics are required. Keep the
   destination on one local filesystem; do not place the database and `market/` on
   separate mounts.
-- MarketLake currently requires POSIX no-follow and directory-descriptor behavior.
-  Backup and restore of MarketLake data are therefore not supported on native
-  Windows filesystems in this release.
+- The complete backup, restore, and interrupted-restore recovery workflow requires
+  POSIX no-follow, directory-descriptor, atomic-rename, and directory-`fsync`
+  behavior. It is not supported on native Windows filesystems in this release,
+  including instances with no MarketLake partitions.
 - Archive validation protects integrity and structure, not confidentiality. A
   portable backup can contain private research, formulas, task history, and model
   output. Encrypt backup storage and control access to it.
