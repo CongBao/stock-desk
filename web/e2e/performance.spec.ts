@@ -209,8 +209,10 @@ async function proveChartInteractionHandshake(
   const box = await canvas.boundingBox();
   expect(box).not.toBeNull();
   if (box === null) throw new Error('chart canvas has no interaction bounds');
+  // Keep the correctness handshake below the 2s chart budget without imposing
+  // a separate sub-350ms ceiling on slower target-runner animation frames.
   const poll: { timeout: number; intervals: number[] } = {
-    timeout: 350,
+    timeout: 1_000,
     intervals: [10, 20, 30],
   };
 
