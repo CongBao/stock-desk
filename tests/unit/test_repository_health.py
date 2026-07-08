@@ -1200,6 +1200,18 @@ def test_performance_chart_timer_includes_the_bounded_interaction_handshake() ->
         )
 
 
+def test_performance_pid_identity_is_scoped_to_each_timed_sample() -> None:
+    source = _read("web/e2e/performance.spec.ts")
+
+    assert "const processIdentities = new ProcessIdentityTracker()" not in source
+    sampler_start = source.index("class RssSampler")
+    sampler_end = source.index("\nasync function forbidExternalNetwork", sampler_start)
+    sampler = source[sampler_start:sampler_end]
+    assert "const identities = new ProcessIdentityTracker()" in sampler
+    assert "processTreeSnapshot(roots, identities)" in sampler
+    assert "processTreeSnapshot(this.roots, this.identities)" in sampler
+
+
 def test_performance_target_ci_is_explicit_and_requirements_remain_mapped() -> None:
     workflow = _load_github_actions_yaml(_read(".github/workflows/ci.yml"))
     e2e = workflow["jobs"]["e2e"]

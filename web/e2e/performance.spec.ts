@@ -65,8 +65,6 @@ function aggregate(samples: readonly TimedSample[], budget: number) {
   };
 }
 
-const processIdentities = new ProcessIdentityTracker();
-
 function processList(): Promise<string> {
   return new Promise((resolve, reject) => {
     execFile(
@@ -82,12 +80,15 @@ function processList(): Promise<string> {
   });
 }
 
-async function processTreeSnapshot(roots: readonly number[]) {
+async function processTreeSnapshot(
+  roots: readonly number[],
+  identities?: ProcessIdentityTracker,
+) {
   const selected = selectProcessTree(
     roots,
     parseProcessRows(await processList()),
   );
-  processIdentities.observe(selected);
+  identities?.observe(selected);
   return {
     rssBytes: selected.reduce((sum, row) => sum + row.rssBytes, 0),
     commands: [...new Set(selected.map((row) => row.command))].sort(),
@@ -104,6 +105,7 @@ class RssSampler {
 
   private constructor(
     private readonly roots: readonly number[],
+    private readonly identities: ProcessIdentityTracker,
     snapshot: Awaited<ReturnType<typeof processTreeSnapshot>>,
   ) {
     this.start = snapshot.rssBytes;
@@ -111,14 +113,19 @@ class RssSampler {
   }
 
   static async create(roots: readonly number[]): Promise<RssSampler> {
-    return new RssSampler(roots, await processTreeSnapshot(roots));
+    const identities = new ProcessIdentityTracker();
+    return new RssSampler(
+      roots,
+      identities,
+      await processTreeSnapshot(roots, identities),
+    );
   }
 
   begin() {
     this.running = true;
     const sample = async () => {
       try {
-        const snapshot = await processTreeSnapshot(this.roots);
+        const snapshot = await processTreeSnapshot(this.roots, this.identities);
         this.peak = Math.max(this.peak, snapshot.rssBytes);
       } catch (error) {
         this.failure =
@@ -144,7 +151,7 @@ class RssSampler {
     if (this.timer !== undefined) clearTimeout(this.timer);
     await this.inFlight;
     if (this.failure !== undefined) throw this.failure;
-    const snapshot = await processTreeSnapshot(this.roots);
+    const snapshot = await processTreeSnapshot(this.roots, this.identities);
     this.peak = Math.max(this.peak, snapshot.rssBytes);
     return {
       rss_start_bytes: this.start,
