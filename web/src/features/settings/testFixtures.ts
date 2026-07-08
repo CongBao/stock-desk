@@ -6,6 +6,9 @@ export const settingsResponse = {
     instruments: ['tushare', 'akshare', 'baostock', 'eastmoney'],
     trading_calendar: ['tushare', 'baostock', 'eastmoney'],
     execution_status: ['tushare'],
+    fundamentals: ['tushare', 'akshare'],
+    announcements: ['tushare', 'akshare'],
+    news: ['akshare'],
   },
   tdx_path: '/safe/vipdoc',
   tushare: {

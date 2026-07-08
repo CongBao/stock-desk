@@ -59,6 +59,24 @@ it('decodes settings and forwards abortable public/token writes', async () => {
   });
 });
 
+it('decodes every category in the backend source-priorities contract', async () => {
+  const priorities = await createSourceSettingsApi(
+    clientReturning('get', settingsResponse),
+  ).getSettings();
+
+  expect(Object.keys(priorities.priorities)).toEqual([
+    'daily_bars',
+    'weekly_bars',
+    'minute_bars',
+    'instruments',
+    'trading_calendar',
+    'execution_status',
+    'fundamentals',
+    'announcements',
+    'news',
+  ]);
+});
+
 it('posts source diagnostics and binds the response source', async () => {
   const client = clientReturning('post', diagnosticResponse);
   const controller = new AbortController();
@@ -122,6 +140,13 @@ it.each([
     'secret-shaped extra field',
     (payload: Record<string, unknown>) => {
       payload['token'] = 'must-not-be-accepted';
+    },
+  ],
+  [
+    'unknown priority category',
+    (payload: Record<string, unknown>) => {
+      const priorities = payload['priorities'] as Record<string, unknown>;
+      priorities['private_feed'] = ['akshare'];
     },
   ],
 ] as const)('rejects malformed settings: %s', async (_name, mutate) => {

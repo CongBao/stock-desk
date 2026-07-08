@@ -7,13 +7,30 @@ import {
 export type SourceProvider =
   'akshare' | 'baostock' | 'eastmoney' | 'tdx_local' | 'tushare';
 
-export type SourceCategory =
-  | 'daily_bars'
-  | 'execution_status'
-  | 'instruments'
-  | 'minute_bars'
-  | 'trading_calendar'
-  | 'weekly_bars';
+export const sourceCategories = [
+  'daily_bars',
+  'weekly_bars',
+  'minute_bars',
+  'instruments',
+  'trading_calendar',
+  'execution_status',
+  'fundamentals',
+  'announcements',
+  'news',
+] as const;
+
+export type SourceCategory = (typeof sourceCategories)[number];
+
+const diagnosticCategories = [
+  'minute_bars',
+  'daily_bars',
+  'weekly_bars',
+  'instruments',
+  'trading_calendar',
+  'execution_status',
+] as const satisfies readonly SourceCategory[];
+
+type DiagnosticCategory = (typeof diagnosticCategories)[number];
 
 export type DiagnosticState =
   | 'available'
@@ -57,13 +74,13 @@ export type SourceDiagnostic = {
     'bars' | 'execution_status' | 'instruments' | 'trading_calendar'
   )[];
   readonly permissions: readonly {
-    readonly category: SourceCategory;
+    readonly category: DiagnosticCategory;
     readonly state: DiagnosticState;
   }[];
   readonly available_periods: readonly ('1d' | '1w' | '60m')[];
   readonly markets: readonly ('SH' | 'SZ')[];
   readonly gaps: readonly {
-    readonly category: SourceCategory;
+    readonly category: DiagnosticCategory;
     readonly state: DiagnosticState;
     readonly reason: FailureReason;
     readonly detail: string;
@@ -105,22 +122,6 @@ const providers = new Set<SourceProvider>([
   'tdx_local',
   'tushare',
 ]);
-const categories = [
-  'daily_bars',
-  'weekly_bars',
-  'minute_bars',
-  'instruments',
-  'trading_calendar',
-  'execution_status',
-] as const satisfies readonly SourceCategory[];
-const diagnosticCategories = [
-  'minute_bars',
-  'daily_bars',
-  'weekly_bars',
-  'instruments',
-  'trading_calendar',
-  'execution_status',
-] as const satisfies readonly SourceCategory[];
 const states = new Set<DiagnosticState>([
   'available',
   'permission_denied',
@@ -169,6 +170,9 @@ const usableProviders: Readonly<
   instruments: new Set(['tushare', 'akshare', 'baostock']),
   trading_calendar: new Set(['tushare', 'baostock']),
   execution_status: new Set(['tushare']),
+  fundamentals: new Set(['tushare', 'akshare']),
+  announcements: new Set(['tushare', 'akshare']),
+  news: new Set(['akshare']),
 };
 
 export class SourceSettingsProtocolError extends Error {
@@ -272,9 +276,9 @@ function decodePriorities(
   value: JsonValue | undefined,
   path: string,
 ): SourcePriorities {
-  const item = exactRecord(value, path, categories);
+  const item = exactRecord(value, path, sourceCategories);
   return Object.fromEntries(
-    categories.map((category) => {
+    sourceCategories.map((category) => {
       const categoryPath = `${path}.${category}`;
       const order = enumArray(
         item[category],
@@ -516,8 +520,8 @@ function decodeDiagnostic(
   );
   const expectedCapabilities: SourceDiagnostic['capabilities'][number][] = [];
   if (
-    ['minute_bars', 'daily_bars', 'weekly_bars'].some((category) =>
-      availableCategories.has(category as SourceCategory),
+    (['minute_bars', 'daily_bars', 'weekly_bars'] as const).some((category) =>
+      availableCategories.has(category),
     )
   )
     expectedCapabilities.push('bars');
