@@ -408,6 +408,7 @@ def test_tag_release_generates_and_attests_sbom_and_artifacts() -> None:
     release = _load_github_actions_yaml(_read(".github/workflows/release.yml"))
     verify = release["jobs"]["verify"]
     assert verify["permissions"] == {"contents": "read"}
+    assert 60 <= verify["timeout-minutes"] <= 90
     steps = verify["steps"]
     names = [step.get("name") for step in steps]
     archive_index = names.index("Prepare release archives")
@@ -701,8 +702,13 @@ def test_workflows_have_least_permissions_timeouts_and_bounded_concurrency() -> 
         assert "concurrency" in workflow, workflow_path
         jobs = workflow["jobs"]
         assert jobs
-        for job in jobs.values():
-            assert 1 <= job["timeout-minutes"] <= 45, workflow_path
+        for job_name, job in jobs.items():
+            maximum = (
+                60
+                if workflow_path.name == "release.yml" and job_name == "verify"
+                else 45
+            )
+            assert 1 <= job["timeout-minutes"] <= maximum, workflow_path
 
     codeql = _read(".github/workflows/codeql.yml")
     assert "security-events: write" in codeql
