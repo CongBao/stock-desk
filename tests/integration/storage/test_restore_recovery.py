@@ -66,9 +66,7 @@ def test_interrupted_restore_rolls_back_original_components(
     tmp_path: Path, crash_phase: str
 ) -> None:
     source = tmp_path / "source"
-    source_url, _new_partition = _instance(
-        source, marker="new", day=date(2024, 5, 6)
-    )
+    source_url, _new_partition = _instance(source, marker="new", day=date(2024, 5, 6))
     archive = tmp_path / "source.stockdesk-backup"
     create_backup(database_url=source_url, data_dir=source, destination=archive)
     destination = tmp_path / "destination"

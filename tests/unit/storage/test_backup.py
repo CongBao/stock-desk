@@ -38,9 +38,7 @@ def test_portable_backup_is_canonical_secret_free_and_catalog_bounded(
     engine = create_engine_for_url(database_url)
     lake = MarketLake(engine=engine, root=(data_dir / "market").resolve())
     stored = lake.write(
-        routed_daily_bars(
-            (date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4))
-        )
+        routed_daily_bars((date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4)))
     )
     secret = "ciphertext-marker-that-must-not-remain"
     with engine.begin() as connection:
@@ -109,7 +107,9 @@ def test_portable_backup_is_canonical_secret_free_and_catalog_bounded(
     assert secret.encode("utf-8") not in cloned.read_bytes()
     assert unreferenced.name not in names
     assert not any(
-        token in name for name in names for token in (".locks", "tdx", "exports", ".env")
+        token in name
+        for name in names
+        for token in (".locks", "tdx", "exports", ".env")
     )
     partition_entry = next(
         item for item in manifest.files if item.archive_path == expected_partition
@@ -118,7 +118,9 @@ def test_portable_backup_is_canonical_secret_free_and_catalog_bounded(
     assert partition_entry.sha256 == _sha256(referenced.read_bytes())
 
 
-def test_backup_clone_contains_committed_uncheckpointed_wal_rows(tmp_path: Path) -> None:
+def test_backup_clone_contains_committed_uncheckpointed_wal_rows(
+    tmp_path: Path,
+) -> None:
     data_dir = tmp_path / "data"
     database = data_dir / "stock-desk.db"
     database_url = f"sqlite:///{database}"
@@ -189,16 +191,18 @@ def _copy_archive(
     mutate: dict[str, bytes] | None = None,
     file_types: dict[str, int] | None = None,
 ) -> None:
-    with zipfile.ZipFile(source) as original, zipfile.ZipFile(destination, "w") as output:
+    with (
+        zipfile.ZipFile(source) as original,
+        zipfile.ZipFile(destination, "w") as output,
+    ):
         for source_info in original.infolist():
             name = (rename or {}).get(source_info.filename, source_info.filename)
             info = zipfile.ZipInfo(name, date_time=source_info.date_time)
             info.compress_type = source_info.compress_type
             info.create_system = source_info.create_system
             info.external_attr = (
-                ((file_types or {}).get(source_info.filename, stat.S_IFREG) | 0o600)
-                << 16
-            )
+                (file_types or {}).get(source_info.filename, stat.S_IFREG) | 0o600
+            ) << 16
             payload = (mutate or {}).get(
                 source_info.filename,
                 original.read(source_info),

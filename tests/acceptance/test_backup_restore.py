@@ -22,9 +22,7 @@ def test_backup_restore_round_trip_preserves_inventory_and_dataset_bytes(
         engine=source_engine,
         root=(source / "market").resolve(),
     )
-    stored = source_lake.write(
-        routed_daily_bars((date(2024, 4, 1), date(2024, 4, 2)))
-    )
+    stored = source_lake.write(routed_daily_bars((date(2024, 4, 1), date(2024, 4, 2))))
     tasks = TaskRepository(source_engine)
     queued = tasks.create("market.update", {"reason": "backup acceptance"})
     archive = tmp_path / "round-trip.stockdesk-backup"
@@ -50,7 +48,9 @@ def test_backup_restore_round_trip_preserves_inventory_and_dataset_bytes(
 
     assert result.manifest.dataset_partitions == backup.manifest.dataset_partitions
     assert result.manifest.logical_inventory == backup.manifest.logical_inventory
-    assert external.read_bytes() == b"external input must survive owned-component restore"
+    assert (
+        external.read_bytes() == b"external input must survive owned-component restore"
+    )
     restored_partition = restored / "market" / stored.partitions[0].relative_path
     source_partition = source / "market" / stored.partitions[0].relative_path
     assert restored_partition.read_bytes() == source_partition.read_bytes()

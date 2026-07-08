@@ -249,8 +249,7 @@ def _open_regular(path: Path) -> int:
         if (
             not stat.S_ISREG(opened.st_mode)
             or opened.st_nlink != 1
-            or (before.st_dev, before.st_ino)
-            != (opened.st_dev, opened.st_ino)
+            or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)
             or (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)
         ):
             raise BackupValidationError("backup input identity changed")
@@ -289,9 +288,10 @@ def _validate_clone(path: Path, *, include_encrypted_secrets: bool) -> None:
             raise BackupValidationError("backup database integrity check failed")
         if connection.execute("PRAGMA foreign_key_check").fetchall():
             raise BackupValidationError("backup database foreign keys are invalid")
-    if path.with_name(f"{path.name}-wal").exists() or path.with_name(
-        f"{path.name}-shm"
-    ).exists():
+    if (
+        path.with_name(f"{path.name}-wal").exists()
+        or path.with_name(f"{path.name}-shm").exists()
+    ):
         raise BackupValidationError("backup clone retained SQLite sidecar files")
 
 
@@ -367,7 +367,9 @@ def _database_rows(
         if public_row is not None and type(public_row[0]) is str:
             try:
                 decoded = json.loads(public_row[0])
-                candidate = decoded.get("tdx_path") if isinstance(decoded, dict) else None
+                candidate = (
+                    decoded.get("tdx_path") if isinstance(decoded, dict) else None
+                )
                 if isinstance(candidate, str):
                     tdx_path = candidate
             except (TypeError, ValueError):
@@ -505,9 +507,7 @@ def create_backup(
     destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     data_dir = Path(data_dir).resolve(strict=True)
     source_database = _sqlite_path(database_url)
-    temporary_archive = destination.parent / (
-        f".{destination.name}.{uuid4().hex}.tmp"
-    )
+    temporary_archive = destination.parent / (f".{destination.name}.{uuid4().hex}.tmp")
     held_files: list[_HeldFile] = []
     engine = None
     try:
@@ -586,7 +586,9 @@ def create_backup(
                     os.replace(temporary_archive, destination)
                     return BackupResult(archive=destination, manifest=manifest)
     except FileLockTimeout as error:
-        raise BackupBusyError("backup could not acquire its consistency locks") from error
+        raise BackupBusyError(
+            "backup could not acquire its consistency locks"
+        ) from error
     finally:
         for held in held_files:
             held.close()
@@ -650,7 +652,9 @@ def inspect_backup(archive: Path) -> BackupManifest:
                         > max(1, info.compress_size) * _MAX_COMPRESSION_RATIO
                     )
                 ):
-                    raise BackupValidationError("backup archive entry encoding is unsafe")
+                    raise BackupValidationError(
+                        "backup archive entry encoding is unsafe"
+                    )
             if sum(info.file_size for info in infos) > _MAX_ARCHIVE_TOTAL_BYTES:
                 raise BackupValidationError("backup archive exceeds the size limit")
             if names[:2] != ["manifest.json", "manifest.sha256"]:
@@ -662,9 +666,7 @@ def inspect_backup(archive: Path) -> BackupManifest:
                 raise BackupValidationError("backup manifest digest size is invalid")
             manifest_bytes = bundle.read(manifest_info)
             digest_bytes = bundle.read(infos[1])
-            if digest_bytes != (_sha256_bytes(manifest_bytes) + "\n").encode(
-                "ascii"
-            ):
+            if digest_bytes != (_sha256_bytes(manifest_bytes) + "\n").encode("ascii"):
                 raise BackupValidationError("backup manifest digest is invalid")
             manifest = BackupManifest.model_validate_json(manifest_bytes)
             if _canonical_json(manifest.model_dump(mode="json")) != manifest_bytes:
@@ -679,9 +681,10 @@ def inspect_backup(archive: Path) -> BackupManifest:
             by_name = {info.filename: info for info in infos}
             for item in manifest.files:
                 info = by_name[item.archive_path]
-                if info.file_size != item.size or _hash_zip_member(
-                    bundle, info
-                ) != item.sha256:
+                if (
+                    info.file_size != item.size
+                    or _hash_zip_member(bundle, info) != item.sha256
+                ):
                     raise BackupValidationError("backup file hash is invalid")
             return manifest
     except BackupValidationError:
@@ -722,9 +725,7 @@ def _journal_path(data_dir: Path) -> Path:
 def _journal_bytes(journal: _RestoreJournal) -> bytes:
     payload = journal.model_dump(mode="json")
     payload_bytes = _canonical_json(payload)
-    return _canonical_json(
-        {"journal": payload, "sha256": _sha256_bytes(payload_bytes)}
-    )
+    return _canonical_json({"journal": payload, "sha256": _sha256_bytes(payload_bytes)})
 
 
 def _write_restore_journal(data_dir: Path, journal: _RestoreJournal) -> None:
@@ -753,7 +754,9 @@ def _read_restore_journal(data_dir: Path) -> _RestoreJournal | None:
     except FileNotFoundError:
         return None
     except (OSError, BackupValidationError) as error:
-        raise RestoreRecoveryRequired("restore journal is not a safe regular file") from error
+        raise RestoreRecoveryRequired(
+            "restore journal is not a safe regular file"
+        ) from error
     try:
         with os.fdopen(descriptor, "rb") as stream:
             raw = stream.read(_MAX_MANIFEST_BYTES + 1)
@@ -767,8 +770,7 @@ def _read_restore_journal(data_dir: Path) -> _RestoreJournal | None:
             not isinstance(envelope, dict)
             or set(envelope) != {"journal", "sha256"}
             or not isinstance(envelope["journal"], dict)
-            or envelope["sha256"]
-            != _sha256_bytes(_canonical_json(envelope["journal"]))
+            or envelope["sha256"] != _sha256_bytes(_canonical_json(envelope["journal"]))
         ):
             raise ValueError("invalid restore journal envelope")
         journal = _RestoreJournal.model_validate(envelope["journal"])
@@ -818,7 +820,9 @@ def _quiesce_offline_database(database: Path) -> None:
             connection.execute("PRAGMA busy_timeout=0")
             connection.execute("BEGIN EXCLUSIVE")
             connection.commit()
-            checkpoint = connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+            checkpoint = connection.execute(
+                "PRAGMA wal_checkpoint(TRUNCATE)"
+            ).fetchone()
             if checkpoint is None or int(checkpoint[0]) != 0:
                 raise BackupValidationError("offline restore database WAL is busy")
     except sqlite3.Error as error:
@@ -889,10 +893,7 @@ def _extract_verified_archive(
             _private_parents(destination.parent, new_root)
             descriptor = os.open(
                 destination,
-                os.O_WRONLY
-                | os.O_CREAT
-                | os.O_EXCL
-                | getattr(os, "O_NOFOLLOW", 0),
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
                 0o600,
             )
             written = 0
@@ -929,11 +930,20 @@ def _validate_staged_restore(
     _validate_clone(database, include_encrypted_secrets=True)
     revision, partitions, inventories, _queued, _tdx = _database_rows(database)
     if revision != manifest.schema_revision:
-        raise BackupValidationError("staged database schema does not match the manifest")
-    if partitions != manifest.dataset_partitions or inventories != manifest.logical_inventory:
-        raise BackupValidationError("staged database inventory does not match the manifest")
+        raise BackupValidationError(
+            "staged database schema does not match the manifest"
+        )
+    if (
+        partitions != manifest.dataset_partitions
+        or inventories != manifest.logical_inventory
+    ):
+        raise BackupValidationError(
+            "staged database inventory does not match the manifest"
+        )
     if bool(market) != any(item.kind == "market_marker" for item in manifest.files):
-        raise BackupValidationError("staged market component does not match the manifest")
+        raise BackupValidationError(
+            "staged market component does not match the manifest"
+        )
 
     staged_url = f"sqlite:///{database}"
     try:
@@ -1030,7 +1040,9 @@ def restore_backup(
     market = data_dir / "market"
     nonempty = any(data_dir.iterdir())
     if nonempty and not offline:
-        raise BackupValidationError("restore into a non-empty destination requires offline")
+        raise BackupValidationError(
+            "restore into a non-empty destination requires offline"
+        )
     had_database = database.exists()
     had_market = market.exists()
     if had_market:
@@ -1197,7 +1209,9 @@ def recover_interrupted_restore(*, data_dir: Path) -> bool:
     if not journal.database_old_moved and old_database.exists():
         if journal.had_database and not database.exists():
             journal = journal.model_copy(update={"database_old_moved": True})
-        elif journal.had_database and database.exists() and not staged_database.exists():
+        elif (
+            journal.had_database and database.exists() and not staged_database.exists()
+        ):
             journal = journal.model_copy(
                 update={"database_old_moved": True, "database_installed": True}
             )
@@ -1244,7 +1258,9 @@ def recover_interrupted_restore(*, data_dir: Path) -> bool:
     if journal.market_old_moved:
         if old_market.exists():
             if market.exists():
-                raise RestoreRecoveryRequired("original restore market target is occupied")
+                raise RestoreRecoveryRequired(
+                    "original restore market target is occupied"
+                )
             _replace_durably(old_market, market)
         elif not market.exists():
             raise RestoreRecoveryRequired("original restore market is missing")
@@ -1263,7 +1279,9 @@ def recover_interrupted_restore(*, data_dir: Path) -> bool:
     if journal.database_old_moved:
         if old_database.exists():
             if database.exists():
-                raise RestoreRecoveryRequired("original restore database target is occupied")
+                raise RestoreRecoveryRequired(
+                    "original restore database target is occupied"
+                )
             _replace_durably(old_database, database)
         elif not database.exists():
             raise RestoreRecoveryRequired("original restore database is missing")

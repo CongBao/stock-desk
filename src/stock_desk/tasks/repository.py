@@ -811,9 +811,9 @@ class TaskRepository:
     def running_task_count(self) -> int:
         with self._engine.connect() as connection:
             value = connection.scalar(
-                select(func.count()).select_from(TaskRun).where(
-                    TaskRun.status == "running"
-                )
+                select(func.count())
+                .select_from(TaskRun)
+                .where(TaskRun.status == "running")
             )
         return int(value or 0)
 
