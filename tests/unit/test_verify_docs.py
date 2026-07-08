@@ -743,8 +743,7 @@ def test_final_wiki_requires_fully_decoded_useful_raster_screenshots(
         "images/tiny.png" in failure and "dimensions" in failure for failure in failures
     )
     assert any(
-        "images/uniform.png" in failure and "content" in failure
-        for failure in failures
+        "images/uniform.png" in failure and "content" in failure for failure in failures
     )
     assert any(
         "images/fake.svg" in failure and "unsupported" in failure
