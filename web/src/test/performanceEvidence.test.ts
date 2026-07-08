@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   canonicalDigest,
+  completedGenerationAfter,
   progressWindowsDemonstrateChange,
   ProcessIdentityTracker,
   parseProcessRows,
@@ -67,6 +68,13 @@ describe('canonical performance evidence', () => {
     expect(progressWindowsDemonstrateChange(initial, [initial, initial])).toBe(
       false,
     );
+  });
+
+  it('requires a strictly newer completed generation without sampling transient pending DOM', () => {
+    expect(completedGenerationAfter(7, 'true', '7')).toBeNull();
+    expect(completedGenerationAfter(7, 'false', '8')).toBeNull();
+    expect(completedGenerationAfter(7, 'true', 'not-an-integer')).toBeNull();
+    expect(completedGenerationAfter(7, 'true', '8')).toBe(8);
   });
 });
 

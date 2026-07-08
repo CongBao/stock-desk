@@ -73,9 +73,10 @@ Each summary uses exactly 20 raw measurements. They are not all independent:
   reset/zoom, and drag handshake succeeds.
 - Chart warm uses 20 adjustment windows on one shared warm page and the same
   interaction-complete timing boundary. Each window captures the prior completed
-  generation, observes a pending render, and waits for a strictly newer ECharts
-  `finished` generation before interactions and timing/RSS shutdown. The page,
-  React tree, ECharts instance, browser cache, and local services are shared.
+  generation and waits for the adjustment response plus a strictly newer ECharts
+  `finished` generation before interactions and timing/RSS shutdown. The
+  transient pending DOM state is component-tested but is not a polling gate. The
+  page, React tree, ECharts instance, browser cache, and local services are shared.
 - Formula cache-cold uses 20 distinct pre-seeded immutable formula versions.
   Each timer covers preview action through main/subchart, BUY/SELL, summary,
   and active-generation ECharts readiness.

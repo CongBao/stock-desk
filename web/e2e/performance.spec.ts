@@ -6,6 +6,7 @@ import { dirname } from 'node:path';
 
 import {
   canonicalDigest as digest,
+  completedGenerationAfter,
   parseProcessRows,
   ProcessIdentityTracker,
   progressWindowsDemonstrateChange,
@@ -283,51 +284,39 @@ async function chartAction(
 async function completedChartGeneration(
   chart: ReturnType<Page['locator']>,
 ): Promise<number> {
-  await expect(chart).toHaveAttribute('data-chart-ready', 'true');
-  const raw = await chart.getAttribute('data-chart-generation');
-  const generation = Number(raw);
-  expect(Number.isSafeInteger(generation) && generation > 0).toBe(true);
+  let generation: number | null = null;
+  await expect
+    .poll(async () => {
+      generation = completedGenerationAfter(
+        0,
+        await chart.getAttribute('data-chart-ready'),
+        await chart.getAttribute('data-chart-generation'),
+      );
+      return generation;
+    })
+    .not.toBeNull();
+  if (generation === null) throw new Error('chart generation did not complete');
   return generation;
 }
 
 async function observeNextChartGeneration(
-  page: Page,
   chart: ReturnType<Page['locator']>,
   previousGeneration: number,
-  action: () => Promise<unknown>,
 ): Promise<number> {
-  const pending = page.waitForFunction(
-    ({ generation }) => {
-      const browserGlobal = globalThis as unknown as {
-        document: {
-          querySelector(
-            selector: string,
-          ): { dataset: Record<string, string | undefined> } | undefined;
-        };
-      };
-      const element = browserGlobal.document.querySelector(
-        '.market-chart-canvas',
-      );
-      return (
-        element?.dataset['chartReady'] === 'false' &&
-        element.dataset['chartGeneration'] === generation
-      );
-    },
-    { generation: String(previousGeneration) },
-    { polling: 'raf', timeout: 2_000 },
-  );
-  await action();
-  await pending;
+  let generation: number | null = null;
   await expect
     .poll(async () => {
-      if ((await chart.getAttribute('data-chart-ready')) !== 'true') return 0;
-      const generation = Number(
+      generation = completedGenerationAfter(
+        previousGeneration,
+        await chart.getAttribute('data-chart-ready'),
         await chart.getAttribute('data-chart-generation'),
       );
-      return Number.isSafeInteger(generation) ? generation : 0;
+      return generation;
     })
-    .toBeGreaterThan(previousGeneration);
-  return completedChartGeneration(chart);
+    .not.toBeNull();
+  if (generation === null)
+    throw new Error('new chart generation did not finish');
+  return generation;
 }
 
 async function warmChartAction(
@@ -346,13 +335,9 @@ async function warmChartAction(
       url.searchParams.get('adjustment') === 'none'
     );
   });
-  const noneGeneration = await observeNextChartGeneration(
-    page,
-    chart,
-    qfqGeneration,
-    () => adjustment.selectOption('none'),
-  );
+  await adjustment.selectOption('none');
   await noneResponse;
+  const noneGeneration = await observeNextChartGeneration(chart, qfqGeneration);
 
   const blockedBefore = network.blockedExternalRequests;
   const sampler = await RssSampler.create(roots, rootRoles);
@@ -365,13 +350,12 @@ async function warmChartAction(
       url.searchParams.get('adjustment') === 'qfq'
     );
   });
+  await adjustment.selectOption('qfq');
+  const response = await responsePromise;
   const qfqFinishedGeneration = await observeNextChartGeneration(
-    page,
     chart,
     noneGeneration,
-    () => adjustment.selectOption('qfq'),
   );
-  const response = await responsePromise;
   const body = (await response.json()) as {
     bars: readonly unknown[];
     dataset_version: string;
@@ -1035,7 +1019,7 @@ test('records aggregate 2/3/5 budgets and worker-backed UI responsiveness', asyn
       chart_cold:
         'new Chromium context with empty browser and HTTP cache; timer starts at selecting the cached symbol and ends at ECharts finished plus hover/zoom/drag/crosshair proof',
       chart_warm:
-        'same Chromium and service processes after one unmeasured completed render; timer requires pending then a newer finished ECharts generation before the chart_cold interaction boundary',
+        'same Chromium and service processes after one unmeasured completed render; timer captures the prior generation and requires a strictly newer finished ECharts generation before the chart_cold interaction boundary',
       formula_cache_cold:
         'one distinct pre-seeded immutable formula version per sample; timer starts at preview action and ends at ECharts finished with main/subchart/BUY/SELL visible',
       single_backtest_fresh:

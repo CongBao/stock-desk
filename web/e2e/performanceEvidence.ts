@@ -231,6 +231,18 @@ export function progressWindowsDemonstrateChange(
   );
 }
 
+export function completedGenerationAfter(
+  previousGeneration: number,
+  ready: string | null,
+  rawGeneration: string | null,
+): number | null {
+  if (ready !== 'true') return null;
+  const generation = Number(rawGeneration);
+  return Number.isSafeInteger(generation) && generation > previousGeneration
+    ? generation
+    : null;
+}
+
 export function providerEvidence(manifest: RoutingManifest) {
   if (manifest.selected_source !== 'stock_desk_demo') {
     throw new Error('performance route did not select stock_desk_demo');
