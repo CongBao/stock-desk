@@ -8,8 +8,18 @@ const PARTIAL_POOL_NAME = 'Stock Desk Synthetic Demo Index (CC0)';
 
 type PreviewBody = {
   readonly formula: {
+    readonly signal_series_id: string;
     readonly formula_version_id: string;
     readonly formula_checksum: string;
+    readonly symbol: string;
+    readonly period: string;
+    readonly adjustment: string;
+    readonly manifest_record_id: string;
+    readonly dataset_version: string;
+    readonly route_version: string;
+    readonly query_start: string;
+    readonly query_end: string;
+    readonly parameters: readonly unknown[];
     readonly timestamps: readonly string[];
     readonly signals: readonly {
       readonly name: string;
@@ -97,6 +107,9 @@ test('complete public demo journey uses real API worker and frozen provenance', 
   ).toBe(true);
   const previewBody = await previewSavedFormula(page, CUSTOM_NAME);
   await expect(page.getByText(/[1-9]\d* 个买点/u)).toBeVisible();
+  await expect(
+    page.getByRole('img', { name: /K 线主图.*公式输出.*买卖信号/u }),
+  ).toBeVisible();
   const customFormula = (await (
     await request.get('/api/formulas?limit=100')
   ).json()) as {
@@ -127,6 +140,7 @@ test('complete public demo journey uses real API worker and frozen provenance', 
   const report = (await (
     await request.get(`/api/backtests/${singleRunId}/report`)
   ).json()) as {
+    readonly formula_parameters: readonly unknown[];
     readonly formula_version_id: string;
     readonly formula_checksum: string;
     readonly overview: { readonly snapshot_id: string };
@@ -137,6 +151,18 @@ test('complete public demo journey uses real API worker and frozen provenance', 
     readonly items: readonly {
       readonly symbol: string;
       readonly signal_series_id: string;
+      readonly provenance: {
+        readonly signal_manifest_record_id: string;
+        readonly signal_dataset_version: string;
+        readonly signal_route_version: string;
+        readonly signal_query: {
+          readonly symbol: string;
+          readonly period: string;
+          readonly adjustment: string;
+          readonly start: string;
+          readonly end: string;
+        };
+      };
     }[];
   };
   const replay = (await (
@@ -149,7 +175,12 @@ test('complete public demo journey uses real API worker and frozen provenance', 
       readonly formula_version_id: string;
       readonly formula_checksum: string;
       readonly signal_series_id: string;
+      readonly signals: readonly {
+        readonly name: string;
+        readonly values: readonly (boolean | null)[];
+      }[];
     };
+    readonly bars: readonly { readonly timestamp: string }[];
     readonly fill_markers: readonly { readonly signal_at: string }[];
   };
   expect(report.formula_version_id).toBe(
@@ -159,9 +190,49 @@ test('complete public demo journey uses real API worker and frozen provenance', 
   expect(replay.formula.formula_checksum).toBe(
     previewBody.formula.formula_checksum,
   );
-  expect(replay.formula.signal_series_id).toBe(
-    symbols.items[0]?.signal_series_id,
+  const symbolResult = symbols.items[0];
+  expect(symbolResult?.signal_series_id).toBe(
+    previewBody.formula.signal_series_id,
   );
+  expect(replay.formula.signal_series_id).toBe(
+    previewBody.formula.signal_series_id,
+  );
+  expect(symbolResult?.provenance.signal_query).toEqual({
+    symbol: previewBody.formula.symbol,
+    period: previewBody.formula.period,
+    adjustment: previewBody.formula.adjustment,
+    start: previewBody.formula.query_start,
+    end: previewBody.formula.query_end,
+  });
+  expect(symbolResult?.provenance.signal_manifest_record_id).toBe(
+    previewBody.formula.manifest_record_id,
+  );
+  expect(symbolResult?.provenance.signal_dataset_version).toBe(
+    previewBody.formula.dataset_version,
+  );
+  expect(symbolResult?.provenance.signal_route_version).toBe(
+    previewBody.formula.route_version,
+  );
+  expect(report.formula_parameters).toEqual(previewBody.formula.parameters);
+  const previewOrdinals = new Map(
+    previewBody.formula.timestamps.map((timestamp, index) => [
+      timestamp,
+      index,
+    ]),
+  );
+  for (const replaySignal of replay.formula.signals) {
+    const previewSignal = previewBody.formula.signals.find(
+      (item) => item.name === replaySignal.name,
+    );
+    expect(previewSignal).toBeDefined();
+    expect(replaySignal.values).toEqual(
+      replay.bars.map((bar) => {
+        const ordinal = previewOrdinals.get(bar.timestamp);
+        expect(ordinal).toBeDefined();
+        return previewSignal?.values[ordinal ?? -1];
+      }),
+    );
+  }
   expect(replay.snapshot_id).toBe(report.overview.snapshot_id);
   const buy = previewBody.formula.signals.find((item) => item.name === 'BUY');
   const firstEligibleBuy = previewBody.formula.timestamps.find(

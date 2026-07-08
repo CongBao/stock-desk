@@ -213,9 +213,6 @@ def main() -> int:
     if sys.argv[1:]:
         raise SystemExit("usage: e2e_dev.py [--worker]")
     data_dir = Path(tempfile.mkdtemp(prefix="stock-desk-e2e-")).resolve()
-    _seed(data_dir)
-    os.environ["STOCK_DESK_DATA_DIR"] = str(data_dir)
-    os.environ["STOCK_DESK_DATABASE_URL"] = f"sqlite:///{data_dir / 'stock-desk.db'}"
     received_signal: int | None = None
 
     def request_stop(signum: int, _frame: object) -> None:
@@ -226,22 +223,27 @@ def main() -> int:
         signum: signal.signal(signum, request_stop)
         for signum in (signal.SIGINT, signal.SIGTERM)
     }
-    commands = (
-        (
-            sys.executable,
-            "-m",
-            "uvicorn",
-            "scripts.e2e_dev:create_e2e_app",
-            "--factory",
-            "--host",
-            "127.0.0.1",
-            "--port",
-            "8000",
-        ),
-        (sys.executable, "-m", "scripts.e2e_dev", "--worker"),
-        ("pnpm", "--dir", "web", "dev"),
-    )
     try:
+        _seed(data_dir)
+        os.environ["STOCK_DESK_DATA_DIR"] = str(data_dir)
+        os.environ["STOCK_DESK_DATABASE_URL"] = (
+            f"sqlite:///{data_dir / 'stock-desk.db'}"
+        )
+        commands = (
+            (
+                sys.executable,
+                "-m",
+                "uvicorn",
+                "scripts.e2e_dev:create_e2e_app",
+                "--factory",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "8000",
+            ),
+            (sys.executable, "-m", "scripts.e2e_dev", "--worker"),
+            ("pnpm", "--dir", "web", "dev"),
+        )
         return supervise(commands, requested_signal=lambda: received_signal)
     finally:
         for signum, previous_handler in previous_handlers.items():

@@ -276,7 +276,11 @@ def test_complete_no_network_application_journey(tmp_path: Path) -> None:
 
 def test_formula_signal_matches_backtest_entry(tmp_path: Path) -> None:
     with _journey(tmp_path) as (client, worker, _summary):
-        formula = _formula(client, name="Signal identity MACD", source=MACD_SOURCE)
+        formula = _formula(
+            client,
+            name="Signal identity custom wave",
+            source=CUSTOM_SOURCE,
+        )
         version_id = cast(
             str,
             cast(dict[str, object], formula["draft"])["executable_version_id"],
@@ -324,9 +328,39 @@ def test_formula_signal_matches_backtest_entry(tmp_path: Path) -> None:
         assert replay_body["formula"]["formula_checksum"] == preview["formula_checksum"]
         assert replay_body["snapshot_id"] == report["overview"]["snapshot_id"]
         symbols = client.get(f"/api/backtests/{run_id}/symbols").json()["items"]
-        assert (
-            replay_body["formula"]["signal_series_id"] == symbols[0]["signal_series_id"]
-        )
+        symbol = symbols[0]
+        assert preview["signal_series_id"] == symbol["signal_series_id"]
+        assert replay_body["formula"]["signal_series_id"] == preview["signal_series_id"]
+        signal_pin = symbol["provenance"]
+        signal_query = signal_pin["signal_query"]
+        assert {
+            "symbol": preview["symbol"],
+            "period": preview["period"],
+            "adjustment": preview["adjustment"],
+            "start": preview["query_start"],
+            "end": preview["query_end"],
+        } == signal_query
+        assert preview["manifest_record_id"] == signal_pin["signal_manifest_record_id"]
+        assert preview["dataset_version"] == signal_pin["signal_dataset_version"]
+        assert preview["route_version"] == signal_pin["signal_route_version"]
+        assert preview["parameters"] == report["formula_parameters"]
+        replay_timestamps = [item["timestamp"] for item in replay_body["bars"]]
+        preview_ordinals = {
+            timestamp: ordinal for ordinal, timestamp in enumerate(timestamps)
+        }
+        preview_signals = {
+            signal["name"]: signal["values"] for signal in preview["signals"]
+        }
+        replay_signals = {
+            signal["name"]: signal["values"]
+            for signal in replay_body["formula"]["signals"]
+        }
+        assert set(preview_signals) == set(replay_signals) == {"BUY", "SELL"}
+        for name, values in replay_signals.items():
+            assert values == [
+                preview_signals[name][preview_ordinals[timestamp]]
+                for timestamp in replay_timestamps
+            ]
         assert replay_body["provenance"]["signal"]["dataset_version"] in {
             item
             for item in [load_demo_fixture().bar_dataset_version]
