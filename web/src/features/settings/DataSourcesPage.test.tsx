@@ -61,12 +61,8 @@ it('renders source cards, safe token state, priorities, and TDX path', async () 
   expect(
     screen.getByRole('group', { name: '基本面优先级' }),
   ).toBeInTheDocument();
-  expect(
-    screen.getByRole('group', { name: '公告优先级' }),
-  ).toBeInTheDocument();
-  expect(
-    screen.getByRole('group', { name: '新闻优先级' }),
-  ).toBeInTheDocument();
+  expect(screen.getByRole('group', { name: '公告优先级' })).toBeInTheDocument();
+  expect(screen.getByRole('group', { name: '新闻优先级' })).toBeInTheDocument();
   expect(
     screen.getAllByRole('button', { name: /^上移/u }).length,
   ).toBeGreaterThan(0);

@@ -367,13 +367,15 @@ def test_reviewed_non_release_evidence_is_existing_and_precisely_scoped(
         evidence.get("selector"): evidence["state"]
         for evidence in by_id["R-031"]["evidence"]
     }
-    assert tdx_selectors[
-        "tests/acceptance/test_tdx_local_user_flow.py::test_unsupported_tdx_file_format_is_rejected_before_enablement"
-    ] == "existing"
+    assert (
+        tdx_selectors[
+            "tests/acceptance/test_tdx_local_user_flow.py::test_unsupported_tdx_file_format_is_rejected_before_enablement"
+        ]
+        == "existing"
+    )
 
     provider_evidence = {
-        evidence.get("selector"): evidence
-        for evidence in by_id["R-032"]["evidence"]
+        evidence.get("selector"): evidence for evidence in by_id["R-032"]["evidence"]
     }
     ui_selector = (
         "model settings UI offers domestic providers, serializes runtime fields, "

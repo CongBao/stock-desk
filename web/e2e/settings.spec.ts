@@ -8,9 +8,9 @@ test('real source settings contract renders every priority category', async ({
   await expect(
     page.getByRole('heading', { level: 2, name: '数据源设置' }),
   ).toBeVisible();
-  await expect(
-    page.getByText('数据源设置读取失败，请稍后重试。'),
-  ).toHaveCount(0);
+  await expect(page.getByText('数据源设置读取失败，请稍后重试。')).toHaveCount(
+    0,
+  );
 
   for (const category of [
     '日线行情',

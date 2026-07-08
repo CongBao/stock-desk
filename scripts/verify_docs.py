@@ -397,8 +397,7 @@ def _rendered_target_failures(
         if (
             allow_extensionless_markdown
             and rendered.kind == "link"
-            and destination.with_name(f"{destination.name}.md")
-            in (allowed_files or ())
+            and destination.with_name(f"{destination.name}.md") in (allowed_files or ())
         ):
             destination = destination.with_name(f"{destination.name}.md")
         if allowed_files is not None and destination not in allowed_files:
@@ -767,9 +766,7 @@ def verify_wiki(wiki_root: Path, *, final: bool) -> list[str]:
                 f"{english_path.name}: missing counterpart link to {stem}.zh-CN"
             )
         if f"[English]({stem})" not in chinese:
-            failures.append(
-                f"{chinese_path.name}: missing counterpart link to {stem}"
-            )
+            failures.append(f"{chinese_path.name}: missing counterpart link to {stem}")
         if stem == "Home":
             continue
         for path, document, required_headings in (
