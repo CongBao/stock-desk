@@ -16,6 +16,10 @@ REPOSITORY_DOCUMENTS = {
 
 ## Quick start
 
+Prefer the source-free `stock-desk-<version>-windows-x86_64.exe`,
+`stock-desk-<version>-macos-x86_64.dmg`, or
+`stock-desk-<version>-macos-arm64.dmg` installer.
+
 ```bash
 make bootstrap
 make dev
@@ -42,6 +46,10 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 [English](README.md)
 
 ## 快速启动
+
+优先使用无需源码的 `stock-desk-<version>-windows-x86_64.exe`、
+`stock-desk-<version>-macos-x86_64.dmg` 或
+`stock-desk-<version>-macos-arm64.dmg` 安装包。
 
 ```bash
 make bootstrap
@@ -365,6 +373,23 @@ def test_repository_contract_requires_all_documented_settings(tmp_path: Path) ->
     failures = verify_repository(tmp_path)
 
     assert any("STOCK_DESK_MASTER_KEY" in failure for failure in failures)
+
+
+def test_repository_contract_requires_source_free_installers_before_source_setup(
+    tmp_path: Path,
+) -> None:
+    _write_repository(tmp_path)
+    readme = tmp_path / "README.md"
+    readme.write_text(
+        readme.read_text(encoding="utf-8").replace(
+            "stock-desk-<version>-macos-arm64.dmg", "macOS installer"
+        ),
+        encoding="utf-8",
+    )
+
+    failures = verify_repository(tmp_path)
+
+    assert any("source-free installer" in failure for failure in failures)
 
 
 def test_wiki_staging_requires_complete_pairs_and_procedural_sections(

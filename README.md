@@ -9,7 +9,32 @@ orders or connect to a broker.
 
 ## Quick start
 
-Native development requires Python `>=3.12,<3.13`,
+For Windows and macOS, prefer the source-free native installer published with a
+release. The verified artifact naming contract is:
+
+- Windows x64: `stock-desk-<version>-windows-x86_64.exe`
+- macOS Intel: `stock-desk-<version>-macos-x86_64.dmg`
+- macOS Apple silicon: `stock-desk-<version>-macos-arm64.dmg`
+
+Download the matching installer, `.sha256` checksum, target manifest, SBOM, and
+provenance from that version's release assets. This README does not link to an
+unpublished release. Verify the checksum and provenance before installation;
+then run the Windows per-user installer or copy the macOS application from the
+DMG into Applications. First launch starts the bundled API and worker on a
+random loopback port and opens the browser. It needs no source checkout, Python,
+Node.js, or pnpm.
+
+For Linux or a private server, use the loopback-only container deployment. Keep
+port 8000 private; use a trusted tunnel rather than exposing this unauthenticated
+service directly:
+
+```bash
+docker compose up --build --wait
+# open http://localhost:8000/market
+docker compose down --volumes --remove-orphans
+```
+
+Contributors working from source need Python `>=3.12,<3.13`,
 [uv](https://docs.astral.sh/uv/), Node.js 22 or 24 LTS, and pnpm 11:
 
 ```bash
@@ -20,14 +45,6 @@ make dev
 Open [http://localhost:5173/market](http://localhost:5173/market). `make dev`
 starts the API, task worker, and Vite development server; stop them with
 `Ctrl-C`.
-
-For a loopback-only container deployment:
-
-```bash
-docker compose up --build --wait
-# open http://localhost:8000/market
-docker compose down --volumes --remove-orphans
-```
 
 The API health endpoint is
 [http://localhost:8000/api/health](http://localhost:8000/api/health). See the

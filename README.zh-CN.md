@@ -7,7 +7,27 @@ Stock Desk `v0.5.0` 是一个本地优先的 A 股研究工作台，覆盖行情
 
 ## 快速启动
 
-原生开发需要 Python `>=3.12,<3.13`、[uv](https://docs.astral.sh/uv/)、
+Windows 与 macOS 用户应优先使用随版本发布、无需源码的原生安装包。已验证的构件命名契约为：
+
+- Windows x64：`stock-desk-<version>-windows-x86_64.exe`
+- macOS Intel：`stock-desk-<version>-macos-x86_64.dmg`
+- macOS Apple 芯片：`stock-desk-<version>-macos-arm64.dmg`
+
+请从对应版本的发布构件中下载匹配的安装包、`.sha256` 校验文件、目标清单、SBOM 和来源证明。
+本文不会链接尚未发布的版本。安装前校验哈希和来源证明；然后运行 Windows 当前用户安装包，或从
+DMG 把 macOS 应用复制到“应用程序”。首次启动会在随机回环端口运行内置 API 与 worker，并打开
+浏览器；不需要源码仓库、Python、Node.js 或 pnpm。
+
+Linux 或私有服务器可使用只绑定回环地址的容器方案。端口 8000 必须保持私有；远程访问应使用
+可信隧道，不要直接暴露这个没有认证的服务：
+
+```bash
+docker compose up --build --wait
+# 打开 http://localhost:8000/market
+docker compose down --volumes --remove-orphans
+```
+
+从源码参与开发需要 Python `>=3.12,<3.13`、[uv](https://docs.astral.sh/uv/)、
 Node.js 22 或 24 LTS 与 pnpm 11：
 
 ```bash
@@ -17,14 +37,6 @@ make dev
 
 打开 [http://localhost:5173/market](http://localhost:5173/market)。`make dev`
 会启动 API、任务 worker 和 Vite 开发服务器；按 `Ctrl-C` 停止。
-
-使用只绑定本机回环地址的容器部署：
-
-```bash
-docker compose up --build --wait
-# 打开 http://localhost:8000/market
-docker compose down --volumes --remove-orphans
-```
 
 API 健康检查位于
 [http://localhost:8000/api/health](http://localhost:8000/api/health)。添加数据源或模型凭据前，

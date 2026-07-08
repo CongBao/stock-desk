@@ -102,6 +102,12 @@ FORBIDDEN_TRACKED_PREFIXES = (
     "work/",
 )
 
+SOURCE_FREE_INSTALLER_PATTERNS = (
+    "stock-desk-<version>-windows-x86_64.exe",
+    "stock-desk-<version>-macos-x86_64.dmg",
+    "stock-desk-<version>-macos-arm64.dmg",
+)
+
 _HEADING = re.compile(r"^#{1,6}\s+(.+?)\s*$", re.MULTILINE)
 _LINK = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
 _FENCED_SHELL = re.compile(
@@ -242,6 +248,23 @@ def verify_repository(repo_root: Path) -> list[str]:
     chinese = documents.get("README.zh-CN.md", "")
     if "[English](README.md)" not in chinese:
         failures.append("README.zh-CN.md must link to README.md")
+
+    for relative_path, document in (
+        ("README.md", english),
+        ("README.zh-CN.md", chinese),
+    ):
+        positions = [
+            document.find(pattern) for pattern in SOURCE_FREE_INSTALLER_PATTERNS
+        ]
+        source_setup = document.find("make bootstrap")
+        if any(position < 0 for position in positions):
+            failures.append(
+                f"{relative_path}: source-free installer artifact names are incomplete"
+            )
+        elif source_setup >= 0 and max(positions) > source_setup:
+            failures.append(
+                f"{relative_path}: source-free installers must precede source setup"
+            )
 
     configuration = documents.get("docs/configuration.md", "")
     for setting in sorted(_required_settings(root)):
