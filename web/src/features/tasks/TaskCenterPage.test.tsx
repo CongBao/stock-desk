@@ -197,6 +197,71 @@ it('filters the latest 100 client-side and preserves a stable selection', async 
   expect(screen.getByText('筛选范围：最近 100 项')).toBeVisible();
 });
 
+it('keeps detached selected detail without pinning it into the latest 100', async () => {
+  const user = userEvent.setup();
+  const selected = task();
+  const updatedSelected = task({
+    progress: 0.8,
+    updatedAt: '2026-07-08T00:00:03Z',
+    presentation: { ...task().presentation, processed: 4 },
+  });
+  const recent = Array.from({ length: 100 }, (_, index) =>
+    task({
+      id: `00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
+      kind: 'analysis.run',
+      status: 'succeeded',
+      progress: 1,
+      updatedAt: '2026-07-08T00:00:04Z',
+      finishedAt: '2026-07-08T00:00:04Z',
+      durationMs: 3_000,
+      presentation: {
+        label: '智能分析',
+        stage: null,
+        processed: null,
+        total: null,
+        failed: null,
+        target: null,
+      },
+    }),
+  );
+  const client = api();
+  vi.mocked(client.listTasks)
+    .mockResolvedValue(recent)
+    .mockResolvedValueOnce([selected]);
+  vi.mocked(client.getTask)
+    .mockResolvedValueOnce(selected)
+    .mockResolvedValue(updatedSelected);
+  renderPage(client);
+  await screen.findByText('2 / 5');
+
+  await user.click(screen.getByRole('button', { name: '刷新任务' }));
+
+  await waitFor(() => expect(client.listTasks).toHaveBeenCalledTimes(2));
+  expect(await screen.findByText('4 / 5')).toBeVisible();
+  const recentPanel = screen.getByRole('region', { name: '最近任务' });
+  expect(within(recentPanel).getAllByRole('button')).toHaveLength(100);
+  expect(
+    within(recentPanel).queryByRole('button', {
+      name: new RegExp(TASK_ID, 'u'),
+    }),
+  ).not.toBeInTheDocument();
+  expect(screen.getAllByText(TASK_ID)).toHaveLength(1);
+
+  await user.selectOptions(screen.getByLabelText('状态筛选'), 'running');
+  expect(
+    within(recentPanel).getByText('没有符合筛选条件的任务。'),
+  ).toBeVisible();
+  expect(screen.getByText('4 / 5')).toBeVisible();
+  expect(screen.getAllByText(TASK_ID)).toHaveLength(1);
+
+  await waitFor(() => expect(client.listTasks).toHaveBeenCalledTimes(3), {
+    timeout: 1_500,
+  });
+  expect(vi.mocked(client.getTask).mock.calls.length).toBeGreaterThanOrEqual(3);
+  expect(within(recentPanel).queryAllByRole('button')).toHaveLength(0);
+  expect(screen.getByText('4 / 5')).toBeVisible();
+});
+
 it('keeps stale tasks visible when a refresh is partially degraded', async () => {
   const client = api();
   vi.mocked(client.listTasks)

@@ -70,6 +70,8 @@ export function TaskCenterPage({
   const [tasks, setTasks] = useState<readonly TaskView[]>([]);
   const [metrics, setMetrics] = useState<TaskMetrics | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedTask, setSelectedTask] = useState<TaskView | null>(null);
+  const [detailRefreshSequence, setDetailRefreshSequence] = useState(0);
   const [events, setEvents] = useState<readonly TaskEventView[]>([]);
   const [statusFilter, setStatusFilter] = useState<'all' | TaskStatus>('all');
   const [kindFilter, setKindFilter] = useState('all');
@@ -85,6 +87,8 @@ export function TaskCenterPage({
   const [cancelUnknownId, setCancelUnknownId] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now());
   const tasksRef = useRef<readonly TaskView[]>(tasks);
+  const selectedIdRef = useRef<string | null>(selectedId);
+  const selectedTaskRef = useRef<TaskView | null>(selectedTask);
   const mountedRef = useRef(false);
   const pollTimerRef = useRef<number | null>(null);
   const refreshPromiseRef = useRef<Promise<void> | null>(null);
@@ -101,12 +105,30 @@ export function TaskCenterPage({
     tasksRef.current = tasks;
   }, [tasks]);
 
+  const selectTask = useCallback((task: TaskView | null) => {
+    const taskId = task?.id ?? null;
+    selectedIdRef.current = taskId;
+    selectedTaskRef.current = task;
+    setSelectedId(taskId);
+    setSelectedTask(task);
+  }, []);
+
   const commitTaskSnapshot = useCallback((replacement: TaskView) => {
     setTasks((current) => {
+      if (!current.some((item) => item.id === replacement.id)) return current;
       const next = updateTaskSnapshot(current, replacement);
       tasksRef.current = next;
       return next;
     });
+    if (selectedIdRef.current === replacement.id) {
+      const current = selectedTaskRef.current;
+      const next =
+        current === null
+          ? replacement
+          : updateTaskSnapshot([current], replacement)[0];
+      selectedTaskRef.current = next;
+      setSelectedTask(next);
+    }
   }, []);
 
   const refresh = useCallback((): Promise<void> => {
@@ -142,11 +164,23 @@ export function TaskCenterPage({
           setCancelError(null);
         }
         setListError(null);
-        setSelectedId((current) =>
-          current !== null && nextTasks.some((item) => item.id === current)
-            ? current
-            : (nextTasks[0]?.id ?? null),
+        const nextSelectedId =
+          selectedIdRef.current ?? nextTasks[0]?.id ?? null;
+        selectedIdRef.current = nextSelectedId;
+        setSelectedId(nextSelectedId);
+        const listedSelection = nextTasks.find(
+          (item) => item.id === nextSelectedId,
         );
+        if (listedSelection !== undefined) {
+          const current = selectedTaskRef.current;
+          const nextSelected =
+            current === null || current.id !== listedSelection.id
+              ? listedSelection
+              : updateTaskSnapshot([current], listedSelection)[0];
+          selectedTaskRef.current = nextSelected;
+          setSelectedTask(nextSelected);
+        }
+        setDetailRefreshSequence(refreshSequence);
       } else if (!(
         tasksResult.reason instanceof TaskApiError &&
         tasksResult.reason.kind === 'abort'
@@ -206,7 +240,9 @@ export function TaskCenterPage({
     };
   }, [refresh]);
 
-  const hasActiveTasks = tasks.some((task) => activeStatuses.has(task.status));
+  const hasActiveTasks =
+    tasks.some((task) => activeStatuses.has(task.status)) ||
+    (selectedTask !== null && activeStatuses.has(selectedTask.status));
   useEffect(() => {
     if (!hasActiveTasks || isLoading || isRefreshing) return undefined;
     pollTimerRef.current = window.setTimeout(() => {
@@ -221,7 +257,6 @@ export function TaskCenterPage({
     };
   }, [hasActiveTasks, isLoading, isRefreshing, pollIntervalMs, refresh]);
 
-  const selectedTask = tasks.find((task) => task.id === selectedId) ?? null;
   useEffect(() => {
     detailControllerRef.current?.abort();
     if (selectedId === null) {
@@ -240,6 +275,16 @@ export function TaskCenterPage({
       if (!mountedRef.current || controller.signal.aborted) return;
       if (taskResult.status === 'fulfilled') {
         commitTaskSnapshot(taskResult.value);
+      } else if (
+        taskResult.reason instanceof TaskApiError &&
+        taskResult.reason.kind === 'not_found' &&
+        selectedIdRef.current === selectedId
+      ) {
+        selectTask(null);
+        setEvents([]);
+        setEventsError(null);
+        setNotice('所选任务已不存在');
+        return;
       }
       if (eventResult.status === 'fulfilled') {
         setEvents(eventResult.value);
@@ -255,6 +300,8 @@ export function TaskCenterPage({
   }, [
     api,
     commitTaskSnapshot,
+    detailRefreshSequence,
+    selectTask,
     selectedId,
     selectedTask?.status,
     selectedTask?.updatedAt,
@@ -475,7 +522,7 @@ export function TaskCenterPage({
                       type="button"
                       aria-current={task.id === selectedId ? 'true' : undefined}
                       aria-label={`${task.presentation.label} ${statusLabels[task.status]} ${task.id}`}
-                      onClick={() => setSelectedId(task.id)}
+                      onClick={() => selectTask(task)}
                     >
                       <span>
                         <strong>{task.presentation.label}</strong>
