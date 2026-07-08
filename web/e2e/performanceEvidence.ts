@@ -62,11 +62,11 @@ export function parseProcProcessRow(
   stat: string,
   status: string,
   cmdline: string,
-): ProcessRow {
+): ProcessRow | null {
   const commandEnd = stat.lastIndexOf(') ');
   const commandStart = stat.indexOf('(');
   if (commandStart < 1 || commandEnd <= commandStart) {
-    throw new Error('proc stat output is malformed');
+    return null;
   }
   const reportedPid = Number(stat.slice(0, commandStart).trim());
   const fields = stat
@@ -84,11 +84,11 @@ export function parseProcProcessRow(
     !/^\d+$/u.test(startTicks) ||
     rssMatch === null
   ) {
-    throw new Error('proc process output is malformed');
+    return null;
   }
   const rssKilobytes = Number(rssMatch[1]);
   if (!Number.isSafeInteger(rssKilobytes) || rssKilobytes < 0) {
-    throw new Error('proc process RSS is malformed');
+    return null;
   }
   const command = cmdline
     .split('\0')

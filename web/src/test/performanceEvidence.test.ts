@@ -163,6 +163,17 @@ describe('process-tree evidence', () => {
     });
   });
 
+  it('skips readable proc entries that do not describe a userspace RSS row', () => {
+    expect(
+      parseProcProcessRow(
+        2,
+        `2 (kthreadd) S 0 ${Array.from({ length: 17 }, () => 0).join(' ')} 42 0 0`,
+        'Name:\tkthreadd\nThreads:\t1\n',
+        '',
+      ),
+    ).toBeNull();
+  });
+
   it('rejects a changed command within the same process incarnation', () => {
     const tracker = new ProcessIdentityTracker(
       new Map([[10, { role: 'playwright' }]]),
