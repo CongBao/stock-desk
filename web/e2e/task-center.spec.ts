@@ -14,15 +14,10 @@ function task(
     status === 'succeeded' || status === 'failed' || status === 'cancelled';
   return {
     id: taskId,
-    correlation_id: taskId,
     kind: 'backtest.run',
     status,
     progress: status === 'succeeded' ? 1 : 0.4,
-    payload: { token: 'PAYLOAD-SECRET' },
-    result: { private: 'RESULT-SECRET' },
-    error: { raw_exception: 'ERROR-SECRET' },
     cancel_requested: false,
-    worker_id: 'WORKER-SECRET',
     created_at: '2026-07-08T00:00:00Z',
     updated_at: terminal ? '2026-07-08T00:00:05Z' : '2026-07-08T00:00:02Z',
     started_at: status === 'queued' ? null : '2026-07-08T00:00:01Z',
@@ -42,7 +37,6 @@ function task(
 const analysisTask = {
   ...task('succeeded'),
   id: secondTaskId,
-  correlation_id: secondTaskId,
   kind: 'analysis.run',
   presentation: {
     label: '智能分析',
@@ -68,11 +62,8 @@ const events = [
   {
     id: eventId,
     task_id: taskId,
-    correlation_id: taskId,
-    event_name: 'task.progressed',
     level: 'info',
     progress: 0.4,
-    detail: { private: 'EVENT-SECRET' },
     occurred_at: '2026-07-08T00:00:02Z',
     presentation: {
       label: '已处理回测标的',
@@ -95,12 +86,11 @@ async function json(route: Route, body: unknown, status = 200) {
 async function installTaskStubs(
   page: Page,
   options: {
-    readonly lifecycle?: boolean;
-    readonly failSecondList?: boolean;
+    readonly lifecycle?: { completed: boolean };
+    readonly failLists?: { enabled: boolean };
     readonly trackCancel?: { count: number };
   } = {},
 ) {
-  let centerLists = 0;
   await page.route('**/api/**', async (route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -127,8 +117,7 @@ async function installTaskStubs(
       url.pathname === '/api/tasks' &&
       url.searchParams.get('limit') === '100'
     ) {
-      centerLists += 1;
-      if (options.failSecondList && centerLists >= 3) {
+      if (options.failLists?.enabled) {
         await json(
           route,
           { code: 'storage_unavailable', diagnostic: secret },
@@ -137,7 +126,7 @@ async function installTaskStubs(
         return;
       }
       await json(route, [
-        options.lifecycle && centerLists >= 3 ? task('succeeded') : task(),
+        options.lifecycle?.completed ? task('succeeded') : task(),
         analysisTask,
       ]);
       return;
@@ -162,7 +151,7 @@ async function installTaskStubs(
     if (url.pathname === `/api/tasks/${taskId}`) {
       await json(
         route,
-        options.lifecycle && centerLists >= 3 ? task('succeeded') : task(),
+        options.lifecycle?.completed ? task('succeeded') : task(),
       );
       return;
     }
@@ -197,7 +186,8 @@ test('shows a deterministic lifecycle while shell and center use distinct list b
   page.on('request', (request) => {
     if (request.url().includes('/api/tasks?')) requests.push(request.url());
   });
-  await installTaskStubs(page, { lifecycle: true });
+  const lifecycle = { completed: false };
+  await installTaskStubs(page, { lifecycle });
   await page.goto('/tasks');
   await page.waitForTimeout(250);
   expect(pageErrors).toEqual([]);
@@ -210,13 +200,19 @@ test('shows a deterministic lifecycle while shell and center use distinct list b
   await expect(
     page.getByRole('link', { name: '打开回测报告' }),
   ).toHaveAttribute('href', `/backtests/${runId}`);
-  await expect(page.getByText('已完成', { exact: true }).last()).toBeVisible({
-    timeout: 6_000,
-  });
-  expect(requests.some((url) => url.endsWith('/api/tasks?limit=5'))).toBe(true);
-  expect(requests.some((url) => url.endsWith('/api/tasks?limit=100'))).toBe(
-    true,
-  );
+  lifecycle.completed = true;
+  await expect(
+    page.getByRole('progressbar', { name: '任务总体进度' }),
+  ).toHaveAttribute('aria-valuenow', '100', { timeout: 6_000 });
+  await expect(
+    page.locator('.task-detail-panel .task-status-badge'),
+  ).toHaveText('已完成');
+  expect(
+    requests.some((url) => url.endsWith('/api/tasks?view=safe&limit=5')),
+  ).toBe(true);
+  expect(
+    requests.some((url) => url.endsWith('/api/tasks?view=safe&limit=100')),
+  ).toBe(true);
   await expect(
     page.getByText(
       /PAYLOAD-SECRET|RESULT-SECRET|ERROR-SECRET|EVENT-SECRET|WORKER-SECRET/u,
@@ -250,11 +246,13 @@ test('keyboard selection and cancellation send one POST and announce reflection'
 test('a safe 503 keeps stale state and never renders diagnostic secrets', async ({
   page,
 }) => {
-  await installTaskStubs(page, { failSecondList: true });
+  const failLists = { enabled: false };
+  await installTaskStubs(page, { failLists });
   await page.goto('/tasks');
   await expect(
     page.getByRole('button', { name: /股票池回测/u }).first(),
   ).toBeVisible();
+  failLists.enabled = true;
   await page.getByRole('button', { name: '刷新任务' }).click();
   await expect(page.getByRole('alert')).toContainText('任务列表刷新失败');
   await expect(
@@ -288,6 +286,26 @@ for (const viewport of [
       page.getByRole('complementary', { name: '上下文状态' }),
     ).toBeHidden();
     await noHorizontalOverflow(page);
+    const navigationToggle = page.locator('.navigation-toggle');
+    await expect(navigationToggle).toBeVisible();
+    const initiallyExpanded =
+      await navigationToggle.getAttribute('aria-expanded');
+    await navigationToggle.click();
+    await expect(navigationToggle).toHaveAttribute(
+      'aria-expanded',
+      initiallyExpanded === 'true' ? 'false' : 'true',
+    );
+    await navigationToggle.click();
+    await expect(navigationToggle).toHaveAttribute(
+      'aria-expanded',
+      initiallyExpanded ?? 'false',
+    );
+    await expect(page.locator('.nav-icon svg').first()).toBeVisible();
+    await page.getByRole('button', { name: '打开上下文面板' }).click();
+    await expect(
+      page.getByRole('complementary', { name: '上下文状态' }),
+    ).toBeVisible();
+    await page.getByRole('button', { name: '关闭上下文面板' }).click();
     const [rail, workspace] = await Promise.all([
       page.locator('.navigation-rail').boundingBox(),
       page.locator('main.workspace').boundingBox(),
@@ -306,5 +324,57 @@ for (const viewport of [
         return layout.scrollWidth <= layout.clientWidth;
       }),
     ).toBe(true);
+    const controls = await Promise.all(
+      [
+        page.getByRole('button', { name: '刷新任务' }),
+        page.getByLabel('状态筛选'),
+        page.getByLabel('类型筛选'),
+        page.getByRole('button', { name: '取消任务' }),
+      ].map((locator) => locator.boundingBox()),
+    );
+    for (let left = 0; left < controls.length; left += 1) {
+      for (let right = left + 1; right < controls.length; right += 1) {
+        const a = controls[left];
+        const b = controls[right];
+        expect(a).not.toBeNull();
+        expect(b).not.toBeNull();
+        if (a && b) {
+          const overlaps =
+            a.x < b.x + b.width &&
+            a.x + a.width > b.x &&
+            a.y < b.y + b.height &&
+            a.y + a.height > b.y;
+          expect(overlaps).toBe(false);
+        }
+      }
+    }
   });
 }
+
+test('Chromium 200 percent page zoom reflows task controls without clipping', async ({
+  page,
+}) => {
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send('Emulation.setDeviceMetricsOverride', {
+    width: 800,
+    height: 450,
+    deviceScaleFactor: 2,
+    mobile: false,
+  });
+  await installTaskStubs(page);
+  await page.goto('/tasks');
+  await expect(page.getByRole('button', { name: '刷新任务' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '取消任务' })).toBeVisible();
+  await noHorizontalOverflow(page);
+  expect(
+    await page.evaluate(() => {
+      const browserGlobal = globalThis as unknown as {
+        devicePixelRatio: number;
+        innerWidth: number;
+      };
+      return (
+        browserGlobal.devicePixelRatio === 2 && browserGlobal.innerWidth === 800
+      );
+    }),
+  ).toBe(true);
+});

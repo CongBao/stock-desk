@@ -1,8 +1,9 @@
-import { act, render, screen, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 
 import { TaskCenterPage } from './TaskCenterPage';
+import { mergeTaskSnapshots } from './taskState';
 import {
   TaskApiError,
   type TaskApi,
@@ -181,6 +182,79 @@ it('keeps stale tasks visible when a refresh is partially degraded', async () =>
   expect(screen.getByRole('button', { name: /股票池回测/u })).toBeVisible();
 });
 
+it('shows unavailable instead of empty when the first task load fails', async () => {
+  const client = api({
+    listTasks: vi.fn(() => Promise.reject(new TaskApiError('storage'))),
+  });
+  renderPage(client);
+
+  expect(await screen.findByRole('alert')).toHaveTextContent(
+    '任务列表刷新失败',
+  );
+  expect(screen.getByText('任务列表暂不可用')).toBeVisible();
+  expect(screen.queryByText('暂无任务')).not.toBeInTheDocument();
+});
+
+it('never shows a previous task timeline under a newly selected task', async () => {
+  const first = task();
+  const second = task({
+    id: SECOND_ID,
+    kind: 'analysis.run',
+    presentation: {
+      label: '智能分析',
+      stage: null,
+      processed: null,
+      total: null,
+      failed: null,
+      target: null,
+    },
+  });
+  const client = api({
+    listTasks: vi.fn(() => Promise.resolve([first, second])),
+    getTask: vi.fn((id) => Promise.resolve(id === TASK_ID ? first : second)),
+    listEvents: vi.fn((id): Promise<readonly TaskEventView[]> =>
+      id === TASK_ID
+        ? Promise.resolve<TaskEventView[]>([
+            {
+              id: '44444444-4444-4444-8444-444444444444',
+              taskId: TASK_ID,
+              level: 'info',
+              progress: 0.4,
+              occurredAt: '2026-07-08T00:00:02Z',
+              presentation: {
+                label: '已处理回测标的',
+                stage: 'executing',
+                processed: 2,
+                total: 5,
+                failed: 1,
+              },
+            },
+          ])
+        : new Promise<readonly TaskEventView[]>(() => undefined),
+    ),
+  });
+  renderPage(client);
+  expect(await screen.findByText('已处理回测标的')).toBeVisible();
+
+  await userEvent.click(screen.getByRole('button', { name: /智能分析/u }));
+
+  expect(screen.queryByText('已处理回测标的')).not.toBeInTheDocument();
+  expect(screen.getByText('暂无可显示事件。')).toBeVisible();
+});
+
+it('merges task snapshots monotonically by updated time', () => {
+  const terminal = task({
+    status: 'cancelled',
+    cancelRequested: true,
+    updatedAt: '2026-07-08T00:00:05Z',
+    finishedAt: '2026-07-08T00:00:05Z',
+    durationMs: 4_000,
+  });
+  const stale = task({ updatedAt: '2026-07-08T00:00:02Z' });
+
+  expect(mergeTaskSnapshots([terminal], [stale])).toEqual([terminal]);
+});
+
 it('coalesces refreshes and never overlaps serialized polling', async () => {
   vi.useFakeTimers();
   let resolveRefresh: ((value: readonly TaskView[]) => void) | undefined;
@@ -265,20 +339,28 @@ it('handles cancel conflicts safely and does not repeat ambiguous network POSTs'
   });
   const first = renderPage(conflictClient);
   await user.click(await screen.findByRole('button', { name: '取消任务' }));
-  expect(await screen.findByRole('status')).toHaveTextContent('任务状态已变化');
+  expect(
+    await screen.findByText('任务状态已变化，正在同步最新状态'),
+  ).toBeVisible();
   expect(conflictClient.getTask).toHaveBeenCalledTimes(2);
   first.unmount();
 
   const networkClient = api({
     cancelTask: vi.fn(() => Promise.reject(new TaskApiError('network'))),
+    getTask: vi.fn(() => Promise.reject(new TaskApiError('network'))),
   });
   renderPage(networkClient);
   await user.click(await screen.findByRole('button', { name: '取消任务' }));
   expect(await screen.findByRole('alert')).toHaveTextContent('取消结果未知');
+  expect(screen.getByRole('button', { name: '取消任务' })).toBeDisabled();
   await act(
     async () => new Promise((resolve) => window.setTimeout(resolve, 10)),
   );
   expect(networkClient.cancelTask).toHaveBeenCalledTimes(1);
+  await user.click(screen.getByRole('button', { name: '刷新任务' }));
+  await waitFor(() =>
+    expect(screen.getByRole('button', { name: '取消任务' })).toBeEnabled(),
+  );
 });
 
 it('announces lifecycle changes in one dedicated live region', async () => {
@@ -288,6 +370,9 @@ it('announces lifecycle changes in one dedicated live region', async () => {
   expect(live).toHaveAttribute('aria-live', 'polite');
   expect(
     document.querySelectorAll('[data-testid="task-live-status"]'),
+  ).toHaveLength(1);
+  expect(
+    document.querySelectorAll('[aria-live="polite"], [role="status"]'),
   ).toHaveLength(1);
   expect(within(live).getByText(/正在运行/u)).toBeInTheDocument();
 });

@@ -168,7 +168,7 @@ export function useSystemStatus(): SystemStatus {
   const tasksQuery = useQuery({
     queryKey: ['system-status', 'tasks', 5],
     queryFn: async ({ signal }) =>
-      decodeTasks(await getWithTimeout('/tasks?limit=5', signal)),
+      decodeTasks(await getWithTimeout('/tasks?view=safe&limit=5', signal)),
     retry: shouldRetry,
     retryDelay: 10,
     staleTime: 1_000,

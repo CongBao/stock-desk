@@ -10,6 +10,7 @@ import {
   type TaskStatus,
   type TaskView,
 } from './taskApi';
+import { mergeTaskSnapshots, updateTaskSnapshot } from './taskState';
 
 type TaskCenterPageProps = {
   readonly api?: TaskApi;
@@ -62,25 +63,6 @@ function runningDuration(task: TaskView, now: number): number | null {
   return Math.max(0, now - Date.parse(task.startedAt));
 }
 
-function updateTask(
-  items: readonly TaskView[],
-  replacement: TaskView,
-): readonly TaskView[] {
-  const index = items.findIndex((item) => item.id === replacement.id);
-  if (index < 0) return [replacement, ...items].slice(0, 100);
-  return items.map((item) => {
-    if (item.id !== replacement.id) return item;
-    if (
-      item.cancelRequested &&
-      !replacement.cancelRequested &&
-      Date.parse(replacement.updatedAt) <= Date.parse(item.updatedAt)
-    ) {
-      return { ...replacement, cancelRequested: true };
-    }
-    return replacement;
-  });
-}
-
 export function TaskCenterPage({
   api = defaultTaskApi,
   pollIntervalMs = 2_000,
@@ -92,6 +74,7 @@ export function TaskCenterPage({
   const [statusFilter, setStatusFilter] = useState<'all' | TaskStatus>('all');
   const [kindFilter, setKindFilter] = useState('all');
   const [isLoading, setIsLoading] = useState(true);
+  const [hasLoadedTasks, setHasLoadedTasks] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [listError, setListError] = useState<string | null>(null);
   const [metricsError, setMetricsError] = useState<string | null>(null);
@@ -99,6 +82,7 @@ export function TaskCenterPage({
   const [notice, setNotice] = useState<string>('正在载入任务');
   const [cancelError, setCancelError] = useState<string | null>(null);
   const [cancelPending, setCancelPending] = useState(false);
+  const [cancelUnknownId, setCancelUnknownId] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now());
   const tasksRef = useRef<readonly TaskView[]>(tasks);
   const mountedRef = useRef(false);
@@ -106,13 +90,28 @@ export function TaskCenterPage({
   const refreshPromiseRef = useRef<Promise<void> | null>(null);
   const refreshControllersRef = useRef<Set<AbortController>>(new Set());
   const detailControllerRef = useRef<AbortController | null>(null);
+  const cancelControllerRef = useRef<AbortController | null>(null);
+  const refreshSequenceRef = useRef(0);
+  const cancelUnknownRef = useRef<{
+    readonly id: string;
+    readonly afterRefreshSequence: number;
+  } | null>(null);
 
   useEffect(() => {
     tasksRef.current = tasks;
   }, [tasks]);
 
+  const commitTaskSnapshot = useCallback((replacement: TaskView) => {
+    setTasks((current) => {
+      const next = updateTaskSnapshot(current, replacement);
+      tasksRef.current = next;
+      return next;
+    });
+  }, []);
+
   const refresh = useCallback((): Promise<void> => {
     if (refreshPromiseRef.current !== null) return refreshPromiseRef.current;
+    const refreshSequence = ++refreshSequenceRef.current;
     if (pollTimerRef.current !== null) {
       window.clearTimeout(pollTimerRef.current);
       pollTimerRef.current = null;
@@ -128,8 +127,20 @@ export function TaskCenterPage({
       if (!mountedRef.current || controller.signal.aborted) return;
       let nextTasks = tasksRef.current;
       if (tasksResult.status === 'fulfilled') {
-        nextTasks = tasksResult.value;
+        nextTasks = mergeTaskSnapshots(tasksRef.current, tasksResult.value);
+        tasksRef.current = nextTasks;
         setTasks(nextTasks);
+        setHasLoadedTasks(true);
+        const unknown = cancelUnknownRef.current;
+        if (
+          unknown !== null &&
+          refreshSequence > unknown.afterRefreshSequence &&
+          nextTasks.some((item) => item.id === unknown.id)
+        ) {
+          cancelUnknownRef.current = null;
+          setCancelUnknownId(null);
+          setCancelError(null);
+        }
         setListError(null);
         setSelectedId((current) =>
           current !== null && nextTasks.some((item) => item.id === current)
@@ -159,14 +170,16 @@ export function TaskCenterPage({
             : 'protocol';
         setMetricsError(`汇总指标刷新失败。${readableError(reason)}`);
       }
-      setNotice(
-        nextTasks.some((item) => activeStatuses.has(item.status))
-          ? '任务列表已更新，仍有任务正在运行'
-          : '任务列表已更新',
-      );
+      if (tasksResult.status === 'fulfilled') {
+        setNotice(
+          nextTasks.some((item) => activeStatuses.has(item.status))
+            ? '任务列表已更新，仍有任务正在运行'
+            : '任务列表已更新',
+        );
+      }
     })().finally(() => {
       refreshControllersRef.current.delete(controller);
-      if (mountedRef.current) {
+      if (mountedRef.current && !controller.signal.aborted) {
         setIsLoading(false);
         setIsRefreshing(false);
       }
@@ -189,6 +202,7 @@ export function TaskCenterPage({
         controller.abort();
       refreshPromiseRef.current = null;
       detailControllerRef.current?.abort();
+      cancelControllerRef.current?.abort();
     };
   }, [refresh]);
 
@@ -217,13 +231,15 @@ export function TaskCenterPage({
     }
     const controller = new AbortController();
     detailControllerRef.current = controller;
+    setEvents([]);
+    setEventsError(null);
     void Promise.allSettled([
       api.getTask(selectedId, { signal: controller.signal }),
       api.listEvents(selectedId, { signal: controller.signal }),
     ]).then(([taskResult, eventResult]) => {
       if (!mountedRef.current || controller.signal.aborted) return;
       if (taskResult.status === 'fulfilled') {
-        setTasks((current) => updateTask(current, taskResult.value));
+        commitTaskSnapshot(taskResult.value);
       }
       if (eventResult.status === 'fulfilled') {
         setEvents(eventResult.value);
@@ -236,7 +252,13 @@ export function TaskCenterPage({
       }
     });
     return () => controller.abort();
-  }, [api, selectedId, selectedTask?.status, selectedTask?.updatedAt]);
+  }, [
+    api,
+    commitTaskSnapshot,
+    selectedId,
+    selectedTask?.status,
+    selectedTask?.updatedAt,
+  ]);
 
   useEffect(() => {
     if (selectedTask === null || !activeStatuses.has(selectedTask.status))
@@ -265,24 +287,56 @@ export function TaskCenterPage({
       return;
     setCancelPending(true);
     setCancelError(null);
+    const taskId = selectedTask.id;
+    const controller = new AbortController();
+    cancelControllerRef.current?.abort();
+    cancelControllerRef.current = controller;
     try {
-      const cancelled = await api.cancelTask(selectedTask.id);
-      setTasks((current) => updateTask(current, cancelled));
+      const cancelled = await api.cancelTask(taskId, {
+        signal: controller.signal,
+      });
+      cancelUnknownRef.current = null;
+      setCancelUnknownId(null);
+      commitTaskSnapshot(cancelled);
       setNotice(cancelled.status === 'cancelled' ? '任务已取消' : '已请求取消');
     } catch (error) {
+      if (error instanceof TaskApiError && error.kind === 'abort') return;
       if (error instanceof TaskApiError && error.kind === 'conflict') {
         setNotice('任务状态已变化，正在同步最新状态');
         try {
-          const latest = await api.getTask(selectedTask.id);
-          setTasks((current) => updateTask(current, latest));
+          const latest = await api.getTask(taskId, {
+            signal: controller.signal,
+          });
+          commitTaskSnapshot(latest);
         } catch {
           setCancelError('任务状态已变化，请手动刷新。');
         }
       } else {
-        setCancelError('取消结果未知。为避免重复请求，请先刷新任务状态。');
+        cancelUnknownRef.current = {
+          id: taskId,
+          afterRefreshSequence: refreshSequenceRef.current,
+        };
+        setCancelUnknownId(taskId);
+        try {
+          const latest = await api.getTask(taskId, {
+            signal: controller.signal,
+          });
+          commitTaskSnapshot(latest);
+          cancelUnknownRef.current = null;
+          setCancelUnknownId(null);
+          setCancelError(
+            latest.cancelRequested || !activeStatuses.has(latest.status)
+              ? null
+              : '取消请求未生效，可以重试。',
+          );
+        } catch {
+          setCancelError('取消结果未知。请先刷新任务状态，再决定是否重试。');
+        }
       }
     } finally {
-      setCancelPending(false);
+      if (!controller.signal.aborted) setCancelPending(false);
+      if (cancelControllerRef.current === controller)
+        cancelControllerRef.current = null;
     }
   }
 
@@ -331,9 +385,7 @@ export function TaskCenterPage({
           {cancelError}
         </p>
       )}
-      <p className="task-action-status" role="status">
-        {notice}
-      </p>
+      <p className="task-action-status">{notice}</p>
 
       <section className="task-metrics" aria-label="全部任务汇总">
         <div>
@@ -396,6 +448,11 @@ export function TaskCenterPage({
         <p className="task-center-empty" role="status">
           正在读取任务…
         </p>
+      ) : !hasLoadedTasks && listError !== null ? (
+        <div className="task-center-empty">
+          <h3>任务列表暂不可用</h3>
+          <p>尚未成功读取任务，请检查服务后重试。</p>
+        </div>
       ) : tasks.length === 0 ? (
         <div className="task-center-empty">
           <h3>暂无任务</h3>
@@ -529,7 +586,11 @@ export function TaskCenterPage({
                     <button
                       type="button"
                       onClick={() => void cancelSelected()}
-                      disabled={cancelPending || selectedTask.cancelRequested}
+                      disabled={
+                        cancelPending ||
+                        selectedTask.cancelRequested ||
+                        cancelUnknownId === selectedTask.id
+                      }
                     >
                       {selectedTask.cancelRequested
                         ? '已请求取消'

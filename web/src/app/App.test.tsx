@@ -46,20 +46,15 @@ const healthyResponse = {
 
 const completedTask = {
   id: '11111111-1111-4111-8111-111111111111',
-  correlation_id: '11111111-1111-4111-8111-111111111111',
   kind: 'demo.double',
   status: 'succeeded',
   progress: 1,
   cancel_requested: false,
-  worker_id: null,
   created_at: '2026-07-05T08:00:00Z',
   updated_at: '2026-07-05T08:00:01Z',
   finished_at: '2026-07-05T08:00:01Z',
   started_at: '2026-07-05T08:00:00Z',
   duration_ms: 1000,
-  result: { value: 42 },
-  payload: {},
-  error: null,
   presentation: {
     label: '后台任务',
     stage: null,
@@ -301,7 +296,7 @@ it('routes tasks to the real v1 task workspace without planned copy', async () =
     'fetch',
     vi.fn((input: RequestInfo | URL) => {
       const url = requestUrl(input);
-      if (url.endsWith('/tasks?limit=100'))
+      if (url.endsWith('/tasks?view=safe&limit=100'))
         return Promise.resolve(jsonResponse([]));
       if (url.endsWith('/tasks/metrics')) {
         return Promise.resolve(
@@ -324,7 +319,7 @@ it('routes tasks to the real v1 task workspace without planned copy', async () =
       }
       if (url.endsWith('/health'))
         return Promise.resolve(jsonResponse(healthyResponse));
-      if (url.endsWith('/tasks?limit=5'))
+      if (url.endsWith('/tasks?view=safe&limit=5'))
         return Promise.resolve(jsonResponse([]));
       return Promise.resolve(jsonResponse([]));
     }),
@@ -578,15 +573,13 @@ it('shows strictly decoded recent task state without raw result context', async 
   expect(task).toHaveAccessibleName(/demo\.double.*已成功/);
 });
 
-it('does not render an explicit raw empty result', async () => {
+it('rejects an explicit raw result at the safe browser boundary', async () => {
   installHealthyFetch([{ ...completedTask, result: { value: null } }]);
 
   renderApp();
 
-  const task = await screen.findByRole('listitem', {
-    name: /demo\.double.*已成功/,
-  });
-  expect(task).not.toHaveTextContent('结果：');
+  expect(await screen.findByText('任务列表暂不可用')).toBeInTheDocument();
+  expect(screen.queryByText('结果：')).not.toBeInTheDocument();
 });
 
 it('labels a running task as unfinished without inventing a result', async () => {
@@ -596,7 +589,7 @@ it('labels a running task as unfinished without inventing a result', async () =>
       status: 'running',
       progress: 0.5,
       finished_at: null,
-      result: null,
+      duration_ms: null,
     },
   ]);
 
@@ -610,7 +603,7 @@ it('labels a running task as unfinished without inventing a result', async () =>
 });
 
 it.each([{ nested: true }, ['nested']])(
-  'keeps a task with complex result.value without rendering it: %j',
+  'rejects a task with raw complex result.value at the safe boundary: %j',
   async (complexValue) => {
     installHealthyFetch([
       { ...completedTask, result: { value: complexValue } },
@@ -618,14 +611,8 @@ it.each([{ nested: true }, ['nested']])(
 
     renderApp();
 
-    const task = await screen.findByRole('listitem', {
-      name: /demo\.double.*已成功/,
-    });
-    expect(task).toHaveTextContent('后台任务');
-    expect(task).not.toHaveTextContent('结果：');
-    expect(
-      await screen.findByText('系统正常', { exact: true }),
-    ).toBeInTheDocument();
+    expect(await screen.findByText('任务列表暂不可用')).toBeInTheDocument();
+    expect(screen.queryByText('结果：')).not.toBeInTheDocument();
   },
 );
 
@@ -790,7 +777,10 @@ it('shares endpoint queries between topbar and context panel consumers', async (
     .map(([input]) => requestUrl(input))
     .filter((url) => /^\/api\/(?:health|tasks\?)/u.test(url));
   expect(systemCalls).toHaveLength(2);
-  expect(systemCalls.sort()).toEqual(['/api/health', '/api/tasks?limit=5']);
+  expect(systemCalls.sort()).toEqual([
+    '/api/health',
+    '/api/tasks?view=safe&limit=5',
+  ]);
 });
 
 it('aborts both in-flight endpoint requests after the final consumer unmounts', async () => {

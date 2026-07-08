@@ -9,7 +9,7 @@ import threading
 import time
 
 import pytest
-from sqlalchemy import event, update
+from sqlalchemy import event, text, update
 
 from stock_desk.backtest.repository import BacktestRepository
 from stock_desk.backtest.export import stream_export
@@ -173,7 +173,7 @@ def test_partial_preset_freezes_runnable_and_gap_in_pool_order(tmp_path: Path) -
         progress_events = [
             event
             for event in tasks.list_events(submitted.task_id)
-            if event.event_name == "task.progressed"
+            if event.event_name == "backtest.progressed"
         ]
         assert len(progress_events) == 1
         assert progress_events[0].detail == {
@@ -213,6 +213,65 @@ def test_partial_preset_freezes_runnable_and_gap_in_pool_order(tmp_path: Path) -
         assert outcomes.failed == 0
         assert outcomes.data_insufficient == 1
         assert outcomes.unprocessed == 0
+    finally:
+        engine.dispose()
+
+
+def test_backtest_progress_events_are_dedicated_and_bounded(tmp_path: Path) -> None:
+    (
+        engine,
+        _market,
+        _statuses,
+        _instruments,
+        _pools,
+        tasks,
+        _formulas,
+        _repository,
+        _service,
+    ) = _services(tmp_path)
+    try:
+        created = tasks.create("backtest.run", {})
+        now = created.created_at
+        with engine.begin() as connection:
+            for processed in range(1, 10_001):
+                tasks.append_backtest_progress_event_in_transaction(
+                    connection,
+                    created.id,
+                    progress=processed / 10_000,
+                    stage="executing",
+                    processed=processed,
+                    total=10_000,
+                    failed=0,
+                    now=now,
+                )
+
+        with engine.connect() as connection:
+            rows = connection.execute(
+                text(
+                    "SELECT event_name, count(*) FROM task_event "
+                    "WHERE task_id = :task_id GROUP BY event_name"
+                ),
+                {"task_id": created.id},
+            ).all()
+        counts = {str(name): int(count) for name, count in rows}
+        assert counts["backtest.progressed"] <= 101
+        assert counts.get("task.progressed", 0) == 0
+
+        tasks.request_cancel(created.id)
+        generic = tasks.create("generic.task", {})
+        assert tasks.claim_next("generic-worker") is not None
+        spoofed = tasks.set_progress(
+            generic.id,
+            0.5,
+            {"stage": "executing", "processed": 1, "total": 2, "failed": 0},
+        )
+        event_snapshot = tasks.list_events(spoofed.id)[-1]
+        presentation = tasks.event_presentation(
+            event_snapshot, task_kind="backtest.run"
+        )
+        assert event_snapshot.event_name == "task.progressed"
+        assert presentation.label == "任务进度已更新"
+        assert presentation.processed is None
     finally:
         engine.dispose()
 

@@ -130,6 +130,8 @@ const eventLabels = new Set<string>([
 const levels = new Set<string>(['info', 'warning', 'error']);
 const canonicalUuid =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+const isoTimestamp =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/u;
 
 export class TaskApiError extends Error {
   constructor(readonly kind: TaskApiErrorKind) {
@@ -145,8 +147,25 @@ function record(value: JsonValue | undefined): Record<string, JsonValue> {
   return value as Record<string, JsonValue>;
 }
 
+function exactKeys(
+  value: Record<string, JsonValue>,
+  expected: readonly string[],
+) {
+  const keys = Object.keys(value);
+  if (
+    keys.length !== expected.length ||
+    expected.some((key) => !Object.hasOwn(value, key))
+  ) {
+    throw new TaskApiError('protocol');
+  }
+}
+
 function timestamp(value: JsonValue | undefined): value is string {
-  return typeof value === 'string' && Number.isFinite(Date.parse(value));
+  return (
+    typeof value === 'string' &&
+    isoTimestamp.test(value) &&
+    Number.isFinite(Date.parse(value))
+  );
 }
 
 function nullableTimestamp(
@@ -203,6 +222,14 @@ function decodeCounts(value: Record<string, JsonValue>) {
 
 function decodePresentation(value: JsonValue | undefined): TaskPresentation {
   const source = record(value);
+  exactKeys(source, [
+    'label',
+    'stage',
+    'processed',
+    'total',
+    'failed',
+    'target',
+  ]);
   if (typeof source.label !== 'string' || !taskLabels.has(source.label)) {
     throw new TaskApiError('protocol');
   }
@@ -210,6 +237,7 @@ function decodePresentation(value: JsonValue | undefined): TaskPresentation {
   let target: TaskPresentation['target'] = null;
   if (source.target !== null) {
     const rawTarget = record(source.target);
+    exactKeys(rawTarget, ['type', 'id']);
     if (
       rawTarget.type !== 'backtest_run' ||
       typeof rawTarget.id !== 'string' ||
@@ -219,21 +247,39 @@ function decodePresentation(value: JsonValue | undefined): TaskPresentation {
     }
     target = { type: 'backtest_run', id: rawTarget.id };
   }
-  return {
+  const presentation = {
     label: source.label as TaskPresentation['label'],
     ...counts,
     target,
   };
+  if ((counts.stage === null) !== (target === null)) {
+    throw new TaskApiError('protocol');
+  }
+  return presentation;
 }
 
 export function decodeTaskResponse(value: JsonValue): TaskView {
   const source = record(value);
+  exactKeys(source, [
+    'id',
+    'kind',
+    'status',
+    'progress',
+    'cancel_requested',
+    'created_at',
+    'updated_at',
+    'started_at',
+    'finished_at',
+    'duration_ms',
+    'presentation',
+  ]);
   if (
     typeof source.id !== 'string' ||
     !canonicalUuid.test(source.id) ||
     typeof source.kind !== 'string' ||
     source.kind.length < 1 ||
     source.kind.length > 64 ||
+    source.kind.trim() !== source.kind ||
     typeof source.status !== 'string' ||
     !statusSet.has(source.status) ||
     typeof source.progress !== 'number' ||
@@ -249,10 +295,58 @@ export function decodeTaskResponse(value: JsonValue): TaskView {
   ) {
     throw new TaskApiError('protocol');
   }
+  const presentation = decodePresentation(source.presentation);
+  const status = source.status as TaskStatus;
+  const created = Date.parse(source.created_at);
+  const updated = Date.parse(source.updated_at);
+  const started =
+    source.started_at === null ? null : Date.parse(source.started_at);
+  const finished =
+    source.finished_at === null ? null : Date.parse(source.finished_at);
+  const terminal =
+    status === 'succeeded' || status === 'failed' || status === 'cancelled';
+  const expectedLabel =
+    source.kind === 'backtest.run'
+      ? '股票池回测'
+      : source.kind === 'analysis.run'
+        ? '智能分析'
+        : source.kind === 'market.update' ||
+            source.kind === 'market.catalog.update'
+          ? '数据更新'
+          : '后台任务';
+  const stageForStatus = {
+    queued: 'queued',
+    running: 'executing',
+    succeeded: 'completed',
+    failed: 'failed',
+    cancelled: 'cancelled',
+  } as const;
+  if (
+    created > updated ||
+    (started !== null && (started < created || started > updated)) ||
+    (finished !== null && (finished < created || finished > updated)) ||
+    (status === 'queued' && (started !== null || finished !== null)) ||
+    (status === 'running' && (started === null || finished !== null)) ||
+    (terminal && finished === null) ||
+    (started === null || finished === null) !== (source.duration_ms === null) ||
+    ((status === 'succeeded' || status === 'failed') && started === null) ||
+    (status === 'succeeded' && source.progress !== 1) ||
+    (status === 'cancelled' && source.cancel_requested !== true) ||
+    (source.duration_ms !== null &&
+      started !== null &&
+      finished !== null &&
+      Math.abs(finished - started - source.duration_ms) > 2) ||
+    presentation.label !== expectedLabel ||
+    (presentation.stage !== null &&
+      (source.kind !== 'backtest.run' ||
+        presentation.stage !== stageForStatus[status]))
+  ) {
+    throw new TaskApiError('protocol');
+  }
   return {
     id: source.id,
     kind: source.kind,
-    status: source.status as TaskStatus,
+    status,
     progress: source.progress,
     cancelRequested: source.cancel_requested,
     createdAt: source.created_at,
@@ -260,7 +354,7 @@ export function decodeTaskResponse(value: JsonValue): TaskView {
     startedAt: source.started_at,
     finishedAt: source.finished_at,
     durationMs: source.duration_ms,
-    presentation: decodePresentation(source.presentation),
+    presentation,
   };
 }
 
@@ -279,6 +373,15 @@ export function decodeTaskListResponse(
 
 function decodeMetrics(value: JsonValue | undefined): TaskMetrics {
   const source = record(value);
+  exactKeys(source, [
+    'total',
+    'by_status',
+    'failure_count',
+    'completed_count',
+    'average_duration_ms',
+    'min_duration_ms',
+    'max_duration_ms',
+  ]);
   const rawByStatus = record(source.by_status);
   if (
     !boundedInteger(source.total) ||
@@ -302,7 +405,7 @@ function decodeMetrics(value: JsonValue | undefined): TaskMetrics {
     Object.values(byStatus).reduce((sum, count) => sum + count, 0) !==
       source.total ||
     source.failure_count !== byStatus.failed ||
-    source.completed_count !==
+    source.completed_count >
       byStatus.succeeded + byStatus.failed + byStatus.cancelled
   ) {
     throw new TaskApiError('protocol');
@@ -313,6 +416,8 @@ function decodeMetrics(value: JsonValue | undefined): TaskMetrics {
     source.max_duration_ms,
   ];
   if (
+    (source.completed_count === 0) !==
+      durations.every((item) => item === null) ||
     durations.some((item) => item === null) !==
       durations.every((item) => item === null) ||
     (durations[0] !== null &&
@@ -335,7 +440,16 @@ function decodeMetrics(value: JsonValue | undefined): TaskMetrics {
 
 function decodeEvent(value: JsonValue, taskId: string): TaskEventView {
   const source = record(value);
+  exactKeys(source, [
+    'id',
+    'task_id',
+    'level',
+    'progress',
+    'occurred_at',
+    'presentation',
+  ]);
   const presentation = record(source.presentation);
+  exactKeys(presentation, ['label', 'stage', 'processed', 'total', 'failed']);
   if (
     typeof source.id !== 'string' ||
     !canonicalUuid.test(source.id) ||
@@ -352,6 +466,10 @@ function decodeEvent(value: JsonValue, taskId: string): TaskEventView {
   ) {
     throw new TaskApiError('protocol');
   }
+  const counts = decodeCounts(presentation);
+  if ((presentation.label === '已处理回测标的') !== (counts.stage !== null)) {
+    throw new TaskApiError('protocol');
+  }
   return {
     id: source.id,
     taskId,
@@ -360,7 +478,7 @@ function decodeEvent(value: JsonValue, taskId: string): TaskEventView {
     occurredAt: source.occurred_at,
     presentation: {
       label: presentation.label as TaskEventView['presentation']['label'],
-      ...decodeCounts(presentation),
+      ...counts,
     },
   };
 }
@@ -373,6 +491,9 @@ function decodeEvents(
     throw new TaskApiError('protocol');
   const rawEvents = value as readonly JsonValue[];
   const events = rawEvents.map((item) => decodeEvent(item, taskId));
+  if (new Set(events.map((event) => event.id)).size !== events.length) {
+    throw new TaskApiError('protocol');
+  }
   for (let index = 1; index < events.length; index += 1) {
     if (
       Date.parse(events[index].occurredAt) <
@@ -409,7 +530,11 @@ export function createTaskApi(client: ApiClient = createApiClient()): TaskApi {
   return {
     listTasks: (options = {}) =>
       safely(async () =>
-        decodeTaskListResponse(await client.get('/tasks?limit=100', options)),
+        decodeTaskListResponse(
+          await client.get('/tasks?view=safe&limit=100', {
+            signal: options.signal,
+          }),
+        ),
       ),
     getMetrics: (options = {}) =>
       safely(async () =>
@@ -418,20 +543,23 @@ export function createTaskApi(client: ApiClient = createApiClient()): TaskApi {
     getTask: (id, options = {}) =>
       safely(async () =>
         decodeTaskResponse(
-          (await client.get(`/tasks/${id}`, options)) as JsonValue,
+          (await client.get(`/tasks/${id}?view=safe`, options)) as JsonValue,
         ),
       ),
     listEvents: (id, options = {}) =>
       safely(async () =>
         decodeEvents(
-          await client.get(`/tasks/${id}/events?limit=100`, options),
+          await client.get(`/tasks/${id}/events?view=safe&limit=100`, options),
           id,
         ),
       ),
     cancelTask: (id, options = {}) =>
       safely(async () =>
         decodeTaskResponse(
-          (await client.post(`/tasks/${id}/cancel`, options)) as JsonValue,
+          (await client.post(
+            `/tasks/${id}/cancel?view=safe`,
+            options,
+          )) as JsonValue,
         ),
       ),
   };

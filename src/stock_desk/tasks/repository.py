@@ -72,6 +72,7 @@ _EVENT_LABELS = {
     "task.created": "任务已创建",
     "task.claimed": "任务已开始",
     "task.progressed": "任务进度已更新",
+    "backtest.progressed": "已处理回测标的",
     "task.cancel_requested": "已请求取消",
     "task.cancelled": "任务已取消",
     "task.succeeded": "任务已完成",
@@ -505,24 +506,49 @@ class TaskRepository:
         constrained domain row, not from task payload/result/error values.
         """
 
-        if task.kind == _BACKTEST_TASK_KIND:
+        return self.presentation_many((task,))[task.id]
+
+    def presentation_many(
+        self, tasks: tuple[TaskSnapshot, ...] | list[TaskSnapshot]
+    ) -> dict[str, TaskPresentationSnapshot]:
+        """Build browser-safe task projections with at most one domain query."""
+
+        task_items = tuple(tasks)
+        backtest_task_ids = tuple(
+            task.id for task in task_items if task.kind == _BACKTEST_TASK_KIND
+        )
+        backtest_rows: dict[str, tuple[object, ...]] = {}
+        if backtest_task_ids:
             from stock_desk.backtest.models import BacktestRunRow
 
             statement = select(
+                BacktestRunRow.task_id,
                 BacktestRunRow.id,
                 BacktestRunRow.stage,
                 BacktestRunRow.processed,
                 BacktestRunRow.total,
                 BacktestRunRow.failed_count,
-            ).where(BacktestRunRow.task_id == task.id)
+            ).where(BacktestRunRow.task_id.in_(backtest_task_ids))
             with self._engine.connect() as connection:
-                row = connection.execute(statement).one_or_none()
-            if row is not None:
-                run_id = cast(str, row[0])
-                stage = cast(str, row[1])
-                processed = int(row[2])
-                total = int(row[3])
-                failed = int(row[4])
+                backtest_rows = {
+                    cast(str, row[0]): tuple(row[1:])
+                    for row in connection.execute(statement).all()
+                }
+
+        presentations: dict[str, TaskPresentationSnapshot] = {}
+        for task in task_items:
+            if task.kind == _BACKTEST_TASK_KIND:
+                row = backtest_rows.get(task.id)
+                if row is not None:
+                    run_id = cast(str, row[0])
+                    stage = cast(str, row[1])
+                    processed = int(cast(int, row[2]))
+                    total = int(cast(int, row[3]))
+                    failed = int(cast(int, row[4]))
+                else:
+                    run_id = ""
+                    stage = ""
+                    processed = total = failed = -1
                 if (
                     stage in _PRESENTATION_STAGES
                     and 0 <= failed <= processed <= total <= 10_000
@@ -532,7 +558,7 @@ class TaskRepository:
                     except TaskValidationError:
                         pass
                     else:
-                        return TaskPresentationSnapshot(
+                        presentations[task.id] = TaskPresentationSnapshot(
                             label="股票池回测",
                             stage=cast(Any, stage),
                             processed=processed,
@@ -542,40 +568,23 @@ class TaskRepository:
                                 type="backtest_run", id=run_id
                             ),
                         )
-            return TaskPresentationSnapshot(
-                label="股票池回测",
+                        continue
+                label: Any = "股票池回测"
+            elif task.kind == _ANALYSIS_TASK_KIND:
+                label = "智能分析"
+            elif task.kind in {"market.update", "market.catalog.update"}:
+                label = "数据更新"
+            else:
+                label = "后台任务"
+            presentations[task.id] = TaskPresentationSnapshot(
+                label=label,
                 stage=None,
                 processed=None,
                 total=None,
                 failed=None,
                 target=None,
             )
-        if task.kind == _ANALYSIS_TASK_KIND:
-            return TaskPresentationSnapshot(
-                label="智能分析",
-                stage=None,
-                processed=None,
-                total=None,
-                failed=None,
-                target=None,
-            )
-        if task.kind in {"market.update", "market.catalog.update"}:
-            return TaskPresentationSnapshot(
-                label="数据更新",
-                stage=None,
-                processed=None,
-                total=None,
-                failed=None,
-                target=None,
-            )
-        return TaskPresentationSnapshot(
-            label="后台任务",
-            stage=None,
-            processed=None,
-            total=None,
-            failed=None,
-            target=None,
-        )
+        return presentations
 
     def event_presentation(
         self,
@@ -593,13 +602,13 @@ class TaskRepository:
         raw_processed = detail.get("processed")
         raw_total = detail.get("total")
         raw_failed = detail.get("failed")
-        if task_event.event_name == "task.progressed" and task_kind is None:
+        if task_event.event_name == "backtest.progressed" and task_kind is None:
             with self._engine.connect() as connection:
                 task_kind = connection.execute(
                     select(TaskRun.kind).where(TaskRun.id == task_event.task_id)
                 ).scalar_one_or_none()
         if (
-            task_event.event_name == "task.progressed"
+            task_event.event_name == "backtest.progressed"
             and task_kind == _BACKTEST_TASK_KIND
             and isinstance(raw_stage, str)
             and raw_stage in _PRESENTATION_STAGES
@@ -621,7 +630,7 @@ class TaskRepository:
             failed=failed,
         )
 
-    def append_progress_event_in_transaction(
+    def append_backtest_progress_event_in_transaction(
         self,
         connection: Connection,
         task_id: str,
@@ -633,7 +642,7 @@ class TaskRepository:
         failed: int,
         now: datetime,
     ) -> None:
-        """Append a bounded progress event inside an owning domain transaction."""
+        """Append a coalesced domain event inside an owning checkpoint transaction."""
 
         if connection.closed or not connection.in_transaction():
             raise TaskValidationError(
@@ -655,10 +664,31 @@ class TaskRepository:
             or not 0 <= failed <= processed <= total <= 10_000
         ):
             raise TaskValidationError("Task progress event is invalid")
+        latest = connection.execute(
+            select(TaskEvent.progress, TaskEvent.detail_json)
+            .where(
+                TaskEvent.task_id == task_id,
+                TaskEvent.event_name == "backtest.progressed",
+            )
+            .order_by(TaskEvent.occurred_at.desc(), TaskEvent.id.desc())
+            .limit(1)
+        ).one_or_none()
+        bucket = math.floor(float(progress) * 100)
+        if latest is not None:
+            latest_progress = latest[0]
+            latest_detail = latest[1]
+            if (
+                isinstance(latest_progress, (int, float))
+                and not isinstance(latest_progress, bool)
+                and math.floor(float(latest_progress) * 100) >= bucket
+                and isinstance(latest_detail, Mapping)
+                and latest_detail.get("stage") == stage
+            ):
+                return
         _append_event(
             connection,
             task_id=task_id,
-            event_name="task.progressed",
+            event_name="backtest.progressed",
             level="info",
             progress=float(progress),
             detail={

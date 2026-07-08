@@ -220,6 +220,114 @@ def test_task_presentation_never_copies_arbitrary_stored_json(tmp_path: Path) ->
         engine.dispose()
 
 
+def test_safe_task_views_omit_raw_json_and_keep_legacy_default(tmp_path: Path) -> None:
+    repository, engine = _injected_repository(tmp_path)
+    try:
+        created = repository.create("secret.task", {"secret": "PAYLOAD-SENTINEL"})
+        assert repository.claim_next("private-worker") is not None
+        repository.set_progress(created.id, 0.5, {"secret": "EVENT-SENTINEL"})
+        repository.fail(created.id, {"secret": "ERROR-SENTINEL"})
+
+        with TestClient(create_app(task_repository=repository)) as client:
+            legacy = client.get(f"/api/tasks/{created.id}")
+            safe = client.get(f"/api/tasks/{created.id}", params={"view": "safe"})
+            safe_list = client.get("/api/tasks", params={"view": "safe", "limit": 100})
+            safe_events = client.get(
+                f"/api/tasks/{created.id}/events",
+                params={"view": "safe", "limit": 100},
+            )
+
+        assert "PAYLOAD-SENTINEL" in legacy.text
+        for response in (safe, safe_list, safe_events):
+            assert response.status_code == 200
+            assert "SENTINEL" not in response.text
+            assert "private-worker" not in response.text
+        assert set(safe.json()) == {
+            "id",
+            "kind",
+            "status",
+            "progress",
+            "cancel_requested",
+            "created_at",
+            "updated_at",
+            "started_at",
+            "finished_at",
+            "duration_ms",
+            "presentation",
+        }
+        assert set(safe_events.json()[-1]) == {
+            "id",
+            "task_id",
+            "level",
+            "progress",
+            "occurred_at",
+            "presentation",
+        }
+
+        schema = create_app(task_repository=repository).openapi()
+        task_response = schema["paths"]["/api/tasks/{task_id}"]["get"]["responses"][
+            "200"
+        ]["content"]["application/json"]["schema"]
+        assert len(task_response["anyOf"]) == 2
+        safe_schema = schema["components"]["schemas"]["TaskSafeResponse"]
+        assert safe_schema["additionalProperties"] is False
+        assert "payload" not in safe_schema["properties"]
+    finally:
+        engine.dispose()
+
+
+def test_task_list_bulk_presentation_uses_constant_query_count(tmp_path: Path) -> None:
+    repository, engine = _injected_repository(tmp_path)
+    try:
+        for _index in range(100):
+            repository.create("backtest.run", {})
+        statements = 0
+
+        def count_select(
+            _connection: object,
+            _cursor: object,
+            statement: str,
+            _parameters: object,
+            _context: object,
+            _executemany: bool,
+        ) -> None:
+            nonlocal statements
+            if statement.lstrip().upper().startswith("SELECT"):
+                statements += 1
+
+        event.listen(engine, "before_cursor_execute", count_select)
+        try:
+            with TestClient(create_app(task_repository=repository)) as client:
+                response = client.get(
+                    "/api/tasks", params={"view": "safe", "limit": 100}
+                )
+        finally:
+            event.remove(engine, "before_cursor_execute", count_select)
+
+        assert response.status_code == 200
+        assert len(response.json()) == 100
+        assert statements <= 2
+    finally:
+        engine.dispose()
+
+
+def test_queued_cancellation_is_terminal_without_a_duration_sample(
+    tmp_path: Path,
+) -> None:
+    repository, engine = _injected_repository(tmp_path)
+    try:
+        created = repository.create("queued.cancel", {})
+        repository.request_cancel(created.id)
+        with TestClient(create_app(task_repository=repository)) as client:
+            metrics = client.get("/api/tasks/metrics").json()
+
+        assert metrics["by_status"]["cancelled"] == 1
+        assert metrics["completed_count"] == 0
+        assert metrics["average_duration_ms"] is None
+    finally:
+        engine.dispose()
+
+
 def test_task_event_api_maps_missing_tasks_and_invalid_limits(tmp_path: Path) -> None:
     repository, engine = _injected_repository(tmp_path)
     try:

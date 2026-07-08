@@ -1568,7 +1568,7 @@ class BacktestRepository:
             )
             if changed.rowcount != 1:
                 raise BacktestConflict("backtest run checkpoint conflicted")
-            tasks.append_progress_event_in_transaction(
+            tasks.append_backtest_progress_event_in_transaction(
                 connection,
                 claim.snapshot.id,
                 progress=progress,

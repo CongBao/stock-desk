@@ -4415,7 +4415,7 @@ a {
 .task-action-status,
 .task-filters p {
   margin: 0;
-  color: var(--muted);
+  color: var(--text-muted);
 }
 
 .task-center-header button,
@@ -4425,8 +4425,8 @@ a {
   padding: 10px 15px;
   border: 1px solid var(--border-strong);
   border-radius: 8px;
-  color: var(--text);
-  background: var(--surface-raised);
+  color: var(--text-primary);
+  background: var(--surface-2);
   font: inherit;
   font-weight: 700;
   text-decoration: none;
@@ -4482,7 +4482,7 @@ a {
 }
 
 .task-metrics span {
-  color: var(--muted);
+  color: var(--text-muted);
   font-size: 0.78rem;
 }
 
@@ -4512,7 +4512,7 @@ a {
   display: grid;
   gap: 5px;
   min-width: 140px;
-  color: var(--muted);
+  color: var(--text-muted);
   font-size: 0.76rem;
 }
 
@@ -4522,7 +4522,7 @@ a {
   padding: 7px 28px 7px 9px;
   border: 1px solid var(--border-strong);
   border-radius: 7px;
-  color: var(--text);
+  color: var(--text-primary);
   background: #0a1b2d;
   font: inherit;
 }
@@ -4576,7 +4576,7 @@ a {
   padding: 11px;
   border: 1px solid transparent;
   border-radius: 8px;
-  color: var(--text);
+  color: var(--text-primary);
   background: rgba(20, 44, 67, 0.58);
   text-align: left;
 }
@@ -4594,7 +4594,7 @@ a {
 
 .task-center-list button > span:not(:first-child),
 .task-center-id {
-  color: var(--muted);
+  color: var(--text-muted);
   font-size: 0.76rem;
 }
 
@@ -4639,7 +4639,7 @@ a {
 
 .task-detail-metadata dt,
 .task-pool-progress span {
-  color: var(--muted);
+  color: var(--text-muted);
   font-size: 0.72rem;
 }
 
@@ -4705,7 +4705,7 @@ a {
 
 .task-timeline time,
 .task-timeline p {
-  color: var(--muted);
+  color: var(--text-muted);
   font-size: 0.74rem;
 }
 

@@ -10,15 +10,10 @@ const RUN_ID = '22222222-2222-4222-8222-222222222222';
 
 const taskResponse = {
   id: TASK_ID,
-  correlation_id: TASK_ID,
   kind: 'backtest.run',
   status: 'running',
   progress: 0.4,
-  payload: { secret: 'PAYLOAD-SENTINEL' },
-  result: { secret: 'RESULT-SENTINEL' },
-  error: { raw_exception: 'ERROR-SENTINEL' },
   cancel_requested: false,
-  worker_id: 'worker-secret',
   created_at: '2026-07-08T00:00:00Z',
   updated_at: '2026-07-08T00:00:02Z',
   started_at: '2026-07-08T00:00:01Z',
@@ -43,7 +38,7 @@ function stubClient(overrides: Partial<ApiClient> = {}): ApiClient {
   };
 }
 
-it('strictly decodes the allowlisted task presentation and discards raw JSON', async () => {
+it('strictly decodes the allowlisted safe task response', async () => {
   const api = createTaskApi(stubClient());
 
   const task = await api.getTask(TASK_ID);
@@ -69,6 +64,23 @@ it('strictly decodes the allowlisted task presentation and discards raw JSON', a
     },
   });
   expect(JSON.stringify(task)).not.toMatch(/SENTINEL|worker-secret/u);
+});
+
+it('rejects raw task JSON crossing the safe browser boundary', async () => {
+  const api = createTaskApi(
+    stubClient({
+      get: vi.fn(() =>
+        Promise.resolve({
+          ...taskResponse,
+          payload: { secret: 'PAYLOAD-SENTINEL' },
+        } as unknown as JsonValue),
+      ),
+    }),
+  );
+
+  await expect(api.getTask(TASK_ID)).rejects.toMatchObject({
+    kind: 'protocol',
+  });
 });
 
 it.each([
@@ -104,6 +116,22 @@ it.each([
       presentation: { ...taskResponse.presentation, stage: 'secret-stage' },
     },
   ],
+  [
+    'terminal task without finish time',
+    { ...taskResponse, status: 'succeeded', progress: 1 },
+  ],
+  [
+    'background task with backtest presentation',
+    { ...taskResponse, kind: 'demo.task' },
+  ],
+  [
+    'timestamps out of order',
+    {
+      ...taskResponse,
+      created_at: '2026-07-08T00:00:03Z',
+      updated_at: '2026-07-08T00:00:02Z',
+    },
+  ],
 ])('rejects invalid task protocol: %s', async (_name, response) => {
   const api = createTaskApi(
     stubClient({
@@ -120,11 +148,8 @@ it('bounds recent tasks, metrics and chronological event history', async () => {
   const event = {
     id: '33333333-3333-4333-8333-333333333333',
     task_id: TASK_ID,
-    correlation_id: TASK_ID,
-    event_name: 'task.progressed',
     level: 'info',
     progress: 0.4,
-    detail: { secret: 'EVENT-SENTINEL' },
     occurred_at: '2026-07-08T00:00:02Z',
     presentation: {
       label: '已处理回测标的',
@@ -165,14 +190,41 @@ it('bounds recent tasks, metrics and chronological event history', async () => {
   const events = await api.listEvents(TASK_ID);
   expect(events).toHaveLength(1);
   expect(JSON.stringify(events)).not.toContain('EVENT-SENTINEL');
-  expect(client.get).toHaveBeenNthCalledWith(1, '/tasks?limit=100', {
+  expect(client.get).toHaveBeenNthCalledWith(1, '/tasks?view=safe&limit=100', {
     signal: undefined,
   });
   expect(client.get).toHaveBeenNthCalledWith(
     3,
-    `/tasks/${TASK_ID}/events?limit=100`,
+    `/tasks/${TASK_ID}/events?view=safe&limit=100`,
     { signal: undefined },
   );
+});
+
+it('accepts queued cancellations outside the duration sample count', async () => {
+  const client = stubClient({
+    get: vi.fn(() =>
+      Promise.resolve({
+        total: 1,
+        by_status: {
+          queued: 0,
+          running: 0,
+          succeeded: 0,
+          failed: 0,
+          cancelled: 1,
+        },
+        failure_count: 0,
+        completed_count: 0,
+        average_duration_ms: null,
+        min_duration_ms: null,
+        max_duration_ms: null,
+      }),
+    ),
+  });
+
+  await expect(createTaskApi(client).getMetrics()).resolves.toMatchObject({
+    completedCount: 0,
+    byStatus: { cancelled: 1 },
+  });
 });
 
 it('forwards AbortSignal to every request', async () => {
@@ -183,12 +235,15 @@ it('forwards AbortSignal to every request', async () => {
   await api.getTask(TASK_ID, { signal: controller.signal });
   await api.cancelTask(TASK_ID, { signal: controller.signal });
 
-  expect(client.get).toHaveBeenCalledWith(`/tasks/${TASK_ID}`, {
+  expect(client.get).toHaveBeenCalledWith(`/tasks/${TASK_ID}?view=safe`, {
     signal: controller.signal,
   });
-  expect(client.post).toHaveBeenCalledWith(`/tasks/${TASK_ID}/cancel`, {
-    signal: controller.signal,
-  });
+  expect(client.post).toHaveBeenCalledWith(
+    `/tasks/${TASK_ID}/cancel?view=safe`,
+    {
+      signal: controller.signal,
+    },
+  );
 });
 
 it.each([

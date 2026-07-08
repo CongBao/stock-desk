@@ -73,6 +73,8 @@ class TaskErrorResponse(BaseModel):
 
 
 class TaskResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     id: str
     correlation_id: str
     kind: str
@@ -100,6 +102,10 @@ class TaskResponse(BaseModel):
             label: Literal["股票池回测", "智能分析", "数据更新", "后台任务"] = (
                 "数据更新"
                 if task.kind in {"market.update", "market.catalog.update"}
+                else "智能分析"
+                if task.kind == "analysis.run"
+                else "股票池回测"
+                if task.kind == "backtest.run"
                 else "后台任务"
             )
             presentation = TaskPresentationSnapshot(
@@ -135,11 +141,15 @@ class TaskResponse(BaseModel):
 
 
 class TaskPresentationTargetResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     type: Literal["backtest_run"]
     id: str
 
 
 class TaskPresentationResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     label: Literal["股票池回测", "智能分析", "数据更新", "后台任务"]
     stage: Literal["queued", "executing", "completed", "failed", "cancelled"] | None
     processed: int | None
@@ -167,6 +177,8 @@ class TaskPresentationResponse(BaseModel):
 
 
 class TaskEventResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     id: str
     task_id: str
     correlation_id: str
@@ -190,6 +202,7 @@ class TaskEventResponse(BaseModel):
                     "任务已创建",
                     "任务已开始",
                     "任务进度已更新",
+                    "已处理回测标的",
                     "已请求取消",
                     "任务已取消",
                     "任务已完成",
@@ -200,6 +213,7 @@ class TaskEventResponse(BaseModel):
                 "task.created": "任务已创建",
                 "task.claimed": "任务已开始",
                 "task.progressed": "任务进度已更新",
+                "backtest.progressed": "已处理回测标的",
                 "task.cancel_requested": "已请求取消",
                 "task.cancelled": "任务已取消",
                 "task.succeeded": "任务已完成",
@@ -226,6 +240,8 @@ class TaskEventResponse(BaseModel):
 
 
 class TaskEventPresentationResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     label: Literal[
         "任务已创建",
         "任务已开始",
@@ -252,6 +268,66 @@ class TaskEventPresentationResponse(BaseModel):
             processed=presentation.processed,
             total=presentation.total,
             failed=presentation.failed,
+        )
+
+
+class TaskSafeResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    kind: str
+    status: TaskStatus
+    progress: float
+    cancel_requested: bool
+    created_at: datetime
+    updated_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+    duration_ms: float | None
+    presentation: TaskPresentationResponse
+
+    @classmethod
+    def from_snapshot(
+        cls, task: TaskSnapshot, presentation: TaskPresentationSnapshot
+    ) -> "TaskSafeResponse":
+        return cls(
+            id=task.id,
+            kind=task.kind,
+            status=task.status,
+            progress=task.progress,
+            cancel_requested=task.cancel_requested,
+            created_at=task.created_at,
+            updated_at=task.updated_at,
+            started_at=task.started_at,
+            finished_at=task.finished_at,
+            duration_ms=task.duration_ms,
+            presentation=TaskPresentationResponse.from_snapshot(presentation),
+        )
+
+
+class TaskEventSafeResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    task_id: str
+    level: TaskEventLevel
+    progress: float | None
+    occurred_at: datetime
+    presentation: TaskEventPresentationResponse
+
+    @classmethod
+    def from_snapshot(
+        cls,
+        task_event: TaskEventSnapshot,
+        presentation: TaskEventPresentationSnapshot,
+    ) -> "TaskEventSafeResponse":
+        return cls(
+            id=task_event.id,
+            task_id=task_event.task_id,
+            level=task_event.level,
+            progress=task_event.progress,
+            occurred_at=task_event.occurred_at,
+            presentation=TaskEventPresentationResponse.from_snapshot(presentation),
         )
 
 
@@ -345,15 +421,20 @@ def create_task(
     return TaskResponse.from_snapshot(task, repository.presentation(task))
 
 
-@router.get("", response_model=list[TaskResponse])
+@router.get("", response_model=list[TaskResponse] | list[TaskSafeResponse])
 def list_tasks(
     repository: RepositoryDependency,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
-) -> list[TaskResponse]:
-    return [
-        TaskResponse.from_snapshot(task, repository.presentation(task))
-        for task in repository.list_recent(limit=limit)
-    ]
+    view: Literal["legacy", "safe"] = "legacy",
+) -> list[TaskResponse] | list[TaskSafeResponse]:
+    tasks = repository.list_recent(limit=limit)
+    presentations = repository.presentation_many(tasks)
+    if view == "safe":
+        return [
+            TaskSafeResponse.from_snapshot(task, presentations[task.id])
+            for task in tasks
+        ]
+    return [TaskResponse.from_snapshot(task, presentations[task.id]) for task in tasks]
 
 
 @router.get("/metrics", response_model=TaskMetricsResponse)
@@ -361,12 +442,16 @@ def get_task_metrics(repository: RepositoryDependency) -> TaskMetricsResponse:
     return TaskMetricsResponse.from_snapshot(repository.metrics())
 
 
-@router.get("/{task_id}/events", response_model=list[TaskEventResponse])
+@router.get(
+    "/{task_id}/events",
+    response_model=list[TaskEventResponse] | list[TaskEventSafeResponse],
+)
 def list_task_events(
     task_id: str,
     repository: RepositoryDependency,
     limit: Annotated[int, Query(ge=1, le=100)] = 100,
-) -> list[TaskEventResponse]:
+    view: Literal["legacy", "safe"] = "legacy",
+) -> list[TaskEventResponse] | list[TaskEventSafeResponse]:
     try:
         task_events = repository.list_events(task_id, limit=limit)
         task_kind = repository.get(task_id).kind
@@ -374,28 +459,45 @@ def list_task_events(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
         ) from error
-    return [
-        TaskEventResponse.from_snapshot(
-            task_event,
-            repository.event_presentation(task_event, task_kind=task_kind),
-        )
+    presentations = [
+        repository.event_presentation(task_event, task_kind=task_kind)
         for task_event in task_events
+    ]
+    if view == "safe":
+        return [
+            TaskEventSafeResponse.from_snapshot(task_event, presentation)
+            for task_event, presentation in zip(task_events, presentations)
+        ]
+    return [
+        TaskEventResponse.from_snapshot(task_event, presentation)
+        for task_event, presentation in zip(task_events, presentations)
     ]
 
 
-@router.get("/{task_id}", response_model=TaskResponse)
-def get_task(task_id: str, repository: RepositoryDependency) -> TaskResponse:
+@router.get("/{task_id}", response_model=TaskResponse | TaskSafeResponse)
+def get_task(
+    task_id: str,
+    repository: RepositoryDependency,
+    view: Literal["legacy", "safe"] = "legacy",
+) -> TaskResponse | TaskSafeResponse:
     try:
         task = repository.get(task_id)
     except TaskNotFound as error:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
         ) from error
-    return TaskResponse.from_snapshot(task, repository.presentation(task))
+    presentation = repository.presentation(task)
+    if view == "safe":
+        return TaskSafeResponse.from_snapshot(task, presentation)
+    return TaskResponse.from_snapshot(task, presentation)
 
 
-@router.post("/{task_id}/cancel", response_model=TaskResponse)
-def cancel_task(task_id: str, repository: RepositoryDependency) -> TaskResponse:
+@router.post("/{task_id}/cancel", response_model=TaskResponse | TaskSafeResponse)
+def cancel_task(
+    task_id: str,
+    repository: RepositoryDependency,
+    view: Literal["legacy", "safe"] = "legacy",
+) -> TaskResponse | TaskSafeResponse:
     try:
         task = repository.request_cancel(task_id)
     except TaskNotFound as error:
@@ -407,4 +509,7 @@ def cancel_task(task_id: str, repository: RepositoryDependency) -> TaskResponse:
             status_code=status.HTTP_409_CONFLICT,
             detail="Task state conflict",
         ) from error
-    return TaskResponse.from_snapshot(task, repository.presentation(task))
+    presentation = repository.presentation(task)
+    if view == "safe":
+        return TaskSafeResponse.from_snapshot(task, presentation)
+    return TaskResponse.from_snapshot(task, presentation)
