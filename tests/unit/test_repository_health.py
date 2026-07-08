@@ -102,21 +102,9 @@ VERIFIED_ACTION_PINS = {
         "2031cfc080254a8a887f58cffee85186f0e49e48",
         "v4.9.0",
     ),
-    "anchore/sbom-action": (
-        "e22c389904149dbc22b58101806040fa8d37a610",
-        "v0.24.0",
-    ),
     "aquasecurity/trivy-action": (
         "57a97c7e7821a5776cebc9bb87c984fa69cba8f1",
         "0.35.0",
-    ),
-    "actions/attest-build-provenance": (
-        "96278af6caaf10aea03fd8d33a09a777ca52d62f",
-        "v3.2.0",
-    ),
-    "actions/attest-sbom": (
-        "4651f806c01d8637787e274ac3bdf724ef169f34",
-        "v3.0.0",
     ),
 }
 
@@ -407,7 +395,11 @@ def test_tag_release_generates_and_attests_sbom_and_artifacts() -> None:
     assert sbom["with"]["upload-release-assets"] is False
 
     attest = release["jobs"]["attest"]
-    assert attest["needs"] == ["verify"]
+    assert set(attest["needs"]) == {
+        "verify",
+        "verify-windows-installer",
+        "verify-macos-installer",
+    }
     assert attest["permissions"] == {
         "attestations": "write",
         "contents": "read",
@@ -423,20 +415,54 @@ def test_tag_release_generates_and_attests_sbom_and_artifacts() -> None:
     attest_names = [step.get("name") for step in attest_steps]
     assert attest_names == [
         "Download verified release assets",
+        "Download verified native installer assets",
         "Verify release asset checksums",
+        "Verify native assets and prepare complete checksums",
         "Attest release provenance",
         "Attest release SBOM",
+        "Attest Windows installer SBOM",
+        "Attest macOS x86_64 installer SBOM",
+        "Attest macOS arm64 installer SBOM",
         "Upload attested release assets",
     ]
     provenance = attest_steps[attest_names.index("Attest release provenance")]
-    assert str(provenance["uses"]).startswith("actions/attest-build-provenance@")
-    assert provenance["with"]["subject-path"] == "release-assets/*.{whl,tar.gz}"
+    assert str(provenance["uses"]).startswith("actions/attest@")
+    provenance_subjects = provenance["with"]["subject-path"].splitlines()
+    assert provenance_subjects == [
+        "release-assets/*.whl",
+        "release-assets/*.tar.gz",
+        "release-assets/*.exe",
+        "release-assets/*.dmg",
+    ]
     sbom_attestation = attest_steps[attest_names.index("Attest release SBOM")]
-    assert str(sbom_attestation["uses"]).startswith("actions/attest-sbom@")
+    assert str(sbom_attestation["uses"]).startswith("actions/attest@")
     assert sbom_attestation["with"] == {
         "subject-path": "release-assets/*.{whl,tar.gz}",
         "sbom-path": "release-assets/stock-desk.spdx.json",
     }
+    for platform, suffix in (
+        ("Windows", "windows-x86_64.exe"),
+        ("macOS x86_64", "macos-x86_64.dmg"),
+        ("macOS arm64", "macos-arm64.dmg"),
+    ):
+        installer_attestation = attest_steps[
+            attest_names.index(f"Attest {platform} installer SBOM")
+        ]
+        assert str(installer_attestation["uses"]).startswith("actions/attest@")
+        assert installer_attestation["with"] == {
+            "subject-path": f"release-assets/*-{suffix}",
+            "sbom-path": f"release-assets/stock-desk-{suffix.rsplit('.', 1)[0]}.sbom.spdx.json",
+        }
+
+    native_verification = attest_steps[
+        attest_names.index("Verify native assets and prepare complete checksums")
+    ]["run"]
+    assert 'test "${#installers[@]}" -eq 3' in native_verification
+    assert 'sha256sum -c "$sidecar"' in native_verification
+    assert "SHA256SUMS.complete" in native_verification
+    assert "! -name '*.sha256'" not in native_verification
+    assert "! -name 'SHA256SUMS'" not in native_verification
+    assert "wc -l < SHA256SUMS.complete" in native_verification
 
     codeql = release["jobs"]["codeql"]
     assert codeql["permissions"] == {
@@ -472,13 +498,91 @@ def test_tag_release_generates_and_attests_sbom_and_artifacts() -> None:
     }
 
     publish = release["jobs"]["release"]
-    assert set(publish["needs"]) == {"verify", "attest", "codeql", "container"}
+    assert set(publish["needs"]) == {
+        "verify",
+        "attest",
+        "codeql",
+        "container",
+        "verify-windows-installer",
+        "verify-macos-installer",
+    }
     download = next(
         step
         for step in publish["steps"]
         if step.get("name") == "Download attested release assets"
     )
     assert download["with"]["name"] == "release-assets-attested"
+
+
+def test_release_job_dependency_graph_is_acyclic_and_preserves_trust_order() -> None:
+    release = _load_github_actions_yaml(_read(".github/workflows/release.yml"))
+    jobs = release["jobs"]
+
+    dependencies: dict[str, set[str]] = {}
+    for job_name, job in jobs.items():
+        raw_needs = job.get("needs", [])
+        if isinstance(raw_needs, str):
+            raw_needs = [raw_needs]
+        dependencies[job_name] = set(raw_needs)
+        assert dependencies[job_name] <= set(jobs), (
+            f"{job_name} references unknown dependencies: "
+            f"{dependencies[job_name] - set(jobs)}"
+        )
+
+    assert dependencies["build-installers"] == {"verify"}
+    assert dependencies["verify-windows-installer"] == {"build-installers"}
+    assert dependencies["verify-macos-installer"] == {"build-installers"}
+    assert dependencies["attest"] == {
+        "verify",
+        "verify-windows-installer",
+        "verify-macos-installer",
+    }
+    assert "attest" in dependencies["release"]
+
+    visited: set[str] = set()
+    active: set[str] = set()
+
+    def visit(job_name: str) -> None:
+        assert job_name not in active, f"release dependency cycle includes {job_name}"
+        if job_name in visited:
+            return
+        active.add(job_name)
+        for dependency in dependencies[job_name]:
+            visit(dependency)
+        active.remove(job_name)
+        visited.add(job_name)
+
+    for job_name in jobs:
+        visit(job_name)
+
+    assert visited == set(jobs)
+
+
+def test_release_publishes_only_the_attested_immutable_asset_directory() -> None:
+    release = _load_github_actions_yaml(_read(".github/workflows/release.yml"))
+    publish = release["jobs"]["release"]
+    steps = publish["steps"]
+
+    assert [step.get("name") for step in steps] == [
+        "Download attested release assets",
+        "Verify release asset checksums",
+        "Verify complete release asset checksums",
+        "Create GitHub release",
+    ]
+    download = steps[0]
+    assert download["with"] == {
+        "name": "release-assets-attested",
+        "path": "release-assets",
+    }
+    assert steps[1]["working-directory"] == "release-assets"
+    assert steps[1]["run"] == "sha256sum -c SHA256SUMS"
+    assert steps[2]["working-directory"] == "release-assets"
+    assert "sha256sum -c SHA256SUMS.complete" in steps[2]["run"]
+    assert (
+        steps[3]["run"]
+        == 'gh release create "$GITHUB_REF_NAME" release-assets/* '
+        '--verify-tag --generate-notes --title "Stock Desk $GITHUB_REF_NAME"'
+    )
 
 
 def test_compose_services_use_read_only_least_privilege_runtime() -> None:
@@ -1384,13 +1488,14 @@ def test_release_checksum_manifest_is_flat_and_verified_before_publish() -> None
     native_checksum_step = next(
         step
         for step in release_steps
-        if step.get("name") == "Verify native assets and prepare complete checksums"
+        if step.get("name") == "Verify complete release asset checksums"
     )
     native_commands = native_checksum_step["run"]
-    assert 'test "$listed" = "$artifact"' in native_commands
-    assert 'sha256sum -c "$sidecar"' in native_commands
+    assert "-eq 3" in native_commands
+    assert "-eq 4" in native_commands
     assert "SHA256SUMS.complete" in native_commands
-    for pattern in ("*.exe", "*.dmg", "stock-desk-*.json", "*.sbom.spdx.json"):
+    assert "wc -l < SHA256SUMS.complete" in native_commands
+    for pattern in ("*.exe", "*.dmg", "*.sbom.spdx.json"):
         assert pattern in native_commands
     assert release_steps.index(native_checksum_step) < create_step_index
 

@@ -78,6 +78,7 @@ jobs:
           make e2e-backtest
           make e2e-analysis
           make e2e-task-center
+          make e2e-accessibility
       - name: Upload release performance evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -192,6 +193,8 @@ jobs:
     name: Attest verified release assets
     needs:
       - verify
+      - verify-windows-installer
+      - verify-macos-installer
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -204,18 +207,72 @@ jobs:
         with:
           name: release-assets-verified
           path: release-assets
+      - name: Download verified native installer assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: native-installer-*
+          path: release-assets
+          merge-multiple: true
       - name: Verify release asset checksums
         working-directory: release-assets
         run: sha256sum -c SHA256SUMS
+      - name: Verify native assets and prepare complete checksums
+        working-directory: release-assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t installers < <(find . -maxdepth 1 -type f \( -name '*.exe' -o -name '*.dmg' \) -printf '%f\n' | sort)
+          mapfile -t sidecars < <(find . -maxdepth 1 -type f \( -name '*.exe.sha256' -o -name '*.dmg.sha256' \) -printf '%f\n' | sort)
+          test "${#installers[@]}" -eq 3
+          test "${#sidecars[@]}" -eq "${#installers[@]}"
+          for artifact in "${installers[@]}"; do
+            sidecar="$artifact.sha256"
+            test -f "$sidecar"
+            test "$(wc -l < "$sidecar")" -eq 1
+            read -r digest listed < "$sidecar"
+            [[ "$digest" =~ ^[0-9a-f]{64}$ ]]
+            test "$listed" = "$artifact"
+            sha256sum -c "$sidecar"
+          done
+          mapfile -t manifests < <(find . -maxdepth 1 -type f -name 'stock-desk-*.json' ! -name '*.sbom.spdx.json' -printf '%f\n' | sort)
+          mapfile -t installer_sboms < <(find . -maxdepth 1 -type f -name 'stock-desk-*-*.sbom.spdx.json' -printf '%f\n' | sort)
+          test "${#manifests[@]}" -eq 3
+          test "${#installer_sboms[@]}" -eq 3
+          find . -maxdepth 1 -type f \
+            ! -name 'SHA256SUMS.complete' \
+            -printf '%f\0' \
+            | sort -z \
+            | xargs -0 sha256sum > SHA256SUMS.complete
+          test "$(wc -l < SHA256SUMS.complete)" -eq "$(find . -maxdepth 1 -type f ! -name 'SHA256SUMS.complete' | wc -l)"
+          sha256sum -c SHA256SUMS.complete
       - name: Attest release provenance
-        uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
         with:
-          subject-path: "release-assets/*.{whl,tar.gz}"
+          subject-path: |
+            release-assets/*.whl
+            release-assets/*.tar.gz
+            release-assets/*.exe
+            release-assets/*.dmg
       - name: Attest release SBOM
-        uses: actions/attest-sbom@4651f806c01d8637787e274ac3bdf724ef169f34 # v3.0.0
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
         with:
           subject-path: "release-assets/*.{whl,tar.gz}"
           sbom-path: release-assets/stock-desk.spdx.json
+      - name: Attest Windows installer SBOM
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        with:
+          subject-path: release-assets/*-windows-x86_64.exe
+          sbom-path: release-assets/stock-desk-windows-x86_64.sbom.spdx.json
+      - name: Attest macOS x86_64 installer SBOM
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        with:
+          subject-path: release-assets/*-macos-x86_64.dmg
+          sbom-path: release-assets/stock-desk-macos-x86_64.sbom.spdx.json
+      - name: Attest macOS arm64 installer SBOM
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        with:
+          subject-path: release-assets/*-macos-arm64.dmg
+          sbom-path: release-assets/stock-desk-macos-arm64.sbom.spdx.json
       - name: Upload attested release assets
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -231,8 +288,6 @@ jobs:
     timeout-minutes: 45
     permissions:
       contents: read
-      id-token: write
-      attestations: write
     strategy:
       fail-fast: false
       matrix:
@@ -347,20 +402,6 @@ jobs:
           format: spdx-json
           output-file: dist/installers/stock-desk-${{ matrix.os_name }}-${{ matrix.architecture }}.sbom.spdx.json
           upload-artifact: false
-      - name: Attest installer provenance
-        id: provenance
-        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
-        with:
-          subject-path: |
-            dist/installers/*.exe
-            dist/installers/*.dmg
-      - name: Attest installer SBOM
-        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
-        with:
-          subject-path: |
-            dist/installers/*.exe
-            dist/installers/*.dmg
-          sbom-path: dist/installers/stock-desk-${{ matrix.os_name }}-${{ matrix.architecture }}.sbom.spdx.json
       - name: Upload native installer
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -547,7 +588,6 @@ jobs:
       - attest
       - codeql
       - container
-      - build-installers
       - verify-windows-installer
       - verify-macos-installer
     runs-on: ubuntu-latest
@@ -560,44 +600,18 @@ jobs:
         with:
           name: release-assets-attested
           path: release-assets
-      - name: Download native installer assets
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          pattern: native-installer-*
-          path: release-assets
-          merge-multiple: true
       - name: Verify release asset checksums
         working-directory: release-assets
         run: sha256sum -c SHA256SUMS
-      - name: Verify native assets and prepare complete checksums
+      - name: Verify complete release asset checksums
         working-directory: release-assets
         shell: bash
         run: |
           set -euo pipefail
-          mapfile -t installers < <(find . -maxdepth 1 -type f \( -name '*.exe' -o -name '*.dmg' \) -printf '%f\n' | sort)
-          mapfile -t sidecars < <(find . -maxdepth 1 -type f \( -name '*.exe.sha256' -o -name '*.dmg.sha256' \) -printf '%f\n' | sort)
-          test "${#installers[@]}" -eq 3
-          test "${#sidecars[@]}" -eq "${#installers[@]}"
-          for artifact in "${installers[@]}"; do
-            sidecar="$artifact.sha256"
-            test -f "$sidecar"
-            test "$(wc -l < "$sidecar")" -eq 1
-            read -r digest listed < "$sidecar"
-            [[ "$digest" =~ ^[0-9a-f]{64}$ ]]
-            test "$listed" = "$artifact"
-            sha256sum -c "$sidecar"
-          done
-          mapfile -t manifests < <(find . -maxdepth 1 -type f -name 'stock-desk-*.json' ! -name '*.sbom.spdx.json' -printf '%f\n' | sort)
-          mapfile -t sboms < <(find . -maxdepth 1 -type f -name '*.sbom.spdx.json' -printf '%f\n' | sort)
-          test "${#manifests[@]}" -eq 3
-          test "${#sboms[@]}" -eq 3
-          find . -maxdepth 1 -type f \
-            ! -name '*.sha256' \
-            ! -name 'SHA256SUMS' \
-            ! -name 'SHA256SUMS.complete' \
-            -printf '%f\0' \
-            | sort -z \
-            | xargs -0 sha256sum > SHA256SUMS.complete
+          test "$(find . -maxdepth 1 -type f \( -name '*.exe' -o -name '*.dmg' \) | wc -l)" -eq 3
+          test "$(find . -maxdepth 1 -type f -name '*.sbom.spdx.json' | wc -l)" -eq 4
+          test -s SHA256SUMS.complete
+          test "$(wc -l < SHA256SUMS.complete)" -eq "$(find . -maxdepth 1 -type f ! -name 'SHA256SUMS.complete' | wc -l)"
           sha256sum -c SHA256SUMS.complete
       - name: Create GitHub release
         env:

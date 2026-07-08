@@ -110,6 +110,8 @@ def test_release_workflow_generates_checksums_sbom_and_provenance() -> None:
     assert "sha256" in workflow_text
     assert "sbom" in workflow_text
     assert "actions/attest@" in workflow_text
+    assert "actions/attest-build-provenance@" not in workflow_text
+    assert "actions/attest-sbom@" not in workflow_text
     assert "signing" in workflow_text or "notar" in workflow_text
     assert "pull_request" not in workflow_text
 
@@ -132,11 +134,17 @@ def test_windows_compiler_is_immutable_verified_and_recorded_in_provenance() -> 
 
 def test_release_verifies_native_sidecars_and_builds_complete_manifest() -> None:
     workflow = _workflow()
+    attest_steps = workflow["jobs"]["attest"]["steps"]
     release_steps = workflow["jobs"]["release"]["steps"]
     native_step = next(
         step
-        for step in release_steps
+        for step in attest_steps
         if step.get("name") == "Verify native assets and prepare complete checksums"
+    )
+    upload_index = next(
+        index
+        for index, step in enumerate(attest_steps)
+        if step.get("name") == "Upload attested release assets"
     )
     create_index = next(
         index
@@ -152,8 +160,20 @@ def test_release_verifies_native_sidecars_and_builds_complete_manifest() -> None
     assert "*.exe" in commands and "*.dmg" in commands
     assert "*.json" in commands and "*.sbom.spdx.json" in commands
     assert "SHA256SUMS.complete" in commands
+    assert "! -name '*.sha256'" not in commands
+    assert "! -name 'SHA256SUMS'" not in commands
+    assert "wc -l < SHA256SUMS.complete" in commands
     assert "sha256sum -c SHA256SUMS.complete" in commands
-    assert release_steps.index(native_step) < create_index
+    assert attest_steps.index(native_step) < upload_index
+
+    complete_step = next(
+        step
+        for step in release_steps
+        if step.get("name") == "Verify complete release asset checksums"
+    )
+    assert "wc -l < SHA256SUMS.complete" in complete_step["run"]
+    assert "sha256sum -c SHA256SUMS.complete" in complete_step["run"]
+    assert release_steps.index(complete_step) < create_index
 
 
 def test_pyinstaller_bundle_declares_assets_migrations_and_legal_notices() -> None:
