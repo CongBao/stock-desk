@@ -842,7 +842,7 @@ requirements:
     status: mapped
     evidence:
       - {state: existing, runner: gate, kind: gate, gate_id: public-tree, assertion: The fixed public-tree gate rejects registered private-input prefixes from tracked repository files.}
-      - {state: planned, runner: pytest, kind: integration, path: tests/acceptance/test_release_artifacts.py, selector: 'tests/acceptance/test_release_artifacts.py::test_release_history_contains_only_public_artifacts', assertion: The final release audit will scan reachable history and archives for private or generated inputs.}
+      - {state: existing, runner: pytest, kind: integration, path: tests/acceptance/test_release_artifacts.py, selector: 'tests/acceptance/test_release_artifacts.py::test_release_history_contains_only_public_artifacts', assertion: 'The release-history acceptance test bounds memory while rejecting registered private or generated paths from the current HEAD and reachable path history, plus local-profile leaks in reachable blobs and the streamed HEAD archive.'}
   - id: R-067
     category: operations
     kind: operational
@@ -887,7 +887,7 @@ requirements:
     status: mapped
     evidence:
       - {state: existing, runner: gate, kind: gate, gate_id: public-tree, assertion: The fixed public-tree gate rejects registered private-input prefixes from tracked repository files.}
-      - {state: planned, runner: pytest, kind: integration, path: tests/acceptance/test_release_artifacts.py, selector: 'tests/acceptance/test_release_artifacts.py::test_release_history_contains_only_public_artifacts', assertion: The final release audit will scan reachable history and archives for private or generated inputs.}
+      - {state: existing, runner: pytest, kind: integration, path: tests/acceptance/test_release_artifacts.py, selector: 'tests/acceptance/test_release_artifacts.py::test_release_history_contains_only_public_artifacts', assertion: 'The release-history acceptance test rejects an openspec/ path from the current HEAD tree or any reachable path history and applies the same bounded payload leak scan to reachable blobs and the streamed HEAD archive.'}
   - id: R-071
     category: publication
     kind: publication
@@ -898,7 +898,7 @@ requirements:
     status: mapped
     evidence:
       - {state: existing, runner: gate, kind: gate, gate_id: bilingual-readme, assertion: The fixed bilingual README gate verifies reciprocal navigation between both public entry documents.}
-      - {state: planned, runner: pytest, kind: integration, path: tests/acceptance/test_release_docs.py, selector: 'tests/acceptance/test_release_docs.py::test_bilingual_readme_baseline_contains_verified_installation_and_use', assertion: The documentation gate will verify that both baseline README documents contain only tested installation and use instructions.}
+      - {state: existing, runner: pytest, kind: integration, path: tests/acceptance/test_release_docs.py, selector: 'tests/acceptance/test_release_docs.py::test_bilingual_readme_baseline_contains_verified_installation_and_use', assertion: 'The baseline documentation test validates reciprocal English and Simplified-Chinese entry links, every native installer name, attestation and Compose/start instructions, and the documentation command allowlist while rejecting internal-path and placeholder references.'}
   - id: R-072
     category: operations
     kind: operational

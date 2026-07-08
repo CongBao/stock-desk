@@ -403,19 +403,49 @@ def test_only_unfinished_release_and_performance_evidence_remains_planned(
     }
     assert planned == {
         "R-053": {"Measure Ubuntu x64 4-core/16GB target baseline"},
-        "R-066": {
-            "tests/acceptance/test_release_artifacts.py::test_release_history_contains_only_public_artifacts"
-        },
-        "R-070": {
-            "tests/acceptance/test_release_artifacts.py::test_release_history_contains_only_public_artifacts"
-        },
-        "R-071": {
-            "tests/acceptance/test_release_docs.py::test_bilingual_readme_baseline_contains_verified_installation_and_use"
-        },
         "R-073": {
             "tests/acceptance/test_release_docs.py::test_readmes_are_concise_reciprocal_and_install_verified"
         },
     }
+
+    reviewed_release_evidence = {
+        "R-066": (
+            "tests/acceptance/test_release_artifacts.py::test_release_history_contains_only_public_artifacts",
+            "The release-history acceptance test bounds memory while rejecting "
+            "registered private or generated paths from the current HEAD and "
+            "reachable path history, plus local-profile leaks in reachable blobs "
+            "and the streamed HEAD archive.",
+        ),
+        "R-070": (
+            "tests/acceptance/test_release_artifacts.py::test_release_history_contains_only_public_artifacts",
+            "The release-history acceptance test rejects an openspec/ path from "
+            "the current HEAD tree or any reachable path history and applies the "
+            "same bounded payload leak scan to reachable blobs and the streamed "
+            "HEAD archive.",
+        ),
+        "R-071": (
+            "tests/acceptance/test_release_docs.py::test_bilingual_readme_baseline_contains_verified_installation_and_use",
+            "The baseline documentation test validates reciprocal English and "
+            "Simplified-Chinese entry links, every native installer name, "
+            "attestation and Compose/start instructions, and the documentation "
+            "command allowlist while rejecting internal-path and placeholder "
+            "references.",
+        ),
+    }
+    for requirement_id, (selector, assertion) in reviewed_release_evidence.items():
+        evidence = next(
+            item
+            for item in by_id[requirement_id]["evidence"]
+            if item.get("selector") == selector
+        )
+        assert evidence == {
+            "state": "existing",
+            "runner": "pytest",
+            "kind": "integration",
+            "path": selector.partition("::")[0],
+            "selector": selector,
+            "assertion": assertion,
+        }
 
     analysis_run = by_id["R-023"]["evidence"]
     assert any(
