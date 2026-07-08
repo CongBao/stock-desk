@@ -138,6 +138,27 @@ it('builds synchronized candlestick and volume grids with explicit rise/fall enc
   expect(formatMarketTooltip(bars[0])).toContain('量 1,000');
 });
 
+it('keeps full market bars out of the ECharts series graph while preserving indexed tooltips', () => {
+  const option = buildMarketChartOption(bars);
+
+  expect(option.series[0].data).toEqual([
+    [10, 10.8, 9.8, 11],
+    [10.8, 10.2, 10.1, 11],
+  ]);
+  expect(option.series[1].data[0]).toEqual({
+    value: 1_000,
+    itemStyle: { color: '#ef4444', decal: { symbol: 'rect' } },
+  });
+  expect(JSON.stringify(option.series)).not.toContain('rawBar');
+
+  const formatter = (
+    option.tooltip as { readonly formatter: (parameters: unknown) => string }
+  ).formatter;
+  expect(formatter([{ dataIndex: 0 }])).toContain('上涨');
+  expect(formatter([{ dataIndex: 1 }])).toContain('开 10.8');
+  expect(formatter([{ dataIndex: 99 }])).toBe('');
+});
+
 it('aligns formula subchart outputs and BUY/SELL markers by timestamp', () => {
   const option = buildFormulaMarketChartOption(bars, {
     placement: 'subchart',

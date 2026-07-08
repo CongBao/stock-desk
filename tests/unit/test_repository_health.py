@@ -1672,14 +1672,29 @@ def test_performance_target_ci_is_explicit_and_requirements_remain_mapped() -> N
     workflow = _load_github_actions_yaml(_read(".github/workflows/ci.yml"))
     e2e = workflow["jobs"]["e2e"]
     assert e2e["runs-on"] == "ubuntu-24.04"
+    stable_source_sha = (
+        "${{ github.event_name == 'pull_request' && "
+        "github.event.pull_request.head.sha || github.sha }}"
+    )
+    checkout_step = next(
+        step for step in e2e["steps"] if step.get("name") == "Check out source"
+    )
+    assert checkout_step["with"] == {
+        "repository": (
+            "${{ github.event.pull_request.head.repo.full_name || github.repository }}"
+        ),
+        "ref": stable_source_sha,
+    }
     target_step = next(
         step
         for step in e2e["steps"]
         if step.get("name") == "Measure Ubuntu x64 4-core/16GB target baseline"
     )
+    assert target_step["env"]["STOCK_DESK_SOURCE_REVISION"] == stable_source_sha
     target_command = target_step["run"]
     for required in (
-        "set -o pipefail",
+        "set -euo pipefail",
+        'test "$(git rev-parse HEAD)" = "$STOCK_DESK_SOURCE_REVISION"',
         "test-results/performance/target-baseline.log",
         "make performance-target 2>&1 | tee",
     ):
@@ -1704,6 +1719,16 @@ def test_performance_target_ci_is_explicit_and_requirements_remain_mapped() -> N
         "gzip_base64=",
     ):
         assert required in import_command
+    for required in (
+        'publish_evidence "test-results/performance/target-baseline.json"',
+        '"target_baseline" "Target performance JSON evidence"',
+        'publish_evidence "test-results/performance/target-baseline.log"',
+        '"measurement_log" "Target performance measurement log"',
+    ):
+        assert required in import_command
+    assert "elif [[ -f test-results/performance/target-baseline.log ]]" not in (
+        import_command
+    )
 
     makefile = _read("Makefile")
     target_recipe = makefile.split("\nperformance-target:\n", maxsplit=1)[1].split(

@@ -52,9 +52,8 @@ const timeFormatter = new Intl.DateTimeFormat('zh-CN', {
   timeZone: 'Asia/Shanghai',
 });
 
-type ChartSeriesDataItem = {
+type VolumeSeriesDataItem = {
   readonly value: readonly number[] | number;
-  readonly rawBar: MarketBar;
   readonly itemStyle?: {
     readonly color: string;
     readonly decal: { readonly symbol: 'rect' | 'triangle' | 'circle' };
@@ -94,7 +93,7 @@ export type MarketChartOption = {
     {
       readonly name: string;
       readonly type: 'candlestick';
-      readonly data: readonly ChartSeriesDataItem[];
+      readonly data: readonly (readonly [number, number, number, number])[];
       readonly itemStyle: {
         readonly color: string;
         readonly color0: string;
@@ -107,7 +106,7 @@ export type MarketChartOption = {
       readonly type: 'bar';
       readonly xAxisIndex: 1;
       readonly yAxisIndex: 1;
-      readonly data: readonly ChartSeriesDataItem[];
+      readonly data: readonly VolumeSeriesDataItem[];
     },
   ];
 };
@@ -172,33 +171,42 @@ export function formatMarketTooltip(bar: MarketBar): string {
   ].join('<br/>');
 }
 
-function tooltipFormatter(parameters: unknown): string {
-  if (!Array.isArray(parameters)) return '';
-  for (const parameter of parameters as unknown[]) {
-    if (
-      typeof parameter !== 'object' ||
-      parameter === null ||
-      !('data' in parameter)
-    )
-      continue;
-    const data = (parameter as Record<string, unknown>)['data'];
-    if (typeof data !== 'object' || data === null || !('rawBar' in data))
-      continue;
-    return formatMarketTooltip(
-      (data as Record<string, unknown>)['rawBar'] as MarketBar,
-    );
-  }
-  return '';
+function tooltipFormatter(bars: readonly MarketBar[]) {
+  return (parameters: unknown): string => {
+    if (!Array.isArray(parameters)) return '';
+    for (const parameter of parameters as unknown[]) {
+      if (typeof parameter !== 'object' || parameter === null) continue;
+      const dataIndex = (parameter as Record<string, unknown>)['dataIndex'];
+      if (
+        typeof dataIndex !== 'number' ||
+        !Number.isInteger(dataIndex) ||
+        dataIndex < 0
+      )
+        continue;
+      const bar = bars[dataIndex];
+      if (bar !== undefined) return formatMarketTooltip(bar);
+    }
+    return '';
+  };
 }
 
+const RISE_VOLUME_STYLE = {
+  color: RISE_COLOR,
+  decal: { symbol: 'rect' as const },
+} as const;
+const FALL_VOLUME_STYLE = {
+  color: FALL_COLOR,
+  decal: { symbol: 'triangle' as const },
+} as const;
+const FLAT_VOLUME_STYLE = {
+  color: FLAT_COLOR,
+  decal: { symbol: 'circle' as const },
+} as const;
+
 function volumeStyle(bar: MarketBar) {
-  if (bar.direction === 'rise') {
-    return { color: RISE_COLOR, decal: { symbol: 'rect' as const } };
-  }
-  if (bar.direction === 'fall') {
-    return { color: FALL_COLOR, decal: { symbol: 'triangle' as const } };
-  }
-  return { color: FLAT_COLOR, decal: { symbol: 'circle' as const } };
+  if (bar.direction === 'rise') return RISE_VOLUME_STYLE;
+  if (bar.direction === 'fall') return FALL_VOLUME_STYLE;
+  return FLAT_VOLUME_STYLE;
 }
 
 function axisPointerIndex(
@@ -288,7 +296,7 @@ export function buildMarketChartOption(
       trigger: 'axis',
       confine: true,
       axisPointer: { type: 'cross', snap: true },
-      formatter: tooltipFormatter,
+      formatter: tooltipFormatter(bars),
       backgroundColor: 'rgba(7, 17, 31, 0.96)',
       borderColor: '#27415f',
       textStyle: { color: '#dbeafe', fontSize: 12 },
@@ -368,10 +376,9 @@ export function buildMarketChartOption(
       {
         name: 'K 线（红涨绿跌）',
         type: 'candlestick',
-        data: bars.map((bar) => ({
-          value: [bar.open, bar.close, bar.low, bar.high],
-          rawBar: bar,
-        })),
+        data: bars.map(
+          (bar) => [bar.open, bar.close, bar.low, bar.high] as const,
+        ),
         itemStyle: {
           color: RISE_COLOR,
           color0: FALL_COLOR,
@@ -386,7 +393,6 @@ export function buildMarketChartOption(
         yAxisIndex: 1,
         data: bars.map((bar) => ({
           value: bar.volume,
-          rawBar: bar,
           itemStyle: volumeStyle(bar),
         })),
       },

@@ -187,6 +187,9 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
@@ -228,8 +231,11 @@ jobs:
         run: make e2e-accessibility
       - name: Measure Ubuntu x64 4-core/16GB target baseline
         shell: bash
+        env:
+          STOCK_DESK_SOURCE_REVISION: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
         run: |
-          set -o pipefail
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$STOCK_DESK_SOURCE_REVISION"
           mkdir -p test-results/performance
           make performance-target 2>&1 | tee test-results/performance/target-baseline.log
       - name: Publish target baseline import notice
@@ -237,25 +243,26 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -f test-results/performance/target-baseline.json ]]; then
-            evidence=test-results/performance/target-baseline.json
-            kind=target_baseline
-          elif [[ -f test-results/performance/target-baseline.log ]]; then
-            evidence=test-results/performance/target-baseline.log
-            kind=failure_log
-          else
-            exit 0
-          fi
-          digest=$(sha256sum "$evidence" | cut -d' ' -f1)
-          payload=$(gzip -n -c "$evidence" | base64 -w0)
-          chunk_size=2800
-          part_count=$(((${#payload} + chunk_size - 1) / chunk_size))
-          for ((part_index = 0; part_index < part_count; part_index++)); do
-            chunk=${payload:part_index*chunk_size:chunk_size}
-            part=$((part_index + 1))
-            printf '::notice file=%s,title=Target performance evidence payload::kind=%s;sha256=%s;part=%s/%s;gzip_base64=%s\n' \
-              "$evidence" "$kind" "$digest" "$part" "$part_count" "$chunk"
-          done
+          publish_evidence() {
+            evidence=$1
+            kind=$2
+            title=$3
+            [[ -f "$evidence" ]] || return 0
+            digest=$(sha256sum "$evidence" | cut -d' ' -f1)
+            payload=$(gzip -n -c "$evidence" | base64 -w0)
+            chunk_size=2800
+            part_count=$(((${#payload} + chunk_size - 1) / chunk_size))
+            for ((part_index = 0; part_index < part_count; part_index++)); do
+              chunk=${payload:part_index*chunk_size:chunk_size}
+              part=$((part_index + 1))
+              printf '::notice file=%s,title=%s::kind=%s;sha256=%s;part=%s/%s;gzip_base64=%s\n' \
+                "$evidence" "$title" "$kind" "$digest" "$part" "$part_count" "$chunk"
+            done
+          }
+          publish_evidence "test-results/performance/target-baseline.json" \
+            "target_baseline" "Target performance JSON evidence"
+          publish_evidence "test-results/performance/target-baseline.log" \
+            "measurement_log" "Target performance measurement log"
       - name: Upload Playwright and performance evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
