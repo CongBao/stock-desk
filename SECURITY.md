@@ -15,3 +15,9 @@ For ordinary bugs and usage questions, follow [SUPPORT.md](SUPPORT.md).
 ## Deployment boundary
 
 Stock Desk is a local, single-user application and does not implement authentication, authorization, multi-tenancy, or TLS termination. Treat the API, SQLite files, local market lake, and mounted TDX data as trusted-local resources and do not expose the service to an untrusted network. Keep `.env`, `STOCK_DESK_MASTER_KEY`, database and market-data files, local paths, and provider credentials out of source control and issue reports.
+
+## Automated security evidence
+
+Pull requests are subject to dependency-diff review, locked Python and Web production-dependency audits, application boundary tests, and Bandit checks that fail on medium or high severity findings. Container builds generate an SPDX JSON software bill of materials (SBOM) and fail when the scanner reports an unaccepted high or critical vulnerability. A missing vulnerability database, scanner failure, or unavailable audit service fails the workflow; it is not treated as a passing result.
+
+Successful tagged-release workflows generate a release SBOM and request GitHub artifact provenance and SBOM attestations through short-lived OpenID Connect credentials. These artifacts and attestations exist only for workflow runs that complete their corresponding steps; consult the release run rather than assuming that an unverified local build is attested.

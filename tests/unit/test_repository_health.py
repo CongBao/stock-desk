@@ -50,6 +50,7 @@ REQUIRED_FILES = {
     ".github/workflows/ci.yml",
     ".github/workflows/codeql.yml",
     ".github/workflows/release.yml",
+    ".github/workflows/security.yml",
 }
 
 VERIFIED_ACTION_PINS = {
@@ -88,6 +89,26 @@ VERIFIED_ACTION_PINS = {
     "pnpm/action-setup": (
         "0ebf47130e4866e96fce0953f49152a61190b271",
         "v6.0.9",
+    ),
+    "actions/dependency-review-action": (
+        "2031cfc080254a8a887f58cffee85186f0e49e48",
+        "v4.9.0",
+    ),
+    "anchore/sbom-action": (
+        "e22c389904149dbc22b58101806040fa8d37a610",
+        "v0.24.0",
+    ),
+    "aquasecurity/trivy-action": (
+        "57a97c7e7821a5776cebc9bb87c984fa69cba8f1",
+        "0.35.0",
+    ),
+    "actions/attest-build-provenance": (
+        "96278af6caaf10aea03fd8d33a09a777ca52d62f",
+        "v3.2.0",
+    ),
+    "actions/attest-sbom": (
+        "4651f806c01d8637787e274ac3bdf724ef169f34",
+        "v3.0.0",
     ),
 }
 
@@ -300,6 +321,7 @@ def test_workflows_declare_the_expected_github_triggers() -> None:
         "ci.yml": {"push", "pull_request"},
         "codeql.yml": {"push", "pull_request", "schedule"},
         "release.yml": {"push"},
+        "security.yml": {"push", "pull_request"},
     }
     loaded_triggers: dict[str, dict[str, Any]] = {}
 
@@ -311,6 +333,117 @@ def test_workflows_declare_the_expected_github_triggers() -> None:
         assert set(triggers) == expected_triggers[workflow_path.name]
 
     assert loaded_triggers["release.yml"] == {"push": {"tags": ["v*"]}}
+
+
+def test_security_workflow_fails_closed_on_dependencies_sbom_and_image_cves() -> None:
+    workflow = _load_github_actions_yaml(_read(".github/workflows/security.yml"))
+    serialized = _read(".github/workflows/security.yml")
+    assert "pull_request_target" not in serialized
+    assert "secrets." not in serialized
+    assert workflow["permissions"] == {"contents": "read"}
+
+    dependency_review = workflow["jobs"]["dependency-review"]
+    assert dependency_review["if"] == "github.event_name == 'pull_request'"
+    assert dependency_review["permissions"] == {"contents": "read"}
+    review_step = next(
+        step
+        for step in dependency_review["steps"]
+        if str(step.get("uses", "")).startswith("actions/dependency-review-action@")
+    )
+    assert review_step["with"]["fail-on-severity"] == "high"
+
+    audit = workflow["jobs"]["locked-audit"]
+    assert audit["permissions"] == {"contents": "read"}
+    audit_commands = "\n".join(
+        str(step.get("run", "")) for step in audit["steps"]
+    )
+    assert "make security" in audit_commands
+
+    image = workflow["jobs"]["container-security"]
+    assert image["permissions"] == {"contents": "read"}
+    image_steps = image["steps"]
+    assert any(
+        str(step.get("uses", "")).startswith("anchore/sbom-action@")
+        and step["with"]["format"] == "spdx-json"
+        and step["with"]["output-file"] == "stock-desk-image.spdx.json"
+        and step["with"]["upload-artifact"] is False
+        and step["with"]["upload-release-assets"] is False
+        for step in image_steps
+    )
+    trivy = next(
+        step
+        for step in image_steps
+        if str(step.get("uses", "")).startswith("aquasecurity/trivy-action@")
+    )
+    assert trivy["with"]["severity"] == "CRITICAL,HIGH"
+    assert str(trivy["with"]["exit-code"]) == "1"
+    assert trivy["with"]["ignore-unfixed"] is False
+
+
+def test_tag_release_generates_and_attests_sbom_and_artifacts() -> None:
+    release = _load_github_actions_yaml(_read(".github/workflows/release.yml"))
+    verify = release["jobs"]["verify"]
+    assert verify["permissions"] == {
+        "attestations": "write",
+        "contents": "read",
+        "id-token": "write",
+    }
+    steps = verify["steps"]
+    names = [step.get("name") for step in steps]
+    archive_index = names.index("Prepare release archives")
+    sbom_index = names.index("Generate release SBOM")
+    checksums_index = names.index("Prepare checksummed assets")
+    provenance_index = names.index("Attest release provenance")
+    attest_sbom_index = names.index("Attest release SBOM")
+    assert archive_index < sbom_index < checksums_index < provenance_index
+    assert provenance_index < attest_sbom_index
+    sbom = steps[sbom_index]
+    assert str(sbom["uses"]).startswith("anchore/sbom-action@")
+    assert sbom["with"]["path"] == "dist"
+    assert sbom["with"]["format"] == "spdx-json"
+    assert sbom["with"]["output-file"] == "dist/stock-desk.spdx.json"
+    assert sbom["with"]["upload-artifact"] is False
+    assert sbom["with"]["upload-release-assets"] is False
+    provenance = steps[provenance_index]
+    assert str(provenance["uses"]).startswith(
+        "actions/attest-build-provenance@"
+    )
+    assert provenance["with"]["subject-path"] == "dist/*.{whl,tar.gz}"
+    sbom_attestation = steps[attest_sbom_index]
+    assert str(sbom_attestation["uses"]).startswith("actions/attest-sbom@")
+    assert sbom_attestation["with"] == {
+        "subject-path": "dist/*.{whl,tar.gz}",
+        "sbom-path": "dist/stock-desk.spdx.json",
+    }
+
+
+def test_compose_services_use_read_only_least_privilege_runtime() -> None:
+    compose = _load_yaml("compose.yaml")
+    shared = compose["x-stock-desk-service"]
+    assert shared["read_only"] is True
+    assert shared["cap_drop"] == ["ALL"]
+    assert shared["cap_add"] == ["CHOWN", "SETGID", "SETUID"]
+    assert shared["security_opt"] == ["no-new-privileges:true"]
+    assert shared["tmpfs"] == ["/tmp:rw,noexec,nosuid,nodev,size=64m"]
+    mounts = {mount["target"]: mount for mount in shared["volumes"]}
+    assert mounts["/app/data"] == {
+        "type": "bind",
+        "source": "./data",
+        "target": "/app/data",
+        "read_only": False,
+    }
+    assert mounts["/app/tdx"]["read_only"] is True
+    assert compose["services"]["api"]["healthcheck"]["test"][0] == "CMD"
+    worker_health = compose["services"]["worker"]["healthcheck"]["test"]
+    assert worker_health[:3] == ["CMD", "python", "-c"]
+    assert "stock_desk.tasks.worker" in worker_health[3]
+
+    dockerfile = _read("Dockerfile")
+    runtime = dockerfile.split(" AS runtime", maxsplit=1)[1]
+    assert "COPY --from=uv-bin" not in runtime
+    assert "COPY --from=python-builder /app/.venv" in runtime
+    assert "USER 10001:10001" in runtime
+    assert "dpkg --purge --force-remove-essential perl-base" in runtime
 
 
 def test_all_workflow_actions_use_verified_immutable_release_pins() -> None:
@@ -569,6 +702,8 @@ def test_security_target_audits_only_locked_production_dependencies() -> None:
         "\n\n", maxsplit=1
     )[0]
     assert security_recipe.splitlines() == [
+        "\tuv run --frozen pytest -W error tests/security -q",
+        "\tuv run --frozen bandit -q -ll -r src scripts",
         "\tuv audit --locked --no-dev",
         "\tpnpm install --lockfile-only --frozen-lockfile --ignore-scripts",
         "\tpnpm audit --prod --audit-level high",
@@ -1089,7 +1224,7 @@ def test_release_workflow_is_tag_only_and_scopes_write_permission() -> None:
     )
     assert "gh release create" in release
     assert "GH_REPO: ${{ github.repository }}" in release
-    assert "sha256sum -- *.whl *.tar.gz > SHA256SUMS" in release
+    assert "sha256sum -- *.whl *.tar.gz *.json > SHA256SUMS" in release
     assert "${GITHUB_REF_NAME#v}" in release
     assert (
         "from scripts.verify_release import check_changelog, check_versions" in release
@@ -1156,7 +1291,9 @@ def test_release_checksum_manifest_is_flat_and_verified_before_publish() -> None
         command for command in prepare_commands if command.startswith("sha256sum")
     ]
 
-    assert checksum_commands == ["sha256sum -- *.whl *.tar.gz > SHA256SUMS"]
+    assert checksum_commands == [
+        "sha256sum -- *.whl *.tar.gz *.json > SHA256SUMS"
+    ]
     assert all("dist/" not in command for command in checksum_commands)
     assert prepare_commands.index("cd dist") < prepare_commands.index(
         checksum_commands[0]

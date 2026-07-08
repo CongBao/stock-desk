@@ -100,6 +100,8 @@ public-tree:
 check-public-tree: public-tree
 
 security:
+	uv run --frozen pytest -W error tests/security -q
+	uv run --frozen bandit -q -ll -r src scripts
 	uv audit --locked --no-dev
 	pnpm install --lockfile-only --frozen-lockfile --ignore-scripts
 	pnpm audit --prod --audit-level high
