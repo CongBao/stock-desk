@@ -919,7 +919,7 @@ requirements:
     status: mapped
     evidence:
       - {state: existing, runner: gate, kind: gate, gate_id: bilingual-readme, assertion: The registered bilingual-readme gate requires reciprocal English and Simplified-Chinese links.}
-      - {state: planned, runner: pytest, kind: integration, path: tests/acceptance/test_release_docs.py, selector: 'tests/acceptance/test_release_docs.py::test_readmes_are_concise_reciprocal_and_install_verified', assertion: The final docs gate will check concise reciprocal content against clean installer evidence.}
+      - {state: existing, runner: pytest, kind: integration, path: tests/acceptance/test_release_docs.py, selector: 'tests/acceptance/test_release_docs.py::test_readmes_are_concise_reciprocal_and_install_verified', assertion: 'The final documentation gate verifies concise reciprocal English and Simplified-Chinese product entries, real release-candidate screenshots, source-free installer names and attestation commands, one minimal start path, Wiki delegation, and public-safe links without placeholders.'}
   - id: R-074
     category: publication
     kind: publication

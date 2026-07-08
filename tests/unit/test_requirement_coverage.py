@@ -403,9 +403,6 @@ def test_only_unfinished_release_and_performance_evidence_remains_planned(
     }
     assert planned == {
         "R-053": {"Measure Ubuntu x64 4-core/16GB target baseline"},
-        "R-073": {
-            "tests/acceptance/test_release_docs.py::test_readmes_are_concise_reciprocal_and_install_verified"
-        },
     }
 
     reviewed_release_evidence = {
