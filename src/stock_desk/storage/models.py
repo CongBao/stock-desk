@@ -430,6 +430,12 @@ class MarketDatasetTimestamp(Base):
 
 class MarketDatasetTimestampSeal(Base):
     __tablename__ = "market_dataset_timestamp_seal"
+    __table_args__ = (
+        CheckConstraint(
+            "row_count > 0",
+            name="ck_market_dataset_timestamp_seal_row_count",
+        ),
+    )
 
     dataset_version: Mapped[str] = mapped_column(
         String(71),

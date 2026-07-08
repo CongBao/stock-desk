@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 import hashlib
 import json
 from pathlib import Path
@@ -52,6 +53,29 @@ def _manifest(tag: str) -> dict[str, object]:
     path = RELEASE_FIXTURES / tag / "manifest.json"
     assert path.is_file(), f"missing exact tagged release fixture: {path}"
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _rewrite_table_schema(
+    database: Path,
+    table: str,
+    transform: Callable[[str], str],
+) -> None:
+    with sqlite3.connect(database) as connection:
+        original = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (table,),
+        ).fetchone()
+        assert original is not None and isinstance(original[0], str)
+        rewritten = transform(original[0])
+        assert rewritten != original[0]
+        connection.execute("PRAGMA writable_schema=ON")
+        connection.execute(
+            "UPDATE sqlite_master SET sql = ? WHERE type = 'table' AND name = ?",
+            (rewritten, table),
+        )
+        schema_version = int(connection.execute("PRAGMA schema_version").fetchone()[0])
+        connection.execute(f"PRAGMA schema_version={schema_version + 1}")
+        connection.execute("PRAGMA writable_schema=OFF")
 
 
 def test_tagged_fixture_provenance_is_bound_to_generator_and_export() -> None:
@@ -252,7 +276,57 @@ def test_current_schema_validation_rejects_missing_check_constraint(
             """
         )
 
-    with pytest.raises(BackupValidationError, match="constraints are incomplete"):
+    with pytest.raises(BackupValidationError, match="current schema"):
+        backup_module._validate_current_schema(database, source_tables=source_tables)
+
+
+def test_current_schema_validation_rejects_same_name_altered_check(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "altered-check.db"
+    migrate(f"sqlite:///{database}")
+    source_tables = backup_module._database_table_names(database)
+    _rewrite_table_schema(
+        database,
+        "formula",
+        lambda sql: sql.replace("latest_version >= 0", "latest_version >= -1", 1),
+    )
+
+    with pytest.raises(BackupValidationError, match="current schema"):
+        backup_module._validate_current_schema(database, source_tables=source_tables)
+
+
+def test_current_schema_validation_rejects_missing_primary_key(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "missing-primary-key.db"
+    migrate(f"sqlite:///{database}")
+    source_tables = backup_module._database_table_names(database)
+    _rewrite_table_schema(
+        database,
+        "formula",
+        lambda sql: sql.replace("\tPRIMARY KEY (id), \n", "", 1),
+    )
+
+    with pytest.raises(BackupValidationError, match="current schema"):
+        backup_module._validate_current_schema(database, source_tables=source_tables)
+
+
+def test_current_schema_validation_rejects_extra_constraint(tmp_path: Path) -> None:
+    database = tmp_path / "extra-constraint.db"
+    migrate(f"sqlite:///{database}")
+    source_tables = backup_module._database_table_names(database)
+
+    def add_constraint(sql: str) -> str:
+        assert sql.endswith("\n)")
+        return (
+            sql[:-2] + ", \n\tCONSTRAINT ck_formula_extra "
+            "CHECK (latest_version < 1000000)\n)"
+        )
+
+    _rewrite_table_schema(database, "formula", add_constraint)
+
+    with pytest.raises(BackupValidationError, match="current schema"):
         backup_module._validate_current_schema(database, source_tables=source_tables)
 
 

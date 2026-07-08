@@ -18,13 +18,11 @@ import sqlite3
 import stat
 import tempfile
 import time
-from typing import Final, Literal, Self, cast
+from typing import Any, Final, Literal, Self, TypeAlias, cast
 from urllib.parse import quote, unquote
 from uuid import uuid4
 import zipfile
 
-from alembic.autogenerate import compare_metadata
-from alembic.migration import MigrationContext
 from filelock import Timeout as FileLockTimeout
 from pydantic import (
     AwareDatetime,
@@ -34,8 +32,16 @@ from pydantic import (
     ValidationError,
     model_validator,
 )
-from sqlalchemy import CheckConstraint, create_engine, inspect
-from sqlalchemy.engine import make_url
+from sqlalchemy import (
+    CheckConstraint,
+    ForeignKeyConstraint,
+    UniqueConstraint,
+    create_engine,
+    inspect,
+)
+from sqlalchemy.engine import Connection, make_url
+from sqlalchemy.sql.elements import ColumnElement
+from sqlalchemy.sql.schema import Table
 
 from stock_desk.market.lake import (
     MarketLake,
@@ -245,6 +251,36 @@ class RestoreResult:
     market: Path | None
     manifest: BackupManifest
     recovery_archive: Path | None
+
+
+_ColumnSchemaSignature: TypeAlias = tuple[str, str, bool]
+_ForeignKeySchemaSignature: TypeAlias = tuple[
+    str,
+    tuple[str, ...],
+    str,
+    str,
+    tuple[str, ...],
+    str,
+    str,
+]
+_NamedColumnsSchemaSignature: TypeAlias = tuple[str, tuple[str, ...]]
+_IndexSchemaSignature: TypeAlias = tuple[
+    str,
+    tuple[str, ...],
+    bool,
+    str,
+]
+_CheckSchemaSignature: TypeAlias = tuple[str, str]
+
+
+@dataclass(frozen=True, slots=True)
+class _TableSchemaSignature:
+    columns: tuple[_ColumnSchemaSignature, ...]
+    primary_key: tuple[str, ...]
+    foreign_keys: tuple[_ForeignKeySchemaSignature, ...]
+    unique_constraints: tuple[_NamedColumnsSchemaSignature, ...]
+    indexes: tuple[_IndexSchemaSignature, ...]
+    checks: tuple[_CheckSchemaSignature, ...]
 
 
 @dataclass(slots=True)
@@ -1270,6 +1306,224 @@ def _database_table_names(database: Path) -> set[str]:
         }
 
 
+def _schema_name(value: object | None) -> str:
+    return "" if value is None else str(value)
+
+
+def _schema_action(value: object | None) -> str:
+    return _schema_name(value).upper()
+
+
+def _normalize_schema_sql(value: object | None) -> str:
+    if value is None:
+        return ""
+    source = str(value).strip()
+    output: list[str] = []
+    pending_space = False
+    closing_quote: str | None = None
+    index = 0
+    while index < len(source):
+        character = source[index]
+        if closing_quote is not None:
+            output.append(character)
+            if character == closing_quote:
+                if index + 1 < len(source) and source[index + 1] == closing_quote:
+                    output.append(source[index + 1])
+                    index += 1
+                else:
+                    closing_quote = None
+            index += 1
+            continue
+        if character in {"'", '"', "`"}:
+            if pending_space and output:
+                output.append(" ")
+            pending_space = False
+            closing_quote = character
+            output.append(character)
+        elif character == "[":
+            if pending_space and output:
+                output.append(" ")
+            pending_space = False
+            closing_quote = "]"
+            output.append(character)
+        elif character.isspace():
+            pending_space = True
+        else:
+            if pending_space and output:
+                output.append(" ")
+            pending_space = False
+            output.append(character.lower())
+        index += 1
+    return "".join(output)
+
+
+def _expected_index_expression(
+    connection: Connection,
+    expression: str | ColumnElement[Any],
+) -> str:
+    if isinstance(expression, str):
+        return expression
+    if expression.name is not None:
+        return str(expression.name)
+    return _normalize_schema_sql(expression.compile(dialect=connection.dialect))
+
+
+def _expected_table_schema(
+    connection: Connection,
+    table: Table,
+) -> _TableSchemaSignature:
+    columns = tuple(
+        sorted(
+            (
+                str(column.name),
+                _normalize_schema_sql(column.type.compile(dialect=connection.dialect)),
+                bool(column.nullable),
+            )
+            for column in table.columns
+        )
+    )
+    foreign_keys = tuple(
+        sorted(
+            (
+                _schema_name(constraint.name),
+                tuple(str(element.parent.name) for element in constraint.elements),
+                _schema_name(constraint.referred_table.schema),
+                str(constraint.referred_table.name),
+                tuple(str(element.column.name) for element in constraint.elements),
+                _schema_action(constraint.onupdate),
+                _schema_action(constraint.ondelete),
+            )
+            for constraint in table.constraints
+            if isinstance(constraint, ForeignKeyConstraint)
+        )
+    )
+    unique_constraints = tuple(
+        sorted(
+            (
+                _schema_name(constraint.name),
+                tuple(str(column.name) for column in constraint.columns),
+            )
+            for constraint in table.constraints
+            if isinstance(constraint, UniqueConstraint)
+        )
+    )
+    indexes = tuple(
+        sorted(
+            (
+                _schema_name(index.name),
+                tuple(
+                    _expected_index_expression(connection, expression)
+                    for expression in index.expressions
+                ),
+                bool(index.unique),
+                _normalize_schema_sql(index.dialect_options["sqlite"].get("where")),
+            )
+            for index in table.indexes
+        )
+    )
+    checks = tuple(
+        sorted(
+            (
+                _schema_name(constraint.name),
+                _normalize_schema_sql(constraint.sqltext),
+            )
+            for constraint in table.constraints
+            if isinstance(constraint, CheckConstraint)
+        )
+    )
+    return _TableSchemaSignature(
+        columns=columns,
+        primary_key=tuple(str(column.name) for column in table.primary_key.columns),
+        foreign_keys=foreign_keys,
+        unique_constraints=unique_constraints,
+        indexes=indexes,
+        checks=checks,
+    )
+
+
+def _reflected_column_names(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list) or any(type(item) is not str for item in value):
+        raise BackupValidationError(
+            "staged database contains an unsupported schema expression"
+        )
+    return tuple(cast(str, item) for item in value)
+
+
+def _actual_table_schema(
+    connection: Connection,
+    table_name: str,
+) -> _TableSchemaSignature:
+    schema_inspector = inspect(connection)
+    columns = tuple(
+        sorted(
+            (
+                str(column["name"]),
+                _normalize_schema_sql(
+                    column["type"].compile(dialect=connection.dialect)
+                ),
+                bool(column["nullable"]),
+            )
+            for column in schema_inspector.get_columns(table_name)
+        )
+    )
+    primary_key = _reflected_column_names(
+        schema_inspector.get_pk_constraint(table_name)["constrained_columns"]
+    )
+    foreign_keys = tuple(
+        sorted(
+            (
+                _schema_name(foreign_key.get("name")),
+                _reflected_column_names(foreign_key["constrained_columns"]),
+                _schema_name(foreign_key.get("referred_schema")),
+                _schema_name(foreign_key.get("referred_table")),
+                _reflected_column_names(foreign_key["referred_columns"]),
+                _schema_action(foreign_key.get("options", {}).get("onupdate")),
+                _schema_action(foreign_key.get("options", {}).get("ondelete")),
+            )
+            for foreign_key in schema_inspector.get_foreign_keys(table_name)
+        )
+    )
+    unique_constraints = tuple(
+        sorted(
+            (
+                _schema_name(constraint.get("name")),
+                _reflected_column_names(constraint["column_names"]),
+            )
+            for constraint in schema_inspector.get_unique_constraints(table_name)
+        )
+    )
+    indexes = tuple(
+        sorted(
+            (
+                _schema_name(index.get("name")),
+                _reflected_column_names(index["column_names"]),
+                bool(index["unique"]),
+                _normalize_schema_sql(
+                    index.get("dialect_options", {}).get("sqlite_where")
+                ),
+            )
+            for index in schema_inspector.get_indexes(table_name)
+        )
+    )
+    checks = tuple(
+        sorted(
+            (
+                _schema_name(constraint.get("name")),
+                _normalize_schema_sql(constraint.get("sqltext")),
+            )
+            for constraint in schema_inspector.get_check_constraints(table_name)
+        )
+    )
+    return _TableSchemaSignature(
+        columns=columns,
+        primary_key=primary_key,
+        foreign_keys=foreign_keys,
+        unique_constraints=unique_constraints,
+        indexes=indexes,
+        checks=checks,
+    )
+
+
 def _validate_current_schema(database: Path, *, source_tables: set[str]) -> None:
     from stock_desk.storage.metadata import Base
 
@@ -1286,26 +1540,21 @@ def _validate_current_schema(database: Path, *, source_tables: set[str]) -> None
                 raise BackupValidationError(
                     "staged database is not at the current head revision"
                 )
-            context = MigrationContext.configure(connection)
-            if compare_metadata(context, Base.metadata):
+            schema_inspector = inspect(connection)
+            expected_tables = set(Base.metadata.tables)
+            actual_tables = set(schema_inspector.get_table_names()) - {
+                "alembic_version"
+            }
+            if actual_tables != expected_tables:
                 raise BackupValidationError(
                     "staged database does not match the current schema"
                 )
-
-            schema_inspector = inspect(connection)
             for table_name, table in Base.metadata.tables.items():
-                expected_checks = {
-                    constraint.name
-                    for constraint in table.constraints
-                    if isinstance(constraint, CheckConstraint)
-                }
-                actual_checks = {
-                    constraint["name"]
-                    for constraint in schema_inspector.get_check_constraints(table_name)
-                }
-                if not expected_checks <= actual_checks:
+                if _actual_table_schema(connection, table_name) != (
+                    _expected_table_schema(connection, table)
+                ):
                     raise BackupValidationError(
-                        "staged database current schema constraints are incomplete"
+                        "staged database does not match the current schema"
                     )
 
             introduced_tables = sorted(set(Base.metadata.tables) - source_tables)
