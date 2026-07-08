@@ -4,7 +4,21 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## Unreleased
+
+### Added
+
+- A public documentation contract covering required pages and sections,
+  reciprocal English/Chinese entry points, local links, supported commands,
+  documented settings, public-tree boundaries, and external Wiki readiness.
+
+### Changed
+
+- The English and Chinese entry points now provide concise, equivalent setup,
+  workflow, safety, and documentation routes.
+- Public architecture, configuration, troubleshooting, support, contribution,
+  roadmap, and research-risk guidance are aligned with the current `v0.5.0`
+  release and unreleased maintenance tooling without declaring a later release.
 
 ## [0.5.0] - 2026-07-08
 

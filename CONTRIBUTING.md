@@ -15,7 +15,7 @@ make dev
 
 The native development command starts the API on port 8000, the worker, and Vite on port 5173. Read the [architecture overview](docs/architecture.md) before changing module boundaries.
 
-## Development workflow
+## Quality gates
 
 Use test-driven development for behavior changes: add a focused failing test, confirm that it fails for the intended reason, implement the smallest change, then refactor while green. Keep generated files and lockfiles consistent with their source manifests.
 
