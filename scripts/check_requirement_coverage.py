@@ -694,12 +694,18 @@ def _validate_evidence(
         _expect_text(
             evidence["assertion"], f"{label}.assertion", minimum=20, maximum=500
         )
+        identity: tuple[str, ...]
         if state == "manual":
-            identity = ("manual", evidence["procedure_id"])
+            identity = ("manual", str(evidence["procedure_id"]))
         elif runner == "gate":
-            identity = ("gate", evidence["gate_id"])
+            identity = ("gate", str(evidence["gate_id"]))
         else:
-            identity = ("selector", runner, evidence["path"], evidence["selector"])
+            identity = (
+                "selector",
+                runner,
+                str(evidence["path"]),
+                str(evidence["selector"]),
+            )
         if identity in seen_records:
             raise ValidationError(
                 f"{item_id}.evidence contains a duplicate evidence record"
