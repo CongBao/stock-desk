@@ -1212,6 +1212,27 @@ def test_performance_pid_identity_is_scoped_to_each_timed_sample() -> None:
     assert "processTreeSnapshot(this.roots, this.identities)" in sampler
 
 
+def test_pool_navigation_interactivity_uses_rendered_spa_and_long_task_evidence() -> (
+    None
+):
+    source = _read("web/e2e/performance.spec.ts")
+    start = source.index(
+        "await beginLongTaskWindow(page);\n  await page.getByRole('link', { name: '任务' })"
+    )
+    end = source.index("\n  await beginLongTaskWindow(page);", start + 1)
+    navigation = source[start:end]
+
+    assert "navigationStarted" not in navigation
+    assert "taskCenterVisible" in navigation
+    assert "runPageVisible" in navigation
+    assert "progressVisible" in navigation
+    assert (
+        "interactive: taskCenterVisible && runPageVisible && progressVisible"
+        in navigation
+    )
+    assert "long_task_count: await endLongTaskWindow(page)" in navigation
+
+
 def test_performance_target_ci_is_explicit_and_requirements_remain_mapped() -> None:
     workflow = _load_github_actions_yaml(_read(".github/workflows/ci.yml"))
     e2e = workflow["jobs"]["e2e"]

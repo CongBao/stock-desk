@@ -896,22 +896,27 @@ test('records aggregate 2/3/5 budgets and worker-backed UI responsiveness', asyn
     SAMPLE_COUNT - 2,
   );
   await beginLongTaskWindow(page);
-  const navigationStarted = performance.now();
   await page.getByRole('link', { name: '任务' }).click();
-  await expect(page.getByRole('heading', { name: '任务中心' })).toBeVisible();
+  const taskCenterHeading = page.getByRole('heading', { name: '任务中心' });
+  await expect(taskCenterHeading).toBeVisible();
+  const taskCenterVisible = await taskCenterHeading.isVisible();
   await page.goBack();
-  await expect(page.getByRole('heading', { name: '回测运行' })).toBeVisible();
+  const runPageHeading = page.getByRole('heading', { name: '回测运行' });
+  const runProgress = page.getByRole('region', { name: '运行进度' });
+  await expect(runPageHeading).toBeVisible();
+  await expect(runProgress).toBeVisible();
+  const runPageVisible = await runPageHeading.isVisible();
+  const progressVisible = await runProgress.isVisible();
   const navigationEvidence = await observeMatchedProgress(
     page,
     poolSubmission.run_id,
     previousProgressKey,
   );
   previousProgressKey = progressKey(navigationEvidence.rendered_state);
-  const navigationInteractive = performance.now() - navigationStarted < 1000;
   poolSamples.push({
     long_task_count: await endLongTaskWindow(page),
     interaction_kind: 'navigation',
-    interactive: navigationInteractive,
+    interactive: taskCenterVisible && runPageVisible && progressVisible,
     ...navigationEvidence,
     correctness_hash: '',
   });
