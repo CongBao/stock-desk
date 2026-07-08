@@ -4,7 +4,9 @@ from copy import deepcopy
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -29,18 +31,50 @@ def _digest(value: object) -> str:
 
 ROLES = ["api", "browser", "playwright", "web", "worker"]
 ROOT = Path(__file__).resolve().parents[2]
+BASELINE_PATH = ROOT / "tests/performance/baseline.json"
+TARGET_BASELINE_SOURCE_SHA = "dfac5a7d1f1cf1b8bb465c27a623b664eceb90d2"
+TARGET_BASELINE_FILE_SHA256 = (
+    "debe271724a85ec69f3eb2ed2a37cdc5a0a7ab2aac8a3969b45b65abe3037f01"
+)
 
 
-def test_committed_baseline_matches_the_current_strict_schema() -> None:
+def test_committed_target_baseline_is_exact_reviewed_ancestor_evidence() -> None:
     fixture = load_fixture_metadata()
-    baseline = json.loads(
-        (ROOT / "tests/performance/baseline.json").read_text(encoding="utf-8")
-    )
+    baseline_bytes = BASELINE_PATH.read_bytes()
+    baseline = json.loads(baseline_bytes)
+
+    assert hashlib.sha256(baseline_bytes).hexdigest() == TARGET_BASELINE_FILE_SHA256
+    assert baseline["evidence_kind"] == "target_baseline"
+    assert baseline["git"] == {
+        "dirty": False,
+        "sha": TARGET_BASELINE_SOURCE_SHA,
+    }
 
     validate_performance_result(
         baseline,
         expected_fixture_digest=fixture.content_digest,
+        expected_source_sha=TARGET_BASELINE_SOURCE_SHA,
     )
+    subprocess.run(
+        [
+            "git",
+            "merge-base",
+            "--is-ancestor",
+            TARGET_BASELINE_SOURCE_SHA,
+            "HEAD",
+        ],
+        cwd=ROOT,
+        check=True,
+    )
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        assert head != TARGET_BASELINE_SOURCE_SHA
 
 
 def _sample(index: int) -> dict[str, object]:

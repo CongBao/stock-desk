@@ -4,7 +4,8 @@ Stock Desk v1 measures the 2/3/5-second requirements on a network-forbidden,
 cached, CC0 synthetic workload. Results are not vendor-data benchmarks. A local
 run on faster hardware is a `reference`; only a qualifying GitHub-hosted Ubuntu
 x64 standard runner can emit `target_baseline` evidence for the ordinary
-4-CPU/16GB requirement.
+4-CPU/16GB requirement. The committed baseline is the byte-for-byte reviewed
+target evidence, not a locally regenerated approximation.
 
 ## Reproduce a local reference
 
@@ -22,7 +23,8 @@ make performance-reference
 seeds normal repositories and the real backtest worker, blocks non-loopback
 browser traffic, writes `test-results/performance/current.json` atomically, and
 compares semantic correctness hashes with `tests/performance/baseline.json`.
-The committed baseline is a faster-host reference, not ordinary-machine proof.
+That committed file is ordinary-machine proof; a local `reference` run is only
+an implementation regression check and never replaces its runner claim.
 
 To replace that reference, first commit every implementation change so the
 worktree is clean, then run:
@@ -51,9 +53,15 @@ the measured environment reports all of the following:
 - the exact byte counts, hosted-image identifiers, repository, run ID, and run
   attempt in the artifact.
 
-The workflow uploads `target-baseline-ubuntu-x64-4c16g`. R-053 remains `mapped`
-until a passing artifact is reviewed and imported; merely adding the workflow
-or passing on a faster host does not verify it.
+The workflow uploads `target-baseline-ubuntu-x64-4c16g`. R-053 is verified by
+the reviewed artifact from CI run `28968553479`, measured at source commit
+`dfac5a7d1f1cf1b8bb465c27a623b664eceb90d2` (H0). Its exact committed file
+SHA-256 is
+`debe271724a85ec69f3eb2ed2a37cdc5a0a7ab2aac8a3969b45b65abe3037f01`.
+The import commit (H1) must descend from H0; CI fetches full history and rejects
+testing the baseline on H0 itself, so the evidence cannot certify its own
+unreviewed import. Merely adding the workflow or passing on a faster host does
+not verify this requirement.
 
 ## Fixed workload and raw windows
 

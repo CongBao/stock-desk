@@ -1,6 +1,6 @@
 # v1 acceptance coverage
 
-<!-- requirements-yaml-sha256: 369df82f2d6986d6acc70bc83e4a9dfccb6483a1a1dbd966b24afd0e437a3613 -->
+<!-- requirements-yaml-sha256: 39f6b3719a7495583905016274d97ed97519145fff7cd4d2693215224ad88ca3 -->
 
 The machine-readable acceptance authority is `tests/acceptance/requirements.yml`. The digest above is checked by `scripts/check_requirement_coverage.py` so this public summary cannot silently drift from the matrix.
 
@@ -19,8 +19,8 @@ Run the mapping gate during development:
 uv run python scripts/check_requirement_coverage.py --mode mapping
 ```
 
-The tag-candidate gate uses `--mode pre-publish`. It rejects every planned
-assertion, runs existing pytest evidence with xfail semantics disabled, and
+The tag-candidate gate uses `--mode pre-publish`. With all planned assertions
+now resolved, it runs existing pytest evidence with xfail semantics disabled and
 rejects incomplete manual artifacts required by `release-acceptance`. Manual
 records explicitly assigned to `final-release-audit` are deferred because some
 of them bind the signed tag, public release page, and final lineage that do not

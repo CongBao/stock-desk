@@ -390,7 +390,7 @@ def test_reviewed_non_release_evidence_is_existing_and_precisely_scoped(
     assert provider_evidence[runtime_selector]["state"] == "existing"
 
 
-def test_only_unfinished_release_and_performance_evidence_remains_planned(
+def test_no_planned_evidence_remains_before_release(
     matrix: dict[str, object],
 ) -> None:
     planned = {
@@ -402,9 +402,7 @@ def test_only_unfinished_release_and_performance_evidence_remains_planned(
         for item in matrix["requirements"]
         if any(evidence["state"] == "planned" for evidence in item["evidence"])
     }
-    assert planned == {
-        "R-053": {"Measure Ubuntu x64 4-core/16GB target baseline"},
-    }
+    assert planned == {}
 
 
 def test_release_acceptance_manual_review_is_complete_but_final_audit_is_deferred(
@@ -492,7 +490,7 @@ def test_release_mode_rejects_planned_and_incomplete_manual_evidence() -> None:
     )
 
     assert result.returncode == 1
-    assert "planned evidence" in result.stderr
+    assert "planned evidence" not in result.stderr
     assert "incomplete manual evidence" in result.stderr
 
 
@@ -623,7 +621,8 @@ def test_exact_schema_and_status_strength_are_enforced(
             for requirement in changed["requirements"]
             if requirement["status"] == "mapped"
             and any(
-                evidence["state"] == "planned" for evidence in requirement["evidence"]
+                evidence["state"] == "manual" and not evidence["completed"]
+                for evidence in requirement["evidence"]
             )
         )
         if message == "verified item"

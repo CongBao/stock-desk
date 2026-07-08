@@ -1010,6 +1010,8 @@ def test_ci_and_release_gate_the_chromium_end_to_end_slice() -> None:
         assert required in ci_e2e
 
     release = _read(".github/workflows/release.yml")
+    release_workflow = _load_github_actions_yaml(release)
+    assert release_workflow["jobs"]["verify"]["steps"][0]["with"] == {"fetch-depth": 0}
     assert "uv sync --frozen --all-groups --extra providers" in release
     assert "git fetch --no-tags origin main:refs/remotes/origin/main" in release
     assert (
@@ -1685,8 +1687,9 @@ def test_pool_navigation_interactivity_uses_rendered_spa_and_long_task_evidence(
     assert "long_task_count: await endLongTaskWindow(page)" in navigation
 
 
-def test_performance_target_ci_is_explicit_and_requirements_remain_mapped() -> None:
+def test_performance_target_ci_is_explicit_and_requirement_is_verified() -> None:
     workflow = _load_github_actions_yaml(_read(".github/workflows/ci.yml"))
+    assert workflow["jobs"]["python"]["steps"][0]["with"] == {"fetch-depth": 0}
     e2e = workflow["jobs"]["e2e"]
     assert e2e["runs-on"] == "ubuntu-24.04"
     stable_source_sha = (
@@ -1757,10 +1760,13 @@ def test_performance_target_ci_is_explicit_and_requirements_remain_mapped() -> N
     records = {item["id"]: item for item in requirements["requirements"]}
     for requirement_id in ("R-053",):
         requirement = records[requirement_id]
-        assert requirement["status"] == "mapped"
+        assert requirement["status"] == "verified"
         assert any(
-            evidence["state"] == "planned" and evidence["runner"] == "github-actions"
+            evidence["state"] == "existing" and evidence["runner"] == "github-actions"
             for evidence in requirement["evidence"]
+        )
+        assert not any(
+            evidence["state"] == "planned" for evidence in requirement["evidence"]
         )
 
 
