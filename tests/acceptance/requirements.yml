@@ -21,7 +21,7 @@ requirements:
     status: mapped
     evidence:
       - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/market.spec.ts, selector: 'real local market workflow stays cached, traceable, and interactive', assertion: 'The browser flow searches, selects, and interacts with locally cached market charts.'}
-      - {state: planned, runner: pytest, kind: acceptance, path: tests/acceptance/test_market_period_adjustment_contract.py, selector: 'tests/acceptance/test_market_period_adjustment_contract.py::test_period_and_adjustment_switches_recalculate_visible_market_and_indicator_values', assertion: 'The planned contract will prove every supported period and adjustment visibly recalculates both market and indicator values, including latest daily data.'}
+      - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_market_period_adjustment_contract.py, selector: 'tests/acceptance/test_market_period_adjustment_contract.py::test_period_and_adjustment_switches_recalculate_visible_market_and_indicator_values', assertion: 'The acceptance matrix proves every supported period and adjustment returns distinct aligned bars and formula values, unique signal identity, and the current daily cutoff.'}
       - {state: existing, runner: vitest, kind: component, path: web/src/features/market/MarketChart.test.tsx, selector: labels main-chart overlays and subcharts according to formula placement, assertion: The chart component distinguishes explicit main overlays from aligned formula subcharts.}
   - id: R-003
     category: formula
@@ -171,7 +171,7 @@ requirements:
     status: mapped
     evidence:
       - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_backtest_semantics.py, selector: 'tests/acceptance/test_backtest_semantics.py::test_complete_runner_matrix_supports_single_and_pool_scopes_for_every_period', assertion: The parameterized acceptance parent collects every single and pool scope for every supported period.}
-      - {state: planned, runner: pytest, kind: acceptance, path: tests/acceptance/test_backtest_scope_matrix.py, selector: 'tests/acceptance/test_backtest_scope_matrix.py::test_all_a_index_industry_custom_failure_and_insufficient_scopes', assertion: 'The planned scope matrix will prove all-A, index, industry, and custom pools plus separate failure and insufficient-data outcomes.'}
+      - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_backtest_scope_matrix.py, selector: 'tests/acceptance/test_backtest_scope_matrix.py::test_all_a_index_industry_custom_failure_and_insufficient_scopes', assertion: 'The scope matrix proves all-A, index, industry, and custom pool preflights plus separate failed and insufficient-data outcomes in a real pool run.'}
   - id: R-015
     category: backtest
     kind: architecture
@@ -350,7 +350,7 @@ requirements:
     evidence:
       - {state: existing, runner: pytest, kind: integration, path: tests/integration/market/test_pools_presets.py, selector: 'tests/integration/market/test_pools_presets.py::test_index_and_industry_presets_are_latest_persistent_and_idempotent', assertion: Preset membership is materialized with its composition identity and timestamp.}
       - {state: existing, runner: pytest, kind: integration, path: tests/integration/market/test_pools_custom.py, selector: 'tests/integration/market/test_pools_custom.py::test_custom_pool_reopens_with_order_and_instrument_pin', assertion: A saved custom pool reopens with its ordered members and pinned instrument identity.}
-      - {state: planned, runner: playwright, kind: acceptance, path: web/e2e/market-pools.spec.ts, selector: all-A index industry and editable custom pools show composition timestamps across sessions, assertion: 'The planned browser flow will prove all preset families, visible composition time, and cross-session custom-pool editing.'}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/market-pools.spec.ts, selector: all-A index industry and editable custom pools show composition timestamps across sessions, assertion: 'The browser flow proves all-A, index, and industry presets expose composition times and a custom pool can be created, edited, reopened, and deleted across reloads.'}
   - id: R-029
     category: formula
     kind: user_visible
@@ -363,7 +363,7 @@ requirements:
       - {state: existing, runner: vitest, kind: component, path: web/src/features/formulas/FormulaStudioPage.test.tsx, selector: 'debounces validation, locates line diagnostics, and blocks saving invalid source', assertion: Formula Studio surfaces line diagnostics and prevents an invalid draft from becoming executable.}
       - {state: existing, runner: vitest, kind: component, path: web/src/features/formulas/tdxLanguage.test.ts, selector: defines TDX tokens and completion snippets from server metadata, assertion: The language service provides syntax tokens and completion snippets from bounded function metadata.}
       - {state: existing, runner: vitest, kind: component, path: web/src/features/formulas/FormulaStudioPage.test.tsx, selector: inserts a function snippet from the searchable categorized library, assertion: The editor exposes searchable function descriptions and inserts a selected function snippet.}
-      - {state: planned, runner: pytest, kind: acceptance, path: tests/acceptance/test_formula_editing_assistance.py, selector: 'tests/acceptance/test_formula_editing_assistance.py::test_highlight_hints_templates_preview_save_and_copy', assertion: 'The planned acceptance flow will jointly prove highlighting, hints, templates, current-stock preview, immutable saving, and copying.'}
+      - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_formula_editing_assistance.py, selector: 'tests/acceptance/test_formula_editing_assistance.py::test_highlight_hints_templates_preview_save_and_copy', assertion: 'The acceptance flow proves function metadata, templates, located validation errors, current-stock preview, immutable version saving, and independent copying.'}
   - id: R-030
     category: backtest
     kind: user_visible
@@ -393,8 +393,8 @@ requirements:
       - {state: existing, runner: pytest, kind: integration, path: tests/unit/market/providers/test_tdx_local.py, selector: 'tests/unit/market/providers/test_tdx_local.py::test_tdx_preflight_returns_safe_typed_layout_failures', assertion: 'The preflight matrix returns bounded actionable failures for missing paths, non-directories, relative paths, and market-layout mismatches.'}
       - {state: existing, runner: pytest, kind: integration, path: tests/unit/market/providers/test_tdx_local.py, selector: 'tests/unit/market/providers/test_tdx_local.py::test_tdx_preflight_rejects_structurally_invalid_day_file_sizes', assertion: 'Empty, misaligned, truncated, and oversized day files are rejected as corrupt before source enablement.'}
       - {state: existing, runner: pytest, kind: security, path: tests/unit/market/providers/test_tdx_local.py, selector: 'tests/unit/market/providers/test_tdx_local.py::test_tdx_preflight_translates_permission_without_os_text', assertion: Unreadable directories produce a safe permission-denied result without exposing path or operating-system text.}
-      - {state: planned, runner: pytest, kind: acceptance, path: tests/acceptance/test_tdx_local_user_flow.py, selector: 'tests/acceptance/test_tdx_local_user_flow.py::test_valid_tdx_directory_shows_markets_period_and_data_cutoff', assertion: 'The planned user flow will prove that a validated directory displays recognized markets, supported period, and observed data cutoff together.'}
-      - {state: planned, runner: pytest, kind: acceptance, path: tests/acceptance/test_tdx_local_user_flow.py, selector: 'tests/acceptance/test_tdx_local_user_flow.py::test_unsupported_tdx_file_format_is_rejected_before_enablement', assertion: The planned format fixture will prove unsupported local TDX content is rejected with actionable guidance before enablement.}
+      - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_tdx_local_user_flow.py, selector: 'tests/acceptance/test_tdx_local_user_flow.py::test_valid_tdx_directory_shows_markets_period_and_data_cutoff', assertion: 'A configured valid TDX directory reports recognized SH and SZ markets, its supported daily period, category gaps, and observed data cutoff together.'}
+      - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_tdx_local_user_flow.py, selector: 'tests/acceptance/test_tdx_local_user_flow.py::test_unsupported_tdx_file_format_is_rejected_before_enablement', assertion: 'An unsupported local TDX file is rejected before activation without changing the active settings or runtime, then a valid replacement is accepted.'}
       - {state: existing, runner: pytest, kind: contract, path: tests/unit/market/test_routing.py, selector: 'tests/unit/market/test_routing.py::test_source_priorities_have_exact_independent_defaults', assertion: The routing contract fixes independent per-category defaults with Tushare first and the declared fallback order.}
       - {state: existing, runner: pytest, kind: contract, path: tests/unit/market/test_routing_bars.py, selector: 'tests/unit/market/test_routing_bars.py::test_fetch_bars_routes_whole_query_and_records_safe_attempts', assertion: A complete bar query routes as one unit and records every safe provider attempt and selected source.}
       - {state: existing, runner: pytest, kind: contract, path: tests/unit/market/test_routing_bars.py, selector: 'tests/unit/market/test_routing_bars.py::test_fetch_bars_rejects_partial_results_without_splicing', assertion: A provider partial result is rejected instead of being silently spliced with another provider series.}
@@ -407,8 +407,9 @@ requirements:
     owning_stage: 4
     status: mapped
     evidence:
-      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/analysis.spec.ts, selector: 'configures a model and completes traceable analysis, retry, and insufficient flows', assertion: 'The browser configures a model, tests it, and uses the immutable selection in an analysis run.'}
-      - {state: planned, runner: playwright, kind: acceptance, path: web/e2e/model-provider-matrix.spec.ts, selector: configures domestic OpenAI-compatible and Ollama providers with immutable runtime parameters, assertion: 'The planned provider matrix will verify every supported adapter and preserve its endpoint, model, key reference, and runtime parameters per run.'}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/analysis.spec.ts, selector: 'configures a model and completes traceable analysis, retry, and insufficient flows', assertion: 'The browser configures and tests a model before completing traceable success, retry, and insufficient-data analysis flows.'}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/model-provider-matrix.spec.ts, selector: 'model settings UI offers domestic providers, serializes runtime fields, and renders masked responses', assertion: 'The model settings UI offers DeepSeek, OpenAI-compatible, and Ollama options, serializes endpoint and runtime fields, and renders API-key responses only in masked form.'}
+      - {state: existing, runner: pytest, kind: integration, path: tests/integration/analysis/test_model_provider_runtime_matrix.py, selector: 'tests/integration/analysis/test_model_provider_runtime_matrix.py::test_real_model_provider_run_freezes_endpoint_secret_reference_and_runtime', assertion: 'A real run for each provider executes its frozen endpoint, model, opaque secret reference, and runtime parameters after a successor configuration has been created.'}
   - id: R-033
     category: formula
     kind: security
@@ -420,7 +421,7 @@ requirements:
     evidence:
       - {state: existing, runner: pytest, kind: security, path: tests/unit/formula/test_future_detection.py, selector: 'tests/unit/formula/test_future_detection.py::test_negative_literal_and_bound_ref_are_blocked_with_structured_diagnostics', assertion: Future-directed references are blocked with structured source diagnostics before execution.}
       - {state: existing, runner: pytest, kind: security, path: tests/unit/formula/test_future_detection.py, selector: 'tests/unit/formula/test_future_detection.py::test_registry_temporal_metadata_blocks_unsafe_or_unknown_behavior', assertion: Unsafe or unknown temporal function behavior fails closed in the versioned registry.}
-      - {state: planned, runner: pytest, kind: acceptance, path: tests/acceptance/test_formula_safety_boundary.py, selector: 'tests/acceptance/test_formula_safety_boundary.py::test_future_or_repainting_formula_cannot_be_saved_or_backtested', assertion: The planned boundary test will prove source-located future/repainting diagnostics block both immutable save and backtest submission.}
+      - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_formula_safety_boundary.py, selector: 'tests/acceptance/test_formula_safety_boundary.py::test_future_or_repainting_formula_cannot_be_saved_or_backtested', assertion: 'Source-located future and repainting diagnostics retain the invalid draft while blocking save, preview, and backtest capability without changing the prior valid version.'}
   - id: R-034
     category: analysis
     kind: user_visible
@@ -447,7 +448,7 @@ requirements:
     evidence:
       - {state: existing, runner: pytest, kind: contract, path: tests/unit/analysis/test_workflow.py, selector: 'tests/unit/analysis/test_workflow.py::test_analysis_import_boundary_rejects_domain_and_direct_network_imports', assertion: The analysis module boundary rejects forbidden domain and direct-network imports.}
       - {state: existing, runner: pytest, kind: integration, path: tests/acceptance/test_container_smoke.py, selector: 'tests/acceptance/test_container_smoke.py::test_compose_worker_completes_demo_task_through_shared_sqlite', assertion: The container smoke test proves heavy task execution crosses an independent worker through shared durable storage.}
-      - {state: planned, runner: pytest, kind: contract, path: tests/acceptance/test_architecture_boundaries.py, selector: 'tests/acceptance/test_architecture_boundaries.py::test_module_inventory_and_heavy_work_use_independent_worker', assertion: The planned architecture inventory will verify every required module and the independent heavy-work boundary together.}
+      - {state: existing, runner: pytest, kind: contract, path: tests/acceptance/test_architecture_boundaries.py, selector: 'tests/acceptance/test_architecture_boundaries.py::test_module_inventory_and_heavy_work_use_independent_worker', assertion: 'The architecture inventory verifies the exact capability packages, forbids heavy-worker imports from API modules, and executes queued work through an independent production worker.'}
   - id: R-036
     category: market
     kind: architecture
@@ -483,7 +484,7 @@ requirements:
     status: mapped
     evidence:
       - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/foundation.spec.ts, selector: desktop market terminal keeps all three work areas aligned without overflow, assertion: Desktop browser acceptance proves the professional three-region market layout and bounded overflow.}
-      - {state: planned, runner: playwright, kind: acceptance, path: web/e2e/market-visual-identity.spec.ts, selector: market terminal preserves navy structure and rise-fall colors with three aligned regions, assertion: 'The planned visual contract will jointly verify the deep-navy palette, red-rise/green-fall encoding, and three-region structure.'}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/market-visual-identity.spec.ts, selector: market terminal preserves navy structure and rise-fall colors with three aligned regions, assertion: 'The browser visual contract verifies the aligned three-region market terminal, exact deep-navy surface, and visible A-share red-rise and green-fall encoding.'}
       - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/foundation.spec.ts, selector: fresh user sees the live foundation shell and completed demo task, assertion: A fresh private user reaches the complete browser shell and worker state without an account flow.}
       - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: /market has bounded non-overlapping layout, assertion: The market workspace remains reachable without an account and bounded at every tested ratio including both tablet orientations.}
       - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: /formulas has bounded non-overlapping layout, assertion: The formula workspace remains reachable without an account and bounded at every tested ratio including both tablet orientations.}
@@ -506,7 +507,7 @@ requirements:
       - {state: existing, runner: pytest, kind: contract, path: tests/unit/formula/test_registry.py, selector: 'tests/unit/formula/test_registry.py::test_unknown_function_is_rejected_at_its_source_span', assertion: 'An unsupported function is rejected with stable code, function name, and actionable line and column diagnostics.'}
       - {state: existing, runner: pytest, kind: security, path: tests/integration/formula/test_backtest_preflight.py, selector: 'tests/integration/formula/test_backtest_preflight.py::test_preflight_rejects_indicator_and_invalid_parameter_binding', assertion: Backtest preflight rejects formula types and invalid parameter bindings that cannot become executable inputs.}
       - {state: existing, runner: vitest, kind: component, path: web/src/features/formulas/FormulaStudioPage.test.tsx, selector: 'debounces validation, locates line diagnostics, and blocks saving invalid source', assertion: Formula Studio preserves an invalid draft with line diagnostics and blocks publishing it as an executable version.}
-      - {state: planned, runner: pytest, kind: security, path: tests/acceptance/test_formula_validation_boundary.py, selector: 'tests/acceptance/test_formula_validation_boundary.py::test_all_validation_stages_block_invalid_save_preview_and_backtest_while_preserving_draft', assertion: 'The planned boundary matrix will jointly prove syntax, function, parameter, and safety validation gates across save, preview, and backtest.'}
+      - {state: existing, runner: pytest, kind: security, path: tests/acceptance/test_formula_validation_boundary.py, selector: 'tests/acceptance/test_formula_validation_boundary.py::test_all_validation_stages_block_invalid_save_preview_and_backtest_while_preserving_draft', assertion: 'The boundary matrix proves syntax, function, and parameter diagnostics preserve invalid drafts while blocking save, preview, and backtest capability and retaining the prior valid version.'}
   - id: R-040
     category: backtest
     kind: user_visible
@@ -517,7 +518,7 @@ requirements:
     status: mapped
     evidence:
       - {state: existing, runner: vitest, kind: component, path: web/src/features/backtests/BacktestWizard.test.tsx, selector: shows next-open and independent-pool semantics before submit, assertion: The review step discloses next-open and independent-pool execution semantics before submission.}
-      - {state: planned, runner: vitest, kind: component, path: web/src/features/backtests/BacktestWizard.test.tsx, selector: collects immutable formula scope period dates and costs and discloses T+1 suspension price limits and pool semantics, assertion: 'The planned component contract will verify every collected configuration field and every required execution disclosure, including T+1.'}
+      - {state: existing, runner: vitest, kind: component, path: web/src/features/backtests/BacktestWizard.test.tsx, selector: collects immutable formula scope period dates and costs and discloses T+1 suspension price limits and pool semantics, assertion: 'The wizard review proves the selected formula, scope, period, dates, and trading costs are sent to preflight while disclosing T+1, suspension, price-limit, and independent-pool semantics.'}
       - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/backtest.spec.ts, selector: 'desktop market prefill runs MACD through report, replay, and export', assertion: 'The browser opens a conclusion-first MACD report, then replays and exports its detailed samples.'}
       - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/backtest.spec.ts, selector: custom formula discloses and completes a partial pool, assertion: The browser drills from a custom-formula pool summary into explicit partial sample outcomes.}
       - {state: existing, runner: vitest, kind: component, path: web/src/features/backtests/BacktestReportPage.test.tsx, selector: keeps concrete reproducibility costs and sources visible across report tabs, assertion: 'Every report tab keeps the pinned reproducibility context, source, and concrete cost parameters visible.'}
@@ -686,7 +687,7 @@ requirements:
     owning_stage: 5
     status: mapped
     evidence:
-      - {state: planned, runner: pytest, kind: acceptance, path: tests/acceptance/test_release_acceptance_scope.py, selector: 'tests/acceptance/test_release_acceptance_scope.py::test_all_first_release_acceptance_domains_and_full_journey_are_gated', assertion: The final acceptance contract will jointly prove every named domain gate and the complete chart-to-backtest-report journey.}
+      - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_release_acceptance_scope.py, selector: 'tests/acceptance/test_release_acceptance_scope.py::test_all_first_release_acceptance_domains_and_full_journey_are_gated', assertion: 'The release acceptance contract proves every named domain selector and the full no-network user journey are wired into Make, candidate verification, and the release workflow.'}
   - id: R-053
     category: performance
     kind: performance
@@ -712,7 +713,7 @@ requirements:
     status: mapped
     evidence:
       - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/foundation.spec.ts, selector: desktop market terminal keeps all three work areas aligned without overflow, assertion: Desktop browser acceptance proves the professional three-region market layout and bounded overflow.}
-      - {state: planned, runner: playwright, kind: acceptance, path: web/e2e/market-visual-identity.spec.ts, selector: market terminal preserves navy structure and rise-fall colors with three aligned regions, assertion: 'The planned visual contract will jointly verify the deep-navy palette, red-rise/green-fall encoding, and three-region structure.'}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/market-visual-identity.spec.ts, selector: market terminal preserves navy structure and rise-fall colors with three aligned regions, assertion: 'The browser visual contract verifies the left pool selector, central chart workspace, and right context panel remain simultaneously visible and horizontally aligned.'}
   - id: R-055
     category: market
     kind: user_visible
@@ -723,7 +724,7 @@ requirements:
     status: mapped
     evidence:
       - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/foundation.spec.ts, selector: desktop market terminal keeps all three work areas aligned without overflow, assertion: Desktop browser acceptance proves the professional three-region market layout and bounded overflow.}
-      - {state: planned, runner: playwright, kind: acceptance, path: web/e2e/market-visual-identity.spec.ts, selector: market terminal preserves navy structure and rise-fall colors with three aligned regions, assertion: 'The planned visual contract will jointly verify the deep-navy palette, red-rise/green-fall encoding, and three-region structure.'}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/market-visual-identity.spec.ts, selector: market terminal preserves navy structure and rise-fall colors with three aligned regions, assertion: 'The browser visual contract verifies the exact deep-navy surface and visible A-share red-rise and green-fall labels and color tokens.'}
   - id: R-056
     category: market
     kind: user_visible
@@ -778,7 +779,7 @@ requirements:
     evidence:
       - {state: existing, runner: vitest, kind: component, path: web/src/app/App.test.tsx, selector: shows the product identity and all primary navigation items, assertion: 'The browser shell renders the exact product identity, release label, and every primary navigation item.'}
       - {state: existing, runner: vitest, kind: component, path: web/src/app/RouteEffects.test.tsx, selector: recognizes a direct backtest run URL as strategy backtesting, assertion: Route effects set the browser title to an exact stock-desk-suffixed title on a dynamic route.}
-      - {state: planned, runner: vitest, kind: component, path: web/src/app/AppIdentity.test.tsx, selector: shows stock-desk name version and repository in about information, assertion: 'The planned About contract will verify exact product name, version, and public repository information in the visible UI.'}
+      - {state: existing, runner: vitest, kind: component, path: web/src/app/AppIdentity.test.tsx, selector: shows stock-desk name version and repository in about information, assertion: 'The visible About dialog verifies the exact stock-desk name, v1.0.0 version, and canonical CongBao/stock-desk repository link.'}
       - {state: existing, runner: pytest, kind: contract, path: tests/unit/test_verify_release.py, selector: 'tests/unit/test_verify_release.py::test_rejects_package_metadata_with_a_different_name', assertion: Release verification rejects wheel and source-distribution metadata whose package name is not stock-desk.}
       - {state: existing, runner: pytest, kind: contract, path: tests/unit/test_repository_health.py, selector: 'tests/unit/test_repository_health.py::test_project_metadata_is_complete_and_points_to_the_public_repository', assertion: Project metadata is required to point every public repository URL to CongBao/stock-desk.}
   - id: R-061

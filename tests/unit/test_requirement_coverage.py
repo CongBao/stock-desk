@@ -243,14 +243,14 @@ def test_requirement_evidence_does_not_overclaim_unproven_clauses(
         )
         assert evidence["state"] == "existing"
 
-    still_planned = {
+    reviewed_existing = {
         "R-014": "tests/acceptance/test_backtest_scope_matrix.py::test_all_a_index_industry_custom_failure_and_insufficient_scopes",
         "R-040": "collects immutable formula scope period dates and costs and discloses T+1 suspension price limits and pool semantics",
         "R-052": "tests/acceptance/test_release_acceptance_scope.py::test_all_first_release_acceptance_domains_and_full_journey_are_gated",
     }
-    for requirement_id, selector in still_planned.items():
+    for requirement_id, selector in reviewed_existing.items():
         assert any(
-            item["state"] == "planned" and item.get("selector") == selector
+            item["state"] == "existing" and item.get("selector") == selector
             for item in by_id[requirement_id]["evidence"]
         )
 
@@ -297,26 +297,85 @@ def test_reviewed_multiclause_rows_keep_clause_level_evidence(
     } <= responsive
 
 
-def test_final_multiclause_audit_keeps_explicit_plans_for_unproven_groups(
+def test_reviewed_non_release_evidence_is_existing_and_precisely_scoped(
     matrix: dict[str, object],
 ) -> None:
     by_id = {item["id"]: item for item in matrix["requirements"]}
-    audited_plans = {
+    reviewed = {
         "R-002": "tests/acceptance/test_market_period_adjustment_contract.py::test_period_and_adjustment_switches_recalculate_visible_market_and_indicator_values",
         "R-014": "tests/acceptance/test_backtest_scope_matrix.py::test_all_a_index_industry_custom_failure_and_insufficient_scopes",
+        "R-028": "all-A index industry and editable custom pools show composition timestamps across sessions",
         "R-029": "tests/acceptance/test_formula_editing_assistance.py::test_highlight_hints_templates_preview_save_and_copy",
         "R-031": "tests/acceptance/test_tdx_local_user_flow.py::test_valid_tdx_directory_shows_markets_period_and_data_cutoff",
         "R-033": "tests/acceptance/test_formula_safety_boundary.py::test_future_or_repainting_formula_cannot_be_saved_or_backtested",
+        "R-035": "tests/acceptance/test_architecture_boundaries.py::test_module_inventory_and_heavy_work_use_independent_worker",
+        "R-038": "market terminal preserves navy structure and rise-fall colors with three aligned regions",
         "R-039": "tests/acceptance/test_formula_validation_boundary.py::test_all_validation_stages_block_invalid_save_preview_and_backtest_while_preserving_draft",
+        "R-040": "collects immutable formula scope period dates and costs and discloses T+1 suspension price limits and pool semantics",
         "R-052": "tests/acceptance/test_release_acceptance_scope.py::test_all_first_release_acceptance_domains_and_full_journey_are_gated",
-        "R-066": "tests/acceptance/test_release_artifacts.py::test_release_history_contains_only_public_artifacts",
-        "R-073": "tests/acceptance/test_release_docs.py::test_readmes_are_concise_reciprocal_and_install_verified",
+        "R-054": "market terminal preserves navy structure and rise-fall colors with three aligned regions",
+        "R-055": "market terminal preserves navy structure and rise-fall colors with three aligned regions",
+        "R-060": "shows stock-desk name version and repository in about information",
     }
-    for requirement_id, selector in audited_plans.items():
+    for requirement_id, selector in reviewed.items():
         assert any(
-            evidence["state"] == "planned" and evidence.get("selector") == selector
+            evidence["state"] == "existing" and evidence.get("selector") == selector
             for evidence in by_id[requirement_id]["evidence"]
         ), requirement_id
+
+    tdx_selectors = {
+        evidence.get("selector"): evidence["state"]
+        for evidence in by_id["R-031"]["evidence"]
+    }
+    assert tdx_selectors[
+        "tests/acceptance/test_tdx_local_user_flow.py::test_unsupported_tdx_file_format_is_rejected_before_enablement"
+    ] == "existing"
+
+    provider_evidence = {
+        evidence.get("selector"): evidence
+        for evidence in by_id["R-032"]["evidence"]
+    }
+    ui_selector = (
+        "model settings UI offers domestic providers, serializes runtime fields, "
+        "and renders masked responses"
+    )
+    runtime_selector = (
+        "tests/integration/analysis/test_model_provider_runtime_matrix.py::"
+        "test_real_model_provider_run_freezes_endpoint_secret_reference_and_runtime"
+    )
+    assert provider_evidence[ui_selector]["state"] == "existing"
+    assert "immutable" not in provider_evidence[ui_selector]["assertion"].lower()
+    assert provider_evidence[runtime_selector]["state"] == "existing"
+
+
+def test_only_unfinished_release_and_performance_evidence_remains_planned(
+    matrix: dict[str, object],
+) -> None:
+    by_id = {item["id"]: item for item in matrix["requirements"]}
+    planned = {
+        item["id"]: {
+            evidence.get("selector")
+            for evidence in item["evidence"]
+            if evidence["state"] == "planned"
+        }
+        for item in matrix["requirements"]
+        if any(evidence["state"] == "planned" for evidence in item["evidence"])
+    }
+    assert planned == {
+        "R-053": {"Measure Ubuntu x64 4-core/16GB target baseline"},
+        "R-066": {
+            "tests/acceptance/test_release_artifacts.py::test_release_history_contains_only_public_artifacts"
+        },
+        "R-070": {
+            "tests/acceptance/test_release_artifacts.py::test_release_history_contains_only_public_artifacts"
+        },
+        "R-071": {
+            "tests/acceptance/test_release_docs.py::test_bilingual_readme_baseline_contains_verified_installation_and_use"
+        },
+        "R-073": {
+            "tests/acceptance/test_release_docs.py::test_readmes_are_concise_reciprocal_and_install_verified"
+        },
+    }
 
     analysis_run = by_id["R-023"]["evidence"]
     assert any(
@@ -704,13 +763,13 @@ def test_evidence_paths_reject_option_shaped_components(
     matrix: dict[str, object],
 ) -> None:
     changed = copy.deepcopy(matrix)
-    planned = next(
+    playwright = next(
         evidence
         for item in changed["requirements"]
         for evidence in item["evidence"]
-        if evidence["state"] == "planned" and evidence["runner"] == "playwright"
+        if evidence["runner"] == "playwright"
     )
-    planned["path"] = "web/--config=untrusted.spec.ts"
+    playwright["path"] = "web/--config=untrusted.spec.ts"
 
     with pytest.raises(checker.ValidationError, match="option-shaped"):
         validate_without_collecting(checker, changed)
