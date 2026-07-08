@@ -713,7 +713,7 @@ def test_workflows_have_least_permissions_timeouts_and_bounded_concurrency() -> 
 def test_python_ci_timeout_covers_the_measured_suite_and_followup_gates() -> None:
     workflow = _load_github_actions_yaml(_read(".github/workflows/ci.yml"))
 
-    assert 30 <= workflow["jobs"]["python"]["timeout-minutes"] <= 35
+    assert 40 <= workflow["jobs"]["python"]["timeout-minutes"] <= 45
 
 
 def test_codeql_excludes_only_nonproduction_adversarial_tests() -> None:
@@ -1623,6 +1623,12 @@ def test_performance_chart_timer_includes_the_bounded_interaction_handshake() ->
     source = _read("web/e2e/performance.spec.ts")
 
     assert "async function proveChartInteractionHandshake" in source
+    handshake_start = source.index("async function proveChartInteractionHandshake")
+    handshake_end = source.index("\nasync function chartAction", handshake_start)
+    handshake = source[handshake_start:handshake_end]
+    assert "重置图表缩放" not in handshake
+    assert "page.mouse.wheel" in handshake
+    assert "page.mouse.down" in handshake
     for action in ("chartAction", "warmChartAction"):
         start = source.index(f"async function {action}")
         end = source.index("\nasync function ", start + 1)
@@ -1788,6 +1794,28 @@ def test_python_ci_publishes_bounded_junit_failure_diagnostics() -> None:
         "part=%s/%s",
     ):
         assert required in command
+
+
+def test_python_ci_provisions_the_locked_node_and_pnpm_test_runtime() -> None:
+    workflow = _load_github_actions_yaml(_read(".github/workflows/ci.yml"))
+    python_job = workflow["jobs"]["python"]
+    assert python_job["timeout-minutes"] == 45
+    steps = python_job["steps"]
+    by_name = {step.get("name"): (index, step) for index, step in enumerate(steps)}
+    test_index = by_name["Test Python"][0]
+    pnpm_index, pnpm = by_name["Set up pnpm"]
+    node_index, node = by_name["Set up Node.js"]
+
+    assert pnpm_index < node_index < test_index
+    assert pnpm["uses"] == (
+        "pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271"
+    )
+    assert pnpm["with"]["version"] == "11.7.0"
+    assert pnpm["with"]["run_install"] is False
+    assert node["uses"] == (
+        "actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e"
+    )
+    assert node["with"]["node-version"] == "24"
 
 
 def test_accessibility_and_responsive_suite_is_a_release_gate() -> None:
