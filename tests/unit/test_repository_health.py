@@ -710,6 +710,12 @@ def test_workflows_have_least_permissions_timeouts_and_bounded_concurrency() -> 
     assert "python" in codeql
 
 
+def test_python_ci_timeout_covers_the_measured_suite_and_followup_gates() -> None:
+    workflow = _load_github_actions_yaml(_read(".github/workflows/ci.yml"))
+
+    assert 30 <= workflow["jobs"]["python"]["timeout-minutes"] <= 35
+
+
 def test_codeql_excludes_only_nonproduction_adversarial_tests() -> None:
     config = _load_yaml(".github/codeql/codeql-config.yml")
     assert config == {
