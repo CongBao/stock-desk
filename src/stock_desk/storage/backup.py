@@ -57,10 +57,12 @@ BACKUP_SUFFIX: Final = ".stockdesk-backup"
 BACKUP_SCHEMA_VERSION: Final = "stock-desk-backup-v1"
 _MARKET_MARKER = ".stock-desk-market-lake"
 _MAX_ARCHIVE_ENTRIES = 100_000
-_MAX_ARCHIVE_FILE_BYTES = 64 * 1024 * 1024 * 1024
-_MAX_ARCHIVE_TOTAL_BYTES = 256 * 1024 * 1024 * 1024
+_MAX_ARCHIVE_FILE_BYTES = 32 * 1024 * 1024 * 1024
+_MAX_ARCHIVE_TOTAL_BYTES = 64 * 1024 * 1024 * 1024
+_MAX_ARCHIVE_COMPRESSED_BYTES = 64 * 1024 * 1024 * 1024
 _MAX_MANIFEST_BYTES = 8 * 1024 * 1024
 _MAX_COMPRESSION_RATIO = 1_000
+_MAX_AGGREGATE_COMPRESSION_RATIO = 200
 _FIXED_ZIP_TIME = (1980, 1, 1, 0, 0, 0)
 _RESTORE_JOURNAL = ".stock-desk-restore-journal.json"
 _RECOVERY_DIRECTORY = ".stock-desk-recovery"
@@ -705,12 +707,14 @@ def _create_backup_under_locks(
             )
             os.close(descriptor)
             _write_archive(temporary_archive, manifest, tuple(held_files))
+            _fsync_regular_file(temporary_archive)
             verified = inspect_backup(temporary_archive)
             if verified != manifest:
                 raise BackupValidationError(
                     "published backup manifest changed during verification"
                 )
             os.replace(temporary_archive, destination)
+            _fsync_directory(destination.parent)
             return BackupResult(archive=destination, manifest=manifest)
     finally:
         for held in held_files:
@@ -742,6 +746,65 @@ def _hash_zip_member(bundle: zipfile.ZipFile, info: zipfile.ZipInfo) -> str:
     return f"sha256:{digest.hexdigest()}"
 
 
+def _validate_archive_limits(infos: list[zipfile.ZipInfo]) -> None:
+    if not 3 <= len(infos) <= _MAX_ARCHIVE_ENTRIES:
+        raise BackupValidationError("backup archive entry count is invalid")
+    total_size = sum(info.file_size for info in infos)
+    total_compressed = sum(info.compress_size for info in infos)
+    if total_compressed > _MAX_ARCHIVE_COMPRESSED_BYTES:
+        raise BackupValidationError("backup compressed size exceeds the limit")
+    if total_size > max(1, total_compressed) * _MAX_AGGREGATE_COMPRESSION_RATIO:
+        raise BackupValidationError("backup aggregate compression ratio is unsafe")
+    if total_size > _MAX_ARCHIVE_TOTAL_BYTES:
+        raise BackupValidationError("backup archive exceeds the size limit")
+
+
+def _zip64_extra_is_supported(extra: bytes) -> bool:
+    offset = 0
+    seen_zip64 = False
+    while offset < len(extra):
+        if len(extra) - offset < 4:
+            return False
+        header_id = int.from_bytes(extra[offset : offset + 2], "little")
+        size = int.from_bytes(extra[offset + 2 : offset + 4], "little")
+        offset += 4
+        if offset + size > len(extra):
+            return False
+        if header_id != 0x0001 or seen_zip64 or size not in {8, 16, 24, 28}:
+            return False
+        seen_zip64 = True
+        offset += size
+    return True
+
+
+def _validate_zip_encoding(info: zipfile.ZipInfo) -> None:
+    file_type = stat.S_IFMT(info.external_attr >> 16)
+    try:
+        info.filename.encode("ascii")
+    except UnicodeError as error:
+        raise BackupValidationError(
+            "backup archive entry encoding is unsafe"
+        ) from error
+    if (
+        info.compress_type != zipfile.ZIP_DEFLATED
+        or info.flag_bits != 0
+        or info.create_system != 3
+        or info.create_version != info.extract_version
+        or info.extract_version not in {20, 45}
+        or info.reserved != 0
+        or file_type != stat.S_IFREG
+        or stat.S_IMODE(info.external_attr >> 16) != 0o600
+        or info.external_attr & 0xFFFF != 0
+        or info.date_time != _FIXED_ZIP_TIME
+        or bool(info.comment)
+        or info.internal_attr != 0
+        or info.volume != 0
+        or (bool(info.extra) and not _zip64_extra_is_supported(info.extra))
+        or info.file_size > max(1, info.compress_size) * _MAX_COMPRESSION_RATIO
+    ):
+        raise BackupValidationError("backup archive entry encoding is unsafe")
+
+
 def inspect_backup(archive: Path) -> BackupManifest:
     """Validate archive structure, limits, canonical manifest, and all file hashes."""
     try:
@@ -750,34 +813,14 @@ def inspect_backup(archive: Path) -> BackupManifest:
             names = [info.filename for info in infos]
             if bundle.comment:
                 raise BackupValidationError("backup archive comment is not canonical")
-            if not 3 <= len(infos) <= _MAX_ARCHIVE_ENTRIES:
-                raise BackupValidationError("backup archive entry count is invalid")
+            _validate_archive_limits(infos)
             if len(names) != len(set(names)):
                 raise BackupValidationError("backup archive contains duplicate entries")
             for info in infos:
                 _validated_archive_path(info.filename)
                 if info.is_dir() or not 0 <= info.file_size <= _MAX_ARCHIVE_FILE_BYTES:
                     raise BackupValidationError("backup archive entry is invalid")
-                file_type = stat.S_IFMT(info.external_attr >> 16)
-                if (
-                    info.compress_type != zipfile.ZIP_DEFLATED
-                    or info.flag_bits & 0x1
-                    or info.create_system != 3
-                    or file_type != stat.S_IFREG
-                    or stat.S_IMODE(info.external_attr >> 16) != 0o600
-                    or info.date_time != _FIXED_ZIP_TIME
-                    or bool(info.comment)
-                    or (
-                        info.file_size > 1024 * 1024
-                        and info.file_size
-                        > max(1, info.compress_size) * _MAX_COMPRESSION_RATIO
-                    )
-                ):
-                    raise BackupValidationError(
-                        "backup archive entry encoding is unsafe"
-                    )
-            if sum(info.file_size for info in infos) > _MAX_ARCHIVE_TOTAL_BYTES:
-                raise BackupValidationError("backup archive exceeds the size limit")
+                _validate_zip_encoding(info)
             if names[:2] != ["manifest.json", "manifest.sha256"]:
                 raise BackupValidationError("backup archive metadata order is invalid")
             manifest_info = infos[0]
@@ -826,6 +869,14 @@ def inspect_backup(archive: Path) -> BackupManifest:
 def _fsync_directory(path: Path) -> None:
     flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
     descriptor = os.open(path, flags)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _fsync_regular_file(path: Path) -> None:
+    descriptor = _open_regular(path)
     try:
         os.fsync(descriptor)
     finally:

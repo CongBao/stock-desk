@@ -14,6 +14,7 @@ import zipfile
 import pytest
 from sqlalchemy import insert
 
+import stock_desk.storage.backup as backup_module
 from stock_desk.storage.backup import (
     BackupValidationError,
     create_backup,
@@ -234,7 +235,7 @@ def _minimal_backup(tmp_path: Path) -> Path:
         ("traversal", "unsafe path"),
         ("symlink", "encoding"),
         ("duplicate", "duplicate"),
-        ("bomb", "encoding"),
+        ("bomb", "compression ratio"),
     ),
 )
 def test_archive_structure_attacks_are_rejected(
@@ -343,3 +344,76 @@ def test_logical_inventory_covers_complete_domain_rows(tmp_path: Path) -> None:
     assert {"request_hash", "usage_json"} <= set(by_table["analysis_attempt"].columns)
     assert {"report_json", "report_hash"} <= set(by_table["analysis_report"].columns)
     assert all(item.content_sha256.startswith("sha256:") for item in by_table.values())
+
+
+def test_archive_preflight_rejects_many_small_high_ratio_entries() -> None:
+    info = zipfile.ZipInfo("market/small.parquet")
+    info.file_size = 900 * 1024
+    info.compress_size = 100
+
+    with pytest.raises(BackupValidationError, match="compression ratio"):
+        backup_module._validate_archive_limits([info] * 100_000)
+
+
+@pytest.mark.parametrize("mutation", ("extra", "flags", "attributes", "version"))
+def test_archive_rejects_unsupported_zip_metadata(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    source = _minimal_backup(tmp_path)
+    with zipfile.ZipFile(source) as original:
+        source_info = original.getinfo("database/stock-desk.db")
+        info = zipfile.ZipInfo(source_info.filename, date_time=source_info.date_time)
+        info.compress_type = source_info.compress_type
+        info.create_system = source_info.create_system
+        info.external_attr = source_info.external_attr
+    if mutation == "extra":
+        info.extra = b"\xfe\xca\x01\x00x"
+    elif mutation == "flags":
+        info.flag_bits = 0x20
+    elif mutation == "attributes":
+        info.external_attr |= 0x01
+    else:
+        info.create_version = 63
+        info.extract_version = 63
+
+    with pytest.raises(BackupValidationError, match="encoding"):
+        backup_module._validate_zip_encoding(info)
+
+
+def test_backup_fsyncs_archive_then_replace_then_parent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_dir = tmp_path / "data"
+    database_url = f"sqlite:///{data_dir / 'stock-desk.db'}"
+    migrate(database_url)
+    destination = tmp_path / "durable.stockdesk-backup"
+    events: list[str] = []
+    original_replace = backup_module.os.replace
+    original_file_fsync = backup_module._fsync_regular_file
+    original_directory_fsync = backup_module._fsync_directory
+
+    def record_file(path: Path) -> None:
+        events.append("file")
+        original_file_fsync(path)
+
+    def record_replace(source: Path, target: Path) -> None:
+        events.append("replace")
+        original_replace(source, target)
+
+    def record_directory(path: Path) -> None:
+        events.append("directory")
+        original_directory_fsync(path)
+
+    monkeypatch.setattr(backup_module, "_fsync_regular_file", record_file)
+    monkeypatch.setattr(backup_module.os, "replace", record_replace)
+    monkeypatch.setattr(backup_module, "_fsync_directory", record_directory)
+
+    create_backup(
+        database_url=database_url,
+        data_dir=data_dir,
+        destination=destination,
+    )
+
+    assert events[-3:] == ["file", "replace", "directory"]
