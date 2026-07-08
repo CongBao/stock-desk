@@ -107,12 +107,14 @@ test('fresh user sees the live foundation shell and completed demo task', async 
   ).toBeVisible();
 
   const demoTask = page
-    .getByRole('listitem')
-    .filter({ hasText: 'demo.double' })
+    .getByRole('listitem', { name: /demo\.double/u })
     .first();
-  await expect(demoTask).toContainText('demo.double');
-  await expect(demoTask).toContainText('已成功', { timeout: 15_000 });
-  await expect(demoTask).toContainText('结果：42');
+  await expect(demoTask).toHaveAccessibleName(/demo\.double.*已成功/u, {
+    timeout: 15_000,
+  });
+  await expect(demoTask).toContainText('后台任务');
+  await expect(demoTask).toContainText('进度 100%');
+  await expect(demoTask).not.toContainText('结果：');
 
   await page.keyboard.press('Escape');
   await expect(panelToggle).toBeFocused();
