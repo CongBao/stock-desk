@@ -285,7 +285,7 @@ def _write_wiki(root: Path) -> None:
         if stem == "Home":
             english = """# Stock Desk Wiki
 
-[简体中文](Home.zh-CN.md)
+[简体中文](Home.zh-CN)
 
 ## Released features
 
@@ -293,7 +293,7 @@ See the feature guides.
 """
             chinese = """# Stock Desk Wiki
 
-[English](Home.md)
+[English](Home)
 
 ## 已发布功能
 
@@ -302,7 +302,7 @@ See the feature guides.
         else:
             english = f"""# {stem.replace("-", " ")}
 
-[简体中文]({stem}.zh-CN.md)
+[简体中文]({stem}.zh-CN)
 
 <!-- SCREENSHOT_PLACEHOLDER: replace after integrated release-candidate capture -->
 
@@ -321,7 +321,7 @@ Return to the task center and retry.
 """
             chinese = f"""# {stem.replace("-", " ")}
 
-[English]({stem}.md)
+[English]({stem})
 
 <!-- SCREENSHOT_PLACEHOLDER: replace after integrated release-candidate capture -->
 

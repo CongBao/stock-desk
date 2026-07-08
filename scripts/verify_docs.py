@@ -364,6 +364,7 @@ def _rendered_target_failures(
     targets: tuple[RenderedTarget, ...],
     *,
     allowed_files: frozenset[Path] | None = None,
+    allow_extensionless_markdown: bool = False,
 ) -> list[str]:
     failures: list[str] = []
     source = root / relative_path
@@ -393,6 +394,13 @@ def _rendered_target_failures(
                 f"{relative_path}: rendered {rendered.kind} escapes the publication root: {target}"
             )
             continue
+        if (
+            allow_extensionless_markdown
+            and rendered.kind == "link"
+            and destination.with_name(f"{destination.name}.md")
+            in (allowed_files or ())
+        ):
+            destination = destination.with_name(f"{destination.name}.md")
         if allowed_files is not None and destination not in allowed_files:
             failures.append(
                 f"{relative_path}: rendered {rendered.kind} target is not a scanned publication file: {target}"
@@ -712,6 +720,7 @@ def verify_wiki(wiki_root: Path, *, final: bool) -> list[str]:
                 relative_path,
                 targets,
                 allowed_files=publication_files,
+                allow_extensionless_markdown=True,
             )
         )
         for blocked in WIKI_FORBIDDEN_REFERENCES:
@@ -753,13 +762,13 @@ def verify_wiki(wiki_root: Path, *, final: bool) -> list[str]:
             continue
         english = documents.get(english_path.name, "")
         chinese = documents.get(chinese_path.name, "")
-        if f"[简体中文]({stem}.zh-CN.md)" not in english:
+        if f"[简体中文]({stem}.zh-CN)" not in english:
             failures.append(
-                f"{english_path.name}: missing counterpart link to {stem}.zh-CN.md"
+                f"{english_path.name}: missing counterpart link to {stem}.zh-CN"
             )
-        if f"[English]({stem}.md)" not in chinese:
+        if f"[English]({stem})" not in chinese:
             failures.append(
-                f"{chinese_path.name}: missing counterpart link to {stem}.md"
+                f"{chinese_path.name}: missing counterpart link to {stem}"
             )
         if stem == "Home":
             continue
