@@ -73,30 +73,81 @@ async function expectNoInteractiveControlOverlap(page: Page) {
     'a:visible, button:visible, input:visible, select:visible, textarea:visible, [role="tab"]:visible',
   );
   const snapshots = await controls.evaluateAll((elements) =>
-    elements.map((element) => {
+    elements.flatMap((element) => {
       const browserElement = element as unknown as {
         getAttribute: (name: string) => string | null;
         getBoundingClientRect: () => {
+          bottom: number;
           height: number;
+          left: number;
+          right: number;
+          top: number;
           width: number;
           x: number;
           y: number;
         };
+        parentElement: unknown;
         textContent: string | null;
       };
-      const rect = browserElement.getBoundingClientRect();
-      return {
-        box: {
-          x: rect.x,
-          y: rect.y,
-          width: rect.width,
-          height: rect.height,
-        },
-        label:
-          browserElement.getAttribute('aria-label') ??
-          browserElement.textContent?.trim() ??
-          '',
+      const browserGlobal = globalThis as unknown as {
+        getComputedStyle: (target: unknown) => {
+          overflowX: string;
+          overflowY: string;
+        };
       };
+      const clipsOverflow = (value: string) =>
+        value === 'auto' ||
+        value === 'clip' ||
+        value === 'hidden' ||
+        value === 'scroll';
+      const rect = browserElement.getBoundingClientRect();
+      let left = rect.left;
+      let right = rect.right;
+      let top = rect.top;
+      let bottom = rect.bottom;
+      let ancestor = browserElement.parentElement as null | {
+        clientHeight: number;
+        clientLeft: number;
+        clientTop: number;
+        clientWidth: number;
+        getBoundingClientRect: () => {
+          left: number;
+          top: number;
+        };
+        parentElement: unknown;
+      };
+
+      while (ancestor !== null) {
+        const style = browserGlobal.getComputedStyle(ancestor);
+        const ancestorRect = ancestor.getBoundingClientRect();
+        const clipLeft = ancestorRect.left + ancestor.clientLeft;
+        const clipTop = ancestorRect.top + ancestor.clientTop;
+        if (clipsOverflow(style.overflowX)) {
+          left = Math.max(left, clipLeft);
+          right = Math.min(right, clipLeft + ancestor.clientWidth);
+        }
+        if (clipsOverflow(style.overflowY)) {
+          top = Math.max(top, clipTop);
+          bottom = Math.min(bottom, clipTop + ancestor.clientHeight);
+        }
+        ancestor = ancestor.parentElement as typeof ancestor;
+      }
+
+      if (right <= left || bottom <= top) return [];
+      return [
+        {
+          box: {
+            x: left,
+            y: top,
+            width: right - left,
+            height: bottom - top,
+          },
+          label:
+            browserElement.getAttribute('aria-label') ??
+            browserElement.textContent?.trim() ??
+            '',
+        },
+      ];
     }),
   );
 
@@ -149,6 +200,11 @@ for (const viewport of viewports) {
         await page.goto(route);
         await emulateClassicScrollbar(page);
         await expect(page.locator('#main-content')).toBeVisible();
+        if (route === '/formulas') {
+          await expect(
+            page.getByRole('button', { name: 'MAX · 两值中的较大值。' }),
+          ).toHaveCount(1);
+        }
         await expect(page.locator('.app-shell')).toHaveAttribute(
           'data-navigation-collapsed',
           String(viewport.collapsed),
