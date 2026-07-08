@@ -405,6 +405,34 @@ def test_only_unfinished_release_and_performance_evidence_remains_planned(
         "R-053": {"Measure Ubuntu x64 4-core/16GB target baseline"},
     }
 
+
+def test_release_acceptance_manual_review_is_complete_but_final_audit_is_deferred(
+    matrix: dict[str, object],
+) -> None:
+    by_id = {item["id"]: item for item in matrix["requirements"]}
+    release_acceptance: dict[str, bool] = {}
+    final_audit: dict[str, bool] = {}
+    for requirement in matrix["requirements"]:
+        for evidence in requirement["evidence"]:
+            if evidence["state"] != "manual":
+                continue
+            target = (
+                release_acceptance
+                if evidence["required_by_gate"] == "release-acceptance"
+                else final_audit
+            )
+            target[requirement["id"]] = evidence["completed"]
+
+    assert release_acceptance == {
+        "R-005": True,
+        "R-006": True,
+        "R-008": True,
+        "R-051": True,
+        "R-065": True,
+    }
+    assert final_audit
+    assert not any(final_audit.values())
+
     reviewed_release_evidence = {
         "R-066": (
             "tests/acceptance/test_release_artifacts.py::test_release_history_contains_only_public_artifacts",

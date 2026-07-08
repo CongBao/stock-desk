@@ -58,7 +58,7 @@ requirements:
     owning_stage: 0
     status: mapped
     evidence:
-      - {state: manual, runner: manual, kind: manual, procedure_id: requirements-freeze-review, artifact_kind: requirements-reconciliation, required_by_gate: release-acceptance, final_artifact_contract: A public-safe reconciliation record binds every stable requirement ID to its acceptance contract., completed: false, assertion: The final review confirms requirements were refined and frozen before implementation began.}
+      - {state: manual, runner: manual, kind: manual, procedure_id: requirements-freeze-review, artifact_kind: requirements-reconciliation, required_by_gate: release-acceptance, final_artifact_contract: A public-safe reconciliation record binds every stable requirement ID to its acceptance contract., completed: true, assertion: The final review confirms requirements were refined and frozen before implementation began.}
   - id: R-006
     category: operations
     kind: operational
@@ -68,7 +68,7 @@ requirements:
     owning_stage: 0
     status: mapped
     evidence:
-      - {state: manual, runner: manual, kind: manual, procedure_id: openspec-authority-review, artifact_kind: specification-authority-record, required_by_gate: release-acceptance, final_artifact_contract: A redacted specification-authority record confirms the final product specification and implemented scope agree., completed: false, assertion: The final review confirms the implemented product follows the confirmed specification authority without publishing local planning files.}
+      - {state: manual, runner: manual, kind: manual, procedure_id: openspec-authority-review, artifact_kind: specification-authority-record, required_by_gate: release-acceptance, final_artifact_contract: A redacted specification-authority record confirms the final product specification and implemented scope agree., completed: true, assertion: The final review confirms the implemented product follows the confirmed specification authority without publishing local planning files.}
   - id: R-007
     category: market
     kind: architecture
@@ -91,7 +91,7 @@ requirements:
     owning_stage: 0
     status: mapped
     evidence:
-      - {state: manual, runner: manual, kind: manual, procedure_id: reference-product-review, artifact_kind: product-reference-record, required_by_gate: release-acceptance, final_artifact_contract: A public-safe product reference record documents which interaction concepts were adopted without copying private material., completed: false, assertion: The final design review confirms TradingAgents-CN was the primary capability and interaction reference.}
+      - {state: manual, runner: manual, kind: manual, procedure_id: reference-product-review, artifact_kind: product-reference-record, required_by_gate: release-acceptance, final_artifact_contract: A public-safe product reference record documents which interaction concepts were adopted without copying private material., completed: true, assertion: The final design review confirms TradingAgents-CN was the primary capability and interaction reference.}
   - id: R-009
     category: analysis
     kind: architecture
@@ -677,7 +677,7 @@ requirements:
     owning_stage: 5
     status: mapped
     evidence:
-      - {state: manual, runner: manual, kind: manual, procedure_id: sequential-capability-stage-review, artifact_kind: stage-acceptance-record, required_by_gate: release-acceptance, final_artifact_contract: 'The release record lists each capability stage, its acceptance gate, and the verified predecessor relationship.', completed: false, assertion: The final review confirms the four independently accepted capability stages completed in their required sequence.}
+      - {state: manual, runner: manual, kind: manual, procedure_id: sequential-capability-stage-review, artifact_kind: stage-acceptance-record, required_by_gate: release-acceptance, final_artifact_contract: 'The release record lists each capability stage, its acceptance gate, and the verified predecessor relationship.', completed: true, assertion: The final review confirms the four independently accepted capability stages completed in their required sequence.}
   - id: R-052
     category: operations
     kind: operational
@@ -831,7 +831,7 @@ requirements:
     owning_stage: 5
     status: mapped
     evidence:
-      - {state: manual, runner: manual, kind: manual, procedure_id: main-upstream-publication-review, artifact_kind: repository-publication-record, required_by_gate: release-acceptance, final_artifact_contract: The publication record identifies main as the default branch and records the canonical upstream relationship without local paths or credentials., completed: false, assertion: The final review confirms main is the public default branch and its initial upstream publication is recorded.}
+      - {state: manual, runner: manual, kind: manual, procedure_id: main-upstream-publication-review, artifact_kind: repository-publication-record, required_by_gate: release-acceptance, final_artifact_contract: The publication record identifies main as the default branch and records the canonical upstream relationship without local paths or credentials., completed: true, assertion: The final review confirms main is the public default branch and its initial upstream publication is recorded.}
   - id: R-066
     category: publication
     kind: publication
