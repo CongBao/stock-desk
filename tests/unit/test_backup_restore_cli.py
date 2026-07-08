@@ -33,7 +33,8 @@ def test_backup_and_restore_cli_round_trip(
         == 0
     )
     backup_output = json.loads(capsys.readouterr().out)
-    assert backup_output["secret_policy"] == "omitted"
+    assert backup_output["encrypted_rows_included"] is False
+    assert "secret_policy" not in backup_output
 
     destination = tmp_path / "destination"
     destination_url = f"sqlite:///{destination / 'stock-desk.db'}"
@@ -61,7 +62,10 @@ def test_restore_cli_recover_only_is_idempotent(
     assert json.loads(capsys.readouterr().out) == {"recovered": False}
 
 
-def test_cli_encrypted_secret_mode_is_explicit(tmp_path: Path) -> None:
+def test_cli_encrypted_secret_mode_is_explicit(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     data_dir = tmp_path / "data"
     url = f"sqlite:///{data_dir / 'stock-desk.db'}"
     migrate(url)
@@ -80,4 +84,7 @@ def test_cli_encrypted_secret_mode_is_explicit(tmp_path: Path) -> None:
         )
         == 0
     )
+    backup_output = json.loads(capsys.readouterr().out)
+    assert backup_output["encrypted_rows_included"] is True
+    assert "secret_policy" not in backup_output
     assert inspect_backup(archive).secret_policy == "encrypted_included"

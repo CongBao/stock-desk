@@ -54,9 +54,9 @@ def main(argv: list[str] | None = None) -> int:
         json.dumps(
             {
                 "archive": os.fspath(result.archive),
+                "encrypted_rows_included": arguments.include_encrypted_secrets,
                 "files": len(result.manifest.files),
                 "schema_revision": result.manifest.schema_revision,
-                "secret_policy": result.manifest.secret_policy,
             },
             ensure_ascii=True,
             separators=(",", ":"),
