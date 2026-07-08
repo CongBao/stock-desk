@@ -1678,6 +1678,22 @@ def test_performance_target_ci_is_explicit_and_requirements_remain_mapped() -> N
         if step.get("name") == "Measure Ubuntu x64 4-core/16GB target baseline"
     )
     assert target_step["run"] == "make performance-target"
+    import_step = next(
+        step
+        for step in e2e["steps"]
+        if step.get("name") == "Publish target baseline import notice"
+    )
+    assert import_step["if"] == "success()"
+    import_command = import_step["run"]
+    for required in (
+        "test-results/performance/target-baseline.json",
+        "sha256sum",
+        "gzip -n -c",
+        "base64 -w0",
+        "::notice",
+        "gzip_base64=",
+    ):
+        assert required in import_command
 
     makefile = _read("Makefile")
     target_recipe = makefile.split("\nperformance-target:\n", maxsplit=1)[1].split(
