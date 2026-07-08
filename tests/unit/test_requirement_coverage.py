@@ -835,8 +835,9 @@ def test_planned_evidence_is_an_exact_file_and_selector_pair(
         evidence
         for item in changed["requirements"]
         for evidence in item["evidence"]
-        if evidence["state"] == "planned" and evidence["runner"] == "pytest"
+        if evidence["state"] == "existing" and evidence["runner"] == "pytest"
     )
+    planned["state"] = "planned"
     planned["path"] = "tests/acceptance"
     with pytest.raises(checker.ValidationError, match="file"):
         validate_without_collecting(checker, changed)
@@ -846,8 +847,9 @@ def test_planned_evidence_is_an_exact_file_and_selector_pair(
         evidence
         for item in changed["requirements"]
         for evidence in item["evidence"]
-        if evidence["state"] == "planned" and evidence["runner"] == "pytest"
+        if evidence["state"] == "existing" and evidence["runner"] == "pytest"
     )
+    planned["state"] = "planned"
     planned["selector"] = "tests/acceptance/a_different_test.py::test_specific_behavior"
     with pytest.raises(checker.ValidationError, match="selector path"):
         validate_without_collecting(checker, changed)
@@ -889,8 +891,9 @@ def test_evidence_paths_reject_symlinked_parent_escape(
             entry
             for item in changed["requirements"]
             for entry in item["evidence"]
-            if entry["runner"] == "pytest" and entry["state"] == state
+            if entry["runner"] == "pytest" and entry["state"] == "existing"
         )
+        evidence["state"] = state
         path = f"{parent_link.name}/future.py"
         evidence["path"] = path
         evidence["selector"] = f"{path}::test_future"
