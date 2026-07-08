@@ -544,6 +544,11 @@ export function MarketChart({
   const containerRef = useRef<HTMLDivElement>(null);
   const instanceRef = useRef<EChartsType | null>(null);
   const barsRef = useRef(bars);
+  const pendingReadinessRef = useRef({ bars, formula });
+  const [finishedFor, setFinishedFor] = useState<{
+    readonly bars: readonly MarketBar[] | undefined;
+    readonly formula: FormulaChartLayer | undefined;
+  } | null>(null);
   const [pointer, setPointer] = useState<{
     readonly bars: readonly MarketBar[];
     readonly index: number;
@@ -551,6 +556,8 @@ export function MarketChart({
   const [zoom, setZoom] = useState<ZoomRange>({ start: 0, end: 100 });
   barsRef.current = bars;
   const hasBars = bars !== undefined && bars.length > 0;
+  const isReady =
+    hasBars && finishedFor?.bars === bars && finishedFor.formula === formula;
   const activeBar =
     bars !== undefined && pointer?.bars === bars && pointer.index < bars.length
       ? bars[pointer.index]
@@ -576,14 +583,17 @@ export function MarketChart({
       const next = dataZoomRange(event);
       if (next !== null) setZoom(next);
     };
+    const handleFinished = () => setFinishedFor(pendingReadinessRef.current);
     chart.on('updateAxisPointer', handleAxisPointer);
     chart.on('dataZoom', handleDataZoom);
+    chart.on('finished', handleFinished);
     const observer = new ResizeObserver(() => chart.resize());
     observer.observe(containerRef.current);
     return () => {
       observer.disconnect();
       chart.off('updateAxisPointer', handleAxisPointer);
       chart.off('dataZoom', handleDataZoom);
+      chart.off('finished', handleFinished);
       chart.dispose();
       instanceRef.current = null;
     };
@@ -595,6 +605,7 @@ export function MarketChart({
       formula === undefined
         ? buildMarketChartOption(bars)
         : buildFormulaMarketChartOption(bars, formula);
+    pendingReadinessRef.current = { bars, formula };
     instanceRef.current.setOption(option as EChartsCoreOption, {
       lazyUpdate: true,
       notMerge: true,
@@ -693,6 +704,8 @@ export function MarketChart({
               ref={containerRef}
               className="market-chart-canvas"
               role="img"
+              aria-busy={!isReady}
+              data-chart-ready={isReady ? 'true' : 'false'}
               aria-label={`${bars[0]?.symbol ?? '证券'} ${
                 formula === undefined
                   ? 'K 线与成交量'

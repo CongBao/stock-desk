@@ -456,6 +456,7 @@ def test_make_test_enforces_coverage_and_writes_reports() -> None:
         "--ignore=tests/acceptance/test_formula_consistency.py",
         "--ignore=tests/acceptance/test_backtest_semantics.py",
         "--ignore=tests/performance/test_single_backtest.py",
+        "--ignore=tests/performance/test_v1_budgets.py",
         "pnpm test",
     ):
         assert required in test_recipe
@@ -495,7 +496,7 @@ def test_ci_uploads_coverage_reports_and_release_uses_canonical_test() -> None:
         next(
             step
             for step in python_steps
-            if step.get("name") == "Benchmark cached ten-year chart query"
+            if step.get("name") == "Verify legacy cached chart correctness"
         )["run"]
         == "make benchmark"
     )
@@ -511,7 +512,7 @@ def test_ci_uploads_coverage_reports_and_release_uses_canonical_test() -> None:
         next(
             step
             for step in python_steps
-            if step.get("name") == "Benchmark cached ten-year formula preview"
+            if step.get("name") == "Verify legacy formula preview correctness"
         )["run"]
         == "make benchmark-formula"
     )
@@ -527,7 +528,7 @@ def test_ci_uploads_coverage_reports_and_release_uses_canonical_test() -> None:
         next(
             step
             for step in python_steps
-            if step.get("name") == "Benchmark ten-year single-stock backtest"
+            if step.get("name") == "Verify legacy single-backtest correctness"
         )["run"]
         == "make benchmark-backtest"
     )
@@ -555,9 +556,8 @@ def test_ci_uploads_coverage_reports_and_release_uses_canonical_test() -> None:
     assert "make acceptance" in commands
     assert "make acceptance-formula" in commands
     assert "make acceptance-backtest" in commands
-    assert "make benchmark" in commands
-    assert "make benchmark-formula" in commands
-    assert "make benchmark-backtest" in commands
+    assert "make performance-regressions" in commands
+    assert "make performance" in commands
     assert "make e2e-market" in commands
     assert "make e2e-formula" in commands
     assert "make e2e-backtest" in commands
@@ -716,6 +716,8 @@ def test_e2e_is_a_root_script_without_changing_the_make_contract() -> None:
         "benchmark",
         "benchmark-formula",
         "benchmark-backtest",
+        "performance",
+        "performance-regressions",
         "bootstrap",
         "check-public-tree",
         "dev",
@@ -753,7 +755,7 @@ def test_stage_two_formula_gates_extend_every_release_surface() -> None:
     )
     assert re.search(
         r"^benchmark-formula:\n\tuv run --frozen pytest -W error "
-        r"tests/performance/test_formula_preview\.py --benchmark-only$",
+        r"tests/performance/test_formula_preview\.py -q$",
         makefile,
         re.MULTILINE,
     )
@@ -766,7 +768,7 @@ def test_stage_two_formula_gates_extend_every_release_surface() -> None:
     release_check = re.search(r"^release-check:\s*(.+)$", makefile, re.MULTILINE)
     assert release_check is not None
     dependencies = release_check.group(1).split()
-    for target in ("acceptance-formula", "benchmark-formula", "e2e-formula"):
+    for target in ("acceptance-formula", "performance-regressions", "e2e-formula"):
         assert target in dependencies
 
     ci = _load_github_actions_yaml(_read(".github/workflows/ci.yml"))
@@ -786,7 +788,7 @@ def test_stage_two_formula_gates_extend_every_release_surface() -> None:
     release = _read(".github/workflows/release.yml")
     for command in (
         "make acceptance-formula",
-        "make benchmark-formula",
+        "make performance-regressions",
         "make e2e-formula",
     ):
         assert command in release
@@ -802,7 +804,7 @@ def test_stage_three_backtest_gates_extend_every_release_surface() -> None:
     )
     assert re.search(
         r"^benchmark-backtest:\n\tuv run --frozen pytest -W error "
-        r"tests/performance/test_single_backtest\.py --benchmark-only$",
+        r"tests/performance/test_single_backtest\.py -q$",
         makefile,
         re.MULTILINE,
     )
@@ -815,7 +817,7 @@ def test_stage_three_backtest_gates_extend_every_release_surface() -> None:
     release_check = re.search(r"^release-check:\s*(.+)$", makefile, re.MULTILINE)
     assert release_check is not None
     dependencies = release_check.group(1).split()
-    for target in ("acceptance-backtest", "benchmark-backtest", "e2e-backtest"):
+    for target in ("acceptance-backtest", "performance-regressions", "e2e-backtest"):
         assert target in dependencies
 
     ci = _load_github_actions_yaml(_read(".github/workflows/ci.yml"))
@@ -832,6 +834,11 @@ def test_stage_three_backtest_gates_extend_every_release_surface() -> None:
         "make e2e-backtest",
     ):
         assert command in ci_commands
+    for command in (
+        "make acceptance-backtest",
+        "make performance-regressions",
+        "make e2e-backtest",
+    ):
         assert command in release
 
 

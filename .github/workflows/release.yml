@@ -64,9 +64,8 @@ jobs:
           make acceptance-formula
           make acceptance-backtest
           make acceptance-analysis
-          make benchmark
-          make benchmark-formula
-          make benchmark-backtest
+          make performance-regressions
+          make performance
           make lint
           make typecheck
           make public-tree
@@ -77,6 +76,16 @@ jobs:
           make e2e-backtest
           make e2e-analysis
           make e2e-task-center
+      - name: Upload release performance evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-performance-evidence
+          path: |
+            test-results/performance/
+            test-results/playwright/
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Build final release assets
         run: make build
       - name: Verify built release artifacts

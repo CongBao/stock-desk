@@ -368,6 +368,33 @@ it('initializes, resizes, resets, and disposes the tree-shaken chart instance', 
   expect(chartMocks.dispose).toHaveBeenCalledOnce();
 });
 
+it('reports readiness only after ECharts finished and resets it for changed data', () => {
+  let finishedHandler: ((event: unknown) => void) | undefined;
+  chartMocks.on.mockImplementation(
+    (eventName: string, handler: (event: unknown) => void) => {
+      if (eventName === 'finished') finishedHandler = handler;
+    },
+  );
+  const { rerender, unmount } = render(<MarketChart bars={bars} />);
+  const chart = screen.getByRole('img', {
+    name: '600000.SH K 线与成交量交互图',
+  });
+
+  expect(chart).toHaveAttribute('data-chart-ready', 'false');
+  expect(chart).toHaveAttribute('aria-busy', 'true');
+  act(() => finishedHandler?.({}));
+  expect(chart).toHaveAttribute('data-chart-ready', 'true');
+  expect(chart).toHaveAttribute('aria-busy', 'false');
+
+  rerender(<MarketChart bars={bars.map((bar) => ({ ...bar }))} />);
+  expect(chart).toHaveAttribute('data-chart-ready', 'false');
+  act(() => finishedHandler?.({}));
+  expect(chart).toHaveAttribute('data-chart-ready', 'true');
+
+  unmount();
+  expect(chartMocks.off).toHaveBeenCalledWith('finished', expect.any(Function));
+});
+
 it('keeps the cached canvas and chart instance through a background error and recovery', () => {
   const { rerender, unmount } = render(<MarketChart bars={bars} />);
   const canvas = screen.getByRole('img', {
@@ -394,8 +421,8 @@ it('keeps the cached canvas and chart instance through a background error and re
   expect(chartMocks.setOption).toHaveBeenCalledTimes(2);
 
   unmount();
-  expect(chartMocks.on).toHaveBeenCalledTimes(2);
-  expect(chartMocks.off).toHaveBeenCalledTimes(2);
+  expect(chartMocks.on).toHaveBeenCalledTimes(3);
+  expect(chartMocks.off).toHaveBeenCalledTimes(3);
   expect(chartMocks.dispose).toHaveBeenCalledOnce();
 });
 

@@ -100,22 +100,23 @@ jobs:
           --ignore=tests/performance/test_chart_query.py
           --ignore=tests/performance/test_formula_preview.py
           --ignore=tests/performance/test_single_backtest.py
+          --ignore=tests/performance/test_v1_budgets.py
           --cov=src/stock_desk --cov=scripts --cov=migrations --cov-branch
           --cov-report=term-missing --cov-report=xml:coverage.xml
           --cov-fail-under=85
       - name: Test Stage 1 market acceptance
         run: make acceptance
-      - name: Benchmark cached ten-year chart query
+      - name: Verify legacy cached chart correctness
         run: make benchmark
       - name: Test Stage 2 formula acceptance
         run: make acceptance-formula
-      - name: Benchmark cached ten-year formula preview
+      - name: Verify legacy formula preview correctness
         run: make benchmark-formula
       - name: Test Stage 3 backtest acceptance
         run: make acceptance-backtest
       - name: Test Stage 4 analysis acceptance and security
         run: make acceptance-analysis
-      - name: Benchmark ten-year single-stock backtest
+      - name: Verify legacy single-backtest correctness
         run: make benchmark-backtest
       - name: Build Python package
         run: uv build --no-build-isolation
@@ -223,12 +224,16 @@ jobs:
         run: make e2e-analysis
       - name: Test live Stage 5 task center slice
         run: make e2e-task-center
-      - name: Upload Playwright failure artifacts
-        if: failure()
+      - name: Enforce aggregate 2/3/5-second performance gate
+        run: make performance
+      - name: Upload Playwright and performance evidence
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: playwright-results
-          path: test-results/playwright/
+          name: playwright-performance-results
+          path: |
+            test-results/playwright/
+            test-results/performance/
           if-no-files-found: ignore
           retention-days: 7
 

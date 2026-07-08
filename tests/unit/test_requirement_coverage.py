@@ -370,7 +370,10 @@ def test_requirement_evidence_does_not_overclaim_unproven_clauses(
 
     chart_performance = by_behavior["cached_chart_is_interactive_within_two_seconds"]
     assert any(
-        evidence["state"] == "planned" for evidence in chart_performance["evidence"]
+        evidence["state"] == "existing"
+        and evidence["selector"]
+        == "records aggregate 2/3/5 budgets and worker-backed UI responsiveness"
+        for evidence in chart_performance["evidence"]
     )
     assert any(
         evidence["kind"] == "performance" for evidence in chart_performance["evidence"]
@@ -378,10 +381,10 @@ def test_requirement_evidence_does_not_overclaim_unproven_clauses(
 
     backtest_performance = by_behavior["single_backtest_finishes_within_five_seconds"]
     assert any(
-        evidence["state"] == "planned" for evidence in backtest_performance["evidence"]
-    )
-    assert any(
-        evidence["state"] == "existing" and evidence["runner"] == "playwright"
+        evidence["state"] == "existing"
+        and evidence["runner"] == "playwright"
+        and evidence["selector"]
+        == "records aggregate 2/3/5 budgets and worker-backed UI responsiveness"
         for evidence in backtest_performance["evidence"]
     )
 
@@ -455,7 +458,6 @@ def test_final_multiclause_audit_keeps_explicit_plans_for_unproven_groups(
         "R-051": "tests/acceptance/test_model_secret_surfaces.py::test_model_key_is_masked_and_redacted_across_requests_logs_errors_reports_diagnostics_and_exports",
         "R-052": "tests/acceptance/test_formula_validation_boundary.py::test_all_validation_stages_block_invalid_save_preview_and_backtest_while_preserving_draft",
         "R-053": "backtest report keeps conclusions tabs sample states and snapshot context complete",
-        "R-055": "formula preview updates main chart subchart and signals within three seconds on the recorded baseline",
         "R-056": "tests/acceptance/test_first_release_market_scope.py::test_positive_market_periods_and_every_excluded_entry_are_exact",
     }
     for requirement_id, selector in audited_plans.items():

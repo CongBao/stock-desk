@@ -132,6 +132,7 @@ def supervise(
     commands: Sequence[Sequence[str]],
     *,
     requested_signal: Callable[[], int | None],
+    on_started: Callable[[Sequence[subprocess.Popen[bytes]]], None] | None = None,
     poll_interval: float = POLL_INTERVAL_SECONDS,
     shutdown_timeout: float = SHUTDOWN_TIMEOUT_SECONDS,
 ) -> int:
@@ -139,6 +140,8 @@ def supervise(
     try:
         for command in commands:
             processes.append(_start(command))
+        if on_started is not None:
+            on_started(tuple(processes))
         while (signum := requested_signal()) is None:
             for process in processes:
                 return_code = process.poll()

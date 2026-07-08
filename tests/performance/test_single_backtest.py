@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from datetime import date
 from pathlib import Path
-from typing import Any
 
 from stock_desk.formula.service import MACD_TEMPLATE_SOURCE, FormulaService
 from stock_desk.market.types import Period
@@ -13,10 +12,8 @@ from tests.backtest_test_helpers import (
 )
 
 
-def test_single_stock_ten_year_daily_under_five_seconds(
-    tmp_path: Path,
-    benchmark: Any,
-) -> None:
+def test_legacy_single_backtest_preserves_report_correctness(tmp_path: Path) -> None:
+    """Correctness regression only; the aggregate worker/browser gate owns timing."""
     with BacktestHarness.create(tmp_path) as harness:
         warmup_start = date(2015, 12, 1)
         scoring_start = date(2016, 1, 1)
@@ -44,19 +41,11 @@ def test_single_stock_ten_year_daily_under_five_seconds(
                 "status": completed.run.status,
             }
 
-        result = benchmark.pedantic(
-            cold_run,
-            rounds=3,
-            iterations=1,
-            warmup_rounds=1,
-        )
+        result = cold_run()
 
         assert result["input_bar_count"] >= 2_400
         assert result["realized_count"] > 0
         assert result["result_hash"] is not None
         assert result["signal_series_id"]
         assert result["status"] == "succeeded"
-        assert len(formula_services) == 4
-        assert len({id(service) for service in formula_services}) == 4
-        assert len({id(service.executor) for service in formula_services}) == 4
-        assert benchmark.stats.stats.mean < 5.0
+        assert len(formula_services) == 1

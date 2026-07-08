@@ -11,10 +11,8 @@ from stock_desk.storage.database import create_engine_for_url, migrate
 from tests.integration.market.lake_test_helpers import routed_daily_bars
 
 
-def test_macd_ten_year_cached_data_preview_under_three_seconds(
-    tmp_path: Path,
-    benchmark: Any,
-) -> None:
+def test_legacy_macd_preview_preserves_output_correctness(tmp_path: Path) -> None:
+    """Correctness regression only; the aggregate browser gate owns timing."""
     database_url = f"sqlite:///{tmp_path / 'formula-performance.db'}"
     migrate(database_url)
     services = MarketServices(
@@ -39,20 +37,12 @@ def test_macd_ten_year_cached_data_preview_under_three_seconds(
         placement="subchart",
     )
 
-    # Each measured round creates a fresh formula service, so its formula-result
-    # LRU is cold. The market snapshot remains locally cached and the measured
-    # path still includes DuckDB read, AST compilation, process spawn and compute.
     def preview_from_cached_market_data() -> Any:
         service = FormulaService(repository=repository, lake=services.lake)
         return service.preview(version.id, routed.result.query, {})
 
     try:
-        result = benchmark.pedantic(
-            preview_from_cached_market_data,
-            rounds=3,
-            iterations=1,
-            warmup_rounds=1,
-        )
+        result = preview_from_cached_market_data()
     finally:
         services.close()
 
@@ -62,4 +52,3 @@ def test_macd_ten_year_cached_data_preview_under_three_seconds(
         "DEA",
         "MACD",
     ]
-    assert benchmark.stats.stats.mean < 3.0

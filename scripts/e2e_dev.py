@@ -5,12 +5,15 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from collections.abc import Sequence
 from decimal import Decimal
 import asyncio
+import json
 import os
 from pathlib import Path
 import shutil
 import signal
+import subprocess
 import sys
 import tempfile
 from zoneinfo import ZoneInfo
@@ -49,9 +52,16 @@ from stock_desk.tasks.models import TaskClaim
 from stock_desk.tasks.repository import TaskRepository
 from scripts.dev import supervise
 from scripts.seed_demo_data import (
+    DemoSymbol,
     DemoResearchDataFactory,
+    _routed_instruments,
+    _routed_status,
     load_demo_fixture,
     seed_demo_data,
+)
+from tests.performance.ten_year_a_share import (
+    generate_fixture_bars,
+    load_fixture_metadata,
 )
 
 
@@ -107,15 +117,51 @@ def _seed(data_dir: Path) -> None:
         instruments = InstrumentRepository(engine)
         pools = PoolRepository(engine)
         partial_pool = pools.get_preset("index-synthetic-demo")
+        fixture = load_demo_fixture()
         lake = MarketLake(engine=engine, root=data_dir / "market")
         status_lake = ExecutionStatusLake(engine)
+        if os.environ.get("STOCK_DESK_PERFORMANCE_MODE") == "1":
+            performance_metadata = load_fixture_metadata()
+            performance_fixture = generate_fixture_bars(performance_metadata)
+            lake.write(performance_fixture.routed)
+            status_lake.write(_routed_status(performance_fixture.routed))
+            performance_symbols = tuple(
+                DemoSymbol(
+                    symbol=f"600{100 + index:03d}.SH",
+                    name=f"Performance Synthetic {index + 1:02d} (CC0)",
+                    wave_phase=index,
+                )
+                for index in range(8)
+            )
+            augmented_fixture = fixture.model_copy(
+                update={"symbols": (*fixture.symbols, *performance_symbols)}
+            )
+            instruments.ingest(_routed_instruments(augmented_fixture))
+            pools.publish_full_a(
+                preset_key="performance-all-a",
+                display_name="Performance Full A (CC0 synthetic)",
+            )
+            for item in performance_symbols:
+                generated = generate_fixture_bars(
+                    performance_metadata.model_copy(update={"symbol": item.symbol})
+                )
+                lake.write(generated.routed)
+                status_lake.write(_routed_status(generated.routed))
         formulas = FormulaRepository(engine)
-        fixture = load_demo_fixture()
         macd_name = next(item.name for item in fixture.formulas if item.key == "macd")
         macd_owner = next(
             formula for formula in formulas.list_formulas() if formula.name == macd_name
         )
         macd = formulas.list_versions(macd_owner.id)[-1]
+        if os.environ.get("STOCK_DESK_PERFORMANCE_MODE") == "1":
+            for index in range(20):
+                formulas.create(
+                    f"Performance MACD {index + 1:02d} (CC0 synthetic)",
+                    "trading",
+                    macd.source,
+                    {},
+                    placement="subchart",
+                )
         tasks = TaskRepository(engine)
         backtests = BacktestRepository(engine)
         service = BacktestService(
@@ -244,7 +290,46 @@ def main() -> int:
             (sys.executable, "-m", "scripts.e2e_dev", "--worker"),
             ("pnpm", "--dir", "web", "dev"),
         )
-        return supervise(commands, requested_signal=lambda: received_signal)
+        process_file = os.environ.get("STOCK_DESK_PERFORMANCE_PROCESS_FILE")
+
+        def record_processes(
+            processes: Sequence[subprocess.Popen[bytes]],
+        ) -> None:
+            if process_file is None:
+                return
+            service_pids = [
+                process.pid
+                for process in processes
+                if isinstance(getattr(process, "pid", None), int)
+            ]
+            destination = Path(process_file).resolve()
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            temporary = destination.with_name(f".{destination.name}.{os.getpid()}.tmp")
+            temporary.write_text(
+                json.dumps(
+                    {
+                        "supervisor_pid": os.getpid(),
+                        "service_pids": service_pids,
+                        "service_processes": [
+                            {"pid": process.pid, "command": list(command)}
+                            for process, command in zip(
+                                processes, commands, strict=True
+                            )
+                        ],
+                    },
+                    sort_keys=True,
+                ),
+                encoding="utf-8",
+            )
+            os.replace(temporary, destination)
+
+        if process_file is None:
+            return supervise(commands, requested_signal=lambda: received_signal)
+        return supervise(
+            commands,
+            requested_signal=lambda: received_signal,
+            on_started=record_processes,
+        )
     finally:
         for signum, previous_handler in previous_handlers.items():
             signal.signal(signum, previous_handler)
