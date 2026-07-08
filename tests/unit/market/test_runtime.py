@@ -5,6 +5,9 @@ from pathlib import Path
 
 from cryptography.fernet import Fernet
 from pydantic import SecretStr
+import pytest
+
+import stock_desk.market.worker_runtime as worker_runtime
 
 from stock_desk.api.settings import (
     PublicSourceSettings,
@@ -33,27 +36,50 @@ from tests.unit.market.providers.tdx_test_helpers import (
 )
 
 
-class _OneIdleWait:
+class _FakeMonotonic:
     def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+class _RepeatedIdleWait:
+    def __init__(self, clock: _FakeMonotonic, *, limit: int) -> None:
+        self.clock = clock
+        self.limit = limit
         self.waits: list[float] = []
 
     def is_set(self) -> bool:
-        return bool(self.waits)
+        return len(self.waits) >= self.limit
 
     def wait(self, timeout: float) -> bool:
         self.waits.append(timeout)
-        return True
+        self.clock.now += timeout
+        return self.is_set()
 
 
-def test_production_worker_checks_new_tasks_within_interactive_latency() -> None:
+def test_production_worker_polls_tasks_quickly_without_locking_schedules_each_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = _FakeMonotonic()
+    monkeypatch.setattr(worker_runtime, "_monotonic", clock, raising=False)
+    schedule_ticks: list[float] = []
     runtime = object.__new__(ProductionMarketWorker)
-    runtime.scheduler = type("Scheduler", (), {"tick": lambda _self: None})()
+    runtime.scheduler = type(
+        "Scheduler",
+        (),
+        {"tick": lambda _self: schedule_ticks.append(clock())},
+    )()
     runtime.worker = type("Worker", (), {"run_once": lambda _self: None})()
-    stop = _OneIdleWait()
+    stop = _RepeatedIdleWait(clock, limit=12)
 
     runtime.run_forever(stop)  # type: ignore[arg-type]
 
-    assert stop.waits == [0.1]
+    assert stop.waits == [0.1] * 12
+    assert len(schedule_ticks) == 2
+    assert schedule_ticks[0] == 0.0
+    assert schedule_ticks[1] >= 1.0
 
 
 class _Provider:

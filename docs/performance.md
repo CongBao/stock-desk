@@ -115,9 +115,10 @@ The separate cached-loading UI contract remains covered by
 `web/src/features/market/MarketChart.test.tsx`; this gate makes no unavailable
 nonzero provider-duration claim.
 
-RSS is sampled through asynchronous `ps` calls on Linux/macOS. The timed Node
-loop never blocks on `execFileSync` and excludes the `ps` helper. Every observed
-root or late child is identified by PID plus portable process start time; a
+RSS is sampled from Linux `/proc` without spawning a helper; macOS uses
+asynchronous `ps` calls. The timed Node loop never blocks on `execFileSync`, and
+the macOS path excludes the `ps` helper. Every observed root or late child is
+identified by PID plus portable process start identity; a
 late descendant's legal `exec`/process-title command evolution is retained in
 its incarnation history, while a reused PID with a new start time is tracked as
 a new process and remains in RSS. Declared roots must match the exact

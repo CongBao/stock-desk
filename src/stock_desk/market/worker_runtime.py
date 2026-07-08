@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import socket
 from threading import Event, Lock
+from time import monotonic as _monotonic
 from typing import Any
 
 from sqlalchemy import Engine
@@ -69,6 +70,7 @@ from stock_desk.tasks.worker import ClaimedTaskHandler, TaskWorker, demo_double
 
 
 _IDLE_TASK_POLL_SECONDS = 0.1
+_SCHEDULE_POLL_SECONDS = 1.0
 
 
 def _utc_now() -> datetime:
@@ -469,8 +471,13 @@ class ProductionMarketWorker:
         return self.worker.run_once()
 
     def run_forever(self, stop_event: Event) -> None:
+        next_schedule_poll = 0.0
         while not stop_event.is_set():
-            completed = self.run_once()
+            now = _monotonic()
+            if now >= next_schedule_poll:
+                self.scheduler.tick()
+                next_schedule_poll = now + _SCHEDULE_POLL_SECONDS
+            completed = self.worker.run_once()
             if completed is None:
                 stop_event.wait(_IDLE_TASK_POLL_SECONDS)
 
