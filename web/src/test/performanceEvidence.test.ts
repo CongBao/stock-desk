@@ -141,7 +141,9 @@ describe('process-tree evidence', () => {
           command: 'python replacement',
         },
       ]),
-    ).toThrow(/PID command identity changed/u);
+    ).toThrow(
+      /PID command identity changed for 10.*parent 1.*Wed Jul 8 12:00:00 2026.*node playwright.*python replacement/u,
+    );
     expect(() => tracker.observe([])).toThrow(/declared root disappeared/u);
   });
 

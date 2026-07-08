@@ -88,7 +88,9 @@ export class ProcessIdentityTracker {
       const identity = `${row.pid}\u0000${row.startedAt}`;
       const command = this.incarnations.get(identity);
       if (command !== undefined && command !== row.command) {
-        throw new Error(`PID command identity changed for ${row.pid}`);
+        throw new Error(
+          `PID command identity changed for ${row.pid} with parent ${row.parent} at ${row.startedAt}: ${JSON.stringify(command)} -> ${JSON.stringify(row.command)}`,
+        );
       }
       this.incarnations.set(identity, row.command);
     }
