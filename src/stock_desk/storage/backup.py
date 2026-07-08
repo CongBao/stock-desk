@@ -8,8 +8,10 @@ from datetime import datetime, timezone
 import hashlib
 from importlib.metadata import version as package_version
 import json
+import math
 import os
 from pathlib import Path, PurePosixPath
+import re
 import shutil
 import sqlite3
 import stat
@@ -57,12 +59,20 @@ _MAX_COMPRESSION_RATIO = 1_000
 _FIXED_ZIP_TIME = (1980, 1, 1, 0, 0, 0)
 _RESTORE_JOURNAL = ".stock-desk-restore-journal.json"
 _RECOVERY_DIRECTORY = ".stock-desk-recovery"
-_INVENTORY_QUERIES = {
-    "task_run": "SELECT id FROM task_run ORDER BY id",
-    "formula_version": "SELECT id FROM formula_version ORDER BY id",
-    "backtest_run": "SELECT id FROM backtest_run ORDER BY id",
-    "analysis_run": "SELECT id FROM analysis_run ORDER BY id",
-}
+_INVENTORY_TABLES = (
+    "task_run",
+    "formula",
+    "formula_version",
+    "backtest_run",
+    "backtest_symbol",
+    "backtest_trade",
+    "backtest_aggregate_metric",
+    "backtest_group_metric",
+    "analysis_run",
+    "analysis_stage",
+    "analysis_attempt",
+    "analysis_report",
+)
 
 
 class BackupError(RuntimeError):
@@ -103,8 +113,23 @@ class BackupDatasetPartition(_Contract):
 
 class BackupLogicalInventory(_Contract):
     table: str = Field(pattern=r"^[a-z][a-z0-9_]{0,63}$")
+    columns: tuple[str, ...] = Field(min_length=1, max_length=256)
+    primary_key: tuple[str, ...] = Field(min_length=1, max_length=32)
     count: int = Field(ge=0)
-    identity_sha256: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    content_sha256: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def validate_columns(self) -> Self:
+        identifier = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
+        if (
+            self.columns != tuple(dict.fromkeys(self.columns))
+            or self.primary_key != tuple(dict.fromkeys(self.primary_key))
+            or not set(self.primary_key) <= set(self.columns)
+            or any(identifier.fullmatch(item) is None for item in self.columns)
+            or any(identifier.fullmatch(item) is None for item in self.primary_key)
+        ):
+            raise ValueError("backup inventory columns are invalid")
+        return self
 
 
 class BackupTaskBarrier(_Contract):
@@ -295,8 +320,73 @@ def _validate_clone(path: Path, *, include_encrypted_secrets: bool) -> None:
         raise BackupValidationError("backup clone retained SQLite sidecar files")
 
 
+def _canonical_inventory_value(column: str, value: object) -> object:
+    if value is None or type(value) in {bool, int, str}:
+        if type(value) is str and column.endswith("_json"):
+            try:
+                return json.loads(value)
+            except (TypeError, ValueError) as error:
+                raise BackupValidationError(
+                    "backup inventory contains invalid JSON"
+                ) from error
+        return value
+    if type(value) is float:
+        if not math.isfinite(value):
+            raise BackupValidationError("backup inventory contains a non-finite value")
+        return value
+    if type(value) is bytes:
+        return {"bytes_sha256": _sha256_bytes(value), "size": len(value)}
+    raise BackupValidationError("backup inventory contains an unsupported value")
+
+
+def _logical_inventory(
+    connection: sqlite3.Connection,
+    table: str,
+    *,
+    columns: tuple[str, ...] | None = None,
+    primary_key: tuple[str, ...] | None = None,
+) -> BackupLogicalInventory:
+    schema_rows = connection.execute(f'PRAGMA table_info("{table}")').fetchall()
+    available = tuple(str(row[1]) for row in schema_rows)
+    discovered_primary_key = tuple(
+        str(row[1])
+        for row in sorted(schema_rows, key=lambda row: int(row[5]))
+        if int(row[5]) > 0
+    )
+    selected_columns = available if columns is None else columns
+    selected_primary_key = (
+        discovered_primary_key if primary_key is None else primary_key
+    )
+    if (
+        not selected_columns
+        or not selected_primary_key
+        or not set(selected_columns) <= set(available)
+        or selected_primary_key != discovered_primary_key
+    ):
+        raise BackupValidationError("backup inventory schema is incompatible")
+    quoted_columns = ", ".join(f'"{item}"' for item in selected_columns)
+    quoted_order = ", ".join(f'"{item}"' for item in selected_primary_key)
+    query = f'SELECT {quoted_columns} FROM "{table}" ORDER BY {quoted_order}'
+    rows = [
+        [
+            _canonical_inventory_value(column, value)
+            for column, value in zip(selected_columns, row, strict=True)
+        ]
+        for row in connection.execute(query)
+    ]
+    return BackupLogicalInventory(
+        table=table,
+        columns=selected_columns,
+        primary_key=selected_primary_key,
+        count=len(rows),
+        content_sha256=_sha256_bytes(_canonical_json(rows)),
+    )
+
+
 def _database_rows(
     database: Path,
+    *,
+    inventory_contract: tuple[BackupLogicalInventory, ...] | None = None,
 ) -> tuple[
     str,
     tuple[BackupDatasetPartition, ...],
@@ -310,60 +400,71 @@ def _database_rows(
         ).fetchone()
         if revision_row is None or type(revision_row[0]) is not str:
             raise BackupValidationError("backup database schema revision is missing")
-        partitions = tuple(
-            BackupDatasetPartition(
-                dataset_version=cast(str, row[0]),
-                partition_manifest_id=cast(str, row[1]),
-                relative_path=cast(str, row[2]),
-                byte_size=cast(int, row[3]),
-                physical_sha256=cast(str, row[4]),
-            )
-            for row in connection.execute(
-                "SELECT dataset_version, partition_manifest_id, relative_path, "
-                "byte_size, physical_sha256 FROM market_dataset_partition "
-                "ORDER BY relative_path"
-            )
-        )
-        inventories: list[BackupLogicalInventory] = []
         existing_tables = {
             cast(str, row[0])
             for row in connection.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'table'"
             )
         }
-        for table, identity_query in _INVENTORY_QUERIES.items():
-            if table not in existing_tables:
-                continue
-            primary_keys = tuple(
-                cast(str, row[1])
-                for row in connection.execute(f'PRAGMA table_info("{table}")')
-                if int(row[5]) > 0
-            )
-            if not primary_keys:
-                raise BackupValidationError("backup inventory table has no identity")
-            if primary_keys != ("id",):
-                raise BackupValidationError("backup inventory identity changed")
-            rows = [
-                [str(value) for value in row]
-                for row in connection.execute(identity_query)
-            ]
-            inventories.append(
-                BackupLogicalInventory(
-                    table=table,
-                    count=len(rows),
-                    identity_sha256=_sha256_bytes(_canonical_json(rows)),
+        partitions = (
+            tuple(
+                BackupDatasetPartition(
+                    dataset_version=cast(str, row[0]),
+                    partition_manifest_id=cast(str, row[1]),
+                    relative_path=cast(str, row[2]),
+                    byte_size=cast(int, row[3]),
+                    physical_sha256=cast(str, row[4]),
+                )
+                for row in connection.execute(
+                    "SELECT dataset_version, partition_manifest_id, relative_path, "
+                    "byte_size, physical_sha256 FROM market_dataset_partition "
+                    "ORDER BY relative_path"
                 )
             )
-        queued_count = int(
-            connection.execute(
-                "SELECT count(*) FROM task_run WHERE status = 'queued'"
-            ).fetchone()[0]
+            if "market_dataset_partition" in existing_tables
+            else ()
+        )
+        if inventory_contract is None:
+            inventories = tuple(
+                _logical_inventory(connection, table)
+                for table in _INVENTORY_TABLES
+                if table in existing_tables
+            )
+        else:
+            if tuple(item.table for item in inventory_contract) != tuple(
+                dict.fromkeys(item.table for item in inventory_contract)
+            ):
+                raise BackupValidationError("backup inventory tables are duplicated")
+            inventories = tuple(
+                _logical_inventory(
+                    connection,
+                    item.table,
+                    columns=item.columns,
+                    primary_key=item.primary_key,
+                )
+                for item in inventory_contract
+                if item.table in existing_tables
+            )
+            if len(inventories) != len(inventory_contract):
+                raise BackupValidationError("backup inventory table is missing")
+        queued_count = (
+            int(
+                connection.execute(
+                    "SELECT count(*) FROM task_run WHERE status = 'queued'"
+                ).fetchone()[0]
+            )
+            if "task_run" in existing_tables
+            else 0
         )
         tdx_path: str | None = None
-        public_row = connection.execute(
-            "SELECT encrypted_value FROM app_setting "
-            "WHERE key = 'public.market.source_settings.v1'"
-        ).fetchone()
+        public_row = (
+            connection.execute(
+                "SELECT encrypted_value FROM app_setting "
+                "WHERE key = 'public.market.source_settings.v1'"
+            ).fetchone()
+            if "app_setting" in existing_tables
+            else None
+        )
         if public_row is not None and type(public_row[0]) is str:
             try:
                 decoded = json.loads(public_row[0])
@@ -377,7 +478,7 @@ def _database_rows(
     return (
         revision_row[0],
         partitions,
-        tuple(inventories),
+        inventories,
         queued_count,
         tdx_path,
     )
@@ -952,7 +1053,10 @@ def _validate_staged_restore(
         raise BackupValidationError("staged database migration failed") from error
     _validate_clone(database, include_encrypted_secrets=True)
     _revision, migrated_partitions, migrated_inventories, _queued, _tdx = (
-        _database_rows(database)
+        _database_rows(
+            database,
+            inventory_contract=manifest.logical_inventory,
+        )
     )
     if (
         migrated_partitions != manifest.dataset_partitions

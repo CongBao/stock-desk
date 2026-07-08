@@ -5,16 +5,32 @@ import json
 from pathlib import Path
 import shutil
 import sqlite3
-import subprocess
 
 import pytest
 
-from stock_desk.storage.database import migrate
+from stock_desk.storage.backup import create_backup, restore_backup
+from stock_desk.storage.database import create_engine_for_url, migrate
+from stock_desk.tasks.repository import TaskRepository
+from tests.fixtures.releases import generate_tagged_fixtures
 
 
 ROOT = Path(__file__).resolve().parents[2]
 RELEASE_FIXTURES = ROOT / "tests" / "fixtures" / "releases"
 RELEASE_TAGS = ("v0.1.0", "v0.2.0", "v0.3.0", "v0.4.0", "v0.5.0")
+RELEASE_COMMITS = {
+    "v0.1.0": "05b379b7984268e34859614a771082e49140632b",
+    "v0.2.0": "f1727c67f9db4a068ed33f6751fa904f88a43f59",
+    "v0.3.0": "7ba36181f77fe7a805e14ec82607f10d13daf3b0",
+    "v0.4.0": "8a97dae9e59109b18f08f297d9d1a7d43bb72bc7",
+    "v0.5.0": "525c1e50cccd87c534ac44ae8f6a29c743dbfc03",
+}
+RELEASE_EXPORT_DIGESTS = {
+    "v0.1.0": "sha256:d28d99af6a0b1e249a15f143e4246d2ff56949bbda69ce94bac1860705739050",
+    "v0.2.0": "sha256:d527482ae763a736dbb990681bfc37770721ba7558b7a4d16fc2f481c168b8cd",
+    "v0.3.0": "sha256:25d0fb76a1976657e95a12ce95cf492d85a0e6850bb95a2ba9761c390fd6ae82",
+    "v0.4.0": "sha256:3bd848d8d59cece6a16c0876e80c33a1d7ba692bdb301334076bd8707ae8fe47",
+    "v0.5.0": "sha256:965249b81002b0fbab4e7fbd98a7f31130176579522cebf4d52e589f5eeb12ba",
+}
 HEAD_REVISION = "0010_parent_active_retry"
 
 
@@ -30,6 +46,39 @@ def _manifest(tag: str) -> dict[str, object]:
     path = RELEASE_FIXTURES / tag / "manifest.json"
     assert path.is_file(), f"missing exact tagged release fixture: {path}"
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_tagged_fixture_provenance_is_bound_to_generator_and_export() -> None:
+    generator_digest = _sha256(Path(generate_tagged_fixtures.__file__))
+    for tag in RELEASE_TAGS:
+        manifest = _manifest(tag)
+        database = RELEASE_FIXTURES / tag / "stock-desk.db"
+        assert manifest["tag_commit"] == RELEASE_COMMITS[tag]
+        assert manifest["generator_sha256"] == generator_digest
+        assert manifest["canonical_export_sha256"] == RELEASE_EXPORT_DIGESTS[tag]
+        assert (
+            generate_tagged_fixtures.canonical_export_sha256(database)
+            == (RELEASE_EXPORT_DIGESTS[tag])
+        )
+
+
+def test_canonical_export_normalizes_generated_identifiers_and_clocks(
+    tmp_path: Path,
+) -> None:
+    digests: list[str] = []
+    for ordinal in range(2):
+        database = tmp_path / f"generated-{ordinal}.db"
+        url = f"sqlite:///{database}"
+        migrate(url)
+        repository = TaskRepository(create_engine_for_url(url))
+        task = repository.create("fixture.reproducible", {"stable": True})
+        claimed = repository.claim_next("fixture-generator")
+        assert claimed is not None and claimed.id == task.id
+        repository.complete(task.id, {"stable": True})
+        repository.close()
+        digests.append(generate_tagged_fixtures.canonical_export_sha256(database))
+
+    assert digests[0] == digests[1]
 
 
 def _database_inventory(
@@ -62,16 +111,9 @@ def test_upgrade_from_exact_tagged_release_fixture_is_idempotent(
 ) -> None:
     source = RELEASE_FIXTURES / tag
     manifest = _manifest(tag)
-    expected_commit = subprocess.run(
-        ["git", "rev-parse", f"{tag}^{{commit}}"],
-        cwd=ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
     assert manifest["schema_version"] == "stock-desk-tagged-release-fixture-v1"
     assert manifest["tag"] == tag
-    assert manifest["tag_commit"] == expected_commit
+    assert manifest["tag_commit"] == RELEASE_COMMITS[tag]
     assert manifest["generated_by"] == "checked-out-tag-software"
 
     destination = tmp_path / tag
@@ -105,3 +147,41 @@ def test_upgrade_from_exact_tagged_release_fixture_is_idempotent(
     assert {
         relative: _sha256(destination / relative) for relative in market_hashes
     } == first_market_hashes
+
+
+@pytest.mark.parametrize("tag", RELEASE_TAGS)
+def test_compatible_backup_from_tagged_fixture_restores_on_current_release(
+    tag: str,
+    tmp_path: Path,
+) -> None:
+    fixture = tmp_path / f"{tag}-source"
+    shutil.copytree(RELEASE_FIXTURES / tag, fixture)
+    source_url = f"sqlite:///{fixture / 'stock-desk.db'}"
+    archive = tmp_path / f"{tag}.stockdesk-backup"
+
+    backed_up = create_backup(
+        database_url=source_url,
+        data_dir=fixture,
+        destination=archive,
+    )
+    restored = tmp_path / f"{tag}-restored"
+    restored.mkdir(mode=0o700)
+    result = restore_backup(
+        archive=archive,
+        database_url=f"sqlite:///{restored / 'stock-desk.db'}",
+        data_dir=restored,
+    )
+
+    assert result.manifest == backed_up.manifest
+    with sqlite3.connect(restored / "stock-desk.db") as connection:
+        assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == (HEAD_REVISION,)
+    fixture_manifest = _manifest(tag)
+    market_hashes = fixture_manifest["market_files"]
+    assert isinstance(market_hashes, dict)
+    assert {
+        relative: _sha256(restored / relative) for relative in market_hashes
+    } == market_hashes

@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import sqlite3
 import stat
 import warnings
@@ -22,6 +23,9 @@ from stock_desk.storage.database import create_engine_for_url, migrate
 from stock_desk.storage.models import AppSetting
 from stock_desk.market.lake import MarketLake
 from tests.integration.market.lake_test_helpers import routed_daily_bars
+
+
+ROOT = Path(__file__).resolve().parents[3]
 
 
 def _sha256(payload: bytes) -> str:
@@ -292,3 +296,50 @@ def test_backup_rejects_hard_linked_catalog_object(tmp_path: Path) -> None:
             destination=tmp_path / "linked.stockdesk-backup",
         )
     engine.dispose()
+
+
+def test_logical_inventory_covers_complete_domain_rows(tmp_path: Path) -> None:
+    data_dir = tmp_path / "tagged-v0.5"
+    shutil.copytree(ROOT / "tests/fixtures/releases/v0.5.0", data_dir)
+    archive = tmp_path / "inventory.stockdesk-backup"
+
+    manifest = create_backup(
+        database_url=f"sqlite:///{data_dir / 'stock-desk.db'}",
+        data_dir=data_dir,
+        destination=archive,
+    ).manifest
+
+    by_table = {item.table: item for item in manifest.logical_inventory}
+    assert {
+        "task_run",
+        "formula",
+        "formula_version",
+        "backtest_run",
+        "backtest_symbol",
+        "backtest_trade",
+        "backtest_aggregate_metric",
+        "backtest_group_metric",
+        "analysis_run",
+        "analysis_stage",
+        "analysis_attempt",
+        "analysis_report",
+    } <= set(by_table)
+    assert {"id", "name", "formula_type", "placement"} <= set(
+        by_table["formula"].columns
+    )
+    assert {"formula_id", "version", "source", "parameter_schema_json"} <= set(
+        by_table["formula_version"].columns
+    )
+    assert {"symbol", "reference_json", "signal_series_id"} <= set(
+        by_table["backtest_symbol"].columns
+    )
+    assert {"symbol", "ordinal", "payload_json"} <= set(
+        by_table["backtest_trade"].columns
+    )
+    assert {"metric_key", "payload_json"} <= set(
+        by_table["backtest_aggregate_metric"].columns
+    )
+    assert {"output_json", "trace_json"} <= set(by_table["analysis_stage"].columns)
+    assert {"request_hash", "usage_json"} <= set(by_table["analysis_attempt"].columns)
+    assert {"report_json", "report_hash"} <= set(by_table["analysis_report"].columns)
+    assert all(item.content_sha256.startswith("sha256:") for item in by_table.values())

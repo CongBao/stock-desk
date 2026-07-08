@@ -7,11 +7,13 @@ from datetime import date, datetime, timedelta, timezone
 import hashlib
 import json
 from pathlib import Path
+import re
 import shutil
 import sqlite3
 import subprocess
 import sys
 import tempfile
+from typing import Any
 
 
 TAGS = ("v0.1.0", "v0.2.0", "v0.3.0", "v0.4.0", "v0.5.0")
@@ -25,7 +27,16 @@ INVENTORY_TABLES = (
     "backtest_aggregate_metric",
     "backtest_group_metric",
     "analysis_run",
+    "analysis_stage",
+    "analysis_attempt",
     "analysis_report",
+)
+UUID_PATTERN = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+)
+SHA256_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
+TIMESTAMP_PATTERN = re.compile(
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}(?:[ T][0-9]{2}:[0-9]{2}:[0-9]{2})"
 )
 
 
@@ -41,7 +52,89 @@ def _sha256(path: Path) -> str:
     return f"sha256:{digest.hexdigest()}"
 
 
-def _complete_fixture_task(tasks: object, tag: str) -> None:
+def _normalized_export_value(column: str, value: object) -> object:
+    if value is None or type(value) in {bool, int, float}:
+        return value
+    if type(value) is bytes:
+        return {"bytes_sha256": f"sha256:{hashlib.sha256(value).hexdigest()}"}
+    if type(value) is not str:
+        raise TypeError("fixture export contains an unsupported SQLite value")
+    if column.endswith("_json"):
+        return _normalized_export_json(json.loads(value))
+    if UUID_PATTERN.fullmatch(value):
+        return "<uuid>"
+    if SHA256_PATTERN.fullmatch(value):
+        return "<sha256>"
+    if TIMESTAMP_PATTERN.match(value):
+        return "<timestamp>"
+    return value
+
+
+def _normalized_export_json(value: object) -> object:
+    if isinstance(value, dict):
+        return {
+            str(key): _normalized_export_json(item)
+            for key, item in sorted(value.items())
+        }
+    if isinstance(value, list):
+        return [_normalized_export_json(item) for item in value]
+    if isinstance(value, str):
+        if UUID_PATTERN.fullmatch(value):
+            return "<uuid>"
+        if SHA256_PATTERN.fullmatch(value):
+            return "<sha256>"
+        if TIMESTAMP_PATTERN.match(value):
+            return "<timestamp>"
+    return value
+
+
+def canonical_export_sha256(database: Path) -> str:
+    """Digest stable logical content while normalizing generated identities."""
+    export: dict[str, object] = {}
+    with sqlite3.connect(database) as connection:
+        existing = {
+            str(row[0])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        for table in INVENTORY_TABLES:
+            if table not in existing:
+                continue
+            columns = tuple(
+                str(row[1])
+                for row in connection.execute(f'PRAGMA table_info("{table}")')
+            )
+            quoted = ", ".join(f'"{column}"' for column in columns)
+            query = f'SELECT {quoted} FROM "{table}"'
+            rows = [
+                [
+                    _normalized_export_value(column, value)
+                    for column, value in zip(columns, row, strict=True)
+                ]
+                for row in connection.execute(query)
+            ]
+            rows.sort(
+                key=lambda row: json.dumps(
+                    row,
+                    allow_nan=False,
+                    ensure_ascii=True,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+            )
+            export[table] = {"columns": columns, "rows": rows}
+    encoded = json.dumps(
+        export,
+        allow_nan=False,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("ascii")
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
+def _complete_fixture_task(tasks: Any, tag: str) -> None:
     task = tasks.create("fixture.release", {"tag": tag})
     claimed = tasks.claim_next("fixture-generator")
     if claimed is None or claimed.id != task.id:
@@ -197,6 +290,8 @@ def _seed_one(tag: str, destination: Path, commit: str) -> None:
         "tag": tag,
         "tag_commit": commit,
         "generated_by": "checked-out-tag-software",
+        "generator_sha256": _sha256(Path(__file__).resolve()),
+        "canonical_export_sha256": canonical_export_sha256(database),
         "schema_revision": revision,
         "database_sha256": _sha256(database),
         "logical_inventory": _inventory(database),
@@ -250,6 +345,28 @@ def generate(repo: Path, output: Path) -> None:
                 _run("git", "worktree", "remove", "--force", str(checkout), cwd=repo)
 
 
+def refresh_provenance(output: Path) -> None:
+    generator_digest = _sha256(Path(__file__).resolve())
+    for tag in TAGS:
+        target = output / tag
+        manifest_path = target / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["generator_sha256"] = generator_digest
+        manifest["canonical_export_sha256"] = canonical_export_sha256(
+            target / "stock-desk.db"
+        )
+        manifest_path.write_text(
+            json.dumps(
+                manifest,
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo", type=Path)
@@ -257,12 +374,18 @@ def main() -> int:
     parser.add_argument("--seed-one", choices=TAGS)
     parser.add_argument("--commit")
     parser.add_argument("--destination", type=Path)
+    parser.add_argument("--refresh-provenance", action="store_true")
     args = parser.parse_args()
     if args.seed_one is not None:
         if args.commit is None or args.destination is None:
             parser.error("--seed-one requires --commit and --destination")
         sys.path.insert(0, str(Path.cwd()))
         _seed_one(args.seed_one, args.destination, args.commit)
+        return 0
+    if args.refresh_provenance:
+        if args.output is None:
+            parser.error("--refresh-provenance requires --output")
+        refresh_provenance(args.output.resolve())
         return 0
     if args.repo is None or args.output is None:
         parser.error("generation requires --repo and --output")
