@@ -281,7 +281,22 @@ def test_requirement_evidence_does_not_overclaim_unproven_clauses(
             "tests/acceptance/test_tdx_local_user_flow.py::test_unsupported_tdx_file_format_is_rejected_before_enablement",
         },
         "private_single_user_web_access": {
-            "every core workspace is reachable without accounts at tablet width",
+            "/market has bounded non-overlapping layout",
+            "/formulas has bounded non-overlapping layout",
+            "/backtests has bounded non-overlapping layout",
+            "/analysis has bounded non-overlapping layout",
+            "/tasks has bounded non-overlapping layout",
+            "/settings has bounded non-overlapping layout",
+        },
+        "responsive_icon_navigation_never_overlaps": {
+            "/market has bounded non-overlapping layout",
+            "/formulas has bounded non-overlapping layout",
+            "/backtests has bounded non-overlapping layout",
+            "/analysis has bounded non-overlapping layout",
+            "/tasks has bounded non-overlapping layout",
+            "/settings has bounded non-overlapping layout",
+            "navigation auto-collapses only when crossing the narrow breakpoint",
+            "collapsed navigation renders icons without textual abbreviations",
         },
         "professional_terminal_visual_structure": {
             "market terminal preserves navy structure and rise-fall colors with three aligned regions",

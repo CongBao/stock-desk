@@ -730,6 +730,7 @@ def test_e2e_is_a_root_script_without_changing_the_make_contract() -> None:
         "e2e-backtest",
         "e2e-analysis",
         "e2e-task-center",
+        "e2e-accessibility",
         "test",
         "lint",
         "typecheck",
@@ -1259,3 +1260,22 @@ def test_performance_target_ci_is_explicit_and_requirements_remain_mapped() -> N
             evidence["state"] == "planned" and evidence["runner"] == "github-actions"
             for evidence in requirement["evidence"]
         )
+
+
+def test_accessibility_and_responsive_suite_is_a_release_gate() -> None:
+    workflow = _load_github_actions_yaml(_read(".github/workflows/ci.yml"))
+    e2e_steps = workflow["jobs"]["e2e"]["steps"]
+    responsive_step = next(
+        step
+        for step in e2e_steps
+        if step.get("name") == "Test accessible responsive workspaces"
+    )
+    assert responsive_step["run"] == "make e2e-accessibility"
+
+    makefile = _read("Makefile")
+    recipe = makefile.split("\ne2e-accessibility:\n", maxsplit=1)[1].split(
+        "\n\n", maxsplit=1
+    )[0]
+    assert "web/e2e/accessibility.spec.ts" in recipe
+    assert "web/e2e/responsive.spec.ts" in recipe
+    assert "e2e-accessibility" in makefile.split("\nrelease-check:", maxsplit=1)[1]

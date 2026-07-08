@@ -279,7 +279,12 @@ requirements:
     status: mapped
     evidence:
       - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/foundation.spec.ts, selector: "fresh user sees the live foundation shell and completed demo task", assertion: "A fresh private user reaches the complete browser shell and worker state without an account flow."}
-      - {state: planned, runner: playwright, kind: acceptance, path: web/e2e/responsive-core-routes.spec.ts, selector: "every core workspace is reachable without accounts at tablet width", assertion: "The planned tablet journey will visit market, formula, backtest, analysis, task, and settings routes without any account flow."}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: "/market has bounded non-overlapping layout", assertion: "The market workspace remains reachable without an account and bounded at every tested ratio including both tablet orientations."}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: "/formulas has bounded non-overlapping layout", assertion: "The formula workspace remains reachable without an account and bounded at every tested ratio including both tablet orientations."}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: "/backtests has bounded non-overlapping layout", assertion: "The backtest workspace remains reachable without an account and bounded at every tested ratio including both tablet orientations."}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: "/analysis has bounded non-overlapping layout", assertion: "The analysis workspace remains reachable without an account and bounded at every tested ratio including both tablet orientations."}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: "/tasks has bounded non-overlapping layout", assertion: "The task workspace remains reachable without an account and bounded at every tested ratio including both tablet orientations."}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: "/settings has bounded non-overlapping layout", assertion: "The settings workspace remains reachable without an account and bounded at every tested ratio including both tablet orientations."}
   - id: R-026
     category: backtest
     kind: user_visible
@@ -969,7 +974,15 @@ requirements:
     status: mapped
     evidence:
       - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/backtest.spec.ts, selector: "global shell stays operable across desktop, tablet, portrait, and 200% effective viewport", assertion: "Existing browser evidence covers the global shell and one major route across representative viewport ratios."}
-      - {state: planned, runner: playwright, kind: acceptance, path: web/e2e/responsive-all-routes.spec.ts, selector: "every workspace remains accessible and non-overlapping at supported ratios", assertion: "The strengthened v1 suite will test icon navigation, keyboard names, drawers, zoom, and overlap on every route."}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: "/market has bounded non-overlapping layout", assertion: "The market workspace is checked for shell overlap, interactive-control overlap, and document overflow at all five release viewports."}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: "/formulas has bounded non-overlapping layout", assertion: "The formula workspace is checked for shell overlap, interactive-control overlap, and document overflow at all five release viewports."}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: "/backtests has bounded non-overlapping layout", assertion: "The backtest workspace is checked for shell overlap, interactive-control overlap, and document overflow at all five release viewports."}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: "/analysis has bounded non-overlapping layout", assertion: "The analysis workspace is checked for shell overlap, interactive-control overlap, and document overflow at all five release viewports."}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: "/tasks has bounded non-overlapping layout", assertion: "The task workspace is checked for shell overlap, interactive-control overlap, and document overflow at all five release viewports."}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: "/settings has bounded non-overlapping layout", assertion: "The settings workspace is checked for shell overlap, interactive-control overlap, and document overflow at all five release viewports."}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: "navigation auto-collapses only when crossing the narrow breakpoint", assertion: "The shell automatically collapses on breakpoint entry while preserving a manual expansion choice until the breakpoint is crossed again."}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: "collapsed navigation renders icons without textual abbreviations", assertion: "Every collapsed navigation entry renders an SVG icon, hides its text label, and retains a non-empty accessible name."}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/accessibility.spec.ts, selector: "skip link and collapsed icon navigation remain keyboard operable", assertion: "Keyboard users can skip to main content and expand the icon navigation through the labelled control with accurate expanded state."}
 non_goals:
   - id: N-001
     category: backtest

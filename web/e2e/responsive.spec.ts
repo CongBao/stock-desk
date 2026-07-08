@@ -65,23 +65,43 @@ async function expectNoInteractiveControlOverlap(page: Page) {
   const controls = page.locator(
     'a:visible, button:visible, input:visible, select:visible, textarea:visible, [role="tab"]:visible',
   );
-  const count = await controls.count();
-  const boxes = await Promise.all(
-    Array.from({ length: count }, (_, index) =>
-      controls.nth(index).boundingBox(),
-    ),
+  const snapshots = await controls.evaluateAll((elements) =>
+    elements.map((element) => {
+      const browserElement = element as unknown as {
+        getAttribute: (name: string) => string | null;
+        getBoundingClientRect: () => {
+          height: number;
+          width: number;
+          x: number;
+          y: number;
+        };
+        textContent: string | null;
+      };
+      const rect = browserElement.getBoundingClientRect();
+      return {
+        box: {
+          x: rect.x,
+          y: rect.y,
+          width: rect.width,
+          height: rect.height,
+        },
+        label:
+          browserElement.getAttribute('aria-label') ??
+          browserElement.textContent?.trim() ??
+          '',
+      };
+    }),
   );
-  const labels = await controls.allTextContents();
 
-  for (let first = 0; first < boxes.length; first += 1) {
-    const firstBox = boxes[first];
-    if (firstBox === null) continue;
-    for (let second = first + 1; second < boxes.length; second += 1) {
-      const secondBox = boxes[second];
-      if (secondBox === null) continue;
+  for (let first = 0; first < snapshots.length; first += 1) {
+    const firstControl = snapshots[first];
+    if (firstControl === undefined) continue;
+    for (let second = first + 1; second < snapshots.length; second += 1) {
+      const secondControl = snapshots[second];
+      if (secondControl === undefined) continue;
       expect(
-        intersects(firstBox, secondBox),
-        `interactive controls overlap: ${labels[first] ?? first} / ${labels[second] ?? second}`,
+        intersects(firstControl.box, secondControl.box),
+        `interactive controls overlap: ${firstControl.label || first} / ${secondControl.label || second}`,
       ).toBe(false);
     }
   }
