@@ -85,6 +85,14 @@ def _reject_active_services(data_dir: Path) -> None:
         marker.unlink()
 
 
+def has_application_or_operator_content(data_dir: Path) -> bool:
+    """Return whether a restore target contains more than lifecycle artifacts."""
+    return any(
+        entry.name not in {_RESTORE_LOCK, _SERVICE_DIRECTORY}
+        for entry in data_dir.iterdir()
+    )
+
+
 @contextmanager
 def restore_lifecycle(
     data_dir: Path,

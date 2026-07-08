@@ -48,6 +48,7 @@ from stock_desk.storage.database import (
 from stock_desk.storage.lifecycle import (
     LifecycleBusyError,
     LifecycleCorruptionError,
+    has_application_or_operator_content,
     restore_lifecycle,
 )
 from stock_desk.tasks.repository import TaskRepository
@@ -65,6 +66,7 @@ _MAX_COMPRESSION_RATIO = 1_000
 _MAX_AGGREGATE_COMPRESSION_RATIO = 200
 _FIXED_ZIP_TIME = (1980, 1, 1, 0, 0, 0)
 _RESTORE_JOURNAL = ".stock-desk-restore-journal.json"
+_RESTORE_MANIFEST = "archive-manifest.json"
 _RECOVERY_DIRECTORY = ".stock-desk-recovery"
 _INVENTORY_TABLES = (
     "task_run",
@@ -91,7 +93,7 @@ class BackupBusyError(BackupError):
 
 
 class BackupValidationError(BackupError):
-    """A backup archive is not canonical or internally consistent."""
+    """A backup archive is structurally invalid or internally inconsistent."""
 
 
 class RestoreRecoveryRequired(BackupError):
@@ -185,8 +187,8 @@ class BackupManifest(_Contract):
 
 
 class _RestoreJournal(_Contract):
-    schema_version: Literal["stock-desk-restore-journal-v1"] = (
-        "stock-desk-restore-journal-v1"
+    schema_version: Literal["stock-desk-restore-journal-v2"] = (
+        "stock-desk-restore-journal-v2"
     )
     token: str = Field(pattern=r"^[0-9a-f]{32}$")
     database_name: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$")
@@ -197,6 +199,7 @@ class _RestoreJournal(_Contract):
         "market_old_moved",
         "market_installed",
         "committed",
+        "rolled_back",
     ]
     had_database: bool
     had_market: bool
@@ -205,6 +208,24 @@ class _RestoreJournal(_Contract):
     market_old_moved: bool = False
     market_installed: bool = False
     archive_manifest_sha256: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    original_database_sha256: str | None = Field(
+        default=None, pattern=r"^sha256:[0-9a-f]{64}$"
+    )
+    installed_database_sha256: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    original_market_sha256: str | None = Field(
+        default=None, pattern=r"^sha256:[0-9a-f]{64}$"
+    )
+    installed_market_sha256: str | None = Field(
+        default=None, pattern=r"^sha256:[0-9a-f]{64}$"
+    )
+
+    @model_validator(mode="after")
+    def validate_component_identities(self) -> Self:
+        if self.had_database != (self.original_database_sha256 is not None):
+            raise ValueError("restore journal database identity is inconsistent")
+        if self.had_market != (self.original_market_sha256 is not None):
+            raise ValueError("restore journal market identity is inconsistent")
+        return self
 
 
 @dataclass(frozen=True, slots=True)
@@ -289,6 +310,57 @@ def _open_regular(path: Path) -> int:
         os.close(descriptor)
         raise
     return descriptor
+
+
+def _regular_file_sha256(path: Path) -> str:
+    descriptor = _open_regular(path)
+    digest = hashlib.sha256()
+    try:
+        while chunk := os.read(descriptor, 1024 * 1024):
+            digest.update(chunk)
+    finally:
+        os.close(descriptor)
+    return f"sha256:{digest.hexdigest()}"
+
+
+def _directory_sha256(path: Path) -> str:
+    try:
+        root_metadata = os.lstat(path)
+    except FileNotFoundError as error:
+        raise BackupValidationError("component directory is missing") from error
+    if stat.S_ISLNK(root_metadata.st_mode) or not stat.S_ISDIR(root_metadata.st_mode):
+        raise BackupValidationError("component directory is unsafe")
+
+    entries: list[dict[str, object]] = []
+
+    def walk(directory: Path, relative: PurePosixPath) -> None:
+        with os.scandir(directory) as scanned:
+            children = sorted(scanned, key=lambda entry: entry.name)
+        for child in children:
+            child_relative = relative / child.name
+            metadata = child.stat(follow_symlinks=False)
+            if stat.S_ISLNK(metadata.st_mode):
+                raise BackupValidationError("component directory contains a symlink")
+            child_path = directory / child.name
+            if stat.S_ISDIR(metadata.st_mode):
+                entries.append({"kind": "directory", "path": child_relative.as_posix()})
+                walk(child_path, child_relative)
+                continue
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+                raise BackupValidationError(
+                    "component directory contains an unsafe file"
+                )
+            entries.append(
+                {
+                    "kind": "file",
+                    "path": child_relative.as_posix(),
+                    "sha256": _regular_file_sha256(child_path),
+                    "size": metadata.st_size,
+                }
+            )
+
+    walk(path, PurePosixPath())
+    return _sha256_bytes(_canonical_json(entries))
 
 
 def _copy_database(source_path: Path, clone_path: Path) -> None:
@@ -919,6 +991,44 @@ def _write_restore_journal(data_dir: Path, journal: _RestoreJournal) -> None:
     _replace_durably(temporary, path)
 
 
+def _write_restore_manifest(stage: Path, manifest: BackupManifest) -> None:
+    path = stage / _RESTORE_MANIFEST
+    descriptor = os.open(
+        path,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+    )
+    try:
+        payload = _canonical_json(manifest.model_dump(mode="json"))
+        with os.fdopen(descriptor, "wb", closefd=False) as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+    finally:
+        os.close(descriptor)
+    _fsync_directory(stage)
+
+
+def _validate_restore_manifest(stage: Path, expected_sha256: str) -> None:
+    path = stage / _RESTORE_MANIFEST
+    try:
+        descriptor = _open_regular(path)
+        with os.fdopen(descriptor, "rb") as stream:
+            raw = stream.read(_MAX_MANIFEST_BYTES + 1)
+    except (OSError, BackupValidationError) as error:
+        raise RestoreRecoveryRequired(
+            "restore archive manifest is not a safe regular file"
+        ) from error
+    if len(raw) > _MAX_MANIFEST_BYTES or _sha256_bytes(raw) != expected_sha256:
+        raise RestoreRecoveryRequired("restore archive manifest binding is invalid")
+    try:
+        manifest = BackupManifest.model_validate_json(raw)
+    except (TypeError, ValueError, ValidationError) as error:
+        raise RestoreRecoveryRequired("restore archive manifest is corrupt") from error
+    if _canonical_json(manifest.model_dump(mode="json")) != raw:
+        raise RestoreRecoveryRequired("restore archive manifest is not canonical")
+
+
 def _read_restore_journal(data_dir: Path) -> _RestoreJournal | None:
     path = _journal_path(data_dir)
     try:
@@ -1238,7 +1348,7 @@ def _restore_backup_locked(
         )
     database = _restore_database_path(database_url, data_dir)
     market = data_dir / "market"
-    nonempty = any(data_dir.iterdir())
+    nonempty = has_application_or_operator_content(data_dir)
     if nonempty and not offline:
         raise BackupValidationError(
             "restore into a non-empty destination requires offline"
@@ -1340,6 +1450,9 @@ def _restore_owned_components(
         _quiesce_offline_database(database)
         tasks.engine.dispose()
 
+    original_database_sha256 = _regular_file_sha256(database) if had_database else None
+    original_market_sha256 = _directory_sha256(market) if had_market else None
+
     stage = data_dir / f".stock-desk-restore-{token}"
     new_root = stage / "new"
     rollback_root = stage / "rollback"
@@ -1359,6 +1472,11 @@ def _restore_owned_components(
             market=staged_market,
             manifest=manifest,
         )
+        installed_database_sha256 = _regular_file_sha256(staged_database)
+        installed_market_sha256 = (
+            _directory_sha256(staged_market) if staged_market is not None else None
+        )
+        _write_restore_manifest(stage, manifest)
         journal = _RestoreJournal(
             token=token,
             database_name=database.name,
@@ -1368,6 +1486,10 @@ def _restore_owned_components(
             archive_manifest_sha256=_sha256_bytes(
                 _canonical_json(manifest.model_dump(mode="json"))
             ),
+            original_database_sha256=original_database_sha256,
+            installed_database_sha256=installed_database_sha256,
+            original_market_sha256=original_market_sha256,
+            installed_market_sha256=installed_market_sha256,
         )
         _write_restore_journal(data_dir, journal)
         journal_written = True
@@ -1467,6 +1589,46 @@ def recover_interrupted_restore(
         raise RestoreRecoveryRequired(str(error)) from error
 
 
+def _recovery_regular_identity(path: Path, label: str) -> str | None:
+    if not os.path.lexists(path):
+        return None
+    try:
+        return _regular_file_sha256(path)
+    except (OSError, BackupValidationError) as error:
+        raise RestoreRecoveryRequired(
+            f"restore {label} is not a safe regular single-link file"
+        ) from error
+
+
+def _recovery_directory_identity(path: Path, label: str) -> str | None:
+    if not os.path.lexists(path):
+        return None
+    try:
+        return _directory_sha256(path)
+    except (OSError, BackupValidationError) as error:
+        raise RestoreRecoveryRequired(f"restore {label} is unsafe") from error
+
+
+def _require_recovery_directory(path: Path, label: str) -> None:
+    try:
+        metadata = os.lstat(path)
+    except FileNotFoundError as error:
+        raise RestoreRecoveryRequired(
+            f"restore {label} directory is missing"
+        ) from error
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+        raise RestoreRecoveryRequired(f"restore {label} directory is unsafe")
+
+
+def _expect_recovery_identity(
+    actual: str | None,
+    expected: str | None,
+    label: str,
+) -> None:
+    if actual != expected:
+        raise RestoreRecoveryRequired(f"restore {label} identity is invalid")
+
+
 def _recover_interrupted_restore_locked(data_dir: Path) -> bool:
     journal = _read_restore_journal(data_dir)
     if journal is None:
@@ -1480,18 +1642,132 @@ def _recover_interrupted_restore_locked(data_dir: Path) -> bool:
         staged_database,
         staged_market,
     ) = _recovery_paths(data_dir, journal)
-    if journal.phase == "committed":
-        _finish_restore_cleanup(data_dir, journal)
-        return True
-    if not stage.is_dir() or stage.is_symlink():
+    discarded_database = stage / "discarded-database"
+    discarded_market = stage / "discarded-market"
+    stage_exists = os.path.lexists(stage)
+    if stage_exists:
+        _require_recovery_directory(stage, "staging")
+        if journal.phase in {"committed", "rolled_back"}:
+            for path, label in (
+                (stage / "rollback", "rollback"),
+                (stage / "new", "new"),
+            ):
+                if os.path.lexists(path):
+                    _require_recovery_directory(path, label)
+            if os.path.lexists(stage / _RESTORE_MANIFEST):
+                _validate_restore_manifest(stage, journal.archive_manifest_sha256)
+        else:
+            _require_recovery_directory(stage / "rollback", "rollback")
+            _require_recovery_directory(stage / "new", "new")
+            _validate_restore_manifest(stage, journal.archive_manifest_sha256)
+    elif journal.phase not in {"committed", "rolled_back"}:
         raise RestoreRecoveryRequired("restore journal staging directory is missing")
 
+    live_database_identity = _recovery_regular_identity(database, "live database")
+    live_market_identity = _recovery_directory_identity(market, "live market")
+    old_database_identity = _recovery_regular_identity(
+        old_database, "rollback database"
+    )
+    old_market_identity = _recovery_directory_identity(old_market, "rollback market")
+    staged_database_identity = _recovery_regular_identity(
+        staged_database, "staged database"
+    )
+    staged_market_identity = _recovery_directory_identity(
+        staged_market, "staged market"
+    )
+    discarded_database_identity = _recovery_regular_identity(
+        discarded_database, "discarded database"
+    )
+    discarded_market_identity = _recovery_directory_identity(
+        discarded_market, "discarded market"
+    )
+
+    for actual, expected, label in (
+        (
+            old_database_identity,
+            journal.original_database_sha256 if old_database_identity else None,
+            "rollback database",
+        ),
+        (
+            old_market_identity,
+            journal.original_market_sha256 if old_market_identity else None,
+            "rollback market",
+        ),
+        (
+            staged_database_identity,
+            journal.installed_database_sha256 if staged_database_identity else None,
+            "staged database",
+        ),
+        (
+            staged_market_identity,
+            journal.installed_market_sha256 if staged_market_identity else None,
+            "staged market",
+        ),
+        (
+            discarded_database_identity,
+            journal.installed_database_sha256 if discarded_database_identity else None,
+            "discarded database",
+        ),
+        (
+            discarded_market_identity,
+            journal.installed_market_sha256 if discarded_market_identity else None,
+            "discarded market",
+        ),
+    ):
+        _expect_recovery_identity(actual, expected, label)
+
+    if journal.phase == "committed":
+        _expect_recovery_identity(
+            live_database_identity,
+            journal.installed_database_sha256,
+            "live database",
+        )
+        _expect_recovery_identity(
+            live_market_identity,
+            journal.installed_market_sha256,
+            "live market",
+        )
+        _finish_restore_cleanup(data_dir, journal)
+        return True
+    if journal.phase == "rolled_back":
+        _expect_recovery_identity(
+            live_database_identity,
+            journal.original_database_sha256,
+            "live database",
+        )
+        _expect_recovery_identity(
+            live_market_identity,
+            journal.original_market_sha256,
+            "live market",
+        )
+        _finish_restore_cleanup(data_dir, journal)
+        return True
+
+    if live_database_identity not in {
+        None,
+        journal.original_database_sha256,
+        journal.installed_database_sha256,
+    }:
+        raise RestoreRecoveryRequired("restore live database identity is invalid")
+    if live_market_identity not in {
+        None,
+        journal.original_market_sha256,
+        journal.installed_market_sha256,
+    }:
+        raise RestoreRecoveryRequired("restore live market identity is invalid")
+
     # Reconcile a crash between an atomic rename and the following journal fsync.
-    if not journal.database_old_moved and old_database.exists():
-        if journal.had_database and not database.exists():
+    if not journal.database_old_moved and old_database_identity is not None:
+        if (
+            journal.had_database
+            and live_database_identity is None
+            and staged_database_identity == journal.installed_database_sha256
+        ):
             journal = journal.model_copy(update={"database_old_moved": True})
         elif (
-            journal.had_database and database.exists() and not staged_database.exists()
+            journal.had_database
+            and live_database_identity == journal.installed_database_sha256
+            and staged_database_identity is None
         ):
             journal = journal.model_copy(
                 update={"database_old_moved": True, "database_installed": True}
@@ -1501,16 +1777,24 @@ def _recover_interrupted_restore_locked(data_dir: Path) -> bool:
         _write_restore_journal(data_dir, journal)
     if (
         not journal.database_installed
-        and database.exists()
-        and not staged_database.exists()
+        and live_database_identity == journal.installed_database_sha256
+        and staged_database_identity is None
         and (journal.database_old_moved or not journal.had_database)
     ):
         journal = journal.model_copy(update={"database_installed": True})
         _write_restore_journal(data_dir, journal)
-    if not journal.market_old_moved and old_market.exists():
-        if journal.had_market and not market.exists():
+    if not journal.market_old_moved and old_market_identity is not None:
+        if (
+            journal.had_market
+            and live_market_identity is None
+            and staged_market_identity == journal.installed_market_sha256
+        ):
             journal = journal.model_copy(update={"market_old_moved": True})
-        elif journal.had_market and market.exists() and not staged_market.exists():
+        elif (
+            journal.had_market
+            and live_market_identity == journal.installed_market_sha256
+            and staged_market_identity is None
+        ):
             journal = journal.model_copy(
                 update={"market_old_moved": True, "market_installed": True}
             )
@@ -1519,55 +1803,84 @@ def _recover_interrupted_restore_locked(data_dir: Path) -> bool:
         _write_restore_journal(data_dir, journal)
     if (
         not journal.market_installed
-        and market.exists()
-        and not staged_market.exists()
+        and journal.installed_market_sha256 is not None
+        and live_market_identity == journal.installed_market_sha256
+        and staged_market_identity is None
         and (journal.market_old_moved or not journal.had_market)
     ):
         journal = journal.model_copy(update={"market_installed": True})
         _write_restore_journal(data_dir, journal)
 
     if journal.market_installed:
-        discarded_market = stage / "discarded-market"
-        if market.exists():
-            if discarded_market.exists():
+        if live_market_identity is not None:
+            _expect_recovery_identity(
+                live_market_identity,
+                journal.installed_market_sha256,
+                "installed market",
+            )
+            if discarded_market_identity is not None:
                 raise RestoreRecoveryRequired("restore market rollback is ambiguous")
             _replace_durably(market, discarded_market)
-        elif not discarded_market.exists():
+            live_market_identity = None
+            discarded_market_identity = journal.installed_market_sha256
+        elif discarded_market_identity is None:
             raise RestoreRecoveryRequired("installed restore market is missing")
         journal = journal.model_copy(update={"market_installed": False})
         _write_restore_journal(data_dir, journal)
     if journal.market_old_moved:
-        if old_market.exists():
-            if market.exists():
+        if old_market_identity is not None:
+            _expect_recovery_identity(
+                old_market_identity,
+                journal.original_market_sha256,
+                "rollback market",
+            )
+            if live_market_identity is not None:
                 raise RestoreRecoveryRequired(
                     "original restore market target is occupied"
                 )
             _replace_durably(old_market, market)
-        elif not market.exists():
+            live_market_identity = journal.original_market_sha256
+            old_market_identity = None
+        elif live_market_identity != journal.original_market_sha256:
             raise RestoreRecoveryRequired("original restore market is missing")
         journal = journal.model_copy(update={"market_old_moved": False})
         _write_restore_journal(data_dir, journal)
     if journal.database_installed:
-        discarded_database = stage / "discarded-database"
-        if database.exists():
-            if discarded_database.exists():
+        if live_database_identity is not None:
+            _expect_recovery_identity(
+                live_database_identity,
+                journal.installed_database_sha256,
+                "installed database",
+            )
+            if discarded_database_identity is not None:
                 raise RestoreRecoveryRequired("restore database rollback is ambiguous")
             _replace_durably(database, discarded_database)
-        elif not discarded_database.exists():
+            live_database_identity = None
+            discarded_database_identity = journal.installed_database_sha256
+        elif discarded_database_identity is None:
             raise RestoreRecoveryRequired("installed restore database is missing")
         journal = journal.model_copy(update={"database_installed": False})
         _write_restore_journal(data_dir, journal)
     if journal.database_old_moved:
-        if old_database.exists():
-            if database.exists():
+        if old_database_identity is not None:
+            _expect_recovery_identity(
+                old_database_identity,
+                journal.original_database_sha256,
+                "rollback database",
+            )
+            if live_database_identity is not None:
                 raise RestoreRecoveryRequired(
                     "original restore database target is occupied"
                 )
             _replace_durably(old_database, database)
-        elif not database.exists():
+            live_database_identity = journal.original_database_sha256
+            old_database_identity = None
+        elif live_database_identity != journal.original_database_sha256:
             raise RestoreRecoveryRequired("original restore database is missing")
         journal = journal.model_copy(update={"database_old_moved": False})
         _write_restore_journal(data_dir, journal)
 
+    journal = journal.model_copy(update={"phase": "rolled_back"})
+    _write_restore_journal(data_dir, journal)
     _finish_restore_cleanup(data_dir, journal)
     return True

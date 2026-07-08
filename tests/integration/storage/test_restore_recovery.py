@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from datetime import date
+import os
 from pathlib import Path
+import shutil
 import sqlite3
 
 import pytest
@@ -59,6 +61,37 @@ def _marker(database: Path) -> str:
                 "WHERE key = 'public.restore-marker'"
             ).fetchone()[0]
         )
+
+
+def _crashed_restore(tmp_path: Path, phase: str) -> Path:
+    source = tmp_path / "source"
+    source_url, _ = _instance(source, marker="new", day=date(2024, 9, 2))
+    archive = tmp_path / "source.stockdesk-backup"
+    create_backup(database_url=source_url, data_dir=source, destination=archive)
+    destination = tmp_path / "destination"
+    destination_url, _ = _instance(destination, marker="old", day=date(2023, 9, 4))
+
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        restore_backup(
+            archive=archive,
+            database_url=destination_url,
+            data_dir=destination,
+            offline=True,
+            _phase_hook=lambda observed: (
+                (_ for _ in ()).throw(RuntimeError("simulated crash"))
+                if observed == phase
+                else None
+            ),
+        )
+    return destination
+
+
+def _restore_stage(destination: Path) -> Path:
+    return next(
+        path
+        for path in destination.glob(".stock-desk-restore-*")
+        if path.name != JOURNAL and path.is_dir()
+    )
 
 
 @pytest.mark.parametrize("crash_phase", CRASH_PHASES)
@@ -210,3 +243,108 @@ def test_staging_failure_leaves_original_components_untouched(
     )
     assert not (destination / JOURNAL).exists()
     assert not tuple(destination.glob(".stock-desk-restore-*"))
+
+
+@pytest.mark.parametrize("mutation", ("symlink", "hardlink", "content"))
+def test_recovery_rejects_unsafe_or_changed_rollback_database(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    destination = _crashed_restore(tmp_path, "database_installed")
+    rollback = _restore_stage(destination) / "rollback" / "stock-desk.db"
+    if mutation == "symlink":
+        rollback.unlink()
+        rollback.symlink_to(destination / "stock-desk.db")
+    elif mutation == "hardlink":
+        decoy = tmp_path / "rollback-copy.db"
+        shutil.copy2(rollback, decoy)
+        rollback.unlink()
+        os.link(decoy, rollback)
+    else:
+        rollback.write_bytes(rollback.read_bytes() + b"changed")
+
+    with pytest.raises(RestoreRecoveryRequired, match="database"):
+        recover_interrupted_restore(data_dir=destination)
+
+
+def test_recovery_rejects_symlinked_staged_market(tmp_path: Path) -> None:
+    destination = _crashed_restore(tmp_path, "prepared")
+    staged_market = _restore_stage(destination) / "new" / "market"
+    shutil.rmtree(staged_market)
+    staged_market.symlink_to(destination / "market", target_is_directory=True)
+
+    with pytest.raises(RestoreRecoveryRequired, match="market"):
+        recover_interrupted_restore(data_dir=destination)
+
+
+def test_recovery_rejects_symlinked_staged_database(tmp_path: Path) -> None:
+    destination = _crashed_restore(tmp_path, "prepared")
+    staged_database = _restore_stage(destination) / "new" / "stock-desk.db"
+    staged_database.unlink()
+    staged_database.symlink_to(destination / "stock-desk.db")
+
+    with pytest.raises(RestoreRecoveryRequired, match="database"):
+        recover_interrupted_restore(data_dir=destination)
+
+
+def test_recovery_rejects_symlinked_rollback_market(tmp_path: Path) -> None:
+    destination = _crashed_restore(tmp_path, "market_installed")
+    rollback_market = _restore_stage(destination) / "rollback" / "market"
+    shutil.rmtree(rollback_market)
+    rollback_market.symlink_to(destination / "market", target_is_directory=True)
+
+    with pytest.raises(RestoreRecoveryRequired, match="market"):
+        recover_interrupted_restore(data_dir=destination)
+
+
+def test_recovery_validates_archive_manifest_binding(tmp_path: Path) -> None:
+    destination = _crashed_restore(tmp_path, "prepared")
+    staged_manifest = _restore_stage(destination) / "archive-manifest.json"
+    assert staged_manifest.is_file()
+    staged_manifest.write_bytes(staged_manifest.read_bytes() + b"changed")
+
+    with pytest.raises(RestoreRecoveryRequired, match="manifest"):
+        recover_interrupted_restore(data_dir=destination)
+
+
+@pytest.mark.parametrize("mutation", ("content", "symlink", "hardlink"))
+def test_committed_recovery_rejects_changed_or_unsafe_live_database(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    destination = _crashed_restore(tmp_path, "committed")
+    database = destination / "stock-desk.db"
+    if mutation == "content":
+        database.write_bytes(database.read_bytes() + b"changed")
+    elif mutation == "symlink":
+        database.unlink()
+        database.symlink_to(tmp_path / "source" / "stock-desk.db")
+    else:
+        decoy = tmp_path / "live-copy.db"
+        shutil.copy2(database, decoy)
+        database.unlink()
+        os.link(decoy, database)
+
+    with pytest.raises(RestoreRecoveryRequired, match="database"):
+        recover_interrupted_restore(data_dir=destination)
+
+
+def test_recovery_resumes_after_rollback_stage_cleanup_crash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    destination = _crashed_restore(tmp_path, "database_installed")
+    original_remove = backup_module._remove_restore_stage
+
+    def remove_then_crash(data_dir: Path, token: str) -> None:
+        original_remove(data_dir, token)
+        raise RuntimeError("crash after rollback stage removal")
+
+    monkeypatch.setattr(backup_module, "_remove_restore_stage", remove_then_crash)
+    with pytest.raises(RuntimeError, match="stage removal"):
+        recover_interrupted_restore(data_dir=destination)
+    monkeypatch.setattr(backup_module, "_remove_restore_stage", original_remove)
+
+    assert recover_interrupted_restore(data_dir=destination) is True
+    assert _marker(destination / "stock-desk.db") == "old"
+    assert not (destination / JOURNAL).exists()
