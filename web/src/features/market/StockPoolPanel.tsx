@@ -13,7 +13,20 @@ type StockPoolPanelProps = {
 };
 
 const poolKindLabels = { preset: '预设', custom: '自定义' } as const;
+const poolCategoryLabels = {
+  all_a: '全 A',
+  index: '指数',
+  industry: '行业',
+} as const;
 const MEMBER_BATCH_SIZE = 100;
+
+function compositionTime(value: string): string {
+  return new Intl.DateTimeFormat('zh-CN', {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+    timeZone: 'Asia/Shanghai',
+  }).format(new Date(value));
+}
 
 function PoolMembers({
   detail,
@@ -29,10 +42,45 @@ function PoolMembers({
     pageStart,
     pageStart + MEMBER_BATCH_SIZE,
   );
+  const composition = detail.provenance.composition;
 
   return (
     <div className="pool-members">
       <h4>{detail.name} · 成员</h4>
+      {detail.kind === 'preset' && composition !== undefined ? (
+        <dl
+          className="pool-composition-context"
+          role="group"
+          aria-label={`${detail.name}成分信息`}
+        >
+          <div>
+            <dt>分类</dt>
+            <dd>{poolCategoryLabels[composition.category]}</dd>
+          </div>
+          <div>
+            <dt>成分截至</dt>
+            <dd>
+              <time dateTime={composition.dataCutoff}>
+                {compositionTime(composition.dataCutoff)}
+              </time>
+            </dd>
+          </div>
+          <div>
+            <dt>更新于</dt>
+            <dd>
+              <time dateTime={composition.fetchedAt}>
+                {compositionTime(composition.fetchedAt)}
+              </time>
+            </dd>
+          </div>
+          <div>
+            <dt>来源</dt>
+            <dd>来源 {composition.source}</dd>
+          </div>
+        </dl>
+      ) : detail.kind === 'custom' ? (
+        <p className="pool-custom-revision">自定义成员版本 {detail.revision}</p>
+      ) : null}
       <ul aria-label={`${detail.name}成员`}>
         {visibleMembers.map((member) => (
           <li key={member.symbol}>

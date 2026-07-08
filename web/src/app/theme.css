@@ -425,8 +425,13 @@ a {
   box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.12);
 }
 
+.topbar-actions {
+  flex: 0 0 auto;
+  gap: 8px !important;
+}
+
+.about-toggle,
 .context-toggle {
-  display: none;
   align-items: center;
   gap: 7px;
   min-height: 44px;
@@ -438,6 +443,106 @@ a {
   font-size: 11px;
   font-weight: 650;
   cursor: pointer;
+}
+
+.about-toggle {
+  display: flex;
+}
+
+.about-toggle > span {
+  display: grid;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  border: 1px solid var(--border-strong);
+  border-radius: 50%;
+  color: var(--accent);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.context-toggle {
+  display: none;
+}
+
+.about-backdrop {
+  position: fixed;
+  z-index: 120;
+  inset: 0;
+  display: grid;
+  padding: 24px;
+  background: rgba(3, 10, 19, 0.76);
+  place-items: center;
+}
+
+.about-dialog {
+  width: min(100%, 440px);
+  max-height: calc(100vh - 48px);
+  padding: 20px;
+  overflow-y: auto;
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  background: var(--surface-1);
+  box-shadow: 0 24px 72px rgba(0, 0, 0, 0.5);
+}
+
+.about-dialog > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.about-dialog h2 {
+  margin: 5px 0 0;
+  font-size: 20px;
+}
+
+.about-dialog > header > button {
+  width: 44px;
+  min-height: 44px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-secondary);
+  background: var(--surface-0);
+  cursor: pointer;
+}
+
+.about-dialog dl {
+  display: grid;
+  gap: 8px;
+  margin: 20px 0 14px;
+}
+
+.about-dialog dl > div {
+  display: grid;
+  grid-template-columns: minmax(72px, 0.35fr) minmax(0, 1fr);
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.about-dialog dt {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.about-dialog dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
+.about-dialog a {
+  color: var(--accent);
+}
+
+.about-dialog > p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 11px;
 }
 
 .page-heading {
@@ -1482,6 +1587,39 @@ a {
   margin: 0 0 9px;
   color: var(--text-secondary);
   font-size: 10px;
+}
+
+.pool-composition-context {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin: 0 0 10px;
+}
+
+.pool-composition-context > div {
+  min-width: 0;
+  padding: 7px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-0);
+}
+
+.pool-composition-context dt {
+  color: var(--text-muted);
+  font-size: 8px;
+}
+
+.pool-composition-context dd {
+  margin: 3px 0 0;
+  overflow-wrap: anywhere;
+  color: var(--text-secondary);
+  font-size: 9px;
+}
+
+.pool-custom-revision {
+  margin: 0 0 10px;
+  color: var(--text-muted);
+  font-size: 9px;
 }
 
 .pool-more {
@@ -5045,6 +5183,23 @@ a {
 
   .workspace-topbar {
     min-height: 54px;
+  }
+
+  .topbar-actions {
+    gap: 4px !important;
+  }
+
+  .about-toggle,
+  .context-toggle {
+    width: 44px;
+    padding-inline: 0;
+    justify-content: center;
+    font-size: 0;
+  }
+
+  .about-toggle > span,
+  .context-toggle > span {
+    font-size: 12px;
   }
 
   .topbar-state {

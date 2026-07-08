@@ -151,6 +151,46 @@ it('shows next-open and independent-pool semantics before submit', async () => {
   expect(screen.getByText(/每只股票独立模拟，不代表组合收益/u)).toBeVisible();
 });
 
+it('collects immutable formula scope period dates and costs and discloses T+1 suspension price limits and pool semantics', async () => {
+  const user = userEvent.setup();
+  const client = api();
+  render(
+    <BacktestWizard
+      api={client}
+      formulaChoices={formulaChoices}
+      initialState={completeState}
+    />,
+  );
+
+  await user.click(screen.getByRole('button', { name: '5. 复核' }));
+
+  expect(screen.getAllByText('MACD 金叉').length).toBeGreaterThan(0);
+  expect(screen.getAllByText('600000.SH').length).toBeGreaterThan(0);
+  expect(screen.getByText(/2025-01-02 00:00（含）/u)).toBeVisible();
+  expect(
+    screen.getByText(/2\.5 基点 \/ 5 元 \/ 5 基点 \/ 1 基点/u),
+  ).toBeVisible();
+  expect(screen.getByText(/T\+1/u)).toBeVisible();
+  expect(screen.getByText(/停牌、涨跌停/u)).toBeVisible();
+  expect(screen.getByText(/每只股票独立模拟，不代表组合收益/u)).toBeVisible();
+
+  await user.click(screen.getByRole('button', { name: '运行预检' }));
+  expect(client.preflight).toHaveBeenCalledWith(
+    expect.objectContaining({
+      formulaVersionId: completeState.formulaVersionId,
+      scope: completeState.scope,
+      period: '1d',
+      scoringStart: '2025-01-02T00:00:00+08:00',
+      scoringEnd: '2026-01-02T00:00:00+08:00',
+      commissionBps: '2.5',
+      minimumCommission: '5',
+      sellTaxBps: '5',
+      slippageBps: '1',
+    }),
+    { signal: expect.any(AbortSignal) as unknown },
+  );
+});
+
 it('rejects hidden parameters not declared by the selected immutable version', async () => {
   const user = userEvent.setup();
   render(

@@ -635,6 +635,25 @@ it('disables copying a saved version while the current draft is dirty', () => {
   expect(api.copyFormula).not.toHaveBeenCalled();
 });
 
+it('copies a saved immutable version as an independent formula with cancellable request context', async () => {
+  const user = userEvent.setup();
+  const api = apiFixture();
+  renderStudio({ initialFormula: detail }, api);
+
+  await user.click(screen.getByRole('button', { name: '复制公式' }));
+
+  await waitFor(() =>
+    expect(api.copyFormula).toHaveBeenCalledWith(
+      detail.id,
+      { name: `${detail.name} 副本`, sourceVersionId: 'version-1' },
+      { signal: expect.any(AbortSignal) as unknown },
+    ),
+  );
+  expect(
+    await screen.findByText(`已复制为独立公式版本：${detail.name} 副本`),
+  ).toBeVisible();
+});
+
 it('aborts and ignores a deferred save response after the draft changes', async () => {
   const user = userEvent.setup();
   const api = apiFixture();

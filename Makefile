@@ -8,14 +8,14 @@ dev:
 	uv run --frozen python scripts/dev.py
 
 test:
-	uv run --frozen pytest -W error --ignore=tests/acceptance/test_market_flow.py --ignore=tests/acceptance/test_formula_consistency.py --ignore=tests/acceptance/test_macd_formula_flow.py --ignore=tests/acceptance/test_backtest_semantics.py --ignore=tests/performance/test_chart_query.py --ignore=tests/performance/test_formula_preview.py --ignore=tests/performance/test_single_backtest.py --ignore=tests/performance/test_v1_budgets.py --cov=src/stock_desk --cov=scripts --cov=migrations --cov-branch --cov-report=term-missing --cov-report=xml:coverage.xml --cov-fail-under=85
+	uv run --frozen pytest -W error --ignore=tests/acceptance/test_market_flow.py --ignore=tests/acceptance/test_formula_consistency.py --ignore=tests/acceptance/test_macd_formula_flow.py --ignore=tests/acceptance/test_formula_editing_assistance.py --ignore=tests/acceptance/test_backtest_semantics.py --ignore=tests/performance/test_chart_query.py --ignore=tests/performance/test_formula_preview.py --ignore=tests/performance/test_single_backtest.py --ignore=tests/performance/test_v1_budgets.py --cov=src/stock_desk --cov=scripts --cov=migrations --cov-branch --cov-report=term-missing --cov-report=xml:coverage.xml --cov-fail-under=85
 	pnpm test
 
 acceptance:
 	uv run --frozen pytest -W error tests/acceptance/test_market_flow.py
 
 acceptance-formula:
-	uv run --frozen pytest -W error tests/acceptance/test_formula_consistency.py tests/acceptance/test_macd_formula_flow.py
+	uv run --frozen pytest -W error tests/acceptance/test_formula_consistency.py tests/acceptance/test_macd_formula_flow.py tests/acceptance/test_formula_editing_assistance.py
 
 acceptance-backtest:
 	uv run --frozen pytest -W error tests/acceptance/test_backtest_semantics.py
@@ -50,7 +50,7 @@ e2e-foundation:
 	pnpm exec playwright test web/e2e/foundation.spec.ts --project=chromium
 
 e2e-market:
-	pnpm exec playwright test web/e2e/market.spec.ts --project=chromium
+	pnpm exec playwright test web/e2e/market.spec.ts web/e2e/market-pools.spec.ts web/e2e/market-visual-identity.spec.ts --project=chromium
 
 e2e-formula:
 	pnpm exec playwright test web/e2e/formula-studio.spec.ts --project=chromium
@@ -59,7 +59,7 @@ e2e-backtest:
 	pnpm exec playwright test web/e2e/backtest.spec.ts --project=chromium
 
 e2e-analysis:
-	pnpm exec playwright test web/e2e/analysis.spec.ts --project=chromium
+	pnpm exec playwright test web/e2e/analysis.spec.ts web/e2e/model-provider-matrix.spec.ts --project=chromium
 
 e2e-task-center:
 	pnpm exec playwright test web/e2e/task-center.spec.ts --project=chromium

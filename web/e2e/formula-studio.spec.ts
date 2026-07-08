@@ -202,6 +202,9 @@ test('desktop MACD flow is atomic, versioned, parameterized, and safe', async ({
       .getByRole('img', { name: /公式输出及买卖信号/u }),
   ).toBeVisible();
 
+  await page.getByRole('button', { name: '复制公式' }).click();
+  await expect(page.getByText(/已复制为独立公式版本/u)).toBeVisible();
+
   for (const excluded of [/条件选股/u, /五彩\s*K/u, /AI.*公式/u]) {
     await expect(page.getByRole('button', { name: excluded })).toHaveCount(0);
     await expect(page.getByRole('link', { name: excluded })).toHaveCount(0);

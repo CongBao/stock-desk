@@ -57,6 +57,21 @@ const page = {
 } as const satisfies MarketPoolPage;
 const detail = {
   ...page.items[0],
+  provenance: {
+    ...provenance,
+    composition: {
+      presetKey: 'all-a',
+      category: 'all_a',
+      displayName: '全量 A 股',
+      symbols: ['600000.SH'],
+      source: 'tushare',
+      datasetVersion: DIGEST,
+      routeVersion: DIGEST,
+      fetchedAt: '2024-01-03T08:00:00Z',
+      dataCutoff: '2024-01-03T07:00:00Z',
+      complete: true,
+    },
+  },
   members: [
     {
       ordinal: 0,
@@ -107,6 +122,16 @@ it('labels preset/custom pools and selects a member from pool detail', async () 
   expect(getPool).toHaveBeenCalledWith('preset-all-a', {
     signal: expect.any(AbortSignal) as unknown,
   });
+  const composition = await screen.findByRole('group', {
+    name: '全量 A 股成分信息',
+  });
+  expect(within(composition).getByText('全 A')).toBeVisible();
+  expect(within(composition).getByText('成分截至')).toBeVisible();
+  expect(within(composition).getByText('更新于')).toBeVisible();
+  expect(within(composition).getByText('来源 tushare')).toBeVisible();
+  expect(
+    composition.querySelector('time[datetime="2024-01-03T07:00:00Z"]'),
+  ).toHaveAttribute('datetime', '2024-01-03T07:00:00Z');
   await user.click(
     await screen.findByRole('button', { name: /浦发银行.*600000\.SH/u }),
   );
