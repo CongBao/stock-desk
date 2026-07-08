@@ -22,7 +22,7 @@ async function json(route: Route, body: unknown, status = 200) {
   });
 }
 
-test('configures domestic OpenAI-compatible and Ollama providers with immutable runtime parameters', async ({
+test('model settings UI offers domestic providers, serializes runtime fields, and renders masked responses', async ({
   page,
 }) => {
   const pageErrors: string[] = [];
@@ -35,23 +35,11 @@ test('configures domestic OpenAI-compatible and Ollama providers with immutable 
     ollama: digest('c'),
   } as const;
 
-  await page.route('**/api/**', async (route) => {
+  await page.route('**/api/settings/models**', async (route) => {
     const request = route.request();
     const url = new URL(request.url());
     const path = decodeURIComponent(url.pathname);
     const method = request.method();
-    if (!path.startsWith('/api/')) {
-      await route.fallback();
-      return;
-    }
-    if (path.endsWith('/health')) {
-      await json(route, {
-        name: 'stock-desk',
-        status: 'ok',
-        api_version: 'v1',
-      });
-      return;
-    }
     if (path.endsWith('/settings/models') && method === 'GET') {
       await json(route, { items: configs, next_cursor: null });
       return;
@@ -110,14 +98,6 @@ test('configures domestic OpenAI-compatible and Ollama providers with immutable 
       });
       return;
     }
-    if (path.endsWith('/analysis') && method === 'GET') {
-      await json(route, { items: [], next_cursor: null });
-      return;
-    }
-    if (path.endsWith('/tasks') && method === 'GET') {
-      await json(route, []);
-      return;
-    }
     await json(route, { detail: 'not found' }, 404);
   });
 
@@ -126,6 +106,11 @@ test('configures domestic OpenAI-compatible and Ollama providers with immutable 
   expect(pageErrors).toEqual([]);
   await page.getByRole('button', { name: '模型设置' }).click();
   const dialog = page.getByRole('dialog', { name: '模型设置' });
+  await expect(dialog.getByLabel('提供商').getByRole('option')).toHaveText([
+    'DeepSeek',
+    'OpenAI-compatible',
+    'Ollama',
+  ]);
   const scenarios = [
     {
       provider: 'deepseek',
@@ -175,6 +160,8 @@ test('configures domestic OpenAI-compatible and Ollama providers with immutable 
     await expect(dialog.getByRole('status')).toContainText(
       '模型配置已安全保存',
     );
+    if ('key' in scenario)
+      await expect(dialog).toContainText('sk-a•••••••tail');
     await dialog
       .getByRole('button', { name: `测试 ${scenario.name} 连接` })
       .click();
