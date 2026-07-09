@@ -882,9 +882,9 @@ test('records aggregate 2/3/5 budgets and worker-backed UI responsiveness', asyn
     await context.close();
   }
 
-  const context = await browser.newContext();
-  const network = await forbidExternalNetwork(context);
-  const page = await context.newPage();
+  let context = await browser.newContext();
+  let network = await forbidExternalNetwork(context);
+  let page = await context.newPage();
   const chartWarm: TimedSample[] = [];
   await page.goto('/market');
   await chartAction(page, network, roots, rootRoles);
@@ -921,6 +921,13 @@ test('records aggregate 2/3/5 budgets and worker-backed UI responsiveness', asyn
     );
   }
 
+  // Pool responsiveness is its own workload. A fresh renderer removes page
+  // heap and GC activity from preceding workloads as contamination variables
+  // while preserving the strict zero-long-task threshold.
+  await context.close();
+  context = await browser.newContext();
+  network = await forbidExternalNetwork(context);
+  page = await context.newPage();
   await page.goto('/backtests');
   await page
     .getByLabel('保存的交易公式')

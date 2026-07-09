@@ -1672,6 +1672,18 @@ def test_performance_rss_sampling_does_not_saturate_the_target_runner() -> None:
     assert "}, 50);" not in sampler
 
 
+def test_pool_ui_long_task_measurement_uses_a_fresh_browser_context() -> None:
+    source = _read("web/e2e/performance.spec.ts")
+    start = source.index("  const backtestSamples: TimedSample[] = [];")
+    end = source.index("  await page.goto('/backtests');", start)
+    setup = source[start:end]
+
+    assert "await context.close();" in setup
+    assert "context = await browser.newContext();" in setup
+    assert "network = await forbidExternalNetwork(context);" in setup
+    assert "page = await context.newPage();" in setup
+
+
 def test_pool_navigation_interactivity_uses_rendered_spa_and_long_task_evidence() -> (
     None
 ):
