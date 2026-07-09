@@ -5,10 +5,13 @@ import math
 import multiprocessing
 import os
 import signal
+import sqlite3
 import socket
 import threading
 import time
 from typing import Any, TypeAlias
+
+from sqlalchemy.exc import DBAPIError, OperationalError
 
 from stock_desk.config import get_settings
 from stock_desk.tasks.models import TaskClaim, TaskSnapshot
@@ -31,6 +34,45 @@ _DEFAULT_HEARTBEAT_STOP_TIMEOUT_SECONDS = 1.0
 _DEFAULT_HEARTBEAT_IO_TIMEOUT_SECONDS = 1.0
 _PARENT_LIVENESS_POLL_SECONDS = 0.05
 _LOGGER = logging.getLogger(__name__)
+
+_HeartbeatFailurePayload: TypeAlias = tuple[str, str, str, str | None]
+
+
+def _heartbeat_failure_payload(error: BaseException) -> _HeartbeatFailurePayload:
+    original = error.orig if isinstance(error, DBAPIError) else error
+    error_code = getattr(original, "sqlite_errorname", None)
+    return (
+        f"{type(error).__module__}.{type(error).__qualname__}",
+        f"{type(original).__module__}.{type(original).__qualname__}",
+        str(original),
+        error_code if isinstance(error_code, str) else None,
+    )
+
+
+def _is_transient_sqlite_contention(error: BaseException) -> bool:
+    if not isinstance(error, OperationalError):
+        return False
+    original = error.orig
+    if not isinstance(original, sqlite3.OperationalError):
+        return False
+    error_code = getattr(original, "sqlite_errorcode", None)
+    return isinstance(error_code, int) and error_code & 0xFF in {
+        sqlite3.SQLITE_BUSY,
+        sqlite3.SQLITE_LOCKED,
+    }
+
+
+def _format_heartbeat_failure(payload: object) -> str:
+    if (
+        not isinstance(payload, tuple)
+        or len(payload) != 4
+        or not all(isinstance(value, str) for value in payload[:3])
+        or (payload[3] is not None and not isinstance(payload[3], str))
+    ):
+        return "invalid heartbeat failure status"
+    error_type, original_type, message, error_code = payload
+    detail = f"{error_type} ({original_type}): {message}"
+    return f"{detail} [{error_code}]" if error_code is not None else detail
 
 
 def _watch_parent_liveness(
@@ -91,14 +133,28 @@ def _heartbeat_process_main(
             timeout_seconds=io_timeout,
         )
         status_sender.send(("ready", None))
+        transient_contention_seen = False
         while not stop_event.wait(interval):
-            repository.record_worker_heartbeat(
-                worker_id,
-                timeout_seconds=io_timeout,
-            )
+            try:
+                repository.record_worker_heartbeat(
+                    worker_id,
+                    timeout_seconds=io_timeout,
+                )
+            except BaseException as error:
+                if stop_event.is_set():
+                    return
+                if (
+                    _is_transient_sqlite_contention(error)
+                    and not transient_contention_seen
+                ):
+                    transient_contention_seen = True
+                    continue
+                raise
+            else:
+                transient_contention_seen = False
     except BaseException as error:
         try:
-            status_sender.send(("error", type(error).__name__))
+            status_sender.send(("error", _heartbeat_failure_payload(error)))
         except (BrokenPipeError, EOFError, OSError):
             pass
     finally:
@@ -144,7 +200,7 @@ class _HeartbeatProcessController:
         )
         self._start_timeout = start_timeout
         self._stop_timeout = stop_timeout
-        self._failure_kind: str | None = None
+        self._failure_detail: str | None = None
         self._started = False
         self._stopping = False
 
@@ -158,11 +214,16 @@ class _HeartbeatProcessController:
             or len(message) != 2
             or message[0] not in {"ready", "error"}
         ):
-            self._failure_kind = "invalid_status"
+            self._failure_detail = "invalid heartbeat status"
             return "error"
         if message[0] == "error":
-            self._failure_kind = str(message[1])
+            self._failure_detail = _format_heartbeat_failure(message[1])
         return str(message[0])
+
+    def _failure_message(self, summary: str) -> str:
+        if self._failure_detail is None:
+            return summary
+        return f"{summary}: {self._failure_detail}"
 
     def start(self) -> None:
         try:
@@ -184,10 +245,18 @@ class _HeartbeatProcessController:
                 if status == "ready":
                     return
                 self.stop()
-                raise RuntimeError("Task worker heartbeat failed before readiness")
+                raise RuntimeError(
+                    self._failure_message(
+                        "Task worker heartbeat failed before readiness"
+                    )
+                )
             if not self._process.is_alive():
                 self.stop()
-                raise RuntimeError("Task worker heartbeat failed before readiness")
+                raise RuntimeError(
+                    self._failure_message(
+                        "Task worker heartbeat failed before readiness"
+                    )
+                )
         self.stop()
         raise RuntimeError(
             "Task worker heartbeat did not become ready within "
@@ -195,15 +264,24 @@ class _HeartbeatProcessController:
         )
 
     def raise_if_failed(self) -> None:
-        if self._failure_kind is not None:
-            raise RuntimeError("Task worker heartbeat process failed")
+        if self._failure_detail is not None:
+            raise RuntimeError(
+                self._failure_message("Task worker heartbeat process failed")
+            )
         if self._stopping:
             return
         if self._receiver.poll():
             self._consume_status()
-        if self._failure_kind is not None:
-            raise RuntimeError("Task worker heartbeat process failed")
+        if self._failure_detail is not None:
+            raise RuntimeError(
+                self._failure_message("Task worker heartbeat process failed")
+            )
         if self._started and not self._stopping and not self._process.is_alive():
+            self.stop()
+            if self._failure_detail is not None:
+                raise RuntimeError(
+                    self._failure_message("Task worker heartbeat process failed")
+                )
             raise RuntimeError("Task worker heartbeat process exited")
 
     def stop(self) -> None:
@@ -221,7 +299,7 @@ class _HeartbeatProcessController:
             self._process.join(timeout=self._stop_timeout)
         if self._process.is_alive():
             raise RuntimeError("Task worker heartbeat process did not stop")
-        if self._receiver.poll():
+        if self._receiver.poll(self._stop_timeout):
             self._consume_status()
         self._receiver.close()
         self._process.close()
