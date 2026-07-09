@@ -68,7 +68,10 @@ jobs:
   python:
     name: Python quality, tests, and package
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # The exhaustive coverage run plus staged acceptance and package gates can
+    # exceed 45 minutes on a saturated hosted runner while still making steady
+    # progress. Keep it bounded, with enough headroom to finish those gates.
+    timeout-minutes: 75
     steps:
       - name: Check out source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0

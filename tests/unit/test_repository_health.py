@@ -706,6 +706,8 @@ def test_workflows_have_least_permissions_timeouts_and_bounded_concurrency() -> 
             maximum = (
                 60
                 if workflow_path.name == "release.yml" and job_name == "verify"
+                else 75
+                if workflow_path.name == "ci.yml" and job_name == "python"
                 else 45
             )
             assert 1 <= job["timeout-minutes"] <= maximum, workflow_path
@@ -719,7 +721,7 @@ def test_workflows_have_least_permissions_timeouts_and_bounded_concurrency() -> 
 def test_python_ci_timeout_covers_the_measured_suite_and_followup_gates() -> None:
     workflow = _load_github_actions_yaml(_read(".github/workflows/ci.yml"))
 
-    assert 40 <= workflow["jobs"]["python"]["timeout-minutes"] <= 45
+    assert 60 <= workflow["jobs"]["python"]["timeout-minutes"] <= 75
 
 
 def test_codeql_excludes_only_nonproduction_adversarial_tests() -> None:
@@ -2039,7 +2041,7 @@ def test_python_ci_publishes_bounded_junit_failure_diagnostics() -> None:
 def test_python_ci_provisions_the_locked_node_and_pnpm_test_runtime() -> None:
     workflow = _load_github_actions_yaml(_read(".github/workflows/ci.yml"))
     python_job = workflow["jobs"]["python"]
-    assert python_job["timeout-minutes"] == 45
+    assert python_job["timeout-minutes"] == 75
     steps = python_job["steps"]
     by_name = {step.get("name"): (index, step) for index, step in enumerate(steps)}
     test_index = by_name["Test Python"][0]
