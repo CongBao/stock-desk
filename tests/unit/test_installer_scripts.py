@@ -104,6 +104,29 @@ def test_installer_command_runner_uses_requested_working_directory(
     assert calls == [(["tool", "argument"], tmp_path, True)]
 
 
+def test_pnpm_command_resolves_the_windows_cmd_shim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(build_installer.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(
+        build_installer.shutil,
+        "which",
+        lambda name: r"C:\pnpm\pnpm.CMD" if name == "pnpm.cmd" else None,
+    )
+
+    assert build_installer._pnpm_command() == r"C:\pnpm\pnpm.CMD"
+
+
+def test_pnpm_command_reports_a_missing_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(build_installer.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(build_installer.shutil, "which", lambda _name: None)
+
+    with pytest.raises(RuntimeError, match="pnpm executable"):
+        build_installer._pnpm_command()
+
+
 def test_inno_compiler_prefers_explicit_verified_path(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -309,6 +332,7 @@ def test_build_installer_drives_native_bundle_and_manifest(
         },
     )
     monkeypatch.setattr(build_installer, "_run", lambda args: calls.append(args))
+    monkeypatch.setattr(build_installer, "_pnpm_command", lambda: "resolved-pnpm")
     monkeypatch.setattr(
         build_installer.shutil, "rmtree", lambda path, **kwargs: calls.append(path)
     )
@@ -353,6 +377,7 @@ def test_build_installer_drives_native_bundle_and_manifest(
     if target[0] == "windows":
         assert manifest["build_provenance"]["inno_setup"]["version"] == "6.7.3"
         assert len(manifest["build_provenance"]["inno_setup"]["compiler_sha256"]) == 64
+    assert ["resolved-pnpm", "build"] in calls
     assert calls
 
 
