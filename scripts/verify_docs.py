@@ -20,7 +20,7 @@ from PIL import Image, UnidentifiedImageError
 
 REQUIRED_PUBLIC_DOCUMENTS = (
     "README.md",
-    "README.zh-CN.md",
+    "README.en.md",
     "CONTRIBUTING.md",
     "SUPPORT.md",
     "CHANGELOG.md",
@@ -34,18 +34,18 @@ REQUIRED_PUBLIC_DOCUMENTS = (
 
 REQUIRED_SECTIONS = {
     "README.md": (
-        "Quick start",
-        "Core workflows",
+        "产品定位",
+        "核心功能",
+        "下载安装",
+        "使用文档",
+        "安全与范围",
+    ),
+    "README.en.md": (
+        "Product positioning",
+        "Core features",
+        "Download and install",
         "Documentation",
         "Safety and scope",
-        "Contributing",
-    ),
-    "README.zh-CN.md": (
-        "快速启动",
-        "核心工作流",
-        "文档",
-        "安全与范围",
-        "参与贡献",
     ),
     "CONTRIBUTING.md": ("Development setup", "Quality gates", "Pull requests"),
     "SUPPORT.md": ("Questions", "Bug reports", "Security"),
@@ -124,16 +124,8 @@ SOURCE_FREE_INSTALLER_PATTERNS = (
 )
 
 REQUIRED_PUBLIC_SNIPPETS = {
-    "README.md": (
-        "gh attestation verify",
-        "--repo CongBao/stock-desk",
-        "--signer-workflow CongBao/stock-desk/.github/workflows/release.yml",
-    ),
-    "README.zh-CN.md": (
-        "gh attestation verify",
-        "--repo CongBao/stock-desk",
-        "--signer-workflow CongBao/stock-desk/.github/workflows/release.yml",
-    ),
+    "README.md": ("https://github.com/CongBao/stock-desk/releases/latest",),
+    "README.en.md": ("https://github.com/CongBao/stock-desk/releases/latest",),
     "docs/architecture.md": (
         "Native installer topology",
         "Source development topology",
@@ -430,7 +422,7 @@ def _command_failures(repo_root: Path, relative_path: str, document: str) -> lis
     failures: list[str] = []
     make_targets = _make_targets(repo_root)
     for block in _FENCED_SHELL.findall(document):
-        if relative_path in {"README.md", "README.zh-CN.md"}:
+        if relative_path in {"README.md", "README.en.md"}:
             failures.extend(_readme_command_failures(repo_root, relative_path, block))
         for target in _MAKE_COMMAND.findall(block):
             if target not in make_targets:
@@ -631,6 +623,17 @@ def verify_repository(repo_root: Path) -> list[str]:
                 failures.append(
                     f"{relative_path}: missing required heading: {required_heading}"
                 )
+        if relative_path in {"README.md", "README.en.md"}:
+            section_positions = [
+                document.find(f"## {heading}")
+                for heading in REQUIRED_SECTIONS[relative_path]
+            ]
+            if all(position >= 0 for position in section_positions) and (
+                section_positions != sorted(section_positions)
+            ):
+                failures.append(f"{relative_path}: required sections are out of order")
+            if len(document.splitlines()) > 100:
+                failures.append(f"{relative_path}: must not exceed 100 lines")
         for snippet in REQUIRED_PUBLIC_SNIPPETS.get(relative_path, ()):
             if snippet not in document:
                 failures.append(
@@ -651,16 +654,16 @@ def verify_repository(repo_root: Path) -> list[str]:
                     f"{relative_path}: forbidden public-boundary reference: {blocked}"
                 )
 
-    english = documents.get("README.md", "")
-    if "[简体中文](README.zh-CN.md)" not in english:
-        failures.append("README.md must link to README.zh-CN.md")
-    chinese = documents.get("README.zh-CN.md", "")
-    if "[English](README.md)" not in chinese:
-        failures.append("README.zh-CN.md must link to README.md")
+    chinese = documents.get("README.md", "")
+    if not chinese.splitlines() or chinese.splitlines()[0] != "[English](README.en.md)":
+        failures.append("README.md must start with a link to README.en.md")
+    english = documents.get("README.en.md", "")
+    if not english.splitlines() or english.splitlines()[0] != "[简体中文](README.md)":
+        failures.append("README.en.md must start with a link to README.md")
 
     for relative_path, document in (
-        ("README.md", english),
-        ("README.zh-CN.md", chinese),
+        ("README.md", chinese),
+        ("README.en.md", english),
     ):
         positions = [
             document.find(pattern) for pattern in SOURCE_FREE_INSTALLER_PATTERNS

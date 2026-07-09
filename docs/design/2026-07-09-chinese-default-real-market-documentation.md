@@ -29,7 +29,7 @@ stock-desk v1 面向中文 A 股个人用户。当前仓库默认展示英文 RE
 
 - `README.md` 是简体中文默认入口，首行链接 `README.en.md`。
 - `README.en.md` 是英文入口，首行链接回 `README.md`。
-- 删除 `README.zh-CN.md`，只保留两份权威内容，避免三份文档漂移。
+- 删除旧的简体中文别名文件，只保留两份权威内容，避免三份文档漂移。
 - 两份 README 保持相同章节顺序、截图和安装入口。
 - README 只保留：产品定位、四项核心能力、4–6 张代表性截图、Windows/macOS 下载入口、Wiki 入口、安全与非投资建议提示。
 - Docker、源码贡献、attestation 命令和详细排障移至 Wiki 或维护者文档。普通安装流程不以 GitHub CLI 为前置条件。

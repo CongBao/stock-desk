@@ -19,8 +19,8 @@ from scripts.verify_release import PRE_PUBLISH_EVIDENCE_GATE, _candidate_gates
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-README_EN = PROJECT_ROOT / "README.md"
-README_ZH = PROJECT_ROOT / "README.zh-CN.md"
+README_EN = PROJECT_ROOT / "README.en.md"
+README_ZH = PROJECT_ROOT / "README.md"
 RELEASE_WORKFLOW = PROJECT_ROOT / ".github" / "workflows" / "release.yml"
 FINAL_WIKI_URL = "https://github.com/CongBao/stock-desk/wiki"
 MARKDOWN_IMAGE = re.compile(r"!\[[^\]]+\]\((?P<target>[^)]+)\)")
@@ -63,23 +63,20 @@ def _readme_commands() -> frozenset[tuple[str, ...]]:
 def test_bilingual_readme_baseline_contains_verified_installation_and_use() -> None:
     english, chinese = _readmes()
     assert verify_repository(PROJECT_ROOT) == []
-    assert english.splitlines()[0] == "[简体中文](README.zh-CN.md)"
-    assert chinese.splitlines()[0] == "[English](README.md)"
+    assert english.splitlines()[0] == "[简体中文](README.md)"
+    assert chinese.splitlines()[0] == "[English](README.en.md)"
+    assert not (PROJECT_ROOT / ("README." + "zh-CN.md")).exists()
+    assert _readme_commands() == frozenset()
 
     for pattern in _native_artifact_patterns():
         assert f"`{pattern}`" in english
         assert f"`{pattern}`" in chinese
     for document in (english, chinese):
-        assert "docker compose up --build --wait" in document
-        assert "docker compose down --volumes --remove-orphans" in document
-        assert "gh attestation verify INSTALLER_PATH" in document
-        assert (
-            "--signer-workflow CongBao/stock-desk/.github/workflows/release.yml"
-            in document
-        )
-        assert "http://localhost:8000/market" in document
-        assert "http://localhost:5173/market" in document
-        assert "scripts/verify_docs.py" in document
+        assert "https://github.com/CongBao/stock-desk/releases/latest" in document
+        assert "docker compose" not in document
+        assert "gh attestation" not in document
+        assert "localhost:" not in document
+        assert "scripts/verify_docs.py" not in document
         assert "openspec/" not in document.casefold()
         assert "docs/superpowers/" not in document.casefold()
         assert "screenshot_placeholder" not in document.casefold()
@@ -99,7 +96,6 @@ def test_bilingual_readme_baseline_contains_verified_installation_and_use() -> N
 
 def test_readme_commands_map_to_executed_release_evidence() -> None:
     commands = _readme_commands()
-    assert commands
     assert commands <= README_COMMAND_EVIDENCE.keys()
 
     candidate_commands = {
@@ -152,11 +148,17 @@ def test_readme_commands_map_to_executed_release_evidence() -> None:
 
 def test_readmes_are_concise_reciprocal_and_install_verified() -> None:
     english, chinese = _readmes()
+    expected_images = {
+        "docs/images/market-data-and-charts.png",
+        "docs/images/formula-studio.png",
+        "docs/images/backtesting.png",
+        "docs/images/multi-agent-research.png",
+    }
     for document in (english, chinese):
-        assert len(document.splitlines()) <= 120
+        assert len(document.splitlines()) <= 100
         assert FINAL_WIKI_URL in document
         image_targets = MARKDOWN_IMAGE.findall(document)
-        assert image_targets
+        assert set(image_targets) == expected_images
         for target in image_targets:
             assert "placeholder" not in target.casefold()
             parsed = urlsplit(target)
@@ -167,8 +169,37 @@ def test_readmes_are_concise_reciprocal_and_install_verified() -> None:
             assert screenshot.is_file()
             assert _raster_failure(screenshot) is None
 
-    assert "[简体中文](README.zh-CN.md)" in english
-    assert "[English](README.md)" in chinese
+    assert "[简体中文](README.md)" in english
+    assert "[English](README.en.md)" in chinese
+    english_sections = (
+        "## Product positioning",
+        "## Core features",
+        "## Download and install",
+        "## Documentation",
+        "## Safety and scope",
+    )
+    chinese_sections = (
+        "## 产品定位",
+        "## 核心功能",
+        "## 下载安装",
+        "## 使用文档",
+        "## 安全与范围",
+    )
+    for document, sections in (
+        (english, english_sections),
+        (chinese, chinese_sections),
+    ):
+        assert [document.index(section) for section in sections] == sorted(
+            document.index(section) for section in sections
+        )
+        core = document.split(sections[1], maxsplit=1)[1].split(
+            sections[2], maxsplit=1
+        )[0]
+        assert len([line for line in core.splitlines() if line.startswith("- ")]) == 4
+        installation = document.split(sections[2], maxsplit=1)[1].split(
+            sections[3], maxsplit=1
+        )[0]
+        assert all(f"{step}. " in installation for step in range(1, 4))
     for pattern in _native_artifact_patterns():
         assert pattern in english
         assert pattern in chinese

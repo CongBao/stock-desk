@@ -228,8 +228,8 @@ CANONICAL_REQUIREMENTS: dict[str, dict[str, Any]] = {
     'R-071': _authority('publication', 'publication', 'bilingual_readme_with_verified_basics', 5, '270277162cdc9b44f120efa2cd2156be1fae1ab1a80d35321e605cfe609280e0', ('market-data-charting', 'bilingual-open-source-readme', 'english-to-chinese'), ('market-data-charting', 'bilingual-open-source-readme', 'chinese-to-english')),
     'R-072': _authority('operations', 'operational', 'stage_plan_implementation_browser_pr_cycle', 5, '830ba1f94b098dc7aa88f79236f1dbef0ebacfb03c83b1976d5f41b1e1dbc8a9', ('delivery-governance', 'stage-publication-and-release', 'push-review-merge-tag-release')),
     'R-073': _authority('publication', 'publication', 'final_readme_is_concise_bilingual_entry', 5, 'b7ca726cbc4a6389da7a73e980f37272c0721333ee8e64f4041bf160f15821d7', ('release-publication', 'verified-reciprocal-readme', 'verify-readme-pair')),
-    'R-074': _authority('publication', 'publication', 'every_feature_has_wiki_steps_and_real_screenshot', 5, '215b9bcbb2a147ed5b3f897b2438879f0d1e53d1600ddbd6c252859baeeca64d', ('release-publication', 'feature-wiki-screenshots-and-steps', 'validate-feature-page-image-and-steps')),
-    'R-075': _authority('publication', 'publication', 'wiki_is_complete_and_bilingual', 5, '92526af1176f0aac8b255bad9b7079d7860b0cab8a948576eaa70e594cf03e5d', ('release-publication', 'reciprocal-bilingual-wiki', 'navigate-language-pair')),
+    'R-074': _authority('publication', 'publication', 'every_feature_has_wiki_steps_and_real_screenshot', 5, '21996be94a21c7c0547299c430d7086357ec66bf74d6b02e96908498f363c1a9', ('release-publication', 'feature-wiki-screenshots-and-steps', 'validate-feature-page-image-and-steps')),
+    'R-075': _authority('publication', 'publication', 'wiki_is_complete_and_bilingual', 5, 'b652e52ccc0a8977baa38f7dca45ea40cb8042118600c0e5bebfade70abb9633', ('release-publication', 'reciprocal-bilingual-wiki', 'navigate-language-pair')),
     'R-076': _authority('publication', 'publication', 'source_free_windows_and_macos_installers', 5, '5f9e292b05b9eb53306b6d59941c94e79d952ed65f5c25f8936349a78fee7d0f', ('release-packaging', 'source-checkout-free-installation', 'install-and-first-launch-windows'), ('release-packaging', 'source-checkout-free-installation', 'install-and-first-launch-macos')),
     'R-077': _authority('platform', 'user_visible', 'responsive_ui_across_screen_ratios', 5, 'fe7d96bc05f113cb91a0aa3773a229f729aec23218eedc0e0c50fd2e6d15a753', ('market-data-charting', 'responsive-navigation-and-nonoverlap', 'narrow-screen-auto-collapse'), ('market-data-charting', 'responsive-navigation-and-nonoverlap', 'manual-navigation-toggle'), ('market-data-charting', 'responsive-navigation-and-nonoverlap', 'preserve-layout-at-supported-ratios'), ('release-quality', 'strengthened-all-route-responsive-ui', 'verify-all-routes-ratios-icons-and-nonoverlap')),
 }
@@ -539,11 +539,16 @@ def _bilingual_readme_gate(
     repo_root: Path,
     _tracked_paths_for_run: frozenset[str] | None = None,
 ) -> None:
-    english = (repo_root / "README.md").read_text(encoding="utf-8")
-    chinese = (repo_root / "README.zh-CN.md").read_text(encoding="utf-8")
-    if "README.zh-CN.md" not in _markdown_link_targets(
-        english
-    ) or "README.md" not in _markdown_link_targets(chinese):
+    chinese = (repo_root / "README.md").read_text(encoding="utf-8")
+    english = (repo_root / "README.en.md").read_text(encoding="utf-8")
+    if (
+        not chinese.splitlines()
+        or chinese.splitlines()[0] != "[English](README.en.md)"
+        or not english.splitlines()
+        or english.splitlines()[0] != "[简体中文](README.md)"
+        or "README.en.md" not in _markdown_link_targets(chinese)
+        or "README.md" not in _markdown_link_targets(english)
+    ):
         raise ValidationError(
             "bilingual-readme gate requires reciprocal Markdown links"
         )

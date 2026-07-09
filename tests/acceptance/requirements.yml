@@ -898,7 +898,7 @@ requirements:
     status: mapped
     evidence:
       - {state: existing, runner: gate, kind: gate, gate_id: bilingual-readme, assertion: The fixed bilingual README gate verifies reciprocal navigation between both public entry documents.}
-      - {state: existing, runner: pytest, kind: integration, path: tests/acceptance/test_release_docs.py, selector: 'tests/acceptance/test_release_docs.py::test_bilingual_readme_baseline_contains_verified_installation_and_use', assertion: 'The baseline documentation test validates reciprocal English and Simplified-Chinese entry links, every native installer name, attestation and Compose/start instructions, and the documentation command allowlist while rejecting internal-path and placeholder references.'}
+      - {state: existing, runner: pytest, kind: integration, path: tests/acceptance/test_release_docs.py, selector: 'tests/acceptance/test_release_docs.py::test_bilingual_readme_baseline_contains_verified_installation_and_use', assertion: 'The baseline documentation test verifies Simplified-Chinese README.md as the default, reciprocal first-line links with README.en.md, the Latest Release link, all three source-free installer names, and no ordinary-user shell or source prerequisite.'}
   - id: R-072
     category: operations
     kind: operational
@@ -919,22 +919,22 @@ requirements:
     status: mapped
     evidence:
       - {state: existing, runner: gate, kind: gate, gate_id: bilingual-readme, assertion: The registered bilingual-readme gate requires reciprocal English and Simplified-Chinese links.}
-      - {state: existing, runner: pytest, kind: integration, path: tests/acceptance/test_release_docs.py, selector: 'tests/acceptance/test_release_docs.py::test_readmes_are_concise_reciprocal_and_install_verified', assertion: 'The final documentation gate verifies concise reciprocal English and Simplified-Chinese product entries, real release-candidate screenshots, source-free installer names and attestation commands, one minimal start path, Wiki delegation, and public-safe links without placeholders.'}
+      - {state: existing, runner: pytest, kind: integration, path: tests/acceptance/test_release_docs.py, selector: 'tests/acceptance/test_release_docs.py::test_readmes_are_concise_reciprocal_and_install_verified', assertion: 'The final documentation test verifies four existing decodable product screenshots, concise reciprocal Simplified-Chinese and English entries, all three source-free installer names, an ordinary-user three-step installation path, and Simplified-Chinese-default Wiki navigation.'}
   - id: R-074
     category: publication
     kind: publication
     behavior_key: every_feature_has_wiki_steps_and_real_screenshot
-    acceptance: "Every delivered feature has a detailed GitHub Wiki usage page with a real product screenshot; screenshots of market quotes, candlesticks, formulas, or backtests use real A-share market data and record symbol, source, cutoff date, application route, release version, and redaction-review evidence; different feature pages may use different suitable real stocks."
+    acceptance: "Every delivered feature has a detailed GitHub Wiki usage page with a real product screenshot; any screenshot that displays stock-specific or market-derived data, including market quotes, candlesticks, formulas, backtests, or analysis, uses real A-share market data and records symbol, source, cutoff date, application route, release version, and redaction-review evidence; different feature pages may use different suitable real stocks."
     source_refs: [{capability: release-publication, requirement: feature-wiki-screenshots-and-steps, scenario: validate-feature-page-image-and-steps}]
     owning_stage: 5
     status: mapped
     evidence:
-      - {state: manual, runner: manual, kind: manual, procedure_id: wiki-screenshot-review, artifact_kind: feature-wiki-matrix, required_by_gate: final-release-audit, final_artifact_contract: 'The matrix maps every shipped feature to a public page and validated release-candidate screenshot with route, version, and redaction checks.', completed: false, assertion: A reviewer validates that every feature page uses a real legible and public-safe release screenshot.}
+      - {state: manual, runner: manual, kind: manual, procedure_id: wiki-screenshot-review, artifact_kind: feature-wiki-matrix, required_by_gate: final-release-audit, final_artifact_contract: 'The matrix maps every shipped feature to a public page and validated release-candidate screenshot, records symbol, source, cutoff date, application route, release version, and redaction-review evidence for every stock-specific or market-derived screenshot (or N/A for a non-stock screenshot), and confirms that any different suitable stocks used across feature pages are real and traceable.', completed: false, assertion: 'A reviewer verifies that every feature page uses a legible public-safe release screenshot and that every stock-specific or market-derived screenshot, including market quotes, candlesticks, formulas, backtests, and analysis, provides symbol, source, cutoff date, route, version, and redaction evidence; non-stock screenshots may record N/A.'}
   - id: R-075
     category: publication
     kind: publication
     behavior_key: wiki_is_complete_and_bilingual
-    acceptance: "GitHub Wiki Home.md is the Simplified-Chinese default home, links reciprocally to English Home-en.md through the Home-en Wiki link target, and every complete English and Simplified-Chinese feature-page pair uses shared navigation with no placeholders."
+    acceptance: "GitHub Wiki Home.md is the Simplified-Chinese default home and links reciprocally to English Home-en.md through the Home-en Wiki link target; for every delivered feature, a complete Simplified-Chinese and English page pair exists, uses shared navigation, and contains no placeholders."
     source_refs: [{capability: release-publication, requirement: reciprocal-bilingual-wiki, scenario: navigate-language-pair}]
     owning_stage: 5
     status: mapped

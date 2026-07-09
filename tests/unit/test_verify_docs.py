@@ -16,27 +16,52 @@ from scripts.verify_docs import (
 
 
 REPOSITORY_DOCUMENTS = {
-    "README.md": """# Stock Desk
+    "README.md": """[English](README.en.md)
 
-[简体中文](README.zh-CN.md)
+# Stock Desk
 
-## Quick start
+## 产品定位
 
-Prefer the source-free `stock-desk-<version>-windows-x86_64.exe`,
-`stock-desk-<version>-macos-x86_64.dmg`, or
-`stock-desk-<version>-macos-arm64.dmg` installer.
+本地优先的个人 A 股研究工作台。
 
-```bash
-gh attestation verify INSTALLER_PATH --repo CongBao/stock-desk --signer-workflow CongBao/stock-desk/.github/workflows/release.yml
-```
+## 核心功能
 
-```bash
-make acceptance
-```
+使用任务中心、行情图表、公式工作室、回测和研究功能。
 
-## Core workflows
+## 下载安装
+
+从 https://github.com/CongBao/stock-desk/releases/latest 选择无需源码的
+`stock-desk-<version>-windows-x86_64.exe`、
+`stock-desk-<version>-macos-x86_64.dmg` 或
+`stock-desk-<version>-macos-arm64.dmg` 安装包。
+
+## 使用文档
+
+参阅[配置](docs/configuration.md)和[免责声明](docs/disclaimer.md)。
+
+## 安全与范围
+
+仅供研究，不连接实盘交易。
+""",
+    "README.en.md": """[简体中文](README.md)
+
+# Stock Desk
+
+## Product positioning
+
+A local-first personal A-share research desk.
+
+## Core features
 
 Use the task center, market charts, Formula Studio, backtesting, and research.
+
+## Download and install
+
+Choose a source-free installer from
+https://github.com/CongBao/stock-desk/releases/latest:
+`stock-desk-<version>-windows-x86_64.exe`,
+`stock-desk-<version>-macos-x86_64.dmg`, or
+`stock-desk-<version>-macos-arm64.dmg`.
 
 ## Documentation
 
@@ -45,44 +70,6 @@ See [configuration](docs/configuration.md) and the [disclaimer](docs/disclaimer.
 ## Safety and scope
 
 Research only; no live trading.
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md).
-""",
-    "README.zh-CN.md": """# Stock Desk
-
-[English](README.md)
-
-## 快速启动
-
-优先使用无需源码的 `stock-desk-<version>-windows-x86_64.exe`、
-`stock-desk-<version>-macos-x86_64.dmg` 或
-`stock-desk-<version>-macos-arm64.dmg` 安装包。
-
-```bash
-gh attestation verify INSTALLER_PATH --repo CongBao/stock-desk --signer-workflow CongBao/stock-desk/.github/workflows/release.yml
-```
-
-```bash
-make acceptance
-```
-
-## 核心工作流
-
-使用任务中心、行情图表、公式工作室、回测和研究功能。
-
-## 文档
-
-参阅[配置](docs/configuration.md)和[免责声明](docs/disclaimer.md)。
-
-## 安全与范围
-
-仅供研究，不连接实盘交易。
-
-## 参与贡献
-
-参阅 [CONTRIBUTING.md](CONTRIBUTING.md)。
 """,
     "CONTRIBUTING.md": """# Contributing
 
@@ -403,7 +390,7 @@ def test_repository_contract_reports_missing_files_and_readme_switch(
     readme = tmp_path / "README.md"
     readme.write_text(
         readme.read_text(encoding="utf-8").replace(
-            "[简体中文](README.zh-CN.md)", "简体中文"
+            "[English](README.en.md)", "English"
         ),
         encoding="utf-8",
     )
@@ -412,7 +399,7 @@ def test_repository_contract_reports_missing_files_and_readme_switch(
 
     assert any("docs/disclaimer.md" in failure for failure in failures)
     assert any(
-        "README.md" in failure and "README.zh-CN.md" in failure for failure in failures
+        "README.md" in failure and "README.en.md" in failure for failure in failures
     )
 
 
@@ -469,7 +456,7 @@ def test_every_actual_readme_shell_command_has_specific_release_evidence() -> No
     evidence = getattr(verify_docs_module, "README_COMMAND_EVIDENCE", {})
     assert evidence, "README commands need an explicit release-evidence map"
 
-    for relative_path in ("README.md", "README.zh-CN.md"):
+    for relative_path in ("README.md", "README.en.md"):
         document = (Path(__file__).resolve().parents[2] / relative_path).read_text(
             encoding="utf-8"
         )
@@ -479,7 +466,6 @@ def test_every_actual_readme_shell_command_has_specific_release_evidence() -> No
             for block in blocks
             for command in verify_docs_module._logical_shell_commands(block)
         )
-        assert commands
         for command in commands:
             arguments = tuple(__import__("shlex").split(command, posix=True))
             assert arguments in evidence, (relative_path, command)
@@ -540,8 +526,6 @@ def test_repository_contract_requires_native_topology_and_attestation_guidance(
 ) -> None:
     _write_repository(tmp_path)
     removals = {
-        "README.md": ("gh attestation verify", "--signer-workflow"),
-        "README.zh-CN.md": ("gh attestation verify", "--signer-workflow"),
         "docs/architecture.md": ("Native installer topology",),
         "docs/configuration.md": (
             "Native installers",
@@ -564,8 +548,6 @@ def test_repository_contract_requires_native_topology_and_attestation_guidance(
         "%LOCALAPPDATA%\\stock-desk",
         "~/Library/Application Support/stock-desk",
         "config/master.key",
-        "gh attestation verify",
-        "--signer-workflow",
     ):
         assert any(expected in failure for failure in failures), expected
 

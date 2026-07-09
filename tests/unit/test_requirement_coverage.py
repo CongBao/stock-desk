@@ -144,16 +144,65 @@ def test_release_documentation_contract_is_chinese_first_and_uses_real_market_da
     )
     assert by_id["R-074"]["acceptance"] == (
         "Every delivered feature has a detailed GitHub Wiki usage page with a real "
-        "product screenshot; screenshots of market quotes, candlesticks, formulas, "
-        "or backtests use real A-share market data and record symbol, source, cutoff "
-        "date, application route, release version, and redaction-review evidence; "
-        "different feature pages may use different suitable real stocks."
+        "product screenshot; any screenshot that displays stock-specific or "
+        "market-derived data, including market quotes, candlesticks, formulas, "
+        "backtests, or analysis, uses real A-share market data and records symbol, "
+        "source, cutoff date, application route, release version, and redaction-review "
+        "evidence; different feature pages may use different suitable real stocks."
     )
     assert by_id["R-075"]["acceptance"] == (
-        "GitHub Wiki Home.md is the Simplified-Chinese default home, links "
-        "reciprocally to English Home-en.md through the Home-en Wiki link target, "
-        "and every complete English and Simplified-Chinese feature-page pair uses "
-        "shared navigation with no placeholders."
+        "GitHub Wiki Home.md is the Simplified-Chinese default home and links "
+        "reciprocally to English Home-en.md through the Home-en Wiki link target; "
+        "for every delivered feature, a complete Simplified-Chinese and English page "
+        "pair exists, uses shared navigation, and contains no placeholders."
+    )
+
+    readme_baseline = next(
+        evidence
+        for evidence in by_id["R-071"]["evidence"]
+        if evidence.get("selector")
+        == "tests/acceptance/test_release_docs.py::test_bilingual_readme_baseline_contains_verified_installation_and_use"
+    )
+    assert readme_baseline["assertion"] == (
+        "The baseline documentation test verifies Simplified-Chinese README.md as "
+        "the default, reciprocal first-line links with README.en.md, the Latest "
+        "Release link, all three source-free installer names, and no ordinary-user "
+        "shell or source prerequisite."
+    )
+
+    final_readme = next(
+        evidence
+        for evidence in by_id["R-073"]["evidence"]
+        if evidence.get("selector")
+        == "tests/acceptance/test_release_docs.py::test_readmes_are_concise_reciprocal_and_install_verified"
+    )
+    assert final_readme["assertion"] == (
+        "The final documentation test verifies four existing decodable product "
+        "screenshots, concise reciprocal Simplified-Chinese and English entries, all "
+        "three source-free installer names, an ordinary-user three-step installation "
+        "path, and Simplified-Chinese-default Wiki navigation."
+    )
+
+    screenshot_review = next(
+        evidence
+        for evidence in by_id["R-074"]["evidence"]
+        if evidence.get("procedure_id") == "wiki-screenshot-review"
+    )
+    assert screenshot_review["completed"] is False
+    assert screenshot_review["final_artifact_contract"] == (
+        "The matrix maps every shipped feature to a public page and validated "
+        "release-candidate screenshot, records symbol, source, cutoff date, "
+        "application route, release version, and redaction-review evidence for every "
+        "stock-specific or market-derived screenshot (or N/A for a non-stock "
+        "screenshot), and confirms that any different suitable stocks used across "
+        "feature pages are real and traceable."
+    )
+    assert screenshot_review["assertion"] == (
+        "A reviewer verifies that every feature page uses a legible public-safe "
+        "release screenshot and that every stock-specific or market-derived "
+        "screenshot, including market quotes, candlesticks, formulas, backtests, and "
+        "analysis, provides symbol, source, cutoff date, route, version, and redaction "
+        "evidence; non-stock screenshots may record N/A."
     )
 
 
@@ -475,11 +524,10 @@ def test_release_acceptance_manual_review_is_complete_but_final_audit_is_deferre
         ),
         "R-071": (
             "tests/acceptance/test_release_docs.py::test_bilingual_readme_baseline_contains_verified_installation_and_use",
-            "The baseline documentation test validates reciprocal English and "
-            "Simplified-Chinese entry links, every native installer name, "
-            "attestation and Compose/start instructions, and the documentation "
-            "command allowlist while rejecting internal-path and placeholder "
-            "references.",
+            "The baseline documentation test verifies Simplified-Chinese "
+            "README.md as the default, reciprocal first-line links with "
+            "README.en.md, the Latest Release link, all three source-free "
+            "installer names, and no ordinary-user shell or source prerequisite.",
         ),
     }
     for requirement_id, (selector, assertion) in reviewed_release_evidence.items():
@@ -709,50 +757,50 @@ def test_bilingual_gate_requires_reciprocal_markdown_link_targets(
     checker: ModuleType,
     tmp_path: Path,
 ) -> None:
-    english = tmp_path / "README.md"
-    chinese = tmp_path / "README.zh-CN.md"
-    english.write_text("README.zh-CN.md is available.\n", encoding="utf-8")
-    chinese.write_text("README.md is available.\n", encoding="utf-8")
+    chinese = tmp_path / "README.md"
+    english = tmp_path / "README.en.md"
+    chinese.write_text("README.en.md is available.\n", encoding="utf-8")
+    english.write_text("README.md is available.\n", encoding="utf-8")
 
     with pytest.raises(checker.ValidationError, match="Markdown links"):
         checker._bilingual_readme_gate(tmp_path)
 
-    english.write_text("![简体中文](README.zh-CN.md)\n", encoding="utf-8")
-    chinese.write_text("![English](README.md)\n", encoding="utf-8")
+    chinese.write_text("![English](README.en.md)\n", encoding="utf-8")
+    english.write_text("![简体中文](README.md)\n", encoding="utf-8")
     with pytest.raises(checker.ValidationError, match="Markdown links"):
         checker._bilingual_readme_gate(tmp_path)
 
     english.write_text(
-        "```markdown\n[简体中文](README.zh-CN.md)\n```\n",
+        "```markdown\n[简体中文](README.md)\n```\n",
         encoding="utf-8",
     )
     chinese.write_text(
-        "```markdown\n[English](README.md)\n```\n",
+        "```markdown\n[English](README.en.md)\n```\n",
         encoding="utf-8",
     )
     with pytest.raises(checker.ValidationError, match="Markdown links"):
         checker._bilingual_readme_gate(tmp_path)
 
     english.write_text(
-        "<!-- [简体中文](README.zh-CN.md) -->\n",
+        "<!-- [简体中文](README.md) -->\n",
         encoding="utf-8",
     )
-    chinese.write_text("<!-- [English](README.md) -->\n", encoding="utf-8")
+    chinese.write_text("<!-- [English](README.en.md) -->\n", encoding="utf-8")
     with pytest.raises(checker.ValidationError, match="Markdown links"):
         checker._bilingual_readme_gate(tmp_path)
 
-    english.write_text("`[简体中文](README.zh-CN.md)`\n", encoding="utf-8")
-    chinese.write_text("`[English](README.md)`\n", encoding="utf-8")
+    english.write_text("`[简体中文](README.md)`\n", encoding="utf-8")
+    chinese.write_text("`[English](README.en.md)`\n", encoding="utf-8")
     with pytest.raises(checker.ValidationError, match="Markdown links"):
         checker._bilingual_readme_gate(tmp_path)
 
-    english.write_text(r"\[简体中文](README.zh-CN.md)" "\n", encoding="utf-8")
-    chinese.write_text(r"\[English](README.md)" "\n", encoding="utf-8")
+    english.write_text(r"\[简体中文](README.md)" "\n", encoding="utf-8")
+    chinese.write_text(r"\[English](README.en.md)" "\n", encoding="utf-8")
     with pytest.raises(checker.ValidationError, match="Markdown links"):
         checker._bilingual_readme_gate(tmp_path)
 
-    english.write_text("[简体中文](README.zh-CN.md)\n", encoding="utf-8")
-    chinese.write_text("[English](README.md)\n", encoding="utf-8")
+    english.write_text("[简体中文](README.md)\n", encoding="utf-8")
+    chinese.write_text("[English](README.en.md)\n", encoding="utf-8")
     checker._bilingual_readme_gate(tmp_path)
 
 

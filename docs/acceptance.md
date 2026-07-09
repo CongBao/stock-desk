@@ -1,6 +1,6 @@
 # v1 acceptance coverage
 
-<!-- requirements-yaml-sha256: a80f832053d6f8cf5b4536ea67ac2ea6988692cfa855fe389b8ea0b17e665ce9 -->
+<!-- requirements-yaml-sha256: 28918c1b803414419f551a474e92aee5144c441cda64feef523e59733068d136 -->
 
 The machine-readable acceptance authority is `tests/acceptance/requirements.yml`. The digest above is checked by `scripts/check_requirement_coverage.py` so this public summary cannot silently drift from the matrix.
 
