@@ -247,7 +247,9 @@ def test_heartbeat_death_before_readiness_settles_delayed_error_payload(
         database_url=database_url,
         worker_id="delayed-before-ready-error",
         interval=0.01,
-        start_timeout=1.0,
+        # Match the production startup allowance: process spawn can exceed one
+        # second on a saturated CI runner before the child can publish failure.
+        start_timeout=5.0,
         stop_timeout=0.3,
         io_timeout=0.05,
     )
@@ -279,7 +281,9 @@ def test_running_heartbeat_death_joins_before_consuming_delayed_error_payload(
         database_url=repository.engine.url.render_as_string(hide_password=False),
         worker_id="delayed-running-error",
         interval=0.01,
-        start_timeout=1.0,
+        # Match the production startup allowance so this test isolates the
+        # post-readiness settlement race instead of runner spawn latency.
+        start_timeout=5.0,
         stop_timeout=0.3,
         io_timeout=0.05,
     )
