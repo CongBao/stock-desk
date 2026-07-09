@@ -8,6 +8,7 @@ from urllib.parse import unquote, urlsplit
 
 import yaml
 
+import scripts.verify_docs as verify_docs_module
 from scripts.verify_docs import (
     README_COMMAND_EVIDENCE,
     _FENCED_SHELL,
@@ -203,3 +204,20 @@ def test_readmes_are_concise_reciprocal_and_install_verified() -> None:
     for pattern in _native_artifact_patterns():
         assert pattern in english
         assert pattern in chinese
+
+
+def test_wiki_publication_contract_uses_chinese_default_paths() -> None:
+    stems = verify_docs_module.REQUIRED_WIKI_PAGE_STEMS
+
+    assert stems[:5] == (
+        "Home",
+        "Feature-Index",
+        "Windows-Installation",
+        "macOS-Installation",
+        "First-Launch-and-Health",
+    )
+    assert "Market-Charts" in stems
+    assert "Formula-Studio-Quickstart" in stems
+    assert "MACD-Backtest-Tutorial" in stems
+    assert "Responsive-Navigation-and-Accessibility" in stems
+    assert not hasattr(verify_docs_module, "REQUIRED_WIKI_PAGES")

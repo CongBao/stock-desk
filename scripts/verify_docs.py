@@ -84,17 +84,54 @@ REQUIRED_SECTIONS = {
     ),
 }
 
-REQUIRED_WIKI_PAGES = (
+REQUIRED_WIKI_PAGE_STEMS = (
     "Home",
-    "Installation",
+    "Feature-Index",
+    "Windows-Installation",
+    "macOS-Installation",
+    "First-Launch-and-Health",
+    "Data-Sources-and-Tushare",
+    "Local-TDX-Data",
+    "Data-Updates-and-Provenance",
+    "Stock-Pools",
+    "Market-Charts",
+    "Formula-Studio-Quickstart",
+    "Formula-Compatibility-and-Errors",
+    "Formula-Versions-and-Safety",
+    "MACD-Backtest-Tutorial",
+    "A-Share-Execution-and-Costs",
+    "Backtest-Metrics-and-Reliability",
+    "Backtest-Replay-Export-and-Failures",
+    "Model-Provider-Setup",
+    "Research-Reports-and-Evidence",
+    "Research-Failures-Retries-and-Safety",
     "Task-Center",
-    "Market-Data-and-Charts",
-    "Formula-Studio",
-    "Backtesting",
-    "Multi-Agent-Research",
-    "Backup-and-Restore",
-    "Configuration-and-Security",
+    "Responsive-Navigation-and-Accessibility",
+    "Credentials-Logs-and-Local-Security",
+    "Backup-Restore-Upgrade-and-Uninstall",
     "Troubleshooting",
+)
+
+REQUIRED_WIKI_ENTRY_FILES = (
+    "Home.md",
+    "Home-en.md",
+    "_Sidebar.md",
+    "_Sidebar-en.md",
+    "Feature-Index.md",
+    "Feature-Index-en.md",
+    "SCREENSHOT-MANIFEST.yml",
+)
+
+REPLACED_WIKI_PAGE_FILENAMES = frozenset(
+    {
+        "Installation.md",
+        "Market-Data-and-Charts.md",
+        "Formula-Studio.md",
+        "Backtesting.md",
+        "Multi-Agent-Research.md",
+        "Backup-and-Restore.md",
+        "Configuration-and-Security.md",
+    }
 )
 
 FORBIDDEN_PUBLIC_REFERENCES = (
@@ -592,7 +629,10 @@ def _wiki_publishable_paths(
                     failures.append(
                         f"{relative_text}: placeholder content blocks final Wiki publication: {placeholder}"
                     )
-            if suffix not in PUBLISHABLE_SUFFIXES:
+            if (
+                suffix not in PUBLISHABLE_SUFFIXES
+                and relative_text != "SCREENSHOT-MANIFEST.yml"
+            ):
                 failures.append(
                     f"{relative_text}: unsupported Wiki publication file type"
                 )
@@ -714,6 +754,14 @@ def verify_wiki(wiki_root: Path, *, final: bool) -> list[str]:
             failures.append(f"{relative_path}: Markdown is unreadable")
             continue
         documents[relative_path] = document
+        if final and path.name.endswith(".zh-CN.md"):
+            failures.append(
+                f"{relative_path}: legacy .zh-CN Wiki alias is not publishable"
+            )
+        if final and relative_path in REPLACED_WIKI_PAGE_FILENAMES:
+            failures.append(
+                f"{relative_path}: replaced Wiki page name is not publishable"
+            )
         targets = _rendered_targets(document)
         rendered_targets[relative_path] = targets
         failures.extend(
@@ -754,22 +802,72 @@ def verify_wiki(wiki_root: Path, *, final: bool) -> list[str]:
                 "PUBLISHING-CHECKLIST.md must be deleted or finalized before publication"
             )
 
-    for stem in REQUIRED_WIKI_PAGES:
-        english_path = root / f"{stem}.md"
-        chinese_path = root / f"{stem}.zh-CN.md"
-        for path in (english_path, chinese_path):
+    for filename in REQUIRED_WIKI_ENTRY_FILES:
+        path = root / filename
+        if not path.is_file():
+            failures.append(f"Missing required Wiki entry file: {filename}")
+
+    for filename, required_link in (
+        ("_Sidebar.md", "[English](Home-en)"),
+        ("_Sidebar-en.md", "[简体中文](Home)"),
+    ):
+        sidebar = documents.get(filename, "")
+        if sidebar and required_link not in sidebar:
+            failures.append(f"{filename}: missing language entry link: {required_link}")
+
+    if final:
+        sidebar_targets: dict[str, set[str]] = {}
+        for filename in ("_Sidebar.md", "_Sidebar-en.md"):
+            sidebar_targets[filename] = {
+                unquote(urlsplit(rendered.target).path)
+                for rendered in rendered_targets.get(filename, ())
+                if rendered.kind == "link"
+                and not urlsplit(rendered.target).scheme
+                and not urlsplit(rendered.target).netloc
+            }
+        chinese_targets = sidebar_targets["_Sidebar.md"]
+        english_targets = sidebar_targets["_Sidebar-en.md"]
+        for stem in REQUIRED_WIKI_PAGE_STEMS:
+            if stem not in chinese_targets:
+                failures.append(
+                    f"_Sidebar.md: missing authoritative Chinese target: {stem}"
+                )
+            english_target = f"{stem}-en"
+            if english_target not in english_targets:
+                failures.append(
+                    "_Sidebar-en.md: missing authoritative English target: "
+                    f"{english_target}"
+                )
+        for wrong_target in sorted(
+            {f"{stem}-en" for stem in REQUIRED_WIKI_PAGE_STEMS if stem != "Home"}
+            & chinese_targets
+        ):
+            failures.append(
+                f"_Sidebar.md: cross-language navigation target: {wrong_target}"
+            )
+        for wrong_target in sorted(
+            (set(REQUIRED_WIKI_PAGE_STEMS) - {"Home"}) & english_targets
+        ):
+            failures.append(
+                f"_Sidebar-en.md: cross-language navigation target: {wrong_target}"
+            )
+
+    for stem in REQUIRED_WIKI_PAGE_STEMS:
+        chinese_path = root / f"{stem}.md"
+        english_path = root / f"{stem}-en.md"
+        for path in (chinese_path, english_path):
             if not path.is_file():
                 failures.append(f"Missing required Wiki page: {path.name}")
         if not english_path.is_file() or not chinese_path.is_file():
             continue
         english = documents.get(english_path.name, "")
         chinese = documents.get(chinese_path.name, "")
-        if f"[简体中文]({stem}.zh-CN)" not in english:
+        if f"[简体中文]({stem})" not in english:
+            failures.append(f"{english_path.name}: missing counterpart link to {stem}")
+        if f"[English]({stem}-en)" not in chinese:
             failures.append(
-                f"{english_path.name}: missing counterpart link to {stem}.zh-CN"
+                f"{chinese_path.name}: missing counterpart link to {stem}-en"
             )
-        if f"[English]({stem})" not in chinese:
-            failures.append(f"{chinese_path.name}: missing counterpart link to {stem}")
         if stem == "Home":
             continue
         for path, document, required_headings in (
@@ -822,7 +920,7 @@ def verify_wiki(wiki_root: Path, *, final: bool) -> list[str]:
         ):
             required_scope = (
                 "仅适用于源码或容器 POSIX"
-                if relative_path.endswith(".zh-CN.md")
+                if not relative_path.endswith("-en.md")
                 else "source/container POSIX only"
             )
             if required_scope not in document:

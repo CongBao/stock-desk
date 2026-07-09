@@ -8,10 +8,48 @@ import pytest
 
 import scripts.verify_docs as verify_docs_module
 from scripts.verify_docs import (
-    REQUIRED_WIKI_PAGES,
     main,
     verify_repository,
     verify_wiki,
+)
+
+
+EXPECTED_WIKI_PAGE_STEMS = (
+    "Home",
+    "Feature-Index",
+    "Windows-Installation",
+    "macOS-Installation",
+    "First-Launch-and-Health",
+    "Data-Sources-and-Tushare",
+    "Local-TDX-Data",
+    "Data-Updates-and-Provenance",
+    "Stock-Pools",
+    "Market-Charts",
+    "Formula-Studio-Quickstart",
+    "Formula-Compatibility-and-Errors",
+    "Formula-Versions-and-Safety",
+    "MACD-Backtest-Tutorial",
+    "A-Share-Execution-and-Costs",
+    "Backtest-Metrics-and-Reliability",
+    "Backtest-Replay-Export-and-Failures",
+    "Model-Provider-Setup",
+    "Research-Reports-and-Evidence",
+    "Research-Failures-Retries-and-Safety",
+    "Task-Center",
+    "Responsive-Navigation-and-Accessibility",
+    "Credentials-Logs-and-Local-Security",
+    "Backup-Restore-Upgrade-and-Uninstall",
+    "Troubleshooting",
+)
+
+EXPECTED_REPLACED_WIKI_PAGES = (
+    "Installation.md",
+    "Market-Data-and-Charts.md",
+    "Formula-Studio.md",
+    "Backtesting.md",
+    "Multi-Agent-Research.md",
+    "Backup-and-Restore.md",
+    "Configuration-and-Security.md",
 )
 
 
@@ -268,47 +306,28 @@ def _write_repository(root: Path) -> None:
 
 
 def _write_wiki(root: Path) -> None:
-    for stem in REQUIRED_WIKI_PAGES:
+    for stem in EXPECTED_WIKI_PAGE_STEMS:
         if stem == "Home":
-            english = """# Stock Desk Wiki
+            chinese = """# Stock Desk 使用手册
 
-[简体中文](Home.zh-CN)
+[English](Home-en)
 
-## Released features
-
-See the feature guides.
-"""
-            chinese = """# Stock Desk Wiki
-
-[English](Home)
-
-## 已发布功能
+## 从这里开始
 
 参阅功能指南。
 """
-        else:
-            english = f"""# {stem.replace("-", " ")}
+            english = """# Stock Desk User Guide
 
-[简体中文]({stem}.zh-CN)
+[简体中文](Home)
 
-<!-- SCREENSHOT_PLACEHOLDER: replace after integrated release-candidate capture -->
+## Start here
 
-## Steps
-
-1. Open Stock Desk.
-2. Complete the workflow.
-
-## Expected result
-
-The result is visible.
-
-## Recovery
-
-Return to the task center and retry.
+See the feature guides.
 """
+        else:
             chinese = f"""# {stem.replace("-", " ")}
 
-[English]({stem})
+[English]({stem}-en)
 
 <!-- SCREENSHOT_PLACEHOLDER: replace after integrated release-candidate capture -->
 
@@ -325,8 +344,40 @@ Return to the task center and retry.
 
 返回任务中心后重试。
 """
-        (root / f"{stem}.md").write_text(english, encoding="utf-8")
-        (root / f"{stem}.zh-CN.md").write_text(chinese, encoding="utf-8")
+            english = f"""# {stem.replace("-", " ")}
+
+[简体中文]({stem})
+
+<!-- SCREENSHOT_PLACEHOLDER: replace after integrated release-candidate capture -->
+
+## Steps
+
+1. Open Stock Desk.
+2. Complete the workflow.
+
+## Expected result
+
+The result is visible.
+
+## Recovery
+
+Return to the task center and retry.
+"""
+        (root / f"{stem}.md").write_text(chinese, encoding="utf-8")
+        (root / f"{stem}-en.md").write_text(english, encoding="utf-8")
+    chinese_navigation = "\n".join(
+        f"- [{stem}]({stem})" for stem in EXPECTED_WIKI_PAGE_STEMS
+    )
+    english_navigation = "\n".join(
+        f"- [{stem}]({stem}-en)" for stem in EXPECTED_WIKI_PAGE_STEMS
+    )
+    (root / "_Sidebar.md").write_text(
+        f"[English](Home-en)\n\n{chinese_navigation}\n", encoding="utf-8"
+    )
+    (root / "_Sidebar-en.md").write_text(
+        f"[简体中文](Home)\n\n{english_navigation}\n", encoding="utf-8"
+    )
+    (root / "SCREENSHOT-MANIFEST.yml").write_text("screenshots: []\n", encoding="utf-8")
 
 
 def _png_bytes(width: int, height: int, *, varied: bool) -> bytes:
@@ -358,10 +409,10 @@ def _finalize_wiki(root: Path) -> None:
     image_dir = root / "images"
     image_dir.mkdir()
     png = _png_bytes(640, 360, varied=True)
-    for stem in REQUIRED_WIKI_PAGES:
+    for stem in EXPECTED_WIKI_PAGE_STEMS:
         if stem == "Home":
             continue
-        for suffix in ("", ".zh-CN"):
+        for suffix in ("", "-en"):
             page = root / f"{stem}{suffix}.md"
             image_name = f"{stem}{suffix}.png"
             page.write_text(
@@ -589,8 +640,8 @@ def test_wiki_staging_requires_complete_pairs_and_procedural_sections(
 
     assert verify_wiki(tmp_path, final=False) == []
 
-    (tmp_path / "Backtesting.zh-CN.md").unlink()
-    formula = tmp_path / "Formula-Studio.md"
+    (tmp_path / "MACD-Backtest-Tutorial-en.md").unlink()
+    formula = tmp_path / "Formula-Studio-Quickstart-en.md"
     formula.write_text(
         formula.read_text(encoding="utf-8").replace("## Recovery", "## Notes"),
         encoding="utf-8",
@@ -598,10 +649,122 @@ def test_wiki_staging_requires_complete_pairs_and_procedural_sections(
 
     failures = verify_wiki(tmp_path, final=False)
 
-    assert any("Backtesting.zh-CN.md" in failure for failure in failures)
+    assert any("MACD-Backtest-Tutorial-en.md" in failure for failure in failures)
     assert any(
-        "Formula-Studio.md" in failure and "Recovery" in failure for failure in failures
+        "Formula-Studio-Quickstart-en.md" in failure and "Recovery" in failure
+        for failure in failures
     )
+
+
+def test_wiki_requires_chinese_default_and_english_suffix(tmp_path: Path) -> None:
+    _write_wiki(tmp_path)
+
+    assert verify_docs_module.REQUIRED_WIKI_PAGE_STEMS == EXPECTED_WIKI_PAGE_STEMS
+    assert verify_wiki(tmp_path, final=False) == []
+
+    home = tmp_path / "Home.md"
+    home.write_text(
+        home.read_text(encoding="utf-8").replace(
+            "[English](Home-en)", "[English](Home)"
+        ),
+        encoding="utf-8",
+    )
+    english = tmp_path / "Market-Charts-en.md"
+    english.write_text(
+        english.read_text(encoding="utf-8").replace(
+            "[简体中文](Market-Charts)", "[简体中文](Market-Charts-en)"
+        ),
+        encoding="utf-8",
+    )
+
+    failures = verify_wiki(tmp_path, final=False)
+
+    assert any("Home.md" in failure and "Home-en" in failure for failure in failures)
+    assert any(
+        "Market-Charts-en.md" in failure and "Market-Charts" in failure
+        for failure in failures
+    )
+
+
+def test_wiki_requires_shared_navigation_and_entry_files(tmp_path: Path) -> None:
+    _write_wiki(tmp_path)
+    (tmp_path / "_Sidebar-en.md").unlink()
+    (tmp_path / "SCREENSHOT-MANIFEST.yml").unlink()
+
+    failures = verify_wiki(tmp_path, final=False)
+
+    assert any("_Sidebar-en.md" in failure for failure in failures)
+    assert any("SCREENSHOT-MANIFEST.yml" in failure for failure in failures)
+
+
+def test_wiki_sidebars_link_to_the_other_language_home(tmp_path: Path) -> None:
+    _write_wiki(tmp_path)
+    sidebar = tmp_path / "_Sidebar.md"
+    sidebar.write_text("[English](Home)\n\n[首页](Home)\n", encoding="utf-8")
+    english_sidebar = tmp_path / "_Sidebar-en.md"
+    english_sidebar.write_text("[中文](Home-en)\n\n[Home](Home-en)\n", encoding="utf-8")
+
+    failures = verify_wiki(tmp_path, final=False)
+
+    assert any(
+        "_Sidebar.md" in failure and "Home-en" in failure for failure in failures
+    )
+    assert any(
+        "_Sidebar-en.md" in failure and "简体中文" in failure for failure in failures
+    )
+
+
+def test_final_wiki_sidebars_require_complete_same_language_navigation(
+    tmp_path: Path,
+) -> None:
+    _write_wiki(tmp_path)
+    _finalize_wiki(tmp_path)
+    sidebar = tmp_path / "_Sidebar.md"
+    sidebar.write_text(
+        sidebar.read_text(encoding="utf-8")
+        .replace("- [Data-Sources-and-Tushare](Data-Sources-and-Tushare)\n", "")
+        .replace("(Market-Charts)", "(Market-Charts-en)"),
+        encoding="utf-8",
+    )
+    english_sidebar = tmp_path / "_Sidebar-en.md"
+    english_sidebar.write_text(
+        english_sidebar.read_text(encoding="utf-8")
+        .replace("- [Local-TDX-Data](Local-TDX-Data-en)\n", "")
+        .replace("(Formula-Studio-Quickstart-en)", "(Formula-Studio-Quickstart)"),
+        encoding="utf-8",
+    )
+
+    failures = verify_wiki(tmp_path, final=True)
+
+    for filename, target in (
+        ("_Sidebar.md", "Data-Sources-and-Tushare"),
+        ("_Sidebar.md", "Market-Charts-en"),
+        ("_Sidebar-en.md", "Local-TDX-Data-en"),
+        ("_Sidebar-en.md", "Formula-Studio-Quickstart"),
+    ):
+        assert any(filename in failure and target in failure for failure in failures)
+
+
+def test_final_wiki_rejects_legacy_language_aliases_and_replaced_pages(
+    tmp_path: Path,
+) -> None:
+    _write_wiki(tmp_path)
+    _finalize_wiki(tmp_path)
+    (tmp_path / "Market-Charts.zh-CN.md").write_text("# 旧中文别名\n", encoding="utf-8")
+    for filename in EXPECTED_REPLACED_WIKI_PAGES:
+        (tmp_path / filename).write_text("# Replaced page\n", encoding="utf-8")
+
+    failures = verify_wiki(tmp_path, final=True)
+
+    assert any(
+        "Market-Charts.zh-CN.md" in failure and "legacy" in failure.casefold()
+        for failure in failures
+    )
+    for filename in EXPECTED_REPLACED_WIKI_PAGES:
+        assert any(
+            filename in failure and "replaced" in failure.casefold()
+            for failure in failures
+        )
 
 
 def test_wiki_cannot_be_marked_final_with_screenshot_placeholders(
@@ -700,7 +863,7 @@ def test_final_wiki_rejects_placeholder_and_internal_publishable_path_names(
 ) -> None:
     _write_wiki(tmp_path)
     _finalize_wiki(tmp_path)
-    png = (tmp_path / "images" / "Backtesting.png").read_bytes()
+    png = (tmp_path / "images" / "MACD-Backtest-Tutorial.png").read_bytes()
     (tmp_path / "images" / "SCREENSHOT_PLACEHOLDER.png").write_bytes(png)
     internal = tmp_path / "openspec" / "private.png"
     internal.parent.mkdir()
@@ -722,6 +885,7 @@ def test_final_wiki_rejects_every_unsupported_regular_path_before_filtering(
         "SCREENSHOT_PLACEHOLDER openspec/private.md",
         encoding="utf-8",
     )
+    (tmp_path / "unexpected.yml").write_text("private: true\n", encoding="utf-8")
     git_metadata = tmp_path / ".git" / "ignored.txt"
     git_metadata.parent.mkdir()
     git_metadata.write_text("SCREENSHOT_PLACEHOLDER", encoding="utf-8")
@@ -733,6 +897,9 @@ def test_final_wiki_rejects_every_unsupported_regular_path_before_filtering(
     )
     assert any(
         "notes.txt" in failure and "unsupported" in failure for failure in failures
+    )
+    assert any(
+        "unexpected.yml" in failure and "unsupported" in failure for failure in failures
     )
     assert any(
         "notes.txt" in failure and "placeholder" in failure.lower()
@@ -758,9 +925,11 @@ def test_final_wiki_requires_fully_decoded_useful_raster_screenshots(
     uniform.write_bytes(_png_bytes(640, 360, varied=False))
     svg = image_dir / "fake.svg"
     svg.write_text("<svg xmlns='http://www.w3.org/2000/svg'></svg>", encoding="utf-8")
-    page = tmp_path / "Backtesting.md"
+    page = tmp_path / "MACD-Backtest-Tutorial-en.md"
     document = page.read_text(encoding="utf-8")
-    document = document.replace("images/Backtesting.png", "images/fake.png")
+    document = document.replace(
+        "images/MACD-Backtest-Tutorial-en.png", "images/fake.png"
+    )
     document += (
         "\n![Tiny](images/tiny.png)\n"
         "![Uniform](images/uniform.png)\n"
@@ -784,7 +953,7 @@ def test_final_wiki_requires_fully_decoded_useful_raster_screenshots(
         for failure in failures
     )
     assert any(
-        "Backtesting.md" in failure and "real screenshot" in failure
+        "MACD-Backtest-Tutorial-en.md" in failure and "real screenshot" in failure
         for failure in failures
     )
 
@@ -846,10 +1015,10 @@ def test_wiki_targets_must_be_scanned_and_screenshots_must_resolve_under_images(
     (git_dir / "private.md").write_text("# Private", encoding="utf-8")
     (git_dir / "private.png").write_bytes(png)
 
-    english = tmp_path / "Backtesting.md"
+    english = tmp_path / "MACD-Backtest-Tutorial-en.md"
     english.write_text(
         english.read_text(encoding="utf-8")
-        .replace("images/Backtesting.png", "images/../root.png")
+        .replace("images/MACD-Backtest-Tutorial-en.png", "images/../root.png")
         .replace(
             "## Recovery",
             """[Ignored](notes.txt)
@@ -861,10 +1030,10 @@ def test_wiki_targets_must_be_scanned_and_screenshots_must_resolve_under_images(
         ),
         encoding="utf-8",
     )
-    chinese = tmp_path / "Backtesting.zh-CN.md"
+    chinese = tmp_path / "MACD-Backtest-Tutorial.md"
     chinese.write_text(
         chinese.read_text(encoding="utf-8")
-        .replace("images/Backtesting.zh-CN.png", "images/%2e%2e/root.png")
+        .replace("images/MACD-Backtest-Tutorial.png", "images/%2e%2e/root.png")
         .replace(
             "## 恢复方法",
             """[编码穿越](images/%2e%2e/notes.txt)
@@ -888,11 +1057,11 @@ def test_wiki_targets_must_be_scanned_and_screenshots_must_resolve_under_images(
             for failure in failures
         ), target
     assert any(
-        "Backtesting.md" in failure and "real screenshot" in failure
+        "MACD-Backtest-Tutorial-en.md" in failure and "real screenshot" in failure
         for failure in failures
     )
     assert any(
-        "Backtesting.zh-CN.md" in failure and "real screenshot" in failure
+        "MACD-Backtest-Tutorial.md" in failure and "real screenshot" in failure
         for failure in failures
     )
 
@@ -901,7 +1070,7 @@ def test_wiki_backup_commands_require_posix_source_or_container_scope(
     tmp_path: Path,
 ) -> None:
     _write_wiki(tmp_path)
-    backup = tmp_path / "Backup-and-Restore.md"
+    backup = tmp_path / "Backup-Restore-Upgrade-and-Uninstall-en.md"
     backup.write_text(
         backup.read_text(encoding="utf-8")
         + "\n`uv run python scripts/backup.py backup.stockdesk-backup`\n",
@@ -911,6 +1080,7 @@ def test_wiki_backup_commands_require_posix_source_or_container_scope(
     failures = verify_wiki(tmp_path, final=False)
 
     assert any(
-        "Backup-and-Restore.md" in failure and "source/container POSIX" in failure
+        "Backup-Restore-Upgrade-and-Uninstall-en.md" in failure
+        and "source/container POSIX" in failure
         for failure in failures
     )
