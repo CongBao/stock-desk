@@ -123,6 +123,14 @@ class ProviderId(StrEnum):
     STOCK_DESK_DEMO = "stock_desk_demo"
 
 
+BAR_SOURCE_PROVIDER_IDS: Final[tuple[ProviderId, ...]] = (
+    ProviderId.TUSHARE,
+    ProviderId.AKSHARE,
+    ProviderId.BAOSTOCK,
+    ProviderId.TDX_LOCAL,
+)
+
+
 CONFIGURABLE_SOURCE_PROVIDER_IDS: Final[frozenset[ProviderId]] = frozenset(
     {
         ProviderId.AKSHARE,

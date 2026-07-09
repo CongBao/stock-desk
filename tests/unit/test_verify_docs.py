@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 import struct
+import subprocess
 import zlib
 
 import pytest
@@ -20,6 +23,7 @@ EXPECTED_WIKI_PAGE_STEMS = (
     "Windows-Installation",
     "macOS-Installation",
     "First-Launch-and-Health",
+    "Project-Governance-and-Release-Evidence",
     "Data-Sources-and-Tushare",
     "Local-TDX-Data",
     "Data-Updates-and-Provenance",
@@ -324,6 +328,33 @@ def _write_wiki(root: Path) -> None:
 
 See the feature guides.
 """
+        elif stem == "Feature-Index":
+            rows = "\n".join(
+                f"| R-{number:03d} | [\u4e2d\u6587\u9996\u9875](Home#\u4ece\u8fd9\u91cc\u5f00\u59cb) | "
+                "[English home](Home-en#start-here) | \u4ece\u8fd9\u91cc\u5f00\u59cb / Start here | "
+                "`planned-home` | `app-route:/market` |"
+                for number in range(1, 80)
+            )
+            chinese = f"""# \u529f\u80fd\u7d22\u5f15
+
+[English](Feature-Index-en)
+
+## \u9700\u6c42\u5230\u9875\u9762
+
+| \u529f\u80fd/\u9700\u6c42 | \u4e2d\u6587\u9875\u9762 | English page | \u7ae0\u8282 | \u622a\u56fe ID | \u8def\u7531/\u754c\u9762 |
+| --- | --- | --- | --- | --- | --- |
+{rows}
+"""
+            english = f"""# Feature index
+
+[\u7b80\u4f53\u4e2d\u6587](Feature-Index)
+
+## Requirements to pages
+
+| Feature/requirement | Chinese page | English page | Section | Screenshot ID | Route/surface |
+| --- | --- | --- | --- | --- | --- |
+{rows}
+"""
         else:
             chinese = f"""# {stem.replace("-", " ")}
 
@@ -377,10 +408,37 @@ Return to the task center and retry.
     (root / "_Sidebar-en.md").write_text(
         f"[简体中文](Home)\n\n{english_navigation}\n", encoding="utf-8"
     )
-    (root / "SCREENSHOT-MANIFEST.yml").write_text("screenshots: []\n", encoding="utf-8")
+    manifest_features = ", ".join(f"R-{number:03d}" for number in range(1, 80))
+    (root / "SCREENSHOT-MANIFEST.yml").write_text(
+        f"""schema_version: stock-desk-documentation-screenshots-v1
+screenshots:
+  - screenshot_id: planned-home
+    path: images/planned-home.png
+    page_pairs: [Home.md, Home-en.md]
+    caption_locales:
+      zh-CN: \u4e2d\u6587\u9ed8\u8ba4\u5165\u53e3
+      en: Chinese-default entry
+    features: [{manifest_features}]
+    surface:
+      type: app-route
+      locator: /market
+    contains_market_data: true
+    state: pending
+    viewport: null
+    product: null
+    captured_at: null
+    sha256: null
+    market_data: null
+    capture: null
+    editing: null
+    redaction: pending
+    disclaimer: \u4ec5\u4f5c\u529f\u80fd\u6f14\u793a\uff0c\u4e0d\u6784\u6210\u6295\u8d44\u5efa\u8bae
+""",
+        encoding="utf-8",
+    )
 
 
-def _png_bytes(width: int, height: int, *, varied: bool) -> bytes:
+def _png_bytes(width: int, height: int, *, varied: bool, seed: int = 0) -> bytes:
     def chunk(kind: bytes, payload: bytes) -> bytes:
         checksum = zlib.crc32(kind + payload) & 0xFFFFFFFF
         return (
@@ -394,7 +452,7 @@ def _png_bytes(width: int, height: int, *, varied: bool) -> bytes:
     for y in range(height):
         rows.append(0)
         for x in range(width):
-            value = (x * 7 + y * 13) % 256 if varied else 128
+            value = (x * 7 + y * 13 + seed * 17) % 256 if varied else 128
             rows.extend((value, (value * 3) % 256, (value * 5) % 256))
     header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
     return (
@@ -403,6 +461,49 @@ def _png_bytes(width: int, height: int, *, varied: bool) -> bytes:
         + chunk(b"IDAT", zlib.compress(bytes(rows), level=9))
         + chunk(b"IEND", b"")
     )
+
+
+def _mark_planned_home_captured(root: Path, payload: bytes) -> None:
+    image = root / "images" / "planned-home.png"
+    image.parent.mkdir(exist_ok=True)
+    image.write_bytes(payload)
+    commit = subprocess.run(
+        ("git", "rev-parse", "HEAD"),
+        cwd=Path(__file__).resolve().parents[2],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    manifest = root / "SCREENSHOT-MANIFEST.yml"
+    document = manifest.read_text(encoding="utf-8")
+    replacements = {
+        "    state: pending": "    state: captured",
+        "    viewport: null": (
+            "    viewport: {width: 1440, height: 1000, device_scale_factor: 1}"
+        ),
+        "    product: null": (f"    product: {{version: 1.0.0, git_commit: {commit}}}"),
+        "    captured_at: null": "    captured_at: 2026-07-09T00:00:00Z",
+        "    sha256: null": f"    sha256: {hashlib.sha256(payload).hexdigest()}",
+        "    market_data: null": (
+            "    market_data:\n"
+            "      symbol: 600519.SH\n"
+            "      name: \u8d35\u5dde\u8305\u53f0\n"
+            "      period: 1d\n"
+            "      adjustment: qfq\n"
+            "      start: 2021-01-01\n"
+            "      end: 2026-07-08\n"
+            "      source: tushare\n"
+            "      cutoff: 2026-07-08T07:00:00Z\n"
+            "      dataset_version: sha256:"
+            f"{hashlib.sha256(b'planned-home-dataset').hexdigest()}"
+        ),
+        "    capture: null": "    capture: playwright",
+        "    editing: null": "    editing: none",
+        "    redaction: pending": "    redaction: passed",
+    }
+    for old, new in replacements.items():
+        document = document.replace(old, new)
+    manifest.write_text(document, encoding="utf-8")
 
 
 def _finalize_wiki(root: Path) -> None:
@@ -425,12 +526,288 @@ def _finalize_wiki(root: Path) -> None:
             (image_dir / image_name).write_bytes(png)
 
 
+def _write_complete_final_wiki(root: Path) -> None:
+    _write_wiki(root)
+    image_dir = root / "images"
+    image_dir.mkdir()
+    repo = Path(__file__).resolve().parents[2]
+    commit = subprocess.run(
+        ("git", "rev-parse", "HEAD"),
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assignments: dict[str, list[str]] = {stem: [] for stem in EXPECTED_WIKI_PAGE_STEMS}
+    for number in range(1, 80):
+        stem = EXPECTED_WIKI_PAGE_STEMS[(number - 1) % len(EXPECTED_WIKI_PAGE_STEMS)]
+        assignments[stem].append(f"R-{number:03d}")
+
+    rows: list[str] = []
+    entries: list[str] = []
+    for ordinal, (stem, features) in enumerate(assignments.items(), start=1):
+        payload = _png_bytes(640, 360, varied=True, seed=ordinal)
+        if stem == "Home":
+            chinese_section, english_section = (
+                "\u4ece\u8fd9\u91cc\u5f00\u59cb",
+                "Start here",
+            )
+            chinese_anchor, english_anchor = (
+                "\u4ece\u8fd9\u91cc\u5f00\u59cb",
+                "start-here",
+            )
+        elif stem == "Feature-Index":
+            chinese_section, english_section = (
+                "\u9700\u6c42\u5230\u9875\u9762",
+                "Requirements to pages",
+            )
+            chinese_anchor, english_anchor = (
+                "\u9700\u6c42\u5230\u9875\u9762",
+                "requirements-to-pages",
+            )
+        else:
+            chinese_section, english_section = "\u64cd\u4f5c\u6b65\u9aa4", "Steps"
+            chinese_anchor, english_anchor = "\u64cd\u4f5c\u6b65\u9aa4", "steps"
+        if stem in {
+            "Market-Charts",
+            "Stock-Pools",
+            "Responsive-Navigation-and-Accessibility",
+            "First-Launch-and-Health",
+        }:
+            surface_type, locator = "app-route", "/market"
+        elif stem.startswith("Formula-"):
+            surface_type, locator = "app-route", "/formulas"
+        elif stem.startswith(("MACD-", "A-Share-", "Backtest-")):
+            surface_type, locator = "app-route", "/backtests"
+        else:
+            surface_type, locator = "wiki-page", stem
+        screenshot_id = f"final-{stem.casefold()}"
+        image_relative = f"images/{screenshot_id}.png"
+        image = root / image_relative
+        image.write_bytes(payload)
+        for suffix in ("", "-en"):
+            page = root / f"{stem}{suffix}.md"
+            document = page.read_text(encoding="utf-8")
+            document = document.replace(
+                "<!-- SCREENSHOT_PLACEHOLDER: replace after integrated release-candidate capture -->",
+                f"![Captured evidence]({image_relative})",
+            )
+            if image_relative not in document:
+                document += f"\n![Captured evidence]({image_relative})\n"
+            page.write_text(document, encoding="utf-8")
+        for requirement_id in features:
+            rows.append(
+                f"| {requirement_id} | [\u4e2d\u6587\u9875\u9762]({stem}#{chinese_anchor}) | "
+                f"[English page]({stem}-en#{english_anchor}) | "
+                f"{chinese_section} / {english_section} | `{screenshot_id}` | "
+                f"`{surface_type}:{locator}` |"
+            )
+        contains_market_data = (
+            surface_type == "app-route"
+            and locator
+            in {
+                "/market",
+                "/formulas",
+                "/backtests",
+            }
+            or verify_docs_module._manifest_market_page([f"{stem}.md", f"{stem}-en.md"])
+        )
+        market_data = (
+            """    market_data:
+      symbol: 600519.SH
+      name: \u8d35\u5dde\u8305\u53f0
+      period: 1d
+      adjustment: qfq
+      start: 2021-01-01
+      end: 2026-07-08
+      source: tushare
+      cutoff: 2026-07-08T07:00:00Z
+      dataset_version: sha256:"""
+            + hashlib.sha256(f"dataset:{stem}".encode()).hexdigest()
+            if contains_market_data
+            else "    market_data: null"
+        )
+        entries.append(
+            f"""  - screenshot_id: {screenshot_id}
+    path: {image_relative}
+    page_pairs: [{stem}.md, {stem}-en.md]
+    caption_locales: {{zh-CN: \u5b8c\u6574\u8bc1\u636e, en: Complete evidence}}
+    features: [{", ".join(features)}]
+    surface: {{type: {surface_type}, locator: {locator}}}
+    contains_market_data: {str(contains_market_data).lower()}
+    state: captured
+    viewport: {{width: 1440, height: 1000, device_scale_factor: 1}}
+    product: {{version: 1.0.0, git_commit: {commit}}}
+    captured_at: 2026-07-09T00:00:00Z
+    sha256: {hashlib.sha256(payload).hexdigest()}
+{market_data}
+    capture: playwright
+    editing: none
+    redaction: passed
+    disclaimer: \u4ec5\u4f5c\u529f\u80fd\u6f14\u793a\uff0c\u4e0d\u6784\u6210\u6295\u8d44\u5efa\u8bae"""
+        )
+    table = "\n".join(rows)
+    (root / "Feature-Index.md").write_text(
+        f"""# \u529f\u80fd\u7d22\u5f15
+
+[English](Feature-Index-en)
+
+## \u9700\u6c42\u5230\u9875\u9762
+
+| \u529f\u80fd/\u9700\u6c42 | \u4e2d\u6587\u9875\u9762 | English page | \u7ae0\u8282 | \u622a\u56fe ID | \u8bc1\u636e\u8868\u9762 |
+| --- | --- | --- | --- | --- | --- |
+{table}
+
+![Captured evidence](images/final-feature-index.png)
+""",
+        encoding="utf-8",
+    )
+    (root / "Feature-Index-en.md").write_text(
+        f"""# Feature index
+
+[\u7b80\u4f53\u4e2d\u6587](Feature-Index)
+
+## Requirements to pages
+
+| Feature/requirement | Chinese page | English page | Section | Screenshot ID | Evidence surface |
+| --- | --- | --- | --- | --- | --- |
+{table}
+
+![Captured evidence](images/final-feature-index.png)
+""",
+        encoding="utf-8",
+    )
+    (root / "SCREENSHOT-MANIFEST.yml").write_text(
+        "schema_version: stock-desk-documentation-screenshots-v1\nscreenshots:\n"
+        + "\n".join(entries)
+        + "\n",
+        encoding="utf-8",
+    )
+
+
 def test_repository_documentation_contract_passes_for_complete_tree(
     tmp_path: Path,
 ) -> None:
     _write_repository(tmp_path)
 
     assert verify_repository(tmp_path) == []
+
+
+def test_complete_final_wiki_fixture_passes_every_publication_gate(
+    tmp_path: Path,
+) -> None:
+    _write_complete_final_wiki(tmp_path)
+
+    assert verify_wiki(tmp_path, final=True) == []
+
+
+def test_wiki_real_market_sources_match_product_bar_providers() -> None:
+    from stock_desk.market.routing import SourcePriorities
+    from stock_desk.market.types import BAR_SOURCE_PROVIDER_IDS
+
+    assert verify_docs_module._real_market_source_ids() == frozenset(
+        {"tushare", "akshare", "baostock", "tdx_local"}
+    )
+    assert SourcePriorities().bars == BAR_SOURCE_PROVIDER_IDS
+
+
+def test_final_wiki_rejects_copied_image_under_another_name(tmp_path: Path) -> None:
+    _write_complete_final_wiki(tmp_path)
+    first = tmp_path / "images/final-home.png"
+    second = tmp_path / "images/final-feature-index.png"
+    first_digest = hashlib.sha256(first.read_bytes()).hexdigest()
+    second_digest = hashlib.sha256(second.read_bytes()).hexdigest()
+    second.write_bytes(first.read_bytes())
+    manifest = tmp_path / "SCREENSHOT-MANIFEST.yml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace(
+            f"    sha256: {second_digest}", f"    sha256: {first_digest}", 1
+        ),
+        encoding="utf-8",
+    )
+
+    failures = verify_wiki(tmp_path, final=True)
+
+    assert any("captured screenshot SHA-256 is reused" in item for item in failures)
+
+
+def test_final_wiki_separates_dataset_digest_from_screenshot_digest(
+    tmp_path: Path,
+) -> None:
+    _write_complete_final_wiki(tmp_path)
+    image = tmp_path / "images/final-market-charts.png"
+    image_digest = hashlib.sha256(image.read_bytes()).hexdigest()
+    dataset_digest = hashlib.sha256(b"dataset:Market-Charts").hexdigest()
+    manifest = tmp_path / "SCREENSHOT-MANIFEST.yml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace(
+            f"      dataset_version: sha256:{dataset_digest}",
+            f"      dataset_version: sha256:{image_digest}",
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+    failures = verify_wiki(tmp_path, final=True)
+
+    assert any(
+        "dataset_version must be distinct from screenshot SHA-256" in item
+        for item in failures
+    )
+
+
+def test_final_wiki_rejects_fictional_market_source(tmp_path: Path) -> None:
+    _write_complete_final_wiki(tmp_path)
+    manifest = tmp_path / "SCREENSHOT-MANIFEST.yml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace(
+            "      source: tushare", "      source: fictional_provider", 1
+        ),
+        encoding="utf-8",
+    )
+
+    failures = verify_wiki(tmp_path, final=True)
+
+    assert any("market source is not a product ProviderId" in item for item in failures)
+
+
+def test_final_wiki_rejects_shape_only_product_commit(tmp_path: Path) -> None:
+    _write_complete_final_wiki(tmp_path)
+    manifest = tmp_path / "SCREENSHOT-MANIFEST.yml"
+    actual = subprocess.run(
+        ("git", "rev-parse", "HEAD"),
+        cwd=Path(__file__).resolve().parents[2],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace(actual, "f" * 40, 1),
+        encoding="utf-8",
+    )
+
+    failures = verify_wiki(tmp_path, final=True)
+
+    assert any(
+        "git_commit is not a reachable repository commit" in item for item in failures
+    )
+
+
+def test_market_surface_cannot_disable_market_provenance(tmp_path: Path) -> None:
+    _write_complete_final_wiki(tmp_path)
+    manifest = tmp_path / "SCREENSHOT-MANIFEST.yml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace(
+            "    contains_market_data: true",
+            "    contains_market_data: false",
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+    failures = verify_wiki(tmp_path, final=True)
+
+    assert any("contains_market_data must be true" in item for item in failures)
 
 
 def test_repository_contract_reports_missing_files_and_readme_switch(
@@ -686,6 +1063,12 @@ def test_wiki_requires_chinese_default_and_english_suffix(tmp_path: Path) -> Non
     )
 
 
+def test_wiki_inventory_includes_public_governance_and_release_evidence() -> None:
+    assert "Project-Governance-and-Release-Evidence" in (
+        verify_docs_module.REQUIRED_WIKI_PAGE_STEMS
+    )
+
+
 def test_wiki_requires_shared_navigation_and_entry_files(tmp_path: Path) -> None:
     _write_wiki(tmp_path)
     (tmp_path / "_Sidebar-en.md").unlink()
@@ -695,6 +1078,506 @@ def test_wiki_requires_shared_navigation_and_entry_files(tmp_path: Path) -> None
 
     assert any("_Sidebar-en.md" in failure for failure in failures)
     assert any("SCREENSHOT-MANIFEST.yml" in failure for failure in failures)
+
+
+def test_final_wiki_feature_index_covers_active_requirements(tmp_path: Path) -> None:
+    _write_wiki(tmp_path)
+
+    failures = verify_wiki(tmp_path, final=True)
+
+    assert not [item for item in failures if "feature index" in item.casefold()]
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected"),
+    (
+        (
+            lambda document: document.replace(
+                "| R-079 | [\u4e2d\u6587\u9996\u9875]",
+                "| R-080 | [\u4e2d\u6587\u9996\u9875]",
+            ),
+            "missing requirement ID: R-079",
+        ),
+        (
+            lambda document: document.replace(
+                "[\u4e2d\u6587\u9996\u9875](Home#\u4ece\u8fd9\u91cc\u5f00\u59cb)",
+                "[\u4e2d\u6587\u9996\u9875](Missing#\u4ece\u8fd9\u91cc\u5f00\u59cb)",
+                1,
+            ),
+            "referenced page does not exist: Missing.md",
+        ),
+        (
+            lambda document: document.replace(
+                "Home#\u4ece\u8fd9\u91cc\u5f00\u59cb", "Home#\u4e0d\u5b58\u5728", 1
+            ),
+            "referenced section does not exist",
+        ),
+        (
+            lambda document: document.replace("`planned-home`", "`missing-shot`", 1),
+            "missing screenshot reference: missing-shot",
+        ),
+    ),
+)
+def test_wiki_feature_index_rejects_incomplete_or_dangling_rows(
+    tmp_path: Path,
+    mutation: object,
+    expected: str,
+) -> None:
+    _write_wiki(tmp_path)
+    index = tmp_path / "Feature-Index.md"
+    mutate = mutation
+    assert callable(mutate)
+    index.write_text(mutate(index.read_text(encoding="utf-8")), encoding="utf-8")
+
+    failures = verify_wiki(tmp_path, final=True)
+
+    assert any(
+        "feature index" in item.casefold() and expected in item for item in failures
+    )
+
+
+def test_screenshot_manifest_allows_honest_staging_but_blocks_final(
+    tmp_path: Path,
+) -> None:
+    _write_wiki(tmp_path)
+
+    staging_failures = verify_wiki(tmp_path, final=False)
+    final_failures = verify_wiki(tmp_path, final=True)
+
+    assert not [
+        item for item in staging_failures if "screenshot manifest" in item.casefold()
+    ]
+    assert any(
+        "screenshot manifest" in item.casefold() and "pending" in item.casefold()
+        for item in final_failures
+    )
+
+
+def test_wiki_feature_index_requires_screenshot_to_cover_mapped_requirement(
+    tmp_path: Path,
+) -> None:
+    _write_wiki(tmp_path)
+    manifest = tmp_path / "SCREENSHOT-MANIFEST.yml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace(", R-079]", "]"),
+        encoding="utf-8",
+    )
+
+    failures = verify_wiki(tmp_path, final=False)
+
+    assert any(
+        "feature index" in item.casefold()
+        and "R-079" in item
+        and "planned-home" in item
+        for item in failures
+    )
+
+
+def test_wiki_manifest_features_exactly_match_feature_index(tmp_path: Path) -> None:
+    _write_wiki(tmp_path)
+    for filename in ("Feature-Index.md", "Feature-Index-en.md"):
+        index = tmp_path / filename
+        index.write_text(
+            index.read_text(encoding="utf-8").replace(
+                "| R-079 | [\u4e2d\u6587\u9996\u9875](Home#\u4ece\u8fd9\u91cc\u5f00\u59cb) | "
+                "[English home](Home-en#start-here) | \u4ece\u8fd9\u91cc\u5f00\u59cb / Start here | "
+                "`planned-home` | `app-route:/market` |",
+                "| R-079 | [\u4e2d\u6587\u9996\u9875](Home#\u4ece\u8fd9\u91cc\u5f00\u59cb) | "
+                "[English home](Home-en#start-here) | \u4ece\u8fd9\u91cc\u5f00\u59cb / Start here | "
+                "`second-shot` | `app-route:/market` |",
+            ),
+            encoding="utf-8",
+        )
+    manifest = tmp_path / "SCREENSHOT-MANIFEST.yml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8")
+        + """  - screenshot_id: second-shot
+    path: images/second-shot.png
+    page_pairs: [Home.md, Home-en.md]
+    caption_locales: {zh-CN: \u7b2c\u4e8c\u5f20\u622a\u56fe, en: Second screenshot}
+    features: [R-079]
+    surface: {type: app-route, locator: /market}
+    state: pending
+    viewport: null
+    product: null
+    captured_at: null
+    sha256: null
+    market_data: null
+    capture: null
+    editing: null
+    redaction: pending
+    disclaimer: \u4ec5\u4f5c\u529f\u80fd\u6f14\u793a\uff0c\u4e0d\u6784\u6210\u6295\u8d44\u5efa\u8bae
+""",
+        encoding="utf-8",
+    )
+
+    failures = verify_wiki(tmp_path, final=False)
+
+    assert any(
+        "screenshot manifest planned-home" in item.casefold()
+        and "features do not exactly match Feature index" in item
+        for item in failures
+    )
+
+
+def test_wiki_typed_surface_supports_app_and_non_app_evidence(
+    tmp_path: Path,
+) -> None:
+    _write_wiki(tmp_path)
+    for filename in ("Feature-Index.md", "Feature-Index-en.md"):
+        index = tmp_path / filename
+        index.write_text(
+            index.read_text(encoding="utf-8").replace(
+                "`app-route:/market`", "`wiki-page:Home`"
+            ),
+            encoding="utf-8",
+        )
+    manifest = tmp_path / "SCREENSHOT-MANIFEST.yml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace(
+            "    surface:\n      type: app-route\n      locator: /market",
+            "    surface:\n      type: wiki-page\n      locator: Home",
+        ),
+        encoding="utf-8",
+    )
+
+    failures = verify_wiki(tmp_path, final=False)
+
+    assert not [item for item in failures if "surface" in item.casefold()]
+
+
+def test_application_routes_use_shared_json_as_the_single_source_of_truth() -> None:
+    repo = Path(__file__).resolve().parents[2]
+    contract_path = repo / "web/src/app/route-paths.json"
+    assert contract_path.is_file()
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    assert isinstance(contract, dict)
+    source = (repo / "web/src/app/routes.ts").read_text(encoding="utf-8")
+    assert "./route-paths.json" in source
+    assert verify_docs_module._canonical_app_routes() == frozenset(contract.values())
+    for key in contract:
+        assert source.count(f"routePaths.{key}") == 1
+    assert "/comment-only-route" not in verify_docs_module._canonical_app_routes()
+
+
+def test_wiki_feature_index_rejects_every_unparsed_table_body_row(
+    tmp_path: Path,
+) -> None:
+    _write_wiki(tmp_path)
+    index = tmp_path / "Feature-Index.md"
+    index.write_text(
+        index.read_text(encoding="utf-8") + "\n| R-080 | malformed | row |\n",
+        encoding="utf-8",
+    )
+
+    failures = verify_wiki(tmp_path, final=False)
+
+    assert any(
+        "feature index feature-index.md" in item.casefold()
+        and "unparseable table row" in item
+        and "R-080" in item
+        for item in failures
+    )
+
+
+def test_final_wiki_requires_every_publication_raster_in_captured_manifest(
+    tmp_path: Path,
+) -> None:
+    _write_wiki(tmp_path)
+    _finalize_wiki(tmp_path)
+    _mark_planned_home_captured(tmp_path, _png_bytes(640, 360, varied=True))
+    for filename in ("Home.md", "Home-en.md"):
+        page = tmp_path / filename
+        page.write_text(
+            page.read_text(encoding="utf-8")
+            + "\n![Home evidence](images/planned-home.png)\n",
+            encoding="utf-8",
+        )
+
+    failures = verify_wiki(tmp_path, final=True)
+
+    assert any(
+        "images/MACD-Backtest-Tutorial.png" in item
+        and "exactly one valid captured manifest entry" in item
+        for item in failures
+    )
+
+
+def test_final_wiki_rejects_rogue_article_raster_reference(tmp_path: Path) -> None:
+    _write_wiki(tmp_path)
+    _mark_planned_home_captured(tmp_path, _png_bytes(640, 360, varied=True))
+    rogue = tmp_path / "images" / "rogue.png"
+    rogue.write_bytes(_png_bytes(640, 360, varied=True))
+    page = tmp_path / "Market-Charts.md"
+    page.write_text(
+        page.read_text(encoding="utf-8") + "\n![Rogue evidence](images/rogue.png)\n",
+        encoding="utf-8",
+    )
+
+    failures = verify_wiki(tmp_path, final=True)
+
+    assert any(
+        "Market-Charts.md" in item
+        and "images/rogue.png" in item
+        and "valid captured manifest entry" in item
+        for item in failures
+    )
+
+
+def test_final_wiki_rejects_unreferenced_raster_outside_images(
+    tmp_path: Path,
+) -> None:
+    _write_wiki(tmp_path)
+    (tmp_path / "root-rogue.png").write_bytes(_png_bytes(640, 360, varied=True))
+
+    failures = verify_wiki(tmp_path, final=True)
+
+    assert any(
+        "root-rogue.png" in item and "outside Wiki images" in item for item in failures
+    )
+
+
+def test_final_wiki_rejects_cross_page_pair_image_reference(tmp_path: Path) -> None:
+    _write_wiki(tmp_path)
+    payload = _png_bytes(640, 360, varied=True)
+    _mark_planned_home_captured(tmp_path, payload)
+    for filename in ("Home.md", "Home-en.md"):
+        page = tmp_path / filename
+        page.write_text(
+            page.read_text(encoding="utf-8")
+            + "\n![Home evidence](images/planned-home.png)\n",
+            encoding="utf-8",
+        )
+    market = tmp_path / "Market-Charts.md"
+    market.write_text(
+        market.read_text(encoding="utf-8")
+        + "\n![Wrong page evidence](images/planned-home.png)\n",
+        encoding="utf-8",
+    )
+
+    failures = verify_wiki(tmp_path, final=True)
+
+    assert any(
+        "Market-Charts.md" in item
+        and "planned-home.png" in item
+        and "not listed in manifest page_pairs" in item
+        for item in failures
+    )
+
+
+def test_final_page_screenshot_gate_requires_valid_manifest_entry(
+    tmp_path: Path,
+) -> None:
+    _write_wiki(tmp_path)
+    _finalize_wiki(tmp_path)
+
+    failures = verify_wiki(tmp_path, final=True)
+
+    assert any(
+        "Market-Charts.md" in item and "captured manifest evidence" in item
+        for item in failures
+    )
+
+
+def test_wiki_feature_routes_come_from_the_application_route_contract(
+    tmp_path: Path,
+) -> None:
+    _write_wiki(tmp_path)
+    index = tmp_path / "Feature-Index.md"
+    index.write_text(
+        index.read_text(encoding="utf-8").replace(
+            "`app-route:/market`", "`app-route:/health`", 1
+        ),
+        encoding="utf-8",
+    )
+
+    failures = verify_wiki(tmp_path, final=False)
+
+    assert any(
+        "feature index" in item.casefold()
+        and "/health" in item
+        and "canonical application route" in item
+        for item in failures
+    )
+
+
+def test_repository_audit_supports_distinct_ssh_identity_policy_surface() -> None:
+    assert (
+        verify_docs_module._surface_failure(
+            ("repository-audit", "ssh-identity-policy"),
+            verify_docs_module._canonical_app_routes(),
+        )
+        is None
+    )
+
+
+def test_wiki_rejects_private_ssh_material_and_machine_paths(tmp_path: Path) -> None:
+    _write_wiki(tmp_path)
+    page = tmp_path / "Project-Governance-and-Release-Evidence.md"
+    ssh_directory = "~/.ssh/"
+    key_family = "id_" + "ed25519"
+    private_key_path = ssh_directory + key_family + "_github"
+    private_key_marker = "BEGIN " + "OPENSSH PRIVATE KEY"
+    private_key_header = "-----" + private_key_marker + "-----"
+    page.write_text(
+        page.read_text(encoding="utf-8")
+        + f"\n{private_key_path}\n{private_key_header}\n",
+        encoding="utf-8",
+    )
+    written = page.read_text(encoding="utf-8")
+    assert private_key_path in written
+    assert private_key_header in written
+
+    failures = verify_wiki(tmp_path, final=False)
+
+    for blocked in (ssh_directory, key_family, private_key_marker):
+        assert any(blocked in item for item in failures)
+
+
+def test_wiki_feature_index_section_column_is_bilingual_and_anchor_bound(
+    tmp_path: Path,
+) -> None:
+    _write_wiki(tmp_path)
+    english = tmp_path / "Feature-Index-en.md"
+    english.write_text(
+        english.read_text(encoding="utf-8").replace(
+            "\u4ece\u8fd9\u91cc\u5f00\u59cb / Start here",
+            "\u4ece\u8fd9\u91cc\u5f00\u59cb / Wrong section",
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+    failures = verify_wiki(tmp_path, final=True)
+
+    assert any(
+        "Feature index" in item
+        and "section" in item.casefold()
+        and "Wrong section" in item
+        for item in failures
+    )
+
+
+def test_wiki_feature_route_must_match_screenshot_manifest(tmp_path: Path) -> None:
+    _write_wiki(tmp_path)
+    manifest = tmp_path / "SCREENSHOT-MANIFEST.yml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace(
+            "      locator: /market", "      locator: /settings", 1
+        ),
+        encoding="utf-8",
+    )
+
+    failures = verify_wiki(tmp_path, final=False)
+
+    assert any(
+        "feature index" in item.casefold()
+        and "planned-home" in item
+        and "surface does not match" in item
+        for item in failures
+    )
+
+
+def test_wiki_manifest_rejects_image_path_escape_and_symlink(
+    tmp_path: Path,
+) -> None:
+    _write_wiki(tmp_path)
+    manifest = tmp_path / "SCREENSHOT-MANIFEST.yml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace(
+            "images/planned-home.png", "images/../escape.png"
+        ),
+        encoding="utf-8",
+    )
+
+    traversal_failures = verify_wiki(tmp_path, final=False)
+
+    assert any(
+        "screenshot manifest" in item.casefold() and "escapes Wiki images" in item
+        for item in traversal_failures
+    )
+
+    _write_wiki(tmp_path)
+    outside = tmp_path.parent / "outside.png"
+    outside.write_bytes(_png_bytes(640, 360, varied=True))
+    images = tmp_path / "images"
+    images.mkdir()
+    (images / "planned-home.png").symlink_to(outside)
+
+    symlink_failures = verify_wiki(tmp_path, final=False)
+
+    assert any(
+        "screenshot manifest" in item.casefold() and "symlink" in item.casefold()
+        for item in symlink_failures
+    )
+
+
+def test_captured_wiki_manifest_rejects_arbitrary_image_bytes(tmp_path: Path) -> None:
+    _write_wiki(tmp_path)
+    _mark_planned_home_captured(tmp_path, b"not a raster image")
+
+    failures = verify_wiki(tmp_path, final=True)
+
+    assert any(
+        "screenshot manifest planned-home" in item.casefold()
+        and "decode" in item.casefold()
+        for item in failures
+    )
+
+
+def test_final_wiki_manifest_rejects_fictional_page_pair(tmp_path: Path) -> None:
+    _write_wiki(tmp_path)
+    manifest = tmp_path / "SCREENSHOT-MANIFEST.yml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace(
+            "[Home.md, Home-en.md]", "[Missing.md, Missing-en.md]"
+        ),
+        encoding="utf-8",
+    )
+
+    failures = verify_wiki(tmp_path, final=True)
+
+    assert any(
+        "screenshot manifest planned-home" in item.casefold()
+        and "page_pairs page does not exist" in item
+        for item in failures
+    )
+
+
+def test_wiki_manifest_page_pair_matches_feature_targets(tmp_path: Path) -> None:
+    _write_wiki(tmp_path)
+    manifest = tmp_path / "SCREENSHOT-MANIFEST.yml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace(
+            "[Home.md, Home-en.md]", "[Market-Charts.md, Market-Charts-en.md]"
+        ),
+        encoding="utf-8",
+    )
+
+    failures = verify_wiki(tmp_path, final=False)
+
+    assert any(
+        "feature index" in item.casefold()
+        and "planned-home" in item
+        and "page_pairs do not match" in item
+        for item in failures
+    )
+
+
+def test_captured_wiki_manifest_requires_article_image_references(
+    tmp_path: Path,
+) -> None:
+    _write_wiki(tmp_path)
+    _mark_planned_home_captured(tmp_path, _png_bytes(640, 360, varied=True))
+
+    failures = verify_wiki(tmp_path, final=True)
+
+    assert any(
+        "screenshot manifest planned-home" in item.casefold()
+        and "Home.md" in item
+        and "must reference images/planned-home.png" in item
+        for item in failures
+    )
 
 
 def test_wiki_sidebars_link_to_the_other_language_home(tmp_path: Path) -> None:

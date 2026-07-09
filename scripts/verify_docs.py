@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from functools import lru_cache
+import hashlib
 from html.parser import HTMLParser
+import json
 import os
 from pathlib import Path
 import re
@@ -16,6 +20,9 @@ import warnings
 from markdown_it import MarkdownIt
 from markdown_it.token import Token
 from PIL import Image, UnidentifiedImageError
+import yaml  # type: ignore[import-untyped]
+
+from stock_desk.market.types import BAR_SOURCE_PROVIDER_IDS
 
 
 REQUIRED_PUBLIC_DOCUMENTS = (
@@ -90,6 +97,7 @@ REQUIRED_WIKI_PAGE_STEMS = (
     "Windows-Installation",
     "macOS-Installation",
     "First-Launch-and-Health",
+    "Project-Governance-and-Release-Evidence",
     "Data-Sources-and-Tushare",
     "Local-TDX-Data",
     "Data-Updates-and-Provenance",
@@ -196,6 +204,9 @@ WIKI_FORBIDDEN_REFERENCES = (
     "/Users/",
     "C:\\Users\\",
     "file://",
+    "~/.ssh/",
+    "id_ed25519",
+    "BEGIN OPENSSH PRIVATE KEY",
 )
 
 WIKI_PLACEHOLDER_PATTERNS = (
@@ -209,6 +220,46 @@ PUBLISHABLE_SUFFIXES = frozenset({".md", *APPROVED_RASTER_SUFFIXES})
 ALLOWED_LINK_SCHEMES = frozenset({"http", "https", "mailto", "tel"})
 MIN_SCREENSHOT_WIDTH = 320
 MIN_SCREENSHOT_HEIGHT = 180
+SCREENSHOT_MANIFEST_SCHEMA = "stock-desk-documentation-screenshots-v1"
+SCREENSHOT_DISCLAIMER = "\u4ec5\u4f5c\u529f\u80fd\u6f14\u793a\uff0c\u4e0d\u6784\u6210\u6295\u8d44\u5efa\u8bae"
+ACTIVE_REQUIREMENT_IDS = frozenset(f"R-{number:03d}" for number in range(1, 80))
+MARKET_SCREENSHOT_PAGE_PREFIXES = (
+    "Market-",
+    "Data-",
+    "Local-TDX-",
+    "Stock-Pools",
+    "Formula-",
+    "MACD-",
+    "A-Share-",
+    "Backtest-",
+)
+EVIDENCE_SURFACE_TYPES = frozenset(
+    {
+        "app-route",
+        "wiki-page",
+        "windows-installer",
+        "macos-installer",
+        "github-release",
+        "repository-audit",
+    }
+)
+REPOSITORY_AUDIT_LOCATORS = frozenset(
+    {
+        "requirements-boundary",
+        "repository-name",
+        "remote",
+        "git-identity",
+        "local-layout",
+        "branch-policy",
+        "public-boundary",
+        "stage-delivery",
+        "open-source-governance",
+        "release-verification",
+        "documentation-entry",
+        "private-spec-boundary",
+        "ssh-identity-policy",
+    }
+)
 
 _HEADING = re.compile(r"^#{1,6}\s+(.+?)\s*$", re.MULTILINE)
 _FENCED_SHELL = re.compile(
@@ -216,6 +267,15 @@ _FENCED_SHELL = re.compile(
 )
 
 _MARKDOWN = MarkdownIt("gfm-like", {"html": True})
+
+_FEATURE_INDEX_ROW = re.compile(
+    r"^\|\s*(R-\d{3}(?:\s*[\u2013\u2014-]\s*R?-?\d{3})?)\s*\|"
+    r"\s*\[[^]]+\]\(([^)]+)\)\s*\|"
+    r"\s*\[[^]]+\]\(([^)]+)\)\s*\|"
+    r"\s*([^|]+?)\s*\|\s*`?([a-z0-9][a-z0-9-]*)`?\s*\|"
+    r"\s*`?([^|`]+)`?\s*\|\s*$",
+    re.MULTILINE,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -727,6 +787,668 @@ def verify_repository(repo_root: Path) -> list[str]:
     return sorted(set(failures))
 
 
+def _manifest_timestamp_is_utc(value: object) -> bool:
+    if isinstance(value, datetime):
+        candidate = value
+    elif isinstance(value, str):
+        try:
+            candidate = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return False
+    else:
+        return False
+    return (
+        candidate.tzinfo is not None
+        and candidate.utcoffset() == timezone.utc.utcoffset(candidate)
+    )
+
+
+def _manifest_market_page(page_pairs: object) -> bool:
+    if not isinstance(page_pairs, list):
+        return False
+    return any(
+        isinstance(page, str)
+        and page.removesuffix("-en.md")
+        .removesuffix(".md")
+        .startswith(MARKET_SCREENSHOT_PAGE_PREFIXES)
+        for page in page_pairs
+    )
+
+
+def _canonical_app_routes() -> frozenset[str]:
+    routes_path = (
+        Path(__file__).resolve().parent.parent / "web/src/app/route-paths.json"
+    )
+    try:
+        loaded = json.loads(routes_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return frozenset()
+    if not isinstance(loaded, dict) or not all(
+        isinstance(key, str)
+        and key
+        and isinstance(value, str)
+        and re.fullmatch(r"/[a-z][a-z0-9-]*", value)
+        for key, value in loaded.items()
+    ):
+        return frozenset()
+    routes = frozenset(loaded.values())
+    return routes if len(routes) == len(loaded) else frozenset()
+
+
+def _real_market_source_ids() -> frozenset[str]:
+    return frozenset(provider.value for provider in BAR_SOURCE_PROVIDER_IDS)
+
+
+@lru_cache(maxsize=128)
+def _repository_commit_is_reachable(commit: str) -> bool:
+    repo = Path(__file__).resolve().parent.parent
+    try:
+        subprocess.run(
+            ("git", "cat-file", "-e", f"{commit}^{{commit}}"),
+            cwd=repo,
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+        subprocess.run(
+            ("git", "merge-base", "--is-ancestor", commit, "HEAD"),
+            cwd=repo,
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return False
+    return True
+
+
+def _surface_tuple(value: object) -> tuple[str, str] | None:
+    if isinstance(value, str):
+        surface_type, separator, locator = value.partition(":")
+        if separator and surface_type and locator:
+            return surface_type, locator
+        return None
+    if not isinstance(value, dict):
+        return None
+    mapped_type = value.get("type")
+    mapped_locator = value.get("locator")
+    if not isinstance(mapped_type, str) or not isinstance(mapped_locator, str):
+        return None
+    return mapped_type, mapped_locator
+
+
+def _surface_failure(
+    surface: tuple[str, str] | None,
+    canonical_routes: frozenset[str],
+) -> str | None:
+    if surface is None:
+        return "requires a typed evidence surface"
+    surface_type, locator = surface
+    if surface_type not in EVIDENCE_SURFACE_TYPES:
+        return f"has an unsupported evidence surface type: {surface_type}"
+    if surface_type == "app-route":
+        if locator not in canonical_routes:
+            return f"is not a canonical application route: {locator}"
+    elif surface_type == "wiki-page":
+        if locator not in REQUIRED_WIKI_PAGE_STEMS:
+            return f"has an unknown Wiki page surface: {locator}"
+    elif surface_type == "windows-installer":
+        if not re.fullmatch(r"stock-desk-<version>-windows-x86_64\.exe", locator):
+            return f"has an invalid Windows installer surface: {locator}"
+    elif surface_type == "macos-installer":
+        if not re.fullmatch(
+            r"stock-desk-<version>-macos-(?:x86_64|arm64)\.dmg", locator
+        ):
+            return f"has an invalid macOS installer surface: {locator}"
+    elif surface_type == "github-release":
+        if locator != "latest":
+            return f"has an invalid GitHub Release surface: {locator}"
+    elif locator not in REPOSITORY_AUDIT_LOCATORS:
+        return f"has an invalid repository audit surface: {locator}"
+    return None
+
+
+def _screenshot_manifest(
+    root: Path,
+    *,
+    final: bool,
+    publication_files: frozenset[Path],
+    documents: dict[str, str],
+    rendered_targets: dict[str, tuple[RenderedTarget, ...]],
+    canonical_routes: frozenset[str],
+) -> tuple[dict[str, dict[str, object]], dict[Path, dict[str, object]], list[str]]:
+    path = root / "SCREENSHOT-MANIFEST.yml"
+    if not path.is_file():
+        return {}, {}, ["Screenshot manifest is missing: SCREENSHOT-MANIFEST.yml"]
+    try:
+        loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, yaml.YAMLError) as error:
+        return {}, {}, [f"Screenshot manifest is unreadable: {type(error).__name__}"]
+    if not isinstance(loaded, dict):
+        return {}, {}, ["Screenshot manifest root must be a mapping"]
+    failures: list[str] = []
+    if loaded.get("schema_version") != SCREENSHOT_MANIFEST_SCHEMA:
+        failures.append(
+            "Screenshot manifest has an unsupported schema_version: "
+            f"{loaded.get('schema_version')!r}"
+        )
+    screenshots = loaded.get("screenshots")
+    if not isinstance(screenshots, list):
+        return {}, {}, [*failures, "Screenshot manifest screenshots must be a list"]
+
+    by_id: dict[str, dict[str, object]] = {}
+    valid_captured_images: dict[Path, dict[str, object]] = {}
+    paths: set[str] = set()
+    captured_digests: dict[str, str] = {}
+    images_root = (root / "images").resolve()
+    for position, raw_entry in enumerate(screenshots, start=1):
+        entry_failure_start = len(failures)
+        label = f"Screenshot manifest entry {position}"
+        if not isinstance(raw_entry, dict):
+            failures.append(f"{label} must be a mapping")
+            continue
+        entry = {str(key): value for key, value in raw_entry.items()}
+        screenshot_id = entry.get("screenshot_id")
+        if not isinstance(screenshot_id, str) or not re.fullmatch(
+            r"[a-z0-9][a-z0-9-]*", screenshot_id
+        ):
+            failures.append(f"{label} has an invalid screenshot_id")
+            continue
+        label = f"Screenshot manifest {screenshot_id}"
+        if screenshot_id in by_id:
+            failures.append(f"{label} duplicates screenshot_id")
+            continue
+        by_id[screenshot_id] = entry
+
+        relative_path = entry.get("path")
+        resolved_image: Path | None = None
+        if isinstance(relative_path, str):
+            candidate = root / relative_path
+            resolved_image = candidate.resolve()
+            if ".." in Path(relative_path).parts:
+                failures.append(f"{label} path escapes Wiki images: {relative_path}")
+            else:
+                try:
+                    resolved_image.relative_to(images_root)
+                except ValueError:
+                    failures.append(
+                        f"{label} path escapes Wiki images: {relative_path}"
+                    )
+            if candidate.is_symlink():
+                failures.append(f"{label} image path must not be a symlink")
+        if not isinstance(relative_path, str) or not re.fullmatch(
+            r"images/[A-Za-z0-9][A-Za-z0-9._/-]*\.(?:png|jpe?g|webp)",
+            relative_path,
+            re.IGNORECASE,
+        ):
+            failures.append(f"{label} has an invalid Wiki-relative image path")
+        elif relative_path in paths:
+            failures.append(f"{label} duplicates image path: {relative_path}")
+        else:
+            paths.add(relative_path)
+
+        page_pairs = entry.get("page_pairs")
+        if (
+            not isinstance(page_pairs, list)
+            or len(page_pairs) != 2
+            or not all(
+                isinstance(page, str) and page.endswith(".md") for page in page_pairs
+            )
+        ):
+            failures.append(f"{label} page_pairs must contain two Markdown pages")
+        elif not (page_pairs[1] == page_pairs[0].removesuffix(".md") + "-en.md"):
+            failures.append(f"{label} page_pairs must be a Chinese/English pair")
+
+        captions = entry.get("caption_locales")
+        if not isinstance(captions, dict) or not all(
+            isinstance(captions.get(locale), str) and captions[locale].strip()
+            for locale in ("zh-CN", "en")
+        ):
+            failures.append(f"{label} requires zh-CN and en caption_locales")
+        features = entry.get("features")
+        if (
+            not isinstance(features, list)
+            or not features
+            or not all(
+                isinstance(feature, str) and feature in ACTIVE_REQUIREMENT_IDS
+                for feature in features
+            )
+        ):
+            failures.append(f"{label} has invalid features")
+        surface = _surface_tuple(entry.get("surface"))
+        surface_failure = _surface_failure(surface, canonical_routes)
+        if surface_failure is not None:
+            failures.append(f"{label} {surface_failure}")
+        contains_market_data = entry.get("contains_market_data")
+        if type(contains_market_data) is not bool:
+            failures.append(f"{label} requires boolean contains_market_data")
+        market_surface = (
+            surface is not None
+            and surface[0] == "app-route"
+            and (surface[1] in {"/market", "/formulas", "/backtests"})
+        )
+        market_page = _manifest_market_page(page_pairs)
+        if (market_surface or market_page) and contains_market_data is not True:
+            failures.append(
+                f"{label} contains_market_data must be true for this surface or page"
+            )
+        if contains_market_data is False and entry.get("market_data") is not None:
+            failures.append(
+                f"{label} market_data must be null when contains_market_data is false"
+            )
+        if entry.get("disclaimer") != SCREENSHOT_DISCLAIMER:
+            failures.append(f"{label} has an invalid disclaimer")
+
+        state = entry.get("state")
+        if final or state == "captured":
+            if isinstance(page_pairs, list):
+                for page_name in page_pairs:
+                    if not isinstance(page_name, str):
+                        continue
+                    page_path = root / page_name
+                    if (
+                        not page_path.is_file()
+                        or page_path.resolve() not in publication_files
+                    ):
+                        failures.append(
+                            f"{label} page_pairs page does not exist in the Wiki publication: "
+                            f"{page_name}"
+                        )
+        if state == "pending":
+            for field in (
+                "viewport",
+                "product",
+                "captured_at",
+                "sha256",
+                "market_data",
+                "capture",
+                "editing",
+            ):
+                if entry.get(field) is not None:
+                    failures.append(f"{label} pending entry must leave {field} null")
+            if entry.get("redaction") != "pending":
+                failures.append(f"{label} pending entry requires redaction: pending")
+            if final:
+                failures.append(f"{label} is pending and blocks final publication")
+            continue
+        if state != "captured":
+            failures.append(f"{label} state must be pending or captured")
+            continue
+
+        if not isinstance(relative_path, str):
+            continue
+        image_path = root / relative_path
+        digest = entry.get("sha256")
+        if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+            failures.append(f"{label} requires a lowercase SHA-256")
+        else:
+            digest_owner = captured_digests.get(digest)
+            if digest_owner is not None:
+                failures.append(
+                    f"{label} captured screenshot SHA-256 is reused by {digest_owner}"
+                )
+            else:
+                captured_digests[digest] = screenshot_id
+            if not image_path.is_file():
+                failures.append(f"{label} image does not exist: {relative_path}")
+            elif hashlib.sha256(image_path.read_bytes()).hexdigest() != digest:
+                failures.append(f"{label} SHA-256 does not match: {relative_path}")
+        if resolved_image not in publication_files:
+            failures.append(
+                f"{label} image is not a scanned Wiki publication file: {relative_path}"
+            )
+        elif image_path.is_file():
+            raster_failure = _raster_failure(image_path)
+            if raster_failure is not None:
+                failures.append(f"{label} {raster_failure}")
+
+        viewport = entry.get("viewport")
+        if not isinstance(viewport, dict) or not all(
+            isinstance(viewport.get(key), int) and viewport[key] > 0
+            for key in ("width", "height", "device_scale_factor")
+        ):
+            failures.append(f"{label} requires a positive viewport")
+        product = entry.get("product")
+        if not isinstance(product, dict):
+            failures.append(f"{label} requires product provenance")
+        else:
+            version = product.get("version")
+            commit = product.get("git_commit")
+            if not isinstance(version, str) or not re.fullmatch(
+                r"(?:[1-9]\d*|0)\.(?:[0-9]+)\.(?:[0-9]+)", version
+            ):
+                failures.append(f"{label} has an invalid product version")
+            elif int(version.split(".")[0]) < 1:
+                failures.append(f"{label} requires product version 1.0.0 or later")
+            if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit):
+                failures.append(f"{label} requires a 40-character git commit")
+            elif not _repository_commit_is_reachable(commit):
+                failures.append(
+                    f"{label} git_commit is not a reachable repository commit"
+                )
+        if not _manifest_timestamp_is_utc(entry.get("captured_at")):
+            failures.append(f"{label} requires an aware UTC captured_at")
+        if entry.get("capture") not in {"playwright", "in-app-browser"}:
+            failures.append(f"{label} has an unsupported capture method")
+        if entry.get("editing") not in {"none", "crop-only"}:
+            failures.append(f"{label} has unsupported editing metadata")
+        if entry.get("redaction") != "passed":
+            failures.append(f"{label} requires redaction: passed")
+
+        market_data = entry.get("market_data")
+        if contains_market_data is True:
+            if not isinstance(market_data, dict):
+                failures.append(f"{label} requires real market provenance")
+            else:
+                serialized_market = str(market_data).casefold()
+                if any(
+                    forbidden in serialized_market
+                    for forbidden in ("synthetic", "cc0 demo", "fixture")
+                ):
+                    failures.append(f"{label} requires real market provenance")
+                if not re.fullmatch(
+                    r"(?:[036]\d{5})\.(?:SH|SZ)", str(market_data.get("symbol", ""))
+                ):
+                    failures.append(f"{label} has an invalid A-share symbol")
+                if market_data.get("period") not in {"1d", "1w", "60m"}:
+                    failures.append(f"{label} has an invalid market period")
+                if market_data.get("adjustment") not in {"none", "qfq", "hfq"}:
+                    failures.append(f"{label} has an invalid adjustment")
+                source = market_data.get("source")
+                if not isinstance(source, str) or not source.strip():
+                    failures.append(f"{label} requires a market source")
+                elif source not in _real_market_source_ids():
+                    failures.append(
+                        f"{label} market source is not a product ProviderId: {source}"
+                    )
+                name = market_data.get("name")
+                if not isinstance(name, str) or not name.strip():
+                    failures.append(f"{label} requires a market instrument name")
+                start = str(market_data.get("start", ""))
+                end = str(market_data.get("end", ""))
+                if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", start) or not re.fullmatch(
+                    r"\d{4}-\d{2}-\d{2}", end
+                ):
+                    failures.append(f"{label} requires market start and end dates")
+                elif start > end:
+                    failures.append(f"{label} market date range is reversed")
+                if not _manifest_timestamp_is_utc(market_data.get("cutoff")):
+                    failures.append(f"{label} requires an aware UTC market cutoff")
+                if not re.fullmatch(
+                    r"sha256:[0-9a-f]{64}",
+                    str(market_data.get("dataset_version", "")),
+                ):
+                    failures.append(f"{label} requires a dataset version")
+                elif market_data.get("dataset_version") == f"sha256:{digest}":
+                    failures.append(
+                        f"{label} dataset_version must be distinct from screenshot "
+                        "SHA-256"
+                    )
+        if isinstance(page_pairs, list):
+            for page_name in page_pairs:
+                if not isinstance(page_name, str) or page_name not in documents:
+                    continue
+                page_path = root / page_name
+                expected_image = image_path.resolve()
+                referenced = any(
+                    rendered.kind == "image"
+                    and _local_destination(root, page_path, rendered.target)
+                    == expected_image
+                    for rendered in rendered_targets.get(page_name, ())
+                )
+                if not referenced:
+                    failures.append(
+                        f"{label} article {page_name} must reference {relative_path}"
+                    )
+        if (
+            state == "captured"
+            and resolved_image is not None
+            and len(failures) == entry_failure_start
+        ):
+            valid_captured_images[resolved_image] = entry
+    return by_id, valid_captured_images, failures
+
+
+def _github_heading_anchor(heading: str) -> str:
+    anchor = heading.casefold().strip()
+    anchor = re.sub(r"[^\w\s-]", "", anchor, flags=re.UNICODE)
+    anchor = re.sub(r"\s+", "-", anchor)
+    return re.sub(r"-+", "-", anchor).strip("-")
+
+
+def _feature_requirement_ids(value: str) -> tuple[str, ...]:
+    normalized = re.sub(r"\s+", "", value).replace("\u2013", "-").replace("\u2014", "-")
+    match = re.fullmatch(r"R-(\d{3})(?:-R?-?(\d{3}))?", normalized)
+    if match is None:
+        return ()
+    start = int(match.group(1))
+    end = int(match.group(2) or start)
+    if end < start:
+        return ()
+    return tuple(f"R-{number:03d}" for number in range(start, end + 1))
+
+
+def _feature_index_rows(
+    document: str,
+) -> tuple[list[tuple[tuple[str, ...], str, str, str, str, str]], list[str]]:
+    rows: list[tuple[tuple[str, ...], str, str, str, str, str]] = []
+    failures: list[str] = []
+    lines = document.splitlines()
+    header_index = next(
+        (
+            index
+            for index, line in enumerate(lines)
+            if line.startswith("|")
+            and ("Screenshot ID" in line or "\u622a\u56fe ID" in line)
+            and ("Feature/requirement" in line or "\u529f\u80fd/\u9700\u6c42" in line)
+        ),
+        None,
+    )
+    if header_index is None or header_index + 1 >= len(lines):
+        return [], ["missing feature-index table header"]
+    separator = [cell.strip() for cell in lines[header_index + 1].strip("|").split("|")]
+    if len(separator) != 6 or not all(
+        re.fullmatch(r":?-{3,}:?", cell) for cell in separator
+    ):
+        return [], ["invalid feature-index table separator"]
+    table_closed = False
+    for line_number, line in enumerate(
+        lines[header_index + 2 :], start=header_index + 3
+    ):
+        if not line.startswith("|"):
+            table_closed = True
+            if re.search(r"\bR-\d{3}\b", line):
+                failures.append(f"unparseable table row at line {line_number}: {line}")
+            continue
+        if table_closed:
+            failures.append(f"unparseable table row at line {line_number}: {line}")
+            continue
+        match = _FEATURE_INDEX_ROW.fullmatch(line)
+        if match is None:
+            failures.append(f"unparseable table row at line {line_number}: {line}")
+            continue
+        identifiers = _feature_requirement_ids(match.group(1))
+        rows.append(
+            (
+                identifiers,
+                match.group(2).strip(),
+                match.group(3).strip(),
+                match.group(4).strip(),
+                match.group(5).strip(),
+                match.group(6).strip(),
+            )
+        )
+    return rows, failures
+
+
+def _feature_index_failures(
+    root: Path,
+    documents: dict[str, str],
+    screenshot_entries: dict[str, dict[str, object]],
+    canonical_routes: frozenset[str],
+) -> list[str]:
+    failures: list[str] = []
+    parsed: dict[str, list[tuple[tuple[str, ...], str, str, str, str, str]]] = {}
+    for filename in ("Feature-Index.md", "Feature-Index-en.md"):
+        rows, row_failures = _feature_index_rows(documents.get(filename, ""))
+        parsed[filename] = rows
+        failures.extend(
+            f"Feature index {filename}: {failure}" for failure in row_failures
+        )
+        if not rows:
+            failures.append(f"Feature index {filename}: no machine-readable rows")
+            continue
+        seen: list[str] = [identifier for row in rows for identifier in row[0]]
+        for identifier in sorted(ACTIVE_REQUIREMENT_IDS - set(seen)):
+            failures.append(
+                f"Feature index {filename}: missing requirement ID: {identifier}"
+            )
+        for identifier in sorted(set(seen) - ACTIVE_REQUIREMENT_IDS):
+            failures.append(
+                f"Feature index {filename}: unknown requirement ID: {identifier}"
+            )
+        for identifier in sorted({item for item in seen if seen.count(item) > 1}):
+            failures.append(
+                f"Feature index {filename}: duplicate requirement ID: {identifier}"
+            )
+        for (
+            identifiers,
+            chinese_target,
+            english_target,
+            section_text,
+            screenshot_id,
+            surface_text,
+        ) in rows:
+            row_label = identifiers[0] if identifiers else "invalid row"
+            chinese_section, separator, english_section = section_text.partition(" / ")
+            if not separator or not chinese_section or not english_section:
+                failures.append(
+                    f"Feature index {filename} {row_label}: section must be bilingual: "
+                    f"{section_text}"
+                )
+            else:
+                for target, section in (
+                    (chinese_target, chinese_section),
+                    (english_target, english_section),
+                ):
+                    target_anchor = unquote(urlsplit(target).fragment).casefold()
+                    expected_anchor = _github_heading_anchor(section)
+                    if target_anchor != expected_anchor:
+                        failures.append(
+                            f"Feature index {filename} {row_label}: section {section} "
+                            f"does not match target anchor: {target}"
+                        )
+            surface = _surface_tuple(surface_text)
+            surface_failure = _surface_failure(surface, canonical_routes)
+            if surface_failure is not None:
+                failures.append(
+                    f"Feature index {filename} {row_label}: {surface_failure}"
+                )
+            if screenshot_id not in screenshot_entries:
+                failures.append(
+                    f"Feature index {filename} {row_label}: missing screenshot reference: "
+                    f"{screenshot_id}"
+                )
+            else:
+                screenshot_entry = screenshot_entries[screenshot_id]
+                manifest_features = screenshot_entry.get("features")
+                if not isinstance(manifest_features, list) or not set(
+                    identifiers
+                ).issubset(manifest_features):
+                    failures.append(
+                        f"Feature index {filename} {row_label}: screenshot "
+                        f"{screenshot_id} does not cover mapped requirement"
+                    )
+                manifest_surface = _surface_tuple(screenshot_entry.get("surface"))
+                if manifest_surface != surface:
+                    failures.append(
+                        f"Feature index {filename} {row_label}: screenshot "
+                        f"{screenshot_id} surface does not match manifest: "
+                        f"{surface} != {manifest_surface}"
+                    )
+                page_pairs = screenshot_entry.get("page_pairs")
+                expected_page_pairs = [
+                    (
+                        unquote(urlsplit(target).path)
+                        if unquote(urlsplit(target).path).endswith(".md")
+                        else f"{unquote(urlsplit(target).path)}.md"
+                    )
+                    for target in (chinese_target, english_target)
+                ]
+                if page_pairs != expected_page_pairs:
+                    failures.append(
+                        f"Feature index {filename} {row_label}: screenshot "
+                        f"{screenshot_id} page_pairs do not match feature targets"
+                    )
+            for target in (chinese_target, english_target):
+                split = urlsplit(target)
+                target_path = unquote(split.path)
+                page_name = (
+                    target_path if target_path.endswith(".md") else f"{target_path}.md"
+                )
+                page = root / page_name
+                if not page.is_file():
+                    failures.append(
+                        f"Feature index {filename} {row_label}: referenced page does not exist: "
+                        f"{page_name}"
+                    )
+                    continue
+                if not split.fragment:
+                    failures.append(
+                        f"Feature index {filename} {row_label}: referenced page lacks a section anchor: "
+                        f"{target}"
+                    )
+                    continue
+                anchors = {
+                    _github_heading_anchor(heading)
+                    for heading in _headings(documents.get(page_name, _read(page)))
+                }
+                if unquote(split.fragment).casefold() not in anchors:
+                    failures.append(
+                        f"Feature index {filename} {row_label}: referenced section does not exist: "
+                        f"{target}"
+                    )
+
+    chinese_rows = parsed.get("Feature-Index.md", [])
+    english_rows = parsed.get("Feature-Index-en.md", [])
+    if chinese_rows and english_rows and chinese_rows != english_rows:
+        failures.append(
+            "Feature index language pages must contain the same requirement mappings"
+        )
+    indexed_features: dict[str, set[str]] = {}
+    for (
+        identifiers,
+        _chinese,
+        _english,
+        _section,
+        screenshot_id,
+        _surface,
+    ) in chinese_rows:
+        indexed_features.setdefault(screenshot_id, set()).update(identifiers)
+    for screenshot_id, entry in screenshot_entries.items():
+        manifest_features = entry.get("features")
+        if isinstance(manifest_features, list) and set(manifest_features) != (
+            indexed_features.get(screenshot_id, set())
+        ):
+            failures.append(
+                f"Screenshot manifest {screenshot_id} features do not exactly match "
+                "Feature index mappings"
+            )
+    referenced_ids = {
+        row[4]
+        for rows in parsed.values()
+        for row in rows
+        if row[4] in screenshot_entries
+    }
+    for screenshot_id in sorted(set(screenshot_entries) - referenced_ids):
+        failures.append(
+            f"Feature index has an unreferenced screenshot manifest entry: {screenshot_id}"
+        )
+    return failures
+
+
 def verify_wiki(wiki_root: Path, *, final: bool) -> list[str]:
     """Verify bilingual external Wiki staging or its final publication boundary."""
 
@@ -741,7 +1463,16 @@ def verify_wiki(wiki_root: Path, *, final: bool) -> list[str]:
     )
     failures.extend(path_failures)
     publication_files = frozenset(
-        path.resolve() for path in (*markdown_paths, *image_paths)
+        path.resolve()
+        for path in (
+            *markdown_paths,
+            *image_paths,
+            *(
+                (root / "SCREENSHOT-MANIFEST.yml",)
+                if (root / "SCREENSHOT-MANIFEST.yml").is_file()
+                else ()
+            ),
+        )
     )
     images_root = (root / "images").resolve()
     documents: dict[str, str] = {}
@@ -792,6 +1523,59 @@ def verify_wiki(wiki_root: Path, *, final: bool) -> list[str]:
             image_failure = _raster_failure(path)
             if image_failure is not None:
                 failures.append(f"{relative_path}: {image_failure}")
+
+    canonical_routes = _canonical_app_routes()
+    if not canonical_routes:
+        failures.append("Unable to load canonical application routes")
+    screenshot_entries, valid_captured_images, manifest_failures = _screenshot_manifest(
+        root,
+        final=final,
+        publication_files=publication_files,
+        documents=documents,
+        rendered_targets=rendered_targets,
+        canonical_routes=canonical_routes,
+    )
+    failures.extend(manifest_failures)
+    failures.extend(
+        _feature_index_failures(root, documents, screenshot_entries, canonical_routes)
+    )
+    if final:
+        for image_path in image_paths:
+            relative_path = image_path.relative_to(root).as_posix()
+            if not relative_path.startswith("images/"):
+                failures.append(
+                    f"{relative_path}: publication raster is outside Wiki images/"
+                )
+            if image_path.resolve() not in valid_captured_images:
+                failures.append(
+                    f"{relative_path}: must have exactly one valid captured manifest entry"
+                )
+        for relative_path, targets in rendered_targets.items():
+            source = root / relative_path
+            for rendered in targets:
+                if rendered.kind != "image":
+                    continue
+                destination = _local_destination(root, source, rendered.target)
+                if (
+                    destination is not None
+                    and destination.suffix.casefold() in APPROVED_RASTER_SUFFIXES
+                ):
+                    manifest_entry = valid_captured_images.get(destination)
+                    if manifest_entry is None:
+                        failures.append(
+                            f"{relative_path}: local raster {rendered.target} is not "
+                            "backed by a valid captured manifest entry"
+                        )
+                    else:
+                        page_pairs = manifest_entry.get("page_pairs")
+                        if (
+                            not isinstance(page_pairs, list)
+                            or relative_path not in page_pairs
+                        ):
+                            failures.append(
+                                f"{relative_path}: local raster {rendered.target} is "
+                                "not listed in manifest page_pairs"
+                            )
 
     checklist = documents.get("PUBLISHING-CHECKLIST.md")
     if final and checklist is not None:
@@ -868,7 +1652,7 @@ def verify_wiki(wiki_root: Path, *, final: bool) -> list[str]:
             failures.append(
                 f"{chinese_path.name}: missing counterpart link to {stem}-en"
             )
-        if stem == "Home":
+        if stem in {"Home", "Feature-Index"}:
             continue
         for path, document, required_headings in (
             (english_path, english, ("Steps", "Expected result", "Recovery")),
@@ -903,14 +1687,19 @@ def verify_wiki(wiki_root: Path, *, final: bool) -> list[str]:
                         continue
                     if destination not in publication_files:
                         continue
-                    if destination.suffix.casefold() not in APPROVED_RASTER_SUFFIXES:
-                        continue
-                    if destination.is_file() and _raster_failure(destination) is None:
+                    manifest_entry = valid_captured_images.get(destination)
+                    page_pairs = (
+                        manifest_entry.get("page_pairs")
+                        if manifest_entry is not None
+                        else None
+                    )
+                    if isinstance(page_pairs, list) and path.name in page_pairs:
                         has_real_screenshot = True
                         break
                 if not has_real_screenshot:
                     failures.append(
-                        f"{path.name}: final page is missing a real screenshot"
+                        f"{path.name}: final page is missing a real screenshot backed by "
+                        "captured manifest evidence"
                     )
 
     for relative_path, document in documents.items():
