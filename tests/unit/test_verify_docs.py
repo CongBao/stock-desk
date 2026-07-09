@@ -784,11 +784,8 @@ EXPECTED_WIKI_WORKFLOW_CONTENT = {
             "300750.SZ",
             "sha256:7e7fbcce7ee0c7a0bd58b9ebd7d7e06c0755b4195ee3a32c49dfab269147f2fe",
             "2026-07-08",
-            "54 个买点",
-            "55 个卖点",
-            "sha256:47d4a02851407ae0d2730497f7b93bd2b249f02c3f03a84b8e42a1e20c2530a0",
-            "待截图元数据",
-            "不是已捕获声明",
+            "预览只使用已保存、已校验的不可变版本。产品运行结果会绑定数据集版本、数据截止时间、公式版本和公式摘要；本页截图清单只记录图片与行情来源元数据，不把截图当作完整运行结果的替代品。",
+            "截图可见已保存的 v1、通过校验的 MACD 源码、宁德时代 K 线主图、公式副图和 BUY/SELL 标记。当前可见区域没有展示完整信号计数或公式摘要，因此本页不据此声称精确的信号总数，也不把图片用作回测结果。",
             "不公开原始行",
             "保存草稿可以保留尚未通过校验的文本",
             "不会生成可预览或可回测版本",
@@ -797,7 +794,15 @@ EXPECTED_WIKI_WORKFLOW_CONTENT = {
             "即使技术指标保存了 BUY/SELL",
             "也不会出现在回测向导",
         ),
-        ("编辑草稿时会自动运行预览", "直接预览未保存草稿"),
+        (
+            "编辑草稿时会自动运行预览",
+            "直接预览未保存草稿",
+            "54 个买点",
+            "55 个卖点",
+            "sha256:47d4a02851407ae0d2730497f7b93bd2b249f02c3f03a84b8e42a1e20c2530a0",
+            "待截图元数据",
+            "不是已捕获声明",
+        ),
     ),
     "Formula-Studio-Quickstart-en.md": (
         (
@@ -816,11 +821,8 @@ EXPECTED_WIKI_WORKFLOW_CONTENT = {
             "300750.SZ",
             "sha256:7e7fbcce7ee0c7a0bd58b9ebd7d7e06c0755b4195ee3a32c49dfab269147f2fe",
             "2026-07-08",
-            "54 BUY signals",
-            "55 SELL signals",
-            "sha256:47d4a02851407ae0d2730497f7b93bd2b249f02c3f03a84b8e42a1e20c2530a0",
-            "future-screenshot metadata",
-            "not a capture-complete claim",
+            "Preview uses only a saved, validated, immutable version. The product runtime binds dataset version, data cutoff, formula version, and formula checksum; this page's screenshot manifest records only image and market-source metadata and does not replace the complete runtime result.",
+            "The image visibly shows saved v1, the validated MACD source, CATL's K-line main chart, the formula subchart, and BUY/SELL markers. The visible crop does not show a complete signal count or formula checksum, so this page makes no exact signal-total claim from the image and does not present it as a backtest result.",
             "No raw rows",
             "Save draft（保存草稿） can preserve text that has not passed validation",
             "does not create a previewable or backtestable version",
@@ -832,6 +834,11 @@ EXPECTED_WIKI_WORKFLOW_CONTENT = {
         (
             "preview runs automatically while editing",
             "preview an unsaved draft directly",
+            "54 BUY signals",
+            "55 SELL signals",
+            "sha256:47d4a02851407ae0d2730497f7b93bd2b249f02c3f03a84b8e42a1e20c2530a0",
+            "future-screenshot metadata",
+            "not a capture-complete claim",
         ),
     ),
     "Formula-Compatibility-and-Errors.md": (
@@ -1594,7 +1601,7 @@ EXPECTED_WIKI_FORMULA_GUIDE_SOURCE_CLAIMS = {
             "executable_version_id=None",
         ),
         (
-            "预览结果绑定数据集版本、数据截止时间、公式版本和公式摘要",
+            "预览只使用已保存、已校验的不可变版本。产品运行结果会绑定数据集版本、数据截止时间、公式版本和公式摘要；本页截图清单只记录图片与行情来源元数据，不把截图当作完整运行结果的替代品。",
             "web/src/features/formulas/formulaApi.ts",
             "readonly formulaChecksum: string;",
         ),
@@ -1616,7 +1623,7 @@ EXPECTED_WIKI_FORMULA_GUIDE_SOURCE_CLAIMS = {
             "executable_version_id=None",
         ),
         (
-            "The preview result binds dataset version, data cutoff, formula version, and formula checksum",
+            "Preview uses only a saved, validated, immutable version. The product runtime binds dataset version, data cutoff, formula version, and formula checksum; this page's screenshot manifest records only image and market-source metadata and does not replace the complete runtime result.",
             "web/src/features/formulas/formulaApi.ts",
             "readonly formulaChecksum: string;",
         ),
@@ -5526,24 +5533,22 @@ def test_formula_docs_lock_current_tdx_v1_time_behavior_boundary() -> None:
     assert captured.value.code == "unsupported_function"
 
 
-def test_formula_pages_keep_bilingual_fixed_capture_metadata(tmp_path: Path) -> None:
+def test_formula_pages_require_honest_bilingual_capture_scope(tmp_path: Path) -> None:
     _write_wiki(tmp_path)
     expected = {
         "Formula-Studio-Quickstart.md": (
-            "300750.SZ",
-            "sha256:7e7fbcce7ee0c7a0bd58b9ebd7d7e06c0755b4195ee3a32c49dfab269147f2fe",
-            "2026-07-08",
+            "截图可见已保存的 v1、通过校验的 MACD 源码、宁德时代 K 线主图、公式副图和 BUY/SELL 标记。当前可见区域没有展示完整信号计数或公式摘要，因此本页不据此声称精确的信号总数，也不把图片用作回测结果。",
             "54 个买点",
             "55 个卖点",
+            "sha256:47d4a02851407ae0d2730497f7b93bd2b249f02c3f03a84b8e42a1e20c2530a0",
             "待截图元数据",
             "不是已捕获声明",
         ),
         "Formula-Studio-Quickstart-en.md": (
-            "300750.SZ",
-            "sha256:7e7fbcce7ee0c7a0bd58b9ebd7d7e06c0755b4195ee3a32c49dfab269147f2fe",
-            "2026-07-08",
+            "The image visibly shows saved v1, the validated MACD source, CATL's K-line main chart, the formula subchart, and BUY/SELL markers. The visible crop does not show a complete signal count or formula checksum, so this page makes no exact signal-total claim from the image and does not present it as a backtest result.",
             "54 BUY signals",
             "55 SELL signals",
+            "sha256:47d4a02851407ae0d2730497f7b93bd2b249f02c3f03a84b8e42a1e20c2530a0",
             "future-screenshot metadata",
             "not a capture-complete claim",
         ),
@@ -5551,13 +5556,19 @@ def test_formula_pages_keep_bilingual_fixed_capture_metadata(tmp_path: Path) -> 
     for filename, markers in expected.items():
         page = tmp_path / filename
         document = page.read_text(encoding="utf-8")
-        page.write_text(document.replace(markers[0], "600000.SH", 1), encoding="utf-8")
+        page.write_text(
+            document.replace(markers[0], " ".join(markers[1:]), 1),
+            encoding="utf-8",
+        )
 
     failures = verify_wiki(tmp_path, final=False)
 
     for filename in expected:
         assert any(
-            filename in failure and "workflow content contract" in failure
+            filename in failure
+            and "workflow content contract" in failure
+            and "missing=" in failure
+            and "forbidden=" in failure
             for failure in failures
         )
 
