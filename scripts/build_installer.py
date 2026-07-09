@@ -43,6 +43,14 @@ def _run(arguments: list[str], *, cwd: Path = ROOT) -> None:
     subprocess.run(arguments, cwd=cwd, check=True)  # noqa: S603
 
 
+def _pnpm_command() -> str:
+    candidates = ("pnpm.cmd", "pnpm") if platform.system() == "Windows" else ("pnpm",)
+    for candidate in candidates:
+        if executable := shutil.which(candidate):
+            return executable
+    raise RuntimeError("pnpm executable is unavailable")
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as artifact:
@@ -274,7 +282,7 @@ def build_installer(version: str, *, output_dir: Path) -> tuple[Path, Path]:
     pyinstaller_work = ROOT / "build" / "pyinstaller"
     shutil.rmtree(pyinstaller_dist, ignore_errors=True)
     shutil.rmtree(pyinstaller_work, ignore_errors=True)
-    _run(["pnpm", "build"])
+    _run([_pnpm_command(), "build"])
     environment = os.environ.copy()
     environment["STOCK_DESK_BUILD_VERSION"] = version
     subprocess.run(  # noqa: S603
