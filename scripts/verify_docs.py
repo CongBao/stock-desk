@@ -4420,24 +4420,25 @@ def _readme_screenshot_manifest_failures(
 
         relative_path = entry.get("path")
         image_path: Path | None = None
+        validated_relative_path: str | None = None
         if isinstance(relative_path, str):
             manifest_paths.append(relative_path)
             if "\0" not in relative_path and ".." in Path(relative_path).parts:
                 failures.append(f"{label} path escapes docs/images: {relative_path}")
-        valid_relative_path = (
-            isinstance(relative_path, str)
-            and "\0" not in relative_path
-            and re.fullmatch(
-                r"docs/images/[A-Za-z0-9][A-Za-z0-9._/-]*\.(?:png|jpe?g|webp)",
-                relative_path,
-                re.IGNORECASE,
-            )
-            is not None
-            and not Path(relative_path).is_absolute()
-            and ".." not in Path(relative_path).parts
-        )
-        if valid_relative_path:
-            relative_image_path = Path(relative_path)
+            if (
+                "\0" not in relative_path
+                and re.fullmatch(
+                    r"docs/images/[A-Za-z0-9][A-Za-z0-9._/-]*\.(?:png|jpe?g|webp)",
+                    relative_path,
+                    re.IGNORECASE,
+                )
+                is not None
+                and not Path(relative_path).is_absolute()
+                and ".." not in Path(relative_path).parts
+            ):
+                validated_relative_path = relative_path
+        if validated_relative_path is not None:
+            relative_image_path = Path(validated_relative_path)
             image_symlink = _relative_symlink(root, relative_image_path)
             if image_symlink is not None:
                 failures.append(
@@ -4454,7 +4455,7 @@ def _readme_screenshot_manifest_failures(
                     failures.append(
                         f"{label} path escapes docs/images: {relative_path}"
                     )
-        if not valid_relative_path:
+        if validated_relative_path is None:
             failures.append(f"{label} has an invalid docs/images path")
 
         state = entry.get("state")
