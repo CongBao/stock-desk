@@ -317,7 +317,9 @@ function progressEvidenceKey(state: ProgressEvidenceState): string {
   ].join('|');
 }
 
-function progressEvidenceState(value: unknown): ProgressEvidenceState | null {
+export function progressEvidenceState(
+  value: unknown,
+): ProgressEvidenceState | null {
   if (typeof value !== 'object' || value === null) return null;
   const candidate = value as Record<string, unknown>;
   const { status, stage, processed, total, failed } = candidate;
