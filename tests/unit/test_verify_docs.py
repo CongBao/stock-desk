@@ -3,11 +3,13 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+import re
 import struct
 import subprocess
 import zlib
 
 import pytest
+import yaml
 
 import scripts.verify_docs as verify_docs_module
 from scripts.verify_docs import (
@@ -55,6 +57,343 @@ EXPECTED_REPLACED_WIKI_PAGES = (
     "Backup-and-Restore.md",
     "Configuration-and-Security.md",
 )
+
+EXPECTED_WIKI_FEATURE_BINDINGS = {
+    "R-050": (
+        "Credentials-Logs-and-Local-Security#适用场景",
+        "Credentials-Logs-and-Local-Security-en#when-to-use-this",
+        "适用场景 / When to use this",
+        "local-security-settings",
+        "app-route:/settings",
+    ),
+    "R-052": (
+        "Project-Governance-and-Release-Evidence#需求边界与验收",
+        "Project-Governance-and-Release-Evidence-en#requirements-boundary-and-acceptance",
+        "需求边界与验收 / Requirements boundary and acceptance",
+        "governance-requirements",
+        "repository-audit:requirements-boundary",
+    ),
+    "R-073": (
+        "Project-Governance-and-Release-Evidence#交付与公开边界",
+        "Project-Governance-and-Release-Evidence-en#delivery-and-public-boundary",
+        "交付与公开边界 / Delivery and public boundary",
+        "governance-documentation",
+        "repository-audit:documentation-entry",
+    ),
+    "R-076": (
+        "Project-Governance-and-Release-Evidence#发布验证",
+        "Project-Governance-and-Release-Evidence-en#release-verification",
+        "发布验证 / Release verification",
+        "cross-platform-release-assets",
+        "github-release:latest",
+    ),
+}
+
+EXPECTED_WIKI_DOCUMENTATION_ENTRY_MARKERS = {
+    "Project-Governance-and-Release-Evidence.md": (
+        "README 提供精简的中英双语入口",
+        "详细的中英双语 Wiki",
+    ),
+    "Project-Governance-and-Release-Evidence-en.md": (
+        "README provides a concise bilingual entry point",
+        "detailed bilingual Wiki",
+    ),
+}
+
+EXPECTED_WIKI_APP_UI_LABELS = {
+    "First-Launch-and-Health": (
+        ("About", "关于"),
+        ("Data source settings", "数据源设置"),
+        ("Worker running", "Worker 运行中"),
+        ("Worker not detected", "Worker 未检测"),
+        ("Worker status unavailable", "Worker 状态不可用"),
+        ("Worker: API offline", "Worker：API 离线"),
+    ),
+    "Data-Sources-and-Tushare": (
+        ("Data source settings", "数据源设置"),
+        ("Save data source settings", "保存数据源设置"),
+        ("Test Tushare connection", "测试 Tushare 连接"),
+    ),
+    "Local-TDX-Data": (
+        ("Local TDX", "通达信本地"),
+        ("TongdaXin vipdoc directory", "通达信 vipdoc 目录"),
+        ("Save data source settings", "保存数据源设置"),
+        ("Test Local TDX connection", "测试 通达信本地 连接"),
+    ),
+    "Data-Updates-and-Provenance": (
+        ("Data update", "数据更新"),
+        ("Cancel update", "取消更新"),
+        ("Save daily schedule", "保存每日计划"),
+    ),
+    "Stock-Pools": (
+        ("Stock pools", "股票池"),
+        ("Create stock pool", "创建股票池"),
+    ),
+    "Market-Charts": (
+        ("Market workspace", "行情工作区"),
+        ("Reset view", "重置视图"),
+    ),
+    "Formula-Studio-Quickstart": (
+        ("Formula Studio", "公式工作台"),
+        ("Custom formulas", "自定义公式"),
+        ("Validate now", "立即校验"),
+        ("Run preview", "运行预览"),
+    ),
+    "Formula-Compatibility-and-Errors": (
+        ("Validate now", "立即校验"),
+        ("Open saved formula", "打开已保存公式"),
+    ),
+    "Formula-Versions-and-Safety": (
+        ("Formula version", "公式版本"),
+        ("Run preview", "运行预览"),
+    ),
+    "MACD-Backtest-Tutorial": (
+        ("Formula Studio", "公式工作台"),
+        ("Strategy backtest", "策略回测"),
+        ("Submit backtest", "提交回测"),
+        ("Task Center", "任务中心"),
+    ),
+    "A-Share-Execution-and-Costs": (("Execution rules", "执行规则"),),
+    "Backtest-Metrics-and-Reliability": (
+        ("Backtest results", "回测结果"),
+        ("Conclusion overview", "结论概览"),
+    ),
+    "Backtest-Replay-Export-and-Failures": (
+        ("Pinned replay", "固定回放"),
+        ("Export trades CSV", "导出交易 CSV"),
+        ("Task Center", "任务中心"),
+        ("Cancel task", "取消任务"),
+    ),
+    "Model-Provider-Setup": (
+        ("Smart analysis", "智能分析"),
+        ("Model settings", "模型设置"),
+        ("Provider", "提供商"),
+        ("Display name", "显示名称"),
+        ("Base URL", "Base URL"),
+        ("Model", "模型"),
+        ("API Key", "API Key"),
+        ("Save model configuration", "保存模型配置"),
+        ("Test connection", "测试连接"),
+        ("Verified", "已验证"),
+        ("Error code", "错误代码"),
+    ),
+    "Research-Reports-and-Evidence": (
+        ("Smart analysis", "智能分析"),
+        ("Start smart analysis", "启动智能分析"),
+        ("View evidence", "查看证据"),
+    ),
+    "Research-Failures-Retries-and-Safety": (
+        ("Stage retry child run", "阶段重试子运行"),
+    ),
+    "Task-Center": (
+        ("Task Center", "任务中心"),
+        ("Status filter", "状态筛选"),
+        ("Type filter", "类型筛选"),
+        ("Open backtest report", "打开回测报告"),
+        ("Security event timeline", "安全事件时间线"),
+        ("Cancel task", "取消任务"),
+    ),
+    "Responsive-Navigation-and-Accessibility": (
+        ("Expand primary navigation", "展开主导航"),
+        ("Collapse primary navigation", "收起主导航"),
+    ),
+    "Credentials-Logs-and-Local-Security": (
+        ("Data source settings", "数据源设置"),
+        ("Save data source settings", "保存数据源设置"),
+    ),
+    "Troubleshooting": (
+        ("Task Center", "任务中心"),
+        ("Safe event timeline", "安全事件时间线"),
+    ),
+}
+
+EXPECTED_WIKI_EXTERNAL_UI_LABELS = {
+    "Project-Governance-and-Release-Evidence": (
+        ("github", "Pull Requests", "拉取请求"),
+        ("github", "Actions", "自动化"),
+        ("github", "Releases", "发行版"),
+    ),
+    "Windows-Installation": (
+        ("github", "Releases", "发行版"),
+        ("windows", "Start menu", "“开始”菜单"),
+    ),
+    "macOS-Installation": (
+        ("github", "Releases", "发行版"),
+        ("macos", "About This Mac", "关于本机"),
+        ("macos", "Applications", "“应用程序”"),
+        ("macos", "Gatekeeper", "安全性检查"),
+    ),
+    "Backup-Restore-Upgrade-and-Uninstall": (
+        ("windows", "Installed apps", "已安装的应用"),
+        ("macos", "Applications", "“应用程序”"),
+    ),
+}
+
+EXPECTED_WIKI_APP_UI_SOURCE_FILES = {
+    "First-Launch-and-Health": ("web/src/app/App.tsx", "web/src/app/routes.ts"),
+    "Data-Sources-and-Tushare": (
+        "web/src/app/routes.ts",
+        "web/src/features/settings/DataSourcesPage.tsx",
+    ),
+    "Local-TDX-Data": ("web/src/features/settings/DataSourcesPage.tsx",),
+    "Data-Updates-and-Provenance": (
+        "web/src/features/market/MarketOperationsPanel.tsx",
+    ),
+    "Stock-Pools": (
+        "web/src/features/market/StockPoolPanel.tsx",
+        "web/src/features/market/MarketOperationsPanel.tsx",
+    ),
+    "Market-Charts": (
+        "web/src/features/market/MarketPage.tsx",
+        "web/src/features/market/MarketChart.tsx",
+    ),
+    "Formula-Studio-Quickstart": (
+        "web/src/app/routes.ts",
+        "web/src/features/formulas/FormulaStudioPage.tsx",
+        "web/src/features/formulas/FormulaPreview.tsx",
+    ),
+    "Formula-Compatibility-and-Errors": (
+        "web/src/features/formulas/FormulaStudioPage.tsx",
+    ),
+    "Formula-Versions-and-Safety": (
+        "web/src/features/formulas/FormulaStudioPage.tsx",
+        "web/src/features/formulas/FormulaPreview.tsx",
+    ),
+    "MACD-Backtest-Tutorial": (
+        "web/src/app/routes.ts",
+        "web/src/features/backtests/BacktestWizard.tsx",
+        "web/src/features/tasks/TaskCenterPage.tsx",
+    ),
+    "A-Share-Execution-and-Costs": ("web/src/features/backtests/steps/ReviewStep.tsx",),
+    "Backtest-Metrics-and-Reliability": (
+        "web/src/features/backtests/BacktestReportPage.tsx",
+    ),
+    "Backtest-Replay-Export-and-Failures": (
+        "web/src/features/backtests/TradeTable.tsx",
+        "web/src/features/backtests/BacktestReportPage.tsx",
+        "web/src/features/tasks/TaskCenterPage.tsx",
+    ),
+    "Model-Provider-Setup": (
+        "web/src/app/routes.ts",
+        "web/src/features/analysis/ModelSettings.tsx",
+    ),
+    "Research-Reports-and-Evidence": (
+        "web/src/app/routes.ts",
+        "web/src/features/analysis/AnalysisRunPanel.tsx",
+        "web/src/features/analysis/AnalysisPage.tsx",
+    ),
+    "Research-Failures-Retries-and-Safety": (
+        "web/src/features/analysis/ProcessRail.tsx",
+    ),
+    "Task-Center": (
+        "web/src/app/routes.ts",
+        "web/src/features/tasks/TaskCenterPage.tsx",
+    ),
+    "Responsive-Navigation-and-Accessibility": ("web/src/app/App.tsx",),
+    "Credentials-Logs-and-Local-Security": (
+        "web/src/app/routes.ts",
+        "web/src/features/settings/DataSourcesPage.tsx",
+    ),
+    "Troubleshooting": (
+        "web/src/app/routes.ts",
+        "web/src/features/tasks/TaskCenterPage.tsx",
+    ),
+}
+
+EXPECTED_WIKI_WORKFLOW_CONTENT = {
+    "First-Launch-and-Health.md": (
+        (
+            "Worker 运行中",
+            "Worker 未检测",
+            "Worker 状态不可用",
+            "Worker：API 离线",
+            "API 正常且 Worker 运行中",
+        ),
+        (),
+    ),
+    "First-Launch-and-Health-en.md": (
+        (
+            "Worker running（Worker 运行中）",
+            "Worker not detected（Worker 未检测）",
+            "Worker status unavailable（Worker 状态不可用）",
+            "Worker: API offline（Worker：API 离线）",
+            "API is healthy and Worker is running",
+        ),
+        (),
+    ),
+    "Local-TDX-Data.md": (
+        ("通达信 vipdoc 目录", "测试 通达信本地 连接"),
+        ("目录选择器", "目录校验", "启用备用源"),
+    ),
+    "Local-TDX-Data-en.md": (
+        (
+            "TongdaXin vipdoc directory（通达信 vipdoc 目录）",
+            "Test Local TDX connection（测试 通达信本地 连接）",
+        ),
+        ("directory picker", "directory validation", "enable the fallback"),
+    ),
+    "Model-Provider-Setup.md": (
+        ("提供商", "Base URL", "模型", "API Key", "已验证", "错误代码"),
+        ("重试次数", "重试延迟"),
+    ),
+    "Model-Provider-Setup-en.md": (
+        (
+            "Provider（提供商）",
+            "Base URL（Base URL）",
+            "Model（模型）",
+            "API Key（API Key）",
+            "Verified（已验证）",
+            "Error code（错误代码）",
+        ),
+        ("retry count", "retry delay"),
+    ),
+    "Task-Center.md": (
+        (
+            "状态筛选",
+            "类型筛选",
+            "安全任务摘要",
+            "安全事件时间线",
+            "取消任务",
+            "安全事件时间线只显示可见的审计事件，不是运行日志",
+            "回测任务使用回测报告深链",
+            "其他任务只显示安全摘要和状态",
+            "响应包含 `backtest_run` target 时就显示回测报告链接，任务仍在运行时也可以显示",
+            "其他不含该 target 的任务不显示此链接",
+        ),
+        (
+            "时间筛选",
+            "逐项结果",
+            "通用日志",
+            "数据分析深链",
+            "没有日志控件",
+            "仅已完成",
+        ),
+    ),
+    "Task-Center-en.md": (
+        (
+            "Status filter（状态筛选）",
+            "Type filter（类型筛选）",
+            "safe task summary",
+            "Security event timeline（安全事件时间线）",
+            "Open backtest report（打开回测报告）",
+            "Cancel task（取消任务）",
+            "visible audit events rather than runtime logs",
+            "Backtest tasks use the backtest-report deep link",
+            "Other task types show only their safe summary and status",
+            "The backtest report link appears whenever the response contains a `backtest_run` target, including while the task is still running",
+            "Other tasks without that target do not show the link",
+        ),
+        (
+            "time filter",
+            "item results",
+            "generic logs",
+            "data or analysis deep link",
+            "no log control",
+            "completed backtest targets",
+            "only completed",
+        ),
+    ),
+}
 
 
 REPOSITORY_DOCUMENTS = {
@@ -309,7 +648,98 @@ def _write_repository(root: Path) -> None:
     )
 
 
+def _planned_screenshot_id(stem: str) -> str:
+    return "planned-home" if stem == "Home" else f"planned-{stem.casefold()}"
+
+
+def _wiki_fixture_surface(stem: str) -> tuple[str, str]:
+    if stem in {
+        "Home",
+        "First-Launch-and-Health",
+        "Stock-Pools",
+        "Market-Charts",
+        "Responsive-Navigation-and-Accessibility",
+    }:
+        return "app-route", "/market"
+    if stem in {
+        "Data-Sources-and-Tushare",
+        "Local-TDX-Data",
+        "Data-Updates-and-Provenance",
+        "Credentials-Logs-and-Local-Security",
+    }:
+        return "app-route", "/settings"
+    if stem.startswith("Formula-"):
+        return "app-route", "/formulas"
+    if stem.startswith(("MACD-", "A-Share-", "Backtest-")):
+        return "app-route", "/backtests"
+    if stem.startswith(("Model-", "Research-")):
+        return "app-route", "/analysis"
+    if stem in {"Task-Center", "Troubleshooting"}:
+        return "app-route", "/tasks"
+    return "wiki-page", stem
+
+
 def _write_wiki(root: Path) -> None:
+    article_stems = EXPECTED_WIKI_PAGE_STEMS[2:]
+    assignments = {stem: [] for stem in EXPECTED_WIKI_PAGE_STEMS}
+    assignments["Home"].append("R-079")
+    distributable_stems = EXPECTED_WIKI_PAGE_STEMS[1:]
+    for number in range(1, 79):
+        stem = distributable_stems[(number - 1) % len(distributable_stems)]
+        assignments[stem].append(f"R-{number:03d}")
+    for requirement_id in EXPECTED_WIKI_FEATURE_BINDINGS:
+        for requirement_ids in assignments.values():
+            if requirement_id in requirement_ids:
+                requirement_ids.remove(requirement_id)
+    requirement_stems = {
+        requirement_id: stem
+        for stem, requirement_ids in assignments.items()
+        for requirement_id in requirement_ids
+    }
+    rows: list[str] = []
+    for number in range(1, 80):
+        requirement_id = f"R-{number:03d}"
+        if requirement_id in EXPECTED_WIKI_FEATURE_BINDINGS:
+            (
+                chinese_target,
+                english_target,
+                section,
+                screenshot_id,
+                surface,
+            ) = EXPECTED_WIKI_FEATURE_BINDINGS[requirement_id]
+            rows.append(
+                f"| {requirement_id} | [\u4e2d\u6587\u9875\u9762]({chinese_target}) | "
+                f"[English page]({english_target}) | {section} | "
+                f"`{screenshot_id}` | `{surface}` |"
+            )
+            continue
+        stem = requirement_stems[requirement_id]
+        if stem == "Home":
+            chinese_link = (
+                "[\u4e2d\u6587\u9996\u9875](Home#\u4ece\u8fd9\u91cc\u5f00\u59cb)"
+            )
+            english_link = "[English home](Home-en#start-here)"
+            section = "\u4ece\u8fd9\u91cc\u5f00\u59cb / Start here"
+        elif stem == "Feature-Index":
+            chinese_link = "[\u529f\u80fd\u7d22\u5f15](Feature-Index#\u9700\u6c42\u5230\u9875\u9762)"
+            english_link = "[Feature index](Feature-Index-en#requirements-to-pages)"
+            section = "\u9700\u6c42\u5230\u9875\u9762 / Requirements to pages"
+        else:
+            chinese_link = (
+                f"[\u4e2d\u6587\u9875\u9762]({stem}#\u9002\u7528\u573a\u666f)"
+            )
+            english_link = f"[English page]({stem}-en#when-to-use-this)"
+            section = "\u9002\u7528\u573a\u666f / When to use this"
+        surface_type, locator = _wiki_fixture_surface(stem)
+        rows.append(
+            f"| {requirement_id} | {chinese_link} | {english_link} | {section} | "
+            f"`{_planned_screenshot_id(stem)}` | `{surface_type}:{locator}` |"
+        )
+    feature_rows = "\n".join(rows)
+    semantic_evidence_by_stem: dict[str, list[str]] = {}
+    for binding in EXPECTED_WIKI_FEATURE_BINDINGS.values():
+        stem = binding[0].partition("#")[0]
+        semantic_evidence_by_stem.setdefault(stem, []).append(binding[3])
     for stem in EXPECTED_WIKI_PAGE_STEMS:
         if stem == "Home":
             chinese = """# Stock Desk 使用手册
@@ -329,12 +759,6 @@ def _write_wiki(root: Path) -> None:
 See the feature guides.
 """
         elif stem == "Feature-Index":
-            rows = "\n".join(
-                f"| R-{number:03d} | [\u4e2d\u6587\u9996\u9875](Home#\u4ece\u8fd9\u91cc\u5f00\u59cb) | "
-                "[English home](Home-en#start-here) | \u4ece\u8fd9\u91cc\u5f00\u59cb / Start here | "
-                "`planned-home` | `app-route:/market` |"
-                for number in range(1, 80)
-            )
             chinese = f"""# \u529f\u80fd\u7d22\u5f15
 
 [English](Feature-Index-en)
@@ -343,7 +767,7 @@ See the feature guides.
 
 | \u529f\u80fd/\u9700\u6c42 | \u4e2d\u6587\u9875\u9762 | English page | \u7ae0\u8282 | \u622a\u56fe ID | \u8def\u7531/\u754c\u9762 |
 | --- | --- | --- | --- | --- | --- |
-{rows}
+{feature_rows}
 """
             english = f"""# Feature index
 
@@ -353,14 +777,90 @@ See the feature guides.
 
 | Feature/requirement | Chinese page | English page | Section | Screenshot ID | Route/surface |
 | --- | --- | --- | --- | --- | --- |
-{rows}
+{feature_rows}
 """
         else:
+            position = article_stems.index(stem)
+            previous_stem = "Home" if position == 0 else article_stems[position - 1]
+            next_stem = (
+                "Home"
+                if position == len(article_stems) - 1
+                else article_stems[position + 1]
+            )
+            screenshot_ids = [
+                _planned_screenshot_id(stem),
+                *semantic_evidence_by_stem.get(stem, []),
+            ]
+            screenshot_text = "、".join(f"`{item}`" for item in screenshot_ids)
+            screenshot_text_en = ", ".join(f"`{item}`" for item in screenshot_ids)
+            app_labels = verify_docs_module.REQUIRED_WIKI_APP_UI_LABELS.get(stem)
+            external_labels = verify_docs_module.REQUIRED_WIKI_EXTERNAL_UI_LABELS.get(
+                stem
+            )
+            ui_labels = (
+                app_labels
+                if app_labels is not None
+                else tuple(
+                    (english, chinese)
+                    for _kind, english, chinese in external_labels or ()
+                )
+            )
+            english_title = stem.replace("-", " ")
+            for english_label, chinese_label in ui_labels:
+                if english_label not in english_title:
+                    continue
+                english_title = english_title.replace(
+                    english_label,
+                    f"{english_label}（{chinese_label}）",
+                    1,
+                )
+            glossary = "\n".join(
+                f"{index}. `{english}（{chinese}）` — This visible label is used by the workflow."
+                for index, (english, chinese) in enumerate(ui_labels, 1)
+            )
+            ui_step_references = ", ".join(
+                f"**{english}（{chinese}）**" for english, chinese in ui_labels
+            )
+            semantic_chinese_sections = ""
+            semantic_english_sections = ""
+            if stem == "Project-Governance-and-Release-Evidence":
+                semantic_chinese_sections = """
+## 需求边界与验收
+
+验收范围可核对。
+
+## 发布验证
+
+发行证据可核对。
+
+## 交付与公开边界
+
+README 提供精简的中英双语入口，详细的中英双语 Wiki 保留完整操作说明。
+"""
+                semantic_english_sections = """
+## Requirements boundary and acceptance
+
+The acceptance scope is auditable.
+
+## Release verification
+
+Release evidence is auditable.
+
+## Delivery and public boundary
+
+The README provides a concise bilingual entry point, while the detailed bilingual Wiki preserves complete operating guidance.
+"""
             chinese = f"""# {stem.replace("-", " ")}
 
-[English]({stem}-en)
+[English]({stem}-en) · [功能索引](Feature-Index) · [首页](Home)
 
-<!-- SCREENSHOT_PLACEHOLDER: replace after integrated release-candidate capture -->
+## 适用场景
+
+完成这一功能工作流。
+
+## 使用前
+
+确认应用健康且所需输入可用。
 
 ## 操作步骤
 
@@ -371,29 +871,68 @@ See the feature guides.
 
 结果可见。
 
+## 截图
+
+截图证据 ID：{screenshot_text}。证据状态以截图清单为准。
+
+{semantic_chinese_sections}
+## 常见问题
+
+输入缺失时先补齐输入。
+
 ## 恢复方法
 
 返回任务中心后重试。
+
+[上一页]({previous_stem}) · [下一页]({next_stem})
 """
-            english = f"""# {stem.replace("-", " ")}
+            english = f"""# {english_title}
 
-[简体中文]({stem})
+[简体中文]({stem}) · [Feature index](Feature-Index-en) · [Home](Home-en)
 
-<!-- SCREENSHOT_PLACEHOLDER: replace after integrated release-candidate capture -->
+## When to use this
+
+Complete this feature workflow.
+
+## Before you start
+
+Confirm that the application is healthy and the required inputs are available.
+
+## Chinese UI labels
+
+{glossary}
 
 ## Steps
 
 1. Open Stock Desk.
 2. Complete the workflow.
+3. Use {ui_step_references}; examples use `sample-value` and `/tmp/example`.
 
 ## Expected result
 
 The result is visible.
 
+## Screenshot
+
+Screenshot evidence ID: {screenshot_text_en}. The evidence state is tracked in the screenshot manifest.
+
+{semantic_english_sections}
+## Common problems
+
+Supply missing inputs before trying again.
+
 ## Recovery
 
 Return to the task center and retry.
+
+[Previous]({previous_stem}-en) · [Next]({next_stem}-en)
 """
+            chinese_contract = EXPECTED_WIKI_WORKFLOW_CONTENT.get(f"{stem}.md")
+            if chinese_contract is not None:
+                chinese += "\n" + "；".join(chinese_contract[0]) + "\n"
+            english_contract = EXPECTED_WIKI_WORKFLOW_CONTENT.get(f"{stem}-en.md")
+            if english_contract is not None:
+                english += "\n" + "; ".join(english_contract[0]) + "\n"
         (root / f"{stem}.md").write_text(chinese, encoding="utf-8")
         (root / f"{stem}-en.md").write_text(english, encoding="utf-8")
     chinese_navigation = "\n".join(
@@ -408,21 +947,23 @@ Return to the task center and retry.
     (root / "_Sidebar-en.md").write_text(
         f"[简体中文](Home)\n\n{english_navigation}\n", encoding="utf-8"
     )
-    manifest_features = ", ".join(f"R-{number:03d}" for number in range(1, 80))
-    (root / "SCREENSHOT-MANIFEST.yml").write_text(
-        f"""schema_version: stock-desk-documentation-screenshots-v1
-screenshots:
-  - screenshot_id: planned-home
-    path: images/planned-home.png
-    page_pairs: [Home.md, Home-en.md]
-    caption_locales:
-      zh-CN: \u4e2d\u6587\u9ed8\u8ba4\u5165\u53e3
-      en: Chinese-default entry
-    features: [{manifest_features}]
-    surface:
-      type: app-route
-      locator: /market
-    contains_market_data: true
+    entries: list[str] = []
+    for stem in EXPECTED_WIKI_PAGE_STEMS:
+        screenshot_id = _planned_screenshot_id(stem)
+        surface_type, locator = _wiki_fixture_surface(stem)
+        contains_market_data = (
+            surface_type == "app-route"
+            and locator in {"/market", "/formulas", "/backtests"}
+            or verify_docs_module._manifest_market_page([f"{stem}.md", f"{stem}-en.md"])
+        )
+        entries.append(
+            f"""  - screenshot_id: {screenshot_id}
+    path: images/{screenshot_id}.png
+    page_pairs: [{stem}.md, {stem}-en.md]
+    caption_locales: {{zh-CN: \u8ba1\u5212\u8bc1\u636e, en: Planned evidence}}
+    features: [{", ".join(assignments[stem])}]
+    surface: {{type: {surface_type}, locator: {locator}}}
+    contains_market_data: {str(contains_market_data).lower()}
     state: pending
     viewport: null
     product: null
@@ -432,8 +973,39 @@ screenshots:
     capture: null
     editing: null
     redaction: pending
-    disclaimer: \u4ec5\u4f5c\u529f\u80fd\u6f14\u793a\uff0c\u4e0d\u6784\u6210\u6295\u8d44\u5efa\u8bae
-""",
+    disclaimer: \u4ec5\u4f5c\u529f\u80fd\u6f14\u793a\uff0c\u4e0d\u6784\u6210\u6295\u8d44\u5efa\u8bae"""
+        )
+    for requirement_id, binding in EXPECTED_WIKI_FEATURE_BINDINGS.items():
+        chinese_target, english_target, _section, screenshot_id, surface = binding
+        chinese_page = chinese_target.partition("#")[0]
+        english_page = english_target.partition("#")[0]
+        surface_type, separator, locator = surface.partition(":")
+        assert separator
+        entries.append(
+            f"""  - screenshot_id: {screenshot_id}
+    path: images/{screenshot_id}.png
+    page_pairs: [{chinese_page}.md, {english_page}.md]
+    caption_locales: {{zh-CN: \u8bed\u4e49\u8bc1\u636e, en: Semantic evidence}}
+    features: [{requirement_id}]
+    surface: {{type: {surface_type}, locator: {locator}}}
+    contains_market_data: false
+    state: pending
+    viewport: null
+    product: null
+    captured_at: null
+    sha256: null
+    market_data: null
+    capture: null
+    editing: null
+    redaction: pending
+    disclaimer: \u4ec5\u4f5c\u529f\u80fd\u6f14\u793a\uff0c\u4e0d\u6784\u6210\u6295\u8d44\u5efa\u8bae"""
+        )
+    (root / "SCREENSHOT-MANIFEST.yml").write_text(
+        """schema_version: stock-desk-documentation-screenshots-v1
+screenshots:
+"""
+        + "\n".join(entries)
+        + "\n",
         encoding="utf-8",
     )
 
@@ -502,7 +1074,7 @@ def _mark_planned_home_captured(root: Path, payload: bytes) -> None:
         "    redaction: pending": "    redaction: passed",
     }
     for old, new in replacements.items():
-        document = document.replace(old, new)
+        document = document.replace(old, new, 1)
     manifest.write_text(document, encoding="utf-8")
 
 
@@ -538,149 +1110,58 @@ def _write_complete_final_wiki(root: Path) -> None:
         capture_output=True,
         text=True,
     ).stdout.strip()
-    assignments: dict[str, list[str]] = {stem: [] for stem in EXPECTED_WIKI_PAGE_STEMS}
-    for number in range(1, 80):
-        stem = EXPECTED_WIKI_PAGE_STEMS[(number - 1) % len(EXPECTED_WIKI_PAGE_STEMS)]
-        assignments[stem].append(f"R-{number:03d}")
-
-    rows: list[str] = []
-    entries: list[str] = []
-    for ordinal, (stem, features) in enumerate(assignments.items(), start=1):
+    manifest_path = root / "SCREENSHOT-MANIFEST.yml"
+    manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    assert isinstance(manifest, dict)
+    entries = manifest.get("screenshots")
+    assert isinstance(entries, list)
+    for ordinal, entry in enumerate(entries, start=1):
+        assert isinstance(entry, dict)
+        screenshot_id = entry.get("screenshot_id")
+        relative_path = entry.get("path")
+        page_pairs = entry.get("page_pairs")
+        assert isinstance(screenshot_id, str)
+        assert isinstance(relative_path, str)
+        assert isinstance(page_pairs, list)
         payload = _png_bytes(640, 360, varied=True, seed=ordinal)
-        if stem == "Home":
-            chinese_section, english_section = (
-                "\u4ece\u8fd9\u91cc\u5f00\u59cb",
-                "Start here",
-            )
-            chinese_anchor, english_anchor = (
-                "\u4ece\u8fd9\u91cc\u5f00\u59cb",
-                "start-here",
-            )
-        elif stem == "Feature-Index":
-            chinese_section, english_section = (
-                "\u9700\u6c42\u5230\u9875\u9762",
-                "Requirements to pages",
-            )
-            chinese_anchor, english_anchor = (
-                "\u9700\u6c42\u5230\u9875\u9762",
-                "requirements-to-pages",
-            )
-        else:
-            chinese_section, english_section = "\u64cd\u4f5c\u6b65\u9aa4", "Steps"
-            chinese_anchor, english_anchor = "\u64cd\u4f5c\u6b65\u9aa4", "steps"
-        if stem in {
-            "Market-Charts",
-            "Stock-Pools",
-            "Responsive-Navigation-and-Accessibility",
-            "First-Launch-and-Health",
-        }:
-            surface_type, locator = "app-route", "/market"
-        elif stem.startswith("Formula-"):
-            surface_type, locator = "app-route", "/formulas"
-        elif stem.startswith(("MACD-", "A-Share-", "Backtest-")):
-            surface_type, locator = "app-route", "/backtests"
-        else:
-            surface_type, locator = "wiki-page", stem
-        screenshot_id = f"final-{stem.casefold()}"
-        image_relative = f"images/{screenshot_id}.png"
-        image = root / image_relative
+        image = root / relative_path
         image.write_bytes(payload)
-        for suffix in ("", "-en"):
-            page = root / f"{stem}{suffix}.md"
+        for page_name in page_pairs:
+            assert isinstance(page_name, str)
+            page = root / page_name
             document = page.read_text(encoding="utf-8")
-            document = document.replace(
-                "<!-- SCREENSHOT_PLACEHOLDER: replace after integrated release-candidate capture -->",
-                f"![Captured evidence]({image_relative})",
-            )
-            if image_relative not in document:
-                document += f"\n![Captured evidence]({image_relative})\n"
+            if relative_path not in document:
+                document += f"\n![Captured evidence]({relative_path})\n"
             page.write_text(document, encoding="utf-8")
-        for requirement_id in features:
-            rows.append(
-                f"| {requirement_id} | [\u4e2d\u6587\u9875\u9762]({stem}#{chinese_anchor}) | "
-                f"[English page]({stem}-en#{english_anchor}) | "
-                f"{chinese_section} / {english_section} | `{screenshot_id}` | "
-                f"`{surface_type}:{locator}` |"
-            )
-        contains_market_data = (
-            surface_type == "app-route"
-            and locator
-            in {
-                "/market",
-                "/formulas",
-                "/backtests",
+        entry["state"] = "captured"
+        entry["viewport"] = {
+            "width": 1440,
+            "height": 1000,
+            "device_scale_factor": 1,
+        }
+        entry["product"] = {"version": "1.0.0", "git_commit": commit}
+        entry["captured_at"] = "2026-07-09T00:00:00Z"
+        entry["sha256"] = hashlib.sha256(payload).hexdigest()
+        if entry.get("contains_market_data") is True:
+            entry["market_data"] = {
+                "symbol": "600519.SH",
+                "name": "\u8d35\u5dde\u8305\u53f0",
+                "period": "1d",
+                "adjustment": "qfq",
+                "start": "2021-01-01",
+                "end": "2026-07-08",
+                "source": "tushare",
+                "cutoff": "2026-07-08T07:00:00Z",
+                "dataset_version": "sha256:"
+                + hashlib.sha256(f"dataset:{screenshot_id}".encode()).hexdigest(),
             }
-            or verify_docs_module._manifest_market_page([f"{stem}.md", f"{stem}-en.md"])
-        )
-        market_data = (
-            """    market_data:
-      symbol: 600519.SH
-      name: \u8d35\u5dde\u8305\u53f0
-      period: 1d
-      adjustment: qfq
-      start: 2021-01-01
-      end: 2026-07-08
-      source: tushare
-      cutoff: 2026-07-08T07:00:00Z
-      dataset_version: sha256:"""
-            + hashlib.sha256(f"dataset:{stem}".encode()).hexdigest()
-            if contains_market_data
-            else "    market_data: null"
-        )
-        entries.append(
-            f"""  - screenshot_id: {screenshot_id}
-    path: {image_relative}
-    page_pairs: [{stem}.md, {stem}-en.md]
-    caption_locales: {{zh-CN: \u5b8c\u6574\u8bc1\u636e, en: Complete evidence}}
-    features: [{", ".join(features)}]
-    surface: {{type: {surface_type}, locator: {locator}}}
-    contains_market_data: {str(contains_market_data).lower()}
-    state: captured
-    viewport: {{width: 1440, height: 1000, device_scale_factor: 1}}
-    product: {{version: 1.0.0, git_commit: {commit}}}
-    captured_at: 2026-07-09T00:00:00Z
-    sha256: {hashlib.sha256(payload).hexdigest()}
-{market_data}
-    capture: playwright
-    editing: none
-    redaction: passed
-    disclaimer: \u4ec5\u4f5c\u529f\u80fd\u6f14\u793a\uff0c\u4e0d\u6784\u6210\u6295\u8d44\u5efa\u8bae"""
-        )
-    table = "\n".join(rows)
-    (root / "Feature-Index.md").write_text(
-        f"""# \u529f\u80fd\u7d22\u5f15
-
-[English](Feature-Index-en)
-
-## \u9700\u6c42\u5230\u9875\u9762
-
-| \u529f\u80fd/\u9700\u6c42 | \u4e2d\u6587\u9875\u9762 | English page | \u7ae0\u8282 | \u622a\u56fe ID | \u8bc1\u636e\u8868\u9762 |
-| --- | --- | --- | --- | --- | --- |
-{table}
-
-![Captured evidence](images/final-feature-index.png)
-""",
-        encoding="utf-8",
-    )
-    (root / "Feature-Index-en.md").write_text(
-        f"""# Feature index
-
-[\u7b80\u4f53\u4e2d\u6587](Feature-Index)
-
-## Requirements to pages
-
-| Feature/requirement | Chinese page | English page | Section | Screenshot ID | Evidence surface |
-| --- | --- | --- | --- | --- | --- |
-{table}
-
-![Captured evidence](images/final-feature-index.png)
-""",
-        encoding="utf-8",
-    )
-    (root / "SCREENSHOT-MANIFEST.yml").write_text(
-        "schema_version: stock-desk-documentation-screenshots-v1\nscreenshots:\n"
-        + "\n".join(entries)
-        + "\n",
+        else:
+            entry["market_data"] = None
+        entry["capture"] = "playwright"
+        entry["editing"] = "none"
+        entry["redaction"] = "passed"
+    manifest_path.write_text(
+        yaml.safe_dump(manifest, sort_keys=False, allow_unicode=True),
         encoding="utf-8",
     )
 
@@ -713,16 +1194,20 @@ def test_wiki_real_market_sources_match_product_bar_providers() -> None:
 
 def test_final_wiki_rejects_copied_image_under_another_name(tmp_path: Path) -> None:
     _write_complete_final_wiki(tmp_path)
-    first = tmp_path / "images/final-home.png"
-    second = tmp_path / "images/final-feature-index.png"
+    first = tmp_path / "images/planned-home.png"
+    second = tmp_path / "images/planned-feature-index.png"
     first_digest = hashlib.sha256(first.read_bytes()).hexdigest()
-    second_digest = hashlib.sha256(second.read_bytes()).hexdigest()
     second.write_bytes(first.read_bytes())
     manifest = tmp_path / "SCREENSHOT-MANIFEST.yml"
+    document = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+    entry = next(
+        item
+        for item in document["screenshots"]
+        if item["screenshot_id"] == "planned-feature-index"
+    )
+    entry["sha256"] = first_digest
     manifest.write_text(
-        manifest.read_text(encoding="utf-8").replace(
-            f"    sha256: {second_digest}", f"    sha256: {first_digest}", 1
-        ),
+        yaml.safe_dump(document, sort_keys=False, allow_unicode=True),
         encoding="utf-8",
     )
 
@@ -735,16 +1220,18 @@ def test_final_wiki_separates_dataset_digest_from_screenshot_digest(
     tmp_path: Path,
 ) -> None:
     _write_complete_final_wiki(tmp_path)
-    image = tmp_path / "images/final-market-charts.png"
+    image = tmp_path / "images/planned-market-charts.png"
     image_digest = hashlib.sha256(image.read_bytes()).hexdigest()
-    dataset_digest = hashlib.sha256(b"dataset:Market-Charts").hexdigest()
     manifest = tmp_path / "SCREENSHOT-MANIFEST.yml"
+    document = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+    entry = next(
+        item
+        for item in document["screenshots"]
+        if item["screenshot_id"] == "planned-market-charts"
+    )
+    entry["market_data"]["dataset_version"] = f"sha256:{image_digest}"
     manifest.write_text(
-        manifest.read_text(encoding="utf-8").replace(
-            f"      dataset_version: sha256:{dataset_digest}",
-            f"      dataset_version: sha256:{image_digest}",
-            1,
-        ),
+        yaml.safe_dump(document, sort_keys=False, allow_unicode=True),
         encoding="utf-8",
     )
 
@@ -759,10 +1246,13 @@ def test_final_wiki_separates_dataset_digest_from_screenshot_digest(
 def test_final_wiki_rejects_fictional_market_source(tmp_path: Path) -> None:
     _write_complete_final_wiki(tmp_path)
     manifest = tmp_path / "SCREENSHOT-MANIFEST.yml"
+    document = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+    entry = next(
+        item for item in document["screenshots"] if item["market_data"] is not None
+    )
+    entry["market_data"]["source"] = "fictional_provider"
     manifest.write_text(
-        manifest.read_text(encoding="utf-8").replace(
-            "      source: tushare", "      source: fictional_provider", 1
-        ),
+        yaml.safe_dump(document, sort_keys=False, allow_unicode=True),
         encoding="utf-8",
     )
 
@@ -796,12 +1286,13 @@ def test_final_wiki_rejects_shape_only_product_commit(tmp_path: Path) -> None:
 def test_market_surface_cannot_disable_market_provenance(tmp_path: Path) -> None:
     _write_complete_final_wiki(tmp_path)
     manifest = tmp_path / "SCREENSHOT-MANIFEST.yml"
+    document = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+    entry = next(
+        item for item in document["screenshots"] if item["contains_market_data"] is True
+    )
+    entry["contains_market_data"] = False
     manifest.write_text(
-        manifest.read_text(encoding="utf-8").replace(
-            "    contains_market_data: true",
-            "    contains_market_data: false",
-            1,
-        ),
+        yaml.safe_dump(document, sort_keys=False, allow_unicode=True),
         encoding="utf-8",
     )
 
@@ -1033,6 +1524,403 @@ def test_wiki_staging_requires_complete_pairs_and_procedural_sections(
     )
 
 
+def test_wiki_articles_require_the_complete_shared_template(tmp_path: Path) -> None:
+    _write_wiki(tmp_path)
+    chinese = tmp_path / "Market-Charts.md"
+    chinese.write_text(
+        chinese.read_text(encoding="utf-8")
+        .replace("## 使用前", "## 准备")
+        .replace("[下一页](Formula-Studio-Quickstart)", "下一页：公式工作室"),
+        encoding="utf-8",
+    )
+    english = tmp_path / "Market-Charts-en.md"
+    english.write_text(
+        english.read_text(encoding="utf-8").replace("## Common problems", "## Notes"),
+        encoding="utf-8",
+    )
+
+    failures = verify_wiki(tmp_path, final=False)
+
+    for filename, required in (
+        ("Market-Charts.md", "使用前"),
+        ("Market-Charts.md", "下一页"),
+        ("Market-Charts-en.md", "Common problems"),
+    ):
+        assert any(
+            filename in failure and required in failure for failure in failures
+        ), required
+
+
+def test_wiki_page_pairs_require_matching_evidence_and_navigation(
+    tmp_path: Path,
+) -> None:
+    _write_wiki(tmp_path)
+    chinese = tmp_path / "Market-Charts.md"
+    chinese.write_text(
+        chinese.read_text(encoding="utf-8").replace(
+            "[上一页](Stock-Pools)", "[上一页](Stock-Pools-en)"
+        ),
+        encoding="utf-8",
+    )
+    english = tmp_path / "Market-Charts-en.md"
+    english.write_text(
+        english.read_text(encoding="utf-8")
+        .replace("`planned-market-charts`", "`unknown-shot`")
+        .replace("[Previous](Stock-Pools-en)", "[Previous](Home-en)"),
+        encoding="utf-8",
+    )
+
+    failures = verify_wiki(tmp_path, final=False)
+
+    assert any(
+        "Market-Charts" in failure and "screenshot evidence order" in failure
+        for failure in failures
+    )
+    assert any(
+        "unknown-shot" in failure and "manifest" in failure for failure in failures
+    )
+    assert any(
+        "Market-Charts" in failure and "normalized navigation" in failure
+        for failure in failures
+    )
+    assert any(
+        "Market-Charts.md" in failure
+        and "cross-language navigation" in failure
+        and "Stock-Pools-en" in failure
+        for failure in failures
+    )
+
+
+def test_wiki_declared_screenshot_ids_must_belong_to_the_page_pair(
+    tmp_path: Path,
+) -> None:
+    _write_wiki(tmp_path)
+    for filename in ("Market-Charts.md", "Market-Charts-en.md"):
+        page = tmp_path / filename
+        page.write_text(
+            page.read_text(encoding="utf-8").replace(
+                "`planned-market-charts`", "`planned-home`"
+            ),
+            encoding="utf-8",
+        )
+
+    failures = verify_wiki(tmp_path, final=False)
+
+    assert any(
+        "Market-Charts.md" in failure
+        and "planned-home" in failure
+        and "page_pairs" in failure
+        for failure in failures
+    )
+
+
+def test_english_articles_require_numbered_chinese_ui_label_mappings(
+    tmp_path: Path,
+) -> None:
+    _write_wiki(tmp_path)
+    for filename, label in (
+        ("Market-Charts-en.md", "Market workspace（行情工作区）"),
+        ("Task-Center-en.md", "Task Center（任务中心）"),
+    ):
+        page = tmp_path / filename
+        page.write_text(
+            page.read_text(encoding="utf-8").replace(label, "Removed label"),
+            encoding="utf-8",
+        )
+
+    failures = verify_wiki(tmp_path, final=False)
+
+    assert any(
+        "Market-Charts-en.md" in failure
+        and "Market workspace" in failure
+        and "行情工作区" in failure
+        and "Chinese UI labels" in failure
+        for failure in failures
+    )
+    assert any(
+        "Task-Center-en.md" in failure
+        and "Task Center" in failure
+        and "任务中心" in failure
+        and "Chinese UI labels" in failure
+        for failure in failures
+    )
+
+
+def test_wiki_app_ui_labels_are_backed_by_tracked_production_source() -> None:
+    assert (
+        getattr(verify_docs_module, "REQUIRED_WIKI_APP_UI_LABELS", None)
+        == EXPECTED_WIKI_APP_UI_LABELS
+    )
+    assert (
+        getattr(verify_docs_module, "REQUIRED_WIKI_APP_UI_SOURCE_FILES", None)
+        == EXPECTED_WIKI_APP_UI_SOURCE_FILES
+    )
+    checker = getattr(verify_docs_module, "_app_ui_label_in_page_source", None)
+    assert callable(checker)
+    repo = Path(__file__).resolve().parents[2]
+    tracked = set(
+        subprocess.run(
+            ("git", "ls-files", "web/src"),
+            cwd=repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.splitlines()
+    )
+    for paths in EXPECTED_WIKI_APP_UI_SOURCE_FILES.values():
+        assert set(paths) <= tracked
+        assert all(".test." not in path and ".spec." not in path for path in paths)
+    for stem, labels in EXPECTED_WIKI_APP_UI_LABELS.items():
+        for _english, chinese in labels:
+            assert checker(stem, chinese), f"{stem}: {chinese}"
+
+
+def test_page_specific_ui_source_rejects_cross_page_borrowing(
+    tmp_path: Path,
+) -> None:
+    _write_wiki(tmp_path)
+    page = tmp_path / "Data-Sources-and-Tushare-en.md"
+    page.write_text(
+        page.read_text(encoding="utf-8")
+        .replace(
+            "## Steps",
+            "4. `Model settings（模型设置）` — borrowed from another page.\n\n## Steps",
+            1,
+        )
+        .replace(
+            "1. Open Stock Desk.",
+            "1. Open Stock Desk and use **Model settings（模型设置）**.",
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+    failures = verify_wiki(tmp_path, final=False)
+
+    assert any(
+        "Data-Sources-and-Tushare-en.md" in failure
+        and "page-specific production source" in failure
+        and "模型设置" in failure
+        for failure in failures
+    )
+
+
+def test_tushare_dynamic_connection_label_is_page_source_backed() -> None:
+    checker = getattr(verify_docs_module, "_app_ui_label_in_page_source", None)
+    assert callable(checker)
+    assert checker("Data-Sources-and-Tushare", "测试 Tushare 连接")
+
+
+def test_wiki_external_ui_labels_use_a_typed_allowlist() -> None:
+    assert (
+        getattr(verify_docs_module, "REQUIRED_WIKI_EXTERNAL_UI_LABELS", None)
+        == EXPECTED_WIKI_EXTERNAL_UI_LABELS
+    )
+    expected_allowlist: dict[str, frozenset[tuple[str, str]]] = {}
+    for labels in EXPECTED_WIKI_EXTERNAL_UI_LABELS.values():
+        for kind, english, chinese in labels:
+            expected_allowlist.setdefault(kind, frozenset())
+            expected_allowlist[kind] = expected_allowlist[kind] | {(english, chinese)}
+    assert (
+        getattr(verify_docs_module, "WIKI_EXTERNAL_UI_LABEL_ALLOWLIST", None)
+        == expected_allowlist
+    )
+
+
+def test_english_ui_label_first_occurrence_is_bilingual(tmp_path: Path) -> None:
+    _write_wiki(tmp_path)
+    page = tmp_path / "Market-Charts-en.md"
+    page.write_text(
+        page.read_text(encoding="utf-8").replace(
+            "Market workspace（行情工作区）", "Market workspace", 1
+        ),
+        encoding="utf-8",
+    )
+
+    failures = verify_wiki(tmp_path, final=False)
+
+    assert any(
+        "Market-Charts-en.md" in failure
+        and "first occurrence" in failure
+        and "Market workspace（行情工作区）" in failure
+        for failure in failures
+    )
+
+
+def test_every_english_ui_label_first_occurrence_is_bilingual(
+    tmp_path: Path,
+) -> None:
+    _write_wiki(tmp_path)
+    page = tmp_path / "Market-Charts-en.md"
+    page.write_text(
+        page.read_text(encoding="utf-8").replace(
+            "Confirm that the application is healthy and the required inputs are available.",
+            "Confirm that the application is healthy, then use Reset view if needed.",
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+    failures = verify_wiki(tmp_path, final=False)
+
+    assert any(
+        "Market-Charts-en.md" in failure
+        and "first occurrence" in failure
+        and "Reset view（重置视图）" in failure
+        for failure in failures
+    )
+
+
+def test_steps_backticked_ui_references_must_exist_in_the_ui_map(
+    tmp_path: Path,
+) -> None:
+    _write_wiki(tmp_path)
+    page = tmp_path / "Data-Sources-and-Tushare-en.md"
+    page.write_text(
+        page.read_text(encoding="utf-8").replace(
+            "1. Open Stock Desk.",
+            "1. Open Stock Desk and use **Ghost control（幽灵控件）**.",
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+    failures = verify_wiki(tmp_path, final=False)
+
+    assert any(
+        "Data-Sources-and-Tushare-en.md" in failure
+        and "Steps UI reference is missing from UI label map" in failure
+        and "Ghost control（幽灵控件）" in failure
+        for failure in failures
+    )
+
+
+def test_every_ui_label_map_item_must_be_used_in_steps(tmp_path: Path) -> None:
+    _write_wiki(tmp_path)
+    page = tmp_path / "Market-Charts-en.md"
+    mapping = "**Reset view（重置视图）**"
+    before, separator, after = page.read_text(encoding="utf-8").rpartition(mapping)
+    assert separator
+    page.write_text(
+        before + "removed step reference" + after,
+        encoding="utf-8",
+    )
+
+    failures = verify_wiki(tmp_path, final=False)
+
+    assert any(
+        "Market-Charts-en.md" in failure
+        and "UI label map item is unused in Steps" in failure
+        and "Reset view（重置视图）" in failure
+        for failure in failures
+    )
+
+
+def test_wiki_rejects_legacy_typed_code_and_path_prefixes(
+    tmp_path: Path,
+) -> None:
+    _write_wiki(tmp_path)
+    page = tmp_path / "Windows-Installation-en.md"
+    page.write_text(
+        page.read_text(encoding="utf-8").replace(
+            "1. Open Stock Desk.",
+            "1. Open Stock Desk with `path:/private/value` and `code:artifact.exe`.",
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+    failures = verify_wiki(tmp_path, final=False)
+
+    assert any(
+        "Windows-Installation-en.md" in failure
+        and "legacy typed prefix" in failure
+        and "path:" in failure
+        and "code:" in failure
+        for failure in failures
+    )
+
+
+@pytest.mark.parametrize(
+    ("filename", "mapping"),
+    (
+        ("First-Launch-and-Health-en.md", "Worker running（Worker 运行中）"),
+        ("Local-TDX-Data-en.md", "Save data source settings（保存数据源设置）"),
+    ),
+)
+def test_required_status_and_save_controls_cannot_be_omitted_from_ui_map(
+    tmp_path: Path,
+    filename: str,
+    mapping: str,
+) -> None:
+    _write_wiki(tmp_path)
+    page = tmp_path / filename
+    document = page.read_text(encoding="utf-8")
+    page.write_text(
+        re.sub(
+            rf"^\d+\. `{re.escape(mapping)}` .*\n",
+            "",
+            document,
+            count=1,
+            flags=re.MULTILINE,
+        ),
+        encoding="utf-8",
+    )
+
+    failures = verify_wiki(tmp_path, final=False)
+
+    assert any(
+        filename in failure
+        and "Chinese UI labels must be the numbered controlled mappings" in failure
+        and mapping.partition("（")[0] in failure
+        for failure in failures
+    )
+
+
+def test_app_ui_map_rejects_nonexistent_production_control(tmp_path: Path) -> None:
+    _write_wiki(tmp_path)
+    page = tmp_path / "Task-Center-en.md"
+    page.write_text(
+        page.read_text(encoding="utf-8").replace(
+            "## Steps",
+            "3. `Nonexistent control（不存在控件）` — must not be accepted.\n\n## Steps",
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+    failures = verify_wiki(tmp_path, final=False)
+
+    assert any(
+        "Task-Center-en.md" in failure
+        and "application UI label is absent from page-specific production source"
+        in failure
+        and "不存在控件" in failure
+        for failure in failures
+    )
+
+
+def test_english_ui_label_check_ignores_markdown_link_destinations(
+    tmp_path: Path,
+) -> None:
+    _write_wiki(tmp_path)
+    page = tmp_path / "Stock-Pools-en.md"
+    page.write_text(
+        page.read_text(encoding="utf-8").replace(
+            "# Stock Pools（股票池）", "# Stock pools"
+        ),
+        encoding="utf-8",
+    )
+
+    failures = verify_wiki(tmp_path, final=False)
+
+    assert not [
+        failure
+        for failure in failures
+        if "Stock-Pools-en.md" in failure and "first occurrence" in failure
+    ]
+
+
 def test_wiki_requires_chinese_default_and_english_suffix(tmp_path: Path) -> None:
     _write_wiki(tmp_path)
 
@@ -1136,6 +2024,235 @@ def test_wiki_feature_index_rejects_incomplete_or_dangling_rows(
     )
 
 
+def test_feature_index_has_fixed_semantic_bindings(tmp_path: Path) -> None:
+    _write_wiki(tmp_path)
+
+    assert (
+        getattr(verify_docs_module, "REQUIRED_WIKI_FEATURE_BINDINGS", None)
+        == EXPECTED_WIKI_FEATURE_BINDINGS
+    )
+    for filename in ("Feature-Index.md", "Feature-Index-en.md"):
+        index = tmp_path / filename
+        index.write_text(
+            index.read_text(encoding="utf-8").replace(
+                "`local-security-settings`",
+                "`planned-credentials-logs-and-local-security`",
+            ),
+            encoding="utf-8",
+        )
+    failures = verify_wiki(tmp_path, final=False)
+    assert any(
+        "R-050" in failure and "semantic binding" in failure for failure in failures
+    )
+
+
+def test_r073_documentation_entry_proves_readme_and_wiki_roles(
+    tmp_path: Path,
+) -> None:
+    _write_wiki(tmp_path)
+
+    assert (
+        getattr(
+            verify_docs_module,
+            "REQUIRED_WIKI_DOCUMENTATION_ENTRY_MARKERS",
+            None,
+        )
+        == EXPECTED_WIKI_DOCUMENTATION_ENTRY_MARKERS
+    )
+    for filename, markers in EXPECTED_WIKI_DOCUMENTATION_ENTRY_MARKERS.items():
+        page = tmp_path / filename
+        page.write_text(
+            page.read_text(encoding="utf-8").replace(markers[1], "generic docs", 1),
+            encoding="utf-8",
+        )
+
+    failures = verify_wiki(tmp_path, final=False)
+
+    for filename in EXPECTED_WIKI_DOCUMENTATION_ENTRY_MARKERS:
+        assert any(
+            filename in failure and "R-073 documentation entry proof" in failure
+            for failure in failures
+        )
+
+
+def test_workflow_pages_reject_fictional_controls_and_fields(tmp_path: Path) -> None:
+    _write_wiki(tmp_path)
+
+    assert (
+        getattr(verify_docs_module, "REQUIRED_WIKI_WORKFLOW_CONTENT", None)
+        == EXPECTED_WIKI_WORKFLOW_CONTENT
+    )
+    for filename, (required, forbidden) in EXPECTED_WIKI_WORKFLOW_CONTENT.items():
+        page = tmp_path / filename
+        document = page.read_text(encoding="utf-8").replace(
+            required[0], "removed required workflow evidence"
+        )
+        if forbidden:
+            document += f"\n{forbidden[0]}\n"
+        page.write_text(document, encoding="utf-8")
+
+    failures = verify_wiki(tmp_path, final=False)
+
+    for filename in EXPECTED_WIKI_WORKFLOW_CONTENT:
+        assert any(
+            filename in failure and "workflow content contract" in failure
+            for failure in failures
+        )
+
+
+def test_task_center_backtest_link_depends_on_target_not_completion(
+    tmp_path: Path,
+) -> None:
+    _write_wiki(tmp_path)
+    page = tmp_path / "Task-Center-en.md"
+    page.write_text(
+        page.read_text(encoding="utf-8")
+        .replace(
+            "The backtest report link appears whenever the response contains a "
+            "`backtest_run` target, including while the task is still running",
+            "The link is limited to completed backtest targets",
+            1,
+        )
+        .replace(
+            "Other tasks without that target do not show the link",
+            "Other tasks are unspecified",
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+    failures = verify_wiki(tmp_path, final=False)
+
+    assert any(
+        "Task-Center-en.md" in failure
+        and "workflow content contract" in failure
+        and "completed backtest targets" in failure
+        for failure in failures
+    )
+
+
+def _append_supplemental_windows_evidence(root: Path, screenshot_id: str) -> None:
+    manifest = root / "SCREENSHOT-MANIFEST.yml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8")
+        + f"""  - screenshot_id: {screenshot_id}
+    path: images/{screenshot_id}.png
+    page_pairs: [Windows-Installation.md, Windows-Installation-en.md]
+    caption_locales: {{zh-CN: Windows 安装证据, en: Windows installation evidence}}
+    features: []
+    surface: {{type: windows-installer, locator: stock-desk-<version>-windows-x86_64.exe}}
+    contains_market_data: false
+    state: pending
+    viewport: null
+    product: null
+    captured_at: null
+    sha256: null
+    market_data: null
+    capture: null
+    editing: null
+    redaction: pending
+    disclaimer: 仅作功能演示，不构成投资建议
+""",
+        encoding="utf-8",
+    )
+
+
+def test_supplemental_page_evidence_may_have_no_requirement_mapping(
+    tmp_path: Path,
+) -> None:
+    _write_wiki(tmp_path)
+    supplemental_id = "supplemental-windows-clean-install"
+    manifest = tmp_path / "SCREENSHOT-MANIFEST.yml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8")
+        + f"""  - screenshot_id: {supplemental_id}
+    path: images/{supplemental_id}.png
+    page_pairs: [Windows-Installation.md, Windows-Installation-en.md]
+    caption_locales: {{zh-CN: Windows \u5b89\u88c5\u8bc1\u636e, en: Windows installation evidence}}
+    features: []
+    surface: {{type: windows-installer, locator: stock-desk-<version>-windows-x86_64.exe}}
+    contains_market_data: false
+    state: pending
+    viewport: null
+    product: null
+    captured_at: null
+    sha256: null
+    market_data: null
+    capture: null
+    editing: null
+    redaction: pending
+    disclaimer: \u4ec5\u4f5c\u529f\u80fd\u6f14\u793a\uff0c\u4e0d\u6784\u6210\u6295\u8d44\u5efa\u8bae
+""",
+        encoding="utf-8",
+    )
+    for filename in ("Windows-Installation.md", "Windows-Installation-en.md"):
+        page = tmp_path / filename
+        document = page.read_text(encoding="utf-8")
+        current_id = _planned_screenshot_id("Windows-Installation")
+        page.write_text(
+            document.replace(f"`{current_id}`", f"`{current_id}`, `{supplemental_id}`"),
+            encoding="utf-8",
+        )
+
+    failures = verify_wiki(tmp_path, final=False)
+
+    assert not [failure for failure in failures if supplemental_id in failure]
+
+
+def test_supplemental_page_evidence_cannot_be_orphaned(tmp_path: Path) -> None:
+    _write_wiki(tmp_path)
+    supplemental_id = "supplemental-windows-orphan"
+    _append_supplemental_windows_evidence(tmp_path, supplemental_id)
+
+    failures = verify_wiki(tmp_path, final=False)
+
+    assert any(
+        supplemental_id in failure
+        and "must be declared by both manifest page_pairs" in failure
+        for failure in failures
+    )
+
+
+def test_supplemental_evidence_rejects_replaced_and_cross_page_declarations(
+    tmp_path: Path,
+) -> None:
+    _write_wiki(tmp_path)
+    supplemental_id = "supplemental-windows-replaced"
+    _append_supplemental_windows_evidence(tmp_path, supplemental_id)
+    windows = tmp_path / "Windows-Installation.md"
+    current_id = _planned_screenshot_id("Windows-Installation")
+    windows.write_text(
+        windows.read_text(encoding="utf-8").replace(
+            f"`{current_id}`", f"`{current_id}`, `{supplemental_id}`", 1
+        ),
+        encoding="utf-8",
+    )
+    market = tmp_path / "Market-Charts-en.md"
+    market.write_text(
+        market.read_text(encoding="utf-8").replace(
+            f"`{_planned_screenshot_id('Market-Charts')}`",
+            f"`{supplemental_id}`",
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+    failures = verify_wiki(tmp_path, final=False)
+
+    assert any(
+        supplemental_id in failure
+        and "Windows-Installation-en.md" in failure
+        and "must be declared by both manifest page_pairs" in failure
+        for failure in failures
+    )
+    assert any(
+        supplemental_id in failure
+        and "Market-Charts-en.md" in failure
+        and "page_pairs does not include" in failure
+        for failure in failures
+    )
+
+
 def test_screenshot_manifest_allows_honest_staging_but_blocks_final(
     tmp_path: Path,
 ) -> None:
@@ -1159,7 +2276,9 @@ def test_wiki_feature_index_requires_screenshot_to_cover_mapped_requirement(
     _write_wiki(tmp_path)
     manifest = tmp_path / "SCREENSHOT-MANIFEST.yml"
     manifest.write_text(
-        manifest.read_text(encoding="utf-8").replace(", R-079]", "]"),
+        manifest.read_text(encoding="utf-8").replace(
+            "    features: [R-079]", "    features: [R-078]"
+        ),
         encoding="utf-8",
     )
 
@@ -1228,15 +2347,17 @@ def test_wiki_typed_surface_supports_app_and_non_app_evidence(
         index = tmp_path / filename
         index.write_text(
             index.read_text(encoding="utf-8").replace(
-                "`app-route:/market`", "`wiki-page:Home`"
+                "`planned-home` | `app-route:/market`",
+                "`planned-home` | `wiki-page:Home`",
             ),
             encoding="utf-8",
         )
     manifest = tmp_path / "SCREENSHOT-MANIFEST.yml"
     manifest.write_text(
         manifest.read_text(encoding="utf-8").replace(
-            "    surface:\n      type: app-route\n      locator: /market",
-            "    surface:\n      type: wiki-page\n      locator: Home",
+            "    surface: {type: app-route, locator: /market}",
+            "    surface: {type: wiki-page, locator: Home}",
+            1,
         ),
         encoding="utf-8",
     )
@@ -1463,7 +2584,9 @@ def test_wiki_feature_route_must_match_screenshot_manifest(tmp_path: Path) -> No
     manifest = tmp_path / "SCREENSHOT-MANIFEST.yml"
     manifest.write_text(
         manifest.read_text(encoding="utf-8").replace(
-            "      locator: /market", "      locator: /settings", 1
+            "    surface: {type: app-route, locator: /market}",
+            "    surface: {type: app-route, locator: /settings}",
+            1,
         ),
         encoding="utf-8",
     )
@@ -1654,6 +2777,12 @@ def test_wiki_cannot_be_marked_final_with_screenshot_placeholders(
     tmp_path: Path,
 ) -> None:
     _write_wiki(tmp_path)
+    page = tmp_path / "Market-Charts.md"
+    page.write_text(
+        page.read_text(encoding="utf-8")
+        + "\n<!-- SCREENSHOT_PLACEHOLDER: forbidden final marker -->\n",
+        encoding="utf-8",
+    )
 
     failures = verify_wiki(tmp_path, final=True)
 

@@ -120,6 +120,366 @@ REQUIRED_WIKI_PAGE_STEMS = (
     "Troubleshooting",
 )
 
+REQUIRED_WIKI_APP_UI_LABELS = {
+    "First-Launch-and-Health": (
+        ("About", "关于"),
+        ("Data source settings", "数据源设置"),
+        ("Worker running", "Worker 运行中"),
+        ("Worker not detected", "Worker 未检测"),
+        ("Worker status unavailable", "Worker 状态不可用"),
+        ("Worker: API offline", "Worker：API 离线"),
+    ),
+    "Data-Sources-and-Tushare": (
+        ("Data source settings", "数据源设置"),
+        ("Save data source settings", "保存数据源设置"),
+        ("Test Tushare connection", "测试 Tushare 连接"),
+    ),
+    "Local-TDX-Data": (
+        ("Local TDX", "通达信本地"),
+        ("TongdaXin vipdoc directory", "通达信 vipdoc 目录"),
+        ("Save data source settings", "保存数据源设置"),
+        ("Test Local TDX connection", "测试 通达信本地 连接"),
+    ),
+    "Data-Updates-and-Provenance": (
+        ("Data update", "数据更新"),
+        ("Cancel update", "取消更新"),
+        ("Save daily schedule", "保存每日计划"),
+    ),
+    "Stock-Pools": (
+        ("Stock pools", "股票池"),
+        ("Create stock pool", "创建股票池"),
+    ),
+    "Market-Charts": (
+        ("Market workspace", "行情工作区"),
+        ("Reset view", "重置视图"),
+    ),
+    "Formula-Studio-Quickstart": (
+        ("Formula Studio", "公式工作台"),
+        ("Custom formulas", "自定义公式"),
+        ("Validate now", "立即校验"),
+        ("Run preview", "运行预览"),
+    ),
+    "Formula-Compatibility-and-Errors": (
+        ("Validate now", "立即校验"),
+        ("Open saved formula", "打开已保存公式"),
+    ),
+    "Formula-Versions-and-Safety": (
+        ("Formula version", "公式版本"),
+        ("Run preview", "运行预览"),
+    ),
+    "MACD-Backtest-Tutorial": (
+        ("Formula Studio", "公式工作台"),
+        ("Strategy backtest", "策略回测"),
+        ("Submit backtest", "提交回测"),
+        ("Task Center", "任务中心"),
+    ),
+    "A-Share-Execution-and-Costs": (("Execution rules", "执行规则"),),
+    "Backtest-Metrics-and-Reliability": (
+        ("Backtest results", "回测结果"),
+        ("Conclusion overview", "结论概览"),
+    ),
+    "Backtest-Replay-Export-and-Failures": (
+        ("Pinned replay", "固定回放"),
+        ("Export trades CSV", "导出交易 CSV"),
+        ("Task Center", "任务中心"),
+        ("Cancel task", "取消任务"),
+    ),
+    "Model-Provider-Setup": (
+        ("Smart analysis", "智能分析"),
+        ("Model settings", "模型设置"),
+        ("Provider", "提供商"),
+        ("Display name", "显示名称"),
+        ("Base URL", "Base URL"),
+        ("Model", "模型"),
+        ("API Key", "API Key"),
+        ("Save model configuration", "保存模型配置"),
+        ("Test connection", "测试连接"),
+        ("Verified", "已验证"),
+        ("Error code", "错误代码"),
+    ),
+    "Research-Reports-and-Evidence": (
+        ("Smart analysis", "智能分析"),
+        ("Start smart analysis", "启动智能分析"),
+        ("View evidence", "查看证据"),
+    ),
+    "Research-Failures-Retries-and-Safety": (
+        ("Stage retry child run", "阶段重试子运行"),
+    ),
+    "Task-Center": (
+        ("Task Center", "任务中心"),
+        ("Status filter", "状态筛选"),
+        ("Type filter", "类型筛选"),
+        ("Open backtest report", "打开回测报告"),
+        ("Security event timeline", "安全事件时间线"),
+        ("Cancel task", "取消任务"),
+    ),
+    "Responsive-Navigation-and-Accessibility": (
+        ("Expand primary navigation", "展开主导航"),
+        ("Collapse primary navigation", "收起主导航"),
+    ),
+    "Credentials-Logs-and-Local-Security": (
+        ("Data source settings", "数据源设置"),
+        ("Save data source settings", "保存数据源设置"),
+    ),
+    "Troubleshooting": (
+        ("Task Center", "任务中心"),
+        ("Safe event timeline", "安全事件时间线"),
+    ),
+}
+
+REQUIRED_WIKI_EXTERNAL_UI_LABELS = {
+    "Project-Governance-and-Release-Evidence": (
+        ("github", "Pull Requests", "拉取请求"),
+        ("github", "Actions", "自动化"),
+        ("github", "Releases", "发行版"),
+    ),
+    "Windows-Installation": (
+        ("github", "Releases", "发行版"),
+        ("windows", "Start menu", "“开始”菜单"),
+    ),
+    "macOS-Installation": (
+        ("github", "Releases", "发行版"),
+        ("macos", "About This Mac", "关于本机"),
+        ("macos", "Applications", "“应用程序”"),
+        ("macos", "Gatekeeper", "安全性检查"),
+    ),
+    "Backup-Restore-Upgrade-and-Uninstall": (
+        ("windows", "Installed apps", "已安装的应用"),
+        ("macos", "Applications", "“应用程序”"),
+    ),
+}
+
+WIKI_EXTERNAL_UI_LABEL_ALLOWLIST = {
+    "github": frozenset(
+        {
+            ("Pull Requests", "拉取请求"),
+            ("Actions", "自动化"),
+            ("Releases", "发行版"),
+        }
+    ),
+    "windows": frozenset(
+        {
+            ("Start menu", "“开始”菜单"),
+            ("Installed apps", "已安装的应用"),
+        }
+    ),
+    "macos": frozenset(
+        {
+            ("About This Mac", "关于本机"),
+            ("Applications", "“应用程序”"),
+            ("Gatekeeper", "安全性检查"),
+        }
+    ),
+}
+
+REQUIRED_WIKI_APP_UI_SOURCE_FILES = {
+    "First-Launch-and-Health": ("web/src/app/App.tsx", "web/src/app/routes.ts"),
+    "Data-Sources-and-Tushare": (
+        "web/src/app/routes.ts",
+        "web/src/features/settings/DataSourcesPage.tsx",
+    ),
+    "Local-TDX-Data": ("web/src/features/settings/DataSourcesPage.tsx",),
+    "Data-Updates-and-Provenance": (
+        "web/src/features/market/MarketOperationsPanel.tsx",
+    ),
+    "Stock-Pools": (
+        "web/src/features/market/StockPoolPanel.tsx",
+        "web/src/features/market/MarketOperationsPanel.tsx",
+    ),
+    "Market-Charts": (
+        "web/src/features/market/MarketPage.tsx",
+        "web/src/features/market/MarketChart.tsx",
+    ),
+    "Formula-Studio-Quickstart": (
+        "web/src/app/routes.ts",
+        "web/src/features/formulas/FormulaStudioPage.tsx",
+        "web/src/features/formulas/FormulaPreview.tsx",
+    ),
+    "Formula-Compatibility-and-Errors": (
+        "web/src/features/formulas/FormulaStudioPage.tsx",
+    ),
+    "Formula-Versions-and-Safety": (
+        "web/src/features/formulas/FormulaStudioPage.tsx",
+        "web/src/features/formulas/FormulaPreview.tsx",
+    ),
+    "MACD-Backtest-Tutorial": (
+        "web/src/app/routes.ts",
+        "web/src/features/backtests/BacktestWizard.tsx",
+        "web/src/features/tasks/TaskCenterPage.tsx",
+    ),
+    "A-Share-Execution-and-Costs": ("web/src/features/backtests/steps/ReviewStep.tsx",),
+    "Backtest-Metrics-and-Reliability": (
+        "web/src/features/backtests/BacktestReportPage.tsx",
+    ),
+    "Backtest-Replay-Export-and-Failures": (
+        "web/src/features/backtests/TradeTable.tsx",
+        "web/src/features/backtests/BacktestReportPage.tsx",
+        "web/src/features/tasks/TaskCenterPage.tsx",
+    ),
+    "Model-Provider-Setup": (
+        "web/src/app/routes.ts",
+        "web/src/features/analysis/ModelSettings.tsx",
+    ),
+    "Research-Reports-and-Evidence": (
+        "web/src/app/routes.ts",
+        "web/src/features/analysis/AnalysisRunPanel.tsx",
+        "web/src/features/analysis/AnalysisPage.tsx",
+    ),
+    "Research-Failures-Retries-and-Safety": (
+        "web/src/features/analysis/ProcessRail.tsx",
+    ),
+    "Task-Center": (
+        "web/src/app/routes.ts",
+        "web/src/features/tasks/TaskCenterPage.tsx",
+    ),
+    "Responsive-Navigation-and-Accessibility": ("web/src/app/App.tsx",),
+    "Credentials-Logs-and-Local-Security": (
+        "web/src/app/routes.ts",
+        "web/src/features/settings/DataSourcesPage.tsx",
+    ),
+    "Troubleshooting": (
+        "web/src/app/routes.ts",
+        "web/src/features/tasks/TaskCenterPage.tsx",
+    ),
+}
+
+REQUIRED_WIKI_FEATURE_BINDINGS = {
+    "R-050": (
+        "Credentials-Logs-and-Local-Security#适用场景",
+        "Credentials-Logs-and-Local-Security-en#when-to-use-this",
+        "适用场景 / When to use this",
+        "local-security-settings",
+        "app-route:/settings",
+    ),
+    "R-052": (
+        "Project-Governance-and-Release-Evidence#需求边界与验收",
+        "Project-Governance-and-Release-Evidence-en#requirements-boundary-and-acceptance",
+        "需求边界与验收 / Requirements boundary and acceptance",
+        "governance-requirements",
+        "repository-audit:requirements-boundary",
+    ),
+    "R-073": (
+        "Project-Governance-and-Release-Evidence#交付与公开边界",
+        "Project-Governance-and-Release-Evidence-en#delivery-and-public-boundary",
+        "交付与公开边界 / Delivery and public boundary",
+        "governance-documentation",
+        "repository-audit:documentation-entry",
+    ),
+    "R-076": (
+        "Project-Governance-and-Release-Evidence#发布验证",
+        "Project-Governance-and-Release-Evidence-en#release-verification",
+        "发布验证 / Release verification",
+        "cross-platform-release-assets",
+        "github-release:latest",
+    ),
+}
+
+REQUIRED_WIKI_DOCUMENTATION_ENTRY_MARKERS = {
+    "Project-Governance-and-Release-Evidence.md": (
+        "README 提供精简的中英双语入口",
+        "详细的中英双语 Wiki",
+    ),
+    "Project-Governance-and-Release-Evidence-en.md": (
+        "README provides a concise bilingual entry point",
+        "detailed bilingual Wiki",
+    ),
+}
+
+REQUIRED_WIKI_WORKFLOW_CONTENT = {
+    "First-Launch-and-Health.md": (
+        (
+            "Worker 运行中",
+            "Worker 未检测",
+            "Worker 状态不可用",
+            "Worker：API 离线",
+            "API 正常且 Worker 运行中",
+        ),
+        (),
+    ),
+    "First-Launch-and-Health-en.md": (
+        (
+            "Worker running（Worker 运行中）",
+            "Worker not detected（Worker 未检测）",
+            "Worker status unavailable（Worker 状态不可用）",
+            "Worker: API offline（Worker：API 离线）",
+            "API is healthy and Worker is running",
+        ),
+        (),
+    ),
+    "Local-TDX-Data.md": (
+        ("通达信 vipdoc 目录", "测试 通达信本地 连接"),
+        ("目录选择器", "目录校验", "启用备用源"),
+    ),
+    "Local-TDX-Data-en.md": (
+        (
+            "TongdaXin vipdoc directory（通达信 vipdoc 目录）",
+            "Test Local TDX connection（测试 通达信本地 连接）",
+        ),
+        ("directory picker", "directory validation", "enable the fallback"),
+    ),
+    "Model-Provider-Setup.md": (
+        ("提供商", "Base URL", "模型", "API Key", "已验证", "错误代码"),
+        ("重试次数", "重试延迟"),
+    ),
+    "Model-Provider-Setup-en.md": (
+        (
+            "Provider（提供商）",
+            "Base URL（Base URL）",
+            "Model（模型）",
+            "API Key（API Key）",
+            "Verified（已验证）",
+            "Error code（错误代码）",
+        ),
+        ("retry count", "retry delay"),
+    ),
+    "Task-Center.md": (
+        (
+            "状态筛选",
+            "类型筛选",
+            "安全任务摘要",
+            "安全事件时间线",
+            "取消任务",
+            "安全事件时间线只显示可见的审计事件，不是运行日志",
+            "回测任务使用回测报告深链",
+            "其他任务只显示安全摘要和状态",
+            "响应包含 `backtest_run` target 时就显示回测报告链接，任务仍在运行时也可以显示",
+            "其他不含该 target 的任务不显示此链接",
+        ),
+        (
+            "时间筛选",
+            "逐项结果",
+            "通用日志",
+            "数据分析深链",
+            "没有日志控件",
+            "仅已完成",
+        ),
+    ),
+    "Task-Center-en.md": (
+        (
+            "Status filter（状态筛选）",
+            "Type filter（类型筛选）",
+            "safe task summary",
+            "Security event timeline（安全事件时间线）",
+            "Open backtest report（打开回测报告）",
+            "Cancel task（取消任务）",
+            "visible audit events rather than runtime logs",
+            "Backtest tasks use the backtest-report deep link",
+            "Other task types show only their safe summary and status",
+            "The backtest report link appears whenever the response contains a `backtest_run` target, including while the task is still running",
+            "Other tasks without that target do not show the link",
+        ),
+        (
+            "time filter",
+            "item results",
+            "generic logs",
+            "data or analysis deep link",
+            "no log control",
+            "completed backtest targets",
+            "only completed",
+        ),
+    ),
+}
+
 REQUIRED_WIKI_ENTRY_FILES = (
     "Home.md",
     "Home-en.md",
@@ -412,6 +772,136 @@ def _headings(document: str) -> set[str]:
     return headings
 
 
+def _heading_sequence(document: str) -> tuple[str, ...]:
+    headings: list[str] = []
+    for raw_heading in _HEADING.findall(document):
+        heading = raw_heading.strip().rstrip("#").strip()
+        if heading.startswith("[") and "]" in heading:
+            heading = heading[1 : heading.index("]")]
+        headings.append(heading)
+    return tuple(headings)
+
+
+def _wiki_screenshot_evidence_ids(document: str) -> tuple[str, ...]:
+    identifiers: list[str] = []
+    for line in document.splitlines():
+        if not re.match(
+            r"^\s*(?:截图证据 ID[：:]|Screenshot evidence ID:)\s*",
+            line,
+            re.IGNORECASE,
+        ):
+            continue
+        identifiers.extend(re.findall(r"`([a-z0-9][a-z0-9-]*)`", line, re.IGNORECASE))
+    return tuple(identifiers)
+
+
+def _wiki_ui_label_mappings(
+    document: str,
+) -> tuple[tuple[tuple[str, str], ...], bool]:
+    marker = "## Chinese UI labels\n"
+    start = document.find(marker)
+    if start < 0:
+        return (), False
+    section = document[start + len(marker) :]
+    next_heading = section.find("\n## ")
+    if next_heading >= 0:
+        section = section[:next_heading]
+    mappings: list[tuple[str, str]] = []
+    ordinals: list[int] = []
+    for line in section.splitlines():
+        match = re.fullmatch(
+            r"(\d+)\.\s+`([^`（）]+)（([^`（）]+)）`\s+[—-]\s+\S.*",
+            line,
+        )
+        if match is None:
+            continue
+        ordinals.append(int(match.group(1)))
+        mappings.append((match.group(2), match.group(3)))
+    return tuple(mappings), ordinals == list(range(1, len(ordinals) + 1))
+
+
+@lru_cache(maxsize=1)
+def _tracked_web_source_paths() -> frozenset[str]:
+    repo = Path(__file__).resolve().parent.parent
+    try:
+        return frozenset(
+            subprocess.run(
+                ("git", "ls-files", "web/src"),
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            ).stdout.splitlines()
+        )
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return frozenset()
+
+
+@lru_cache(maxsize=None)
+def _page_ui_source_text(stem: str) -> str:
+    repo = Path(__file__).resolve().parent.parent
+    tracked = _tracked_web_source_paths()
+    documents: list[str] = []
+    for relative_path in REQUIRED_WIKI_APP_UI_SOURCE_FILES.get(stem, ()):
+        if relative_path not in tracked:
+            return ""
+        try:
+            documents.append((repo / relative_path).read_text(encoding="utf-8"))
+        except (OSError, UnicodeError):
+            return ""
+    return "\n".join(documents)
+
+
+def _app_ui_label_in_page_source(stem: str, chinese_label: str) -> bool:
+    source = _page_ui_source_text(stem)
+    if chinese_label in source:
+        return True
+    dynamic_connection = re.fullmatch(r"测试 (.+) 连接", chinese_label)
+    return (
+        dynamic_connection is not None
+        and "测试 ${source.name} 连接" in source
+        and dynamic_connection.group(1) in source
+    )
+
+
+def _wiki_steps_ui_references(document: str) -> tuple[str, ...]:
+    marker = "## Steps\n"
+    start = document.find(marker)
+    if start < 0:
+        return ()
+    section = document[start + len(marker) :]
+    next_heading = section.find("\n## ")
+    if next_heading >= 0:
+        section = section[:next_heading]
+    return tuple(re.findall(r"\*\*([^*\n]+)\*\*", section))
+
+
+def _normalized_wiki_navigation(
+    targets: tuple[RenderedTarget, ...],
+) -> tuple[str, ...]:
+    normalized: list[str] = []
+    for path in _wiki_navigation_paths(targets):
+        if path.endswith("-en"):
+            path = path[:-3]
+        normalized.append(path)
+    return tuple(normalized)
+
+
+def _wiki_navigation_paths(
+    targets: tuple[RenderedTarget, ...],
+) -> tuple[str, ...]:
+    paths: list[str] = []
+    for rendered in targets:
+        if rendered.kind != "link":
+            continue
+        parsed = urlsplit(rendered.target)
+        if parsed.scheme or parsed.netloc or not parsed.path:
+            continue
+        paths.append(unquote(parsed.path).removesuffix(".md"))
+    return tuple(paths)
+
+
 def _rendered_targets(document: str) -> tuple[RenderedTarget, ...]:
     rendered: list[RenderedTarget] = []
 
@@ -435,6 +925,22 @@ def _rendered_targets(document: str) -> tuple[RenderedTarget, ...]:
 
     visit(_MARKDOWN.parse(document))
     return tuple(rendered)
+
+
+def _markdown_visible_text(document: str) -> str:
+    visible: list[str] = []
+
+    def visit(tokens: list[Token]) -> None:
+        for token in tokens:
+            if token.type in {"text", "code_inline", "code_block", "fence"}:
+                visible.append(token.content)
+            elif token.type in {"softbreak", "hardbreak"}:
+                visible.append("\n")
+            if token.children:
+                visit(token.children)
+
+    visit(_MARKDOWN.parse(document))
+    return " ".join(visible)
 
 
 def _local_destination(root: Path, source: Path, target: str) -> Path | None:
@@ -1008,13 +1514,9 @@ def _screenshot_manifest(
         ):
             failures.append(f"{label} requires zh-CN and en caption_locales")
         features = entry.get("features")
-        if (
-            not isinstance(features, list)
-            or not features
-            or not all(
-                isinstance(feature, str) and feature in ACTIVE_REQUIREMENT_IDS
-                for feature in features
-            )
+        if not isinstance(features, list) or not all(
+            isinstance(feature, str) and feature in ACTIVE_REQUIREMENT_IDS
+            for feature in features
         ):
             failures.append(f"{label} has invalid features")
         surface = _surface_tuple(entry.get("surface"))
@@ -1417,6 +1919,15 @@ def _feature_index_failures(
         failures.append(
             "Feature index language pages must contain the same requirement mappings"
         )
+    rows_by_requirement = {
+        identifier: row[1:] for row in chinese_rows for identifier in row[0]
+    }
+    for requirement_id, expected_binding in REQUIRED_WIKI_FEATURE_BINDINGS.items():
+        if rows_by_requirement.get(requirement_id) != expected_binding:
+            failures.append(
+                f"Feature index {requirement_id}: semantic binding must be "
+                f"{expected_binding!r}"
+            )
     indexed_features: dict[str, set[str]] = {}
     for (
         identifiers,
@@ -1443,6 +1954,9 @@ def _feature_index_failures(
         if row[4] in screenshot_entries
     }
     for screenshot_id in sorted(set(screenshot_entries) - referenced_ids):
+        features = screenshot_entries[screenshot_id].get("features")
+        if isinstance(features, list) and not features:
+            continue
         failures.append(
             f"Feature index has an unreferenced screenshot manifest entry: {screenshot_id}"
         )
@@ -1509,6 +2023,12 @@ def verify_wiki(wiki_root: Path, *, final: bool) -> list[str]:
                 failures.append(
                     f"{relative_path}: forbidden public-boundary reference: {blocked}"
                 )
+        legacy_typed = sorted(set(re.findall(r"`((?:code|path):[^`]+)`", document)))
+        if legacy_typed:
+            failures.append(
+                f"{relative_path}: legacy typed prefix is not publishable: "
+                f"{legacy_typed!r}"
+            )
         if final:
             casefolded = document.casefold()
             for placeholder in WIKI_PLACEHOLDER_PATTERNS:
@@ -1539,6 +2059,30 @@ def verify_wiki(wiki_root: Path, *, final: bool) -> list[str]:
     failures.extend(
         _feature_index_failures(root, documents, screenshot_entries, canonical_routes)
     )
+    evidence_owners: dict[str, set[str]] = {}
+    for page_name, document in documents.items():
+        for screenshot_id in _wiki_screenshot_evidence_ids(document):
+            evidence_owners.setdefault(screenshot_id, set()).add(page_name)
+    for screenshot_id, supplemental_entry in screenshot_entries.items():
+        features = supplemental_entry.get("features")
+        page_pairs = supplemental_entry.get("page_pairs")
+        if not isinstance(features, list) or features:
+            continue
+        expected_owners = (
+            set(page_pairs)
+            if isinstance(page_pairs, list)
+            and all(isinstance(page, str) for page in page_pairs)
+            else set()
+        )
+        actual_owners = evidence_owners.get(screenshot_id, set())
+        if actual_owners != expected_owners:
+            missing = sorted(expected_owners - actual_owners)
+            unexpected = sorted(actual_owners - expected_owners)
+            failures.append(
+                f"Screenshot manifest {screenshot_id} with features: [] must be "
+                "declared by both manifest page_pairs and no other page; "
+                f"missing={missing!r}, unexpected={unexpected!r}"
+            )
     if final:
         for image_path in image_paths:
             relative_path = image_path.relative_to(root).as_posix()
@@ -1590,6 +2134,24 @@ def verify_wiki(wiki_root: Path, *, final: bool) -> list[str]:
         path = root / filename
         if not path.is_file():
             failures.append(f"Missing required Wiki entry file: {filename}")
+
+    for filename, markers in REQUIRED_WIKI_DOCUMENTATION_ENTRY_MARKERS.items():
+        document = documents.get(filename, "")
+        missing = [marker for marker in markers if marker not in document]
+        if missing:
+            failures.append(
+                f"{filename}: R-073 documentation entry proof requires: {missing!r}"
+            )
+
+    for filename, (required, forbidden) in REQUIRED_WIKI_WORKFLOW_CONTENT.items():
+        document = documents.get(filename, "")
+        missing = [marker for marker in required if marker not in document]
+        present_forbidden = [marker for marker in forbidden if marker in document]
+        if missing or present_forbidden:
+            failures.append(
+                f"{filename}: workflow content contract mismatch; "
+                f"missing={missing!r}, forbidden={present_forbidden!r}"
+            )
 
     for filename, required_link in (
         ("_Sidebar.md", "[English](Home-en)"),
@@ -1654,24 +2216,72 @@ def verify_wiki(wiki_root: Path, *, final: bool) -> list[str]:
             )
         if stem in {"Home", "Feature-Index"}:
             continue
-        for path, document, required_headings in (
-            (english_path, english, ("Steps", "Expected result", "Recovery")),
-            (chinese_path, chinese, ("操作步骤", "预期结果", "恢复方法")),
+        for path, document, required_headings, required_navigation in (
+            (
+                english_path,
+                english,
+                (
+                    "When to use this",
+                    "Before you start",
+                    "Chinese UI labels",
+                    "Steps",
+                    "Expected result",
+                    "Screenshot",
+                    "Common problems",
+                    "Recovery",
+                ),
+                (
+                    "[Feature index](Feature-Index-en)",
+                    "[Home](Home-en)",
+                    "[Previous](",
+                    "[Next](",
+                ),
+            ),
+            (
+                chinese_path,
+                chinese,
+                (
+                    "适用场景",
+                    "使用前",
+                    "操作步骤",
+                    "预期结果",
+                    "截图",
+                    "常见问题",
+                    "恢复方法",
+                ),
+                (
+                    "[功能索引](Feature-Index)",
+                    "[首页](Home)",
+                    "[上一页](",
+                    "[下一页](",
+                ),
+            ),
         ):
-            headings = _headings(document)
+            heading_sequence = _heading_sequence(document)
+            headings = set(heading_sequence)
             for heading in required_headings:
                 if heading not in headings:
                     failures.append(f"{path.name}: missing required heading: {heading}")
+            if all(heading in headings for heading in required_headings):
+                positions = tuple(
+                    heading_sequence.index(heading) for heading in required_headings
+                )
+                if positions != tuple(sorted(positions)):
+                    failures.append(
+                        f"{path.name}: required shared-template headings are out of order"
+                    )
+            for navigation in required_navigation:
+                if navigation not in document:
+                    failures.append(
+                        f"{path.name}: missing required navigation: "
+                        f"{navigation.removesuffix('(')}"
+                    )
             if not re.search(r"^1\.\s+\S", document, re.MULTILINE):
                 failures.append(f"{path.name}: missing ordered workflow steps")
             marker_present = "screenshot_placeholder" in document.casefold()
             if final and marker_present:
                 failures.append(
                     f"{path.name}: SCREENSHOT_PLACEHOLDER blocks final Wiki publication"
-                )
-            if not final and not marker_present:
-                failures.append(
-                    f"{path.name}: staging page must carry a SCREENSHOT_PLACEHOLDER marker"
                 )
             if final:
                 has_real_screenshot = False
@@ -1701,6 +2311,141 @@ def verify_wiki(wiki_root: Path, *, final: bool) -> list[str]:
                         f"{path.name}: final page is missing a real screenshot backed by "
                         "captured manifest evidence"
                     )
+
+        chinese_evidence = _wiki_screenshot_evidence_ids(chinese)
+        english_evidence = _wiki_screenshot_evidence_ids(english)
+        if not chinese_evidence:
+            failures.append(
+                f"{chinese_path.name}: missing ordered screenshot evidence IDs"
+            )
+        if not english_evidence:
+            failures.append(
+                f"{english_path.name}: missing ordered screenshot evidence IDs"
+            )
+        if chinese_evidence != english_evidence:
+            failures.append(
+                f"{stem}: Chinese/English screenshot evidence order differs"
+            )
+        for path, evidence_ids in (
+            (chinese_path, chinese_evidence),
+            (english_path, english_evidence),
+        ):
+            for screenshot_id in evidence_ids:
+                entry = screenshot_entries.get(screenshot_id)
+                if entry is None:
+                    failures.append(
+                        f"{stem}: screenshot evidence ID is absent from the manifest: "
+                        f"{screenshot_id}"
+                    )
+                    continue
+                page_pairs = entry.get("page_pairs")
+                if not isinstance(page_pairs, list) or path.name not in page_pairs:
+                    failures.append(
+                        f"{path.name}: screenshot evidence ID {screenshot_id} manifest "
+                        f"page_pairs does not include {path.name}"
+                    )
+
+        app_ui_labels = REQUIRED_WIKI_APP_UI_LABELS.get(stem)
+        external_ui_labels = REQUIRED_WIKI_EXTERNAL_UI_LABELS.get(stem)
+        if (app_ui_labels is None) == (external_ui_labels is None):
+            failures.append(
+                f"{english_path.name}: requires exactly one typed UI-label contract"
+            )
+        else:
+            expected_labels = (
+                app_ui_labels
+                if app_ui_labels is not None
+                else tuple(
+                    (english_label, chinese_label)
+                    for _kind, english_label, chinese_label in external_ui_labels or ()
+                )
+            )
+            actual_labels, sequential = _wiki_ui_label_mappings(english)
+            if actual_labels != expected_labels or not sequential:
+                failures.append(
+                    f"{english_path.name}: Chinese UI labels must be the numbered "
+                    f"controlled mappings: {expected_labels!r}"
+                )
+            if app_ui_labels is not None:
+                for _english_label, chinese_label in actual_labels:
+                    if not _app_ui_label_in_page_source(stem, chinese_label):
+                        failures.append(
+                            f"{english_path.name}: application UI label is absent from "
+                            f"page-specific production source: {chinese_label}"
+                        )
+            else:
+                for kind, english_label, chinese_label in external_ui_labels or ():
+                    if (english_label, chinese_label) not in (
+                        WIKI_EXTERNAL_UI_LABEL_ALLOWLIST.get(kind, frozenset())
+                    ):
+                        failures.append(
+                            f"{english_path.name}: external UI label is not in the "
+                            f"typed {kind} allowlist: {english_label}（{chinese_label}）"
+                        )
+            mapped_tokens = tuple(
+                f"{english_label}（{chinese_label}）"
+                for english_label, chinese_label in actual_labels
+            )
+            step_references = _wiki_steps_ui_references(english)
+            for reference in step_references:
+                if reference not in mapped_tokens:
+                    failures.append(
+                        f"{english_path.name}: Steps UI reference is missing from UI "
+                        f"label map: {reference}"
+                    )
+            for mapped_token in mapped_tokens:
+                if mapped_token not in step_references:
+                    failures.append(
+                        f"{english_path.name}: UI label map item is unused in Steps: "
+                        f"{mapped_token}"
+                    )
+            visible_english = _markdown_visible_text(english)
+            for english_label, chinese_label in expected_labels:
+                bilingual_label = f"{english_label}（{chinese_label}）"
+                first_label = re.search(
+                    rf"(?<![A-Za-z0-9]){re.escape(english_label)}(?![A-Za-z0-9])",
+                    visible_english,
+                )
+                bilingual_position = visible_english.find(bilingual_label)
+                if (
+                    first_label is None
+                    or bilingual_position < 0
+                    or first_label.start() != bilingual_position
+                ):
+                    failures.append(
+                        f"{english_path.name}: first occurrence of the controlled UI "
+                        f"label must be bilingual: {bilingual_label}"
+                    )
+
+        chinese_paths = _wiki_navigation_paths(
+            rendered_targets.get(chinese_path.name, ())
+        )
+        english_paths = _wiki_navigation_paths(
+            rendered_targets.get(english_path.name, ())
+        )
+        for target in chinese_paths:
+            if target.endswith("-en") and target != f"{stem}-en":
+                failures.append(
+                    f"{chinese_path.name}: cross-language navigation target: {target}"
+                )
+        for target in english_paths:
+            if (
+                target in REQUIRED_WIKI_PAGE_STEMS
+                and target != stem
+                and not target.endswith("-en")
+            ):
+                failures.append(
+                    f"{english_path.name}: cross-language navigation target: {target}"
+                )
+
+        chinese_navigation = _normalized_wiki_navigation(
+            rendered_targets.get(chinese_path.name, ())
+        )
+        english_navigation = _normalized_wiki_navigation(
+            rendered_targets.get(english_path.name, ())
+        )
+        if chinese_navigation != english_navigation:
+            failures.append(f"{stem}: Chinese/English normalized navigation differs")
 
     for relative_path, document in documents.items():
         if (
