@@ -1533,6 +1533,12 @@ def test_candidate_stops_at_first_failed_gate_and_writes_safe_report(
         "source_unchanged": True,
         "fixture_hashes": {"tests/fixtures/example.json": "sha256:" + "a" * 64},
         "gates": [
+            {
+                "command": list(
+                    verify_release_module.PRE_PUBLISH_EVIDENCE_GATE.command
+                ),
+                "status": "passed",
+            },
             {"command": ["make", "test"], "status": "passed"},
             {"command": ["make", "acceptance"], "status": "passed"},
             {
@@ -1589,10 +1595,15 @@ def test_candidate_rejects_gate_source_mutation_before_next_gate(
     payload = json.loads(report.read_text(encoding="utf-8"))
     assert payload["status"] == "failed"
     assert payload["source_unchanged"] is False
-    assert payload["gates"] == [{"command": ["make", "test"], "status": "failed"}]
+    assert payload["gates"] == [
+        {
+            "command": list(verify_release_module.PRE_PUBLISH_EVIDENCE_GATE.command),
+            "status": "failed",
+        }
+    ]
     assert payload["failure"] == {
         "kind": "source_changed",
-        "gate": ["make", "test"],
+        "gate": list(verify_release_module.PRE_PUBLISH_EVIDENCE_GATE.command),
         "message": "release candidate gate modified release sources",
     }
     assert len(runner.calls) == 1
@@ -1710,7 +1721,10 @@ def test_candidate_success_report_is_deterministic_and_uses_target_performance(
     assert payload["status"] == "passed"
     assert payload["failure"] is None
     commands = [tuple(item["command"]) for item in payload["gates"]]
+    assert commands[0] == verify_release_module.PRE_PUBLISH_EVIDENCE_GATE.command
+    assert commands.count(verify_release_module.PRE_PUBLISH_EVIDENCE_GATE.command) == 1
     assert commands == [
+        verify_release_module.PRE_PUBLISH_EVIDENCE_GATE.command,
         ("make", "test"),
         ("make", "acceptance"),
         ("make", "acceptance-formula"),
@@ -1732,7 +1746,6 @@ def test_candidate_success_report_is_deterministic_and_uses_target_performance(
         ("make", "security"),
         ("uv", "run", "--frozen", "python", "scripts/verify_docs.py"),
         ("make", "public-tree"),
-        verify_release_module.PRE_PUBLISH_EVIDENCE_GATE.command,
     ]
 
 
