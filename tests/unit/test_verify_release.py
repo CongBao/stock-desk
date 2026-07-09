@@ -1261,6 +1261,7 @@ def test_success_runs_timed_gates_and_rechecks_clean_sources(
 def test_candidate_and_final_release_require_complete_requirement_evidence(
     release_repo: Path,
 ) -> None:
+    budget = verify_release_module.RELEASE_EVIDENCE_TIMEOUT_BUDGET
     evidence_gate = GateCommand(
         (
             "uv",
@@ -1271,7 +1272,10 @@ def test_candidate_and_final_release_require_complete_requirement_evidence(
             "--mode",
             "pre-publish",
         ),
-        timeout_seconds=300,
+        timeout_seconds=budget.outer_gate_timeout_seconds,
+    )
+    assert budget.collection_timeout_seconds + budget.cleanup_margin_seconds <= (
+        evidence_gate.timeout_seconds
     )
     assert evidence_gate in verify_release_module._candidate_gates(
         target_performance=False

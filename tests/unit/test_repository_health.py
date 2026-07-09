@@ -1084,6 +1084,25 @@ def test_release_workflow_uses_candidate_gate_and_always_uploads_its_report() ->
     assert '"source_fingerprint"' in build_script
 
 
+def test_release_workflow_delegates_all_source_gates_to_candidate_verifier() -> None:
+    workflow = _load_github_actions_yaml(_read(".github/workflows/release.yml"))
+    steps = workflow["jobs"]["verify"]["steps"]
+    gate = next(step for step in steps if step.get("name") == "Run release gates")
+    commands = [
+        line.strip()
+        for line in str(gate["run"]).splitlines()
+        if line.strip()
+        and line.strip() != "set -euo pipefail"
+        and not line.strip().startswith("release_version=")
+    ]
+
+    assert commands == [
+        'uv run --frozen python scripts/verify_release.py "$release_version" '
+        "--candidate --target-performance --report "
+        "test-results/release/candidate.json"
+    ]
+
+
 def test_e2e_is_a_root_script_without_changing_the_make_contract() -> None:
     package = json.loads(_read("package.json"))
     assert package["scripts"]["e2e"] == "playwright test"

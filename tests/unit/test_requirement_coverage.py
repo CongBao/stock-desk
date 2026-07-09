@@ -941,6 +941,23 @@ def test_frontend_listings_require_an_exact_test_title(checker: ModuleType) -> N
     assert "complete" not in checker.listed_test_titles("vitest", vitest)
 
 
+def test_release_evidence_timeout_budget_covers_slow_runner_and_cleanup(
+    checker: ModuleType,
+) -> None:
+    budget = checker.RELEASE_EVIDENCE_TIMEOUT_BUDGET
+
+    assert budget.reference_slow_run_seconds == 120
+    assert budget.collection_timeout_seconds == 240
+    assert budget.outer_gate_timeout_seconds == 300
+    assert budget.collection_timeout_seconds >= 2 * budget.reference_slow_run_seconds
+    assert budget.cleanup_margin_seconds >= 60
+    assert budget.collection_timeout_seconds < budget.outer_gate_timeout_seconds
+    assert (
+        budget.collection_timeout_seconds + budget.cleanup_margin_seconds
+        <= budget.outer_gate_timeout_seconds
+    )
+
+
 @pytest.mark.parametrize("runner", ["pytest", "vitest", "playwright"])
 def test_selector_collection_timeout_is_bounded_and_deterministic(
     checker: ModuleType,
@@ -968,16 +985,26 @@ def test_selector_collection_timeout_is_bounded_and_deterministic(
         ]
     }
 
+    observed_timeouts: list[object] = []
+
     def timeout(
-        command: list[str], **_kwargs: object
+        command: list[str], **options: object
     ) -> subprocess.CompletedProcess[str]:
-        raise subprocess.TimeoutExpired(command, timeout=1)
+        configured_timeout = options["timeout"]
+        observed_timeouts.append(configured_timeout)
+        raise subprocess.TimeoutExpired(command, timeout=configured_timeout)
 
     monkeypatch.setattr(checker.subprocess, "run", timeout)
     with pytest.raises(
-        checker.ValidationError, match=f"{runner} selector collection timed out"
+        checker.ValidationError,
+        match=(
+            rf"{runner} selector collection timed out after \d+\.\d{{3}}s "
+            r"\(configured 240s\)"
+        ),
     ):
         checker._collect_existing_selectors([item], ROOT)
+
+    assert observed_timeouts == [240]
 
 
 def test_non_goal_inventory_catches_normalized_synonyms() -> None:

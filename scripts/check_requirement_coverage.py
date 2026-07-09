@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import hashlib
 import os
 import re
 import subprocess
 import sys
+import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Final
 
 import yaml  # type: ignore[import-untyped]
 from yaml.events import AliasEvent  # type: ignore[import-untyped]
@@ -96,7 +98,38 @@ DOC_DIGEST = re.compile(r"requirements-yaml-sha256: ([0-9a-f]{64})")
 MARKDOWN_LINK = re.compile(
     r"(?<!!)\[[^\]]+\]\((?P<target><[^>]+>|[^\s)]+)(?:\s+[^)]*)?\)"
 )
-COLLECTION_TIMEOUT_SECONDS = 120
+
+
+@dataclass(frozen=True, slots=True)
+class ReleaseEvidenceTimeoutBudget:
+    reference_slow_run_seconds: int
+    collection_timeout_seconds: int
+    cleanup_margin_seconds: int
+    outer_gate_timeout_seconds: int
+
+    def __post_init__(self) -> None:
+        if self.reference_slow_run_seconds <= 0:
+            raise ValueError("evidence reference duration must be positive")
+        if self.collection_timeout_seconds < 2 * self.reference_slow_run_seconds:
+            raise ValueError("evidence collection must allow a 2x slow-runner margin")
+        if self.cleanup_margin_seconds < 60:
+            raise ValueError("evidence gate must reserve at least 60s for cleanup")
+        if (
+            self.collection_timeout_seconds + self.cleanup_margin_seconds
+            > self.outer_gate_timeout_seconds
+        ):
+            raise ValueError("evidence collection and cleanup must fit the outer gate")
+
+
+# The previous 120s collection limit was exhausted on a loaded GitHub runner. The
+# inner budget doubles that observed boundary, while the outer gate reserves a
+# separate minute for subprocess teardown, reporting, and source-integrity checks.
+RELEASE_EVIDENCE_TIMEOUT_BUDGET: Final = ReleaseEvidenceTimeoutBudget(
+    reference_slow_run_seconds=120,
+    collection_timeout_seconds=240,
+    cleanup_margin_seconds=60,
+    outer_gate_timeout_seconds=300,
+)
 
 
 # Public-safe frozen authority. Stable IDs are bound to behavior keys, exact
@@ -817,6 +850,8 @@ def _run_collection_command(
     repo_root: Path,
     runner: str,
 ) -> subprocess.CompletedProcess[str]:
+    timeout_seconds = RELEASE_EVIDENCE_TIMEOUT_BUDGET.collection_timeout_seconds
+    started_at = time.monotonic()
     try:
         return subprocess.run(
             command,
@@ -824,10 +859,14 @@ def _run_collection_command(
             capture_output=True,
             text=True,
             check=False,
-            timeout=COLLECTION_TIMEOUT_SECONDS,
+            timeout=timeout_seconds,
         )
     except subprocess.TimeoutExpired as exc:
-        raise ValidationError(f"{runner} selector collection timed out") from exc
+        elapsed_seconds = max(0.0, time.monotonic() - started_at)
+        raise ValidationError(
+            f"{runner} selector collection timed out after {elapsed_seconds:.3f}s "
+            f"(configured {timeout_seconds}s)"
+        ) from exc
 
 
 def _collect_existing_selectors(

@@ -32,6 +32,7 @@ if __package__ in {None, ""}:
     sys.path.insert(0, os.fspath(Path(__file__).resolve().parent.parent))
 
 from scripts.check_public_tree import forbidden_paths
+from scripts.check_requirement_coverage import RELEASE_EVIDENCE_TIMEOUT_BUDGET
 from scripts.source_fingerprint import compute_source_fingerprint
 
 
@@ -70,7 +71,7 @@ PRE_PUBLISH_EVIDENCE_GATE = GateCommand(
         "--mode",
         "pre-publish",
     ),
-    timeout_seconds=300,
+    timeout_seconds=RELEASE_EVIDENCE_TIMEOUT_BUDGET.outer_gate_timeout_seconds,
 )
 
 _RELEASE_SCAN_CHUNK_SIZE = 64 * 1024
