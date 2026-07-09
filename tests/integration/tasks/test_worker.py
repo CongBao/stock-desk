@@ -188,9 +188,13 @@ def test_blocked_heartbeat_io_has_bounded_startup_and_leaves_no_live_executor(
     )
     started = time.monotonic()
     try:
-        with pytest.raises(RuntimeError, match="heartbeat did not become ready"):
+        with pytest.raises(RuntimeError) as error:
             worker.run_forever(threading.Event())
 
+        assert str(error.value) == (
+            "Task worker heartbeat did not become ready within 0.300 seconds; "
+            "subprocess was stopped"
+        )
         assert time.monotonic() - started < 1.5
         assert not any(
             child.name == "task-worker-heartbeat-blocked-heartbeat"
@@ -218,7 +222,6 @@ def test_stop_terminates_heartbeat_blocked_after_readiness_before_engine_close(
         worker_id="blocked-after-ready",
         poll_interval=0.01,
         heartbeat_interval=0.02,
-        heartbeat_start_timeout=1.0,
         heartbeat_stop_timeout=0.3,
         heartbeat_io_timeout=5.0,
     )
@@ -228,7 +231,10 @@ def test_stop_terminates_heartbeat_blocked_after_readiness_before_engine_close(
     blocker = sqlite3.connect(database_path, isolation_level=None)
     try:
         runner.start()
-        _wait_until(lambda: repository.worker_status().state == "running")
+        _wait_until(
+            lambda: repository.worker_status().state == "running",
+            timeout=6.0,
+        )
         blocker.execute("BEGIN EXCLUSIVE")
         threading.Event().wait(0.1)
 
@@ -269,7 +275,6 @@ def test_heartbeat_storage_failure_after_readiness_propagates_and_stops(
         worker_id="failure-after-ready",
         poll_interval=0.01,
         heartbeat_interval=0.05,
-        heartbeat_start_timeout=1.0,
         heartbeat_stop_timeout=0.3,
     )
     monkeypatch.setattr(worker, "run_once", lambda: None)
@@ -285,7 +290,10 @@ def test_heartbeat_storage_failure_after_readiness_propagates_and_stops(
     runner = threading.Thread(target=run)
     try:
         runner.start()
-        _wait_until(lambda: repository.worker_status().state == "running")
+        _wait_until(
+            lambda: repository.worker_status().state == "running",
+            timeout=6.0,
+        )
         with repository.engine.begin() as connection:
             connection.exec_driver_sql("DROP TABLE task_worker_heartbeat")
         _wait_until(lambda: not runner.is_alive())

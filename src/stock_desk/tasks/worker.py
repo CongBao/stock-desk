@@ -189,7 +189,10 @@ class _HeartbeatProcessController:
                 self.stop()
                 raise RuntimeError("Task worker heartbeat failed before readiness")
         self.stop()
-        raise RuntimeError("Task worker heartbeat did not become ready")
+        raise RuntimeError(
+            "Task worker heartbeat did not become ready within "
+            f"{self._start_timeout:.3f} seconds; subprocess was stopped"
+        )
 
     def raise_if_failed(self) -> None:
         if self._failure_kind is not None:
