@@ -147,3 +147,4 @@ finally:
     assert (
         "stock_desk/migrations/versions/0010_parent_active_retry.py" in packaged_files
     )
+    assert "stock_desk/migrations/versions/0011_worker_heartbeat.py" in packaged_files

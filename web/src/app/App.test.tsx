@@ -44,6 +44,11 @@ const healthyResponse = {
   api_version: 'v1',
 };
 
+const runningWorkerResponse = {
+  state: 'running',
+  last_seen_at: '2026-07-09T02:00:00Z',
+};
+
 const completedTask = {
   id: '11111111-1111-4111-8111-111111111111',
   kind: 'demo.double',
@@ -98,7 +103,18 @@ function requestUrl(input: RequestInfo | URL): string {
   return input instanceof URL ? input.href : input.url;
 }
 
-function installHealthyFetch(tasks: readonly unknown[] = []) {
+function isSystemStatusRequest(url: string): boolean {
+  return (
+    url === '/api/health' ||
+    url === '/api/tasks?view=safe&limit=5' ||
+    url === '/api/tasks/worker-status'
+  );
+}
+
+function installHealthyFetch(
+  tasks: readonly unknown[] = [],
+  worker: unknown = runningWorkerResponse,
+) {
   const fetchMock = vi.fn((input: RequestInfo | URL) => {
     const url = requestUrl(input);
     return Promise.resolve(
@@ -106,9 +122,11 @@ function installHealthyFetch(tasks: readonly unknown[] = []) {
         ? jsonResponse({ items: [], next_cursor: null })
         : url.endsWith('/market/schedules/daily')
           ? jsonResponse(disabledDailySchedule)
-          : url.endsWith('/health')
-            ? jsonResponse(healthyResponse)
-            : jsonResponse(tasks),
+          : url.endsWith('/tasks/worker-status')
+            ? jsonResponse(worker)
+            : url.endsWith('/health')
+              ? jsonResponse(healthyResponse)
+              : jsonResponse(tasks),
     );
   });
   vi.stubGlobal('fetch', fetchMock);
@@ -538,7 +556,7 @@ it('uses one navigation/main landmark and named complementary work areas', () =>
   );
 });
 
-it('reports healthy only after both live endpoints pass strict decoding', async () => {
+it('reports a fresh persisted Worker heartbeat in both status surfaces', async () => {
   installHealthyFetch();
 
   renderApp();
@@ -552,10 +570,132 @@ it('reports healthy only after both live endpoints pass strict decoding', async 
   expect(
     screen.getByText('已检测：API / 任务存储', { exact: true }),
   ).toBeInTheDocument();
-  expect(screen.getAllByText(/Worker 未检测/)).not.toHaveLength(0);
+  expect(
+    screen.getByText('Worker 运行中', { exact: true }),
+  ).toBeInTheDocument();
+  expect(
+    screen.getByText('任务 Worker：运行中', { exact: true }),
+  ).toBeInTheDocument();
+});
+
+it('reports a stale Worker heartbeat as not detected with its last-seen time', async () => {
+  installHealthyFetch([], {
+    state: 'not_detected',
+    last_seen_at: '2026-07-09T01:59:00Z',
+  });
+
+  renderApp();
+
+  expect(
+    await screen.findByText('Worker 未检测', { exact: true }),
+  ).toBeInTheDocument();
   expect(
     screen.getByText('任务 Worker：未检测', { exact: true }),
   ).toBeInTheDocument();
+  expect(screen.getByText(/最近心跳：/u)).toBeInTheDocument();
+});
+
+it('prioritizes API offline over a cached running Worker heartbeat', async () => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn((input: RequestInfo | URL) => {
+      const url = requestUrl(input);
+      if (url.endsWith('/health')) {
+        return Promise.reject(new TypeError('offline'));
+      }
+      if (url.endsWith('/tasks/worker-status')) {
+        return Promise.resolve(jsonResponse(runningWorkerResponse));
+      }
+      return Promise.resolve(jsonResponse([]));
+    }),
+  );
+
+  renderApp();
+
+  expect(
+    await screen.findByText('Worker：API 离线', { exact: true }),
+  ).toBeInTheDocument();
+  expect(
+    screen.getByText('任务 Worker：API 离线', { exact: true }),
+  ).toBeInTheDocument();
+  expect(
+    screen.queryByText('Worker 运行中', { exact: true }),
+  ).not.toBeInTheDocument();
+});
+
+it('treats a Worker transport failure as API offline before health refresh', async () => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn((input: RequestInfo | URL) => {
+      const url = requestUrl(input);
+      if (url.endsWith('/tasks/worker-status')) {
+        return Promise.reject(new TypeError('offline'));
+      }
+      return Promise.resolve(
+        url.endsWith('/health')
+          ? jsonResponse(healthyResponse)
+          : jsonResponse([]),
+      );
+    }),
+  );
+
+  renderApp();
+
+  expect(
+    await screen.findByText('Worker：API 离线', { exact: true }),
+  ).toBeInTheDocument();
+  expect(
+    screen.queryByText('Worker 状态不可用', { exact: true }),
+  ).not.toBeInTheDocument();
+});
+
+it('rejects Worker status protocol extensions without exposing identity', async () => {
+  installHealthyFetch([], {
+    ...runningWorkerResponse,
+    worker_id: 'private-hostname-4242',
+  });
+
+  renderApp();
+
+  expect(
+    await screen.findByText('Worker 状态不可用', { exact: true }),
+  ).toBeInTheDocument();
+  expect(screen.queryByText(/private-hostname/u)).not.toBeInTheDocument();
+});
+
+it('rejects a running Worker status without a heartbeat timestamp', async () => {
+  installHealthyFetch([], { state: 'running', last_seen_at: null });
+
+  renderApp();
+
+  expect(
+    await screen.findByText('Worker 状态不可用', { exact: true }),
+  ).toBeInTheDocument();
+});
+
+it('polls Worker freshness and cancels polling after unmount', async () => {
+  vi.useFakeTimers();
+  const fetchMock = installHealthyFetch();
+  const mounted = renderApp();
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(100);
+  });
+  const workerCallCount = () =>
+    fetchMock.mock.calls.filter(([input]) =>
+      requestUrl(input).endsWith('/tasks/worker-status'),
+    ).length;
+  expect(workerCallCount()).toBe(1);
+
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(5_000);
+  });
+  expect(workerCallCount()).toBe(2);
+
+  mounted.unmount();
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(10_000);
+  });
+  expect(workerCallCount()).toBe(2);
 });
 
 it('shows strictly decoded recent task state without raw result context', async () => {
@@ -621,8 +761,12 @@ it('stays checking when one valid endpoint remains pending', async () => {
   vi.stubGlobal(
     'fetch',
     vi.fn((input: RequestInfo | URL) => {
-      if (requestUrl(input).endsWith('/health')) {
+      const url = requestUrl(input);
+      if (url.endsWith('/health')) {
         return Promise.resolve(jsonResponse(healthyResponse));
+      }
+      if (url.endsWith('/tasks/worker-status')) {
+        return Promise.resolve(jsonResponse(runningWorkerResponse));
       }
       return new Promise<Response>((resolve) => {
         resolveTasks = resolve;
@@ -663,9 +807,9 @@ it('times out hung requests, retries once, and enables manual retry', async () =
   });
 
   const systemCalls = fetchMock.mock.calls.filter(([input]) =>
-    /^\/api\/(?:health|tasks\?)/u.test(requestUrl(input)),
+    isSystemStatusRequest(requestUrl(input)),
   );
-  expect(systemCalls).toHaveLength(4);
+  expect(systemCalls).toHaveLength(6);
   expect(screen.getByText('服务不可用', { exact: true })).toBeInTheDocument();
   expect(screen.getByRole('button', { name: '重新检测' })).toBeEnabled();
 });
@@ -681,7 +825,7 @@ it('keeps manual retry enabled during a background refresh', async () => {
       queryKey: ['system-status'],
     });
   });
-  await waitFor(() => expect(pending.fetchMock).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(pending.fetchMock).toHaveBeenCalledTimes(3));
 
   expect(screen.getByRole('button', { name: '重新检测' })).toBeEnabled();
 });
@@ -734,9 +878,12 @@ it('recovers both endpoint states after a bounded retry and manual recheck', asy
       return Promise.reject(new TypeError('offline'));
     }
     return new Promise<Response>((resolve) => {
-      const response = requestUrl(input).endsWith('/health')
+      const url = requestUrl(input);
+      const response = url.endsWith('/health')
         ? jsonResponse(healthyResponse)
-        : jsonResponse([]);
+        : url.endsWith('/tasks/worker-status')
+          ? jsonResponse(runningWorkerResponse)
+          : jsonResponse([]);
       releaseResponses.push(() => resolve(response));
     });
   });
@@ -748,15 +895,15 @@ it('recovers both endpoint states after a bounded retry and manual recheck', asy
     await screen.findByText('服务不可用', { exact: true }),
   ).toBeInTheDocument();
   const systemCalls = fetchMock.mock.calls.filter(([input]) =>
-    /^\/api\/(?:health|tasks\?)/u.test(requestUrl(input)),
+    isSystemStatusRequest(requestUrl(input)),
   );
-  expect(systemCalls).toHaveLength(4);
+  expect(systemCalls).toHaveLength(6);
 
   available = true;
   const retry = screen.getByRole('button', { name: '重新检测' });
   await user.click(retry);
   expect(retry).toBeDisabled();
-  expect(releaseResponses).toHaveLength(2);
+  expect(releaseResponses).toHaveLength(3);
   act(() => {
     for (const release of releaseResponses) {
       release();
@@ -775,10 +922,11 @@ it('shares endpoint queries between topbar and context panel consumers', async (
   await screen.findByText('系统正常', { exact: true });
   const systemCalls = fetchMock.mock.calls
     .map(([input]) => requestUrl(input))
-    .filter((url) => /^\/api\/(?:health|tasks\?)/u.test(url));
-  expect(systemCalls).toHaveLength(2);
+    .filter(isSystemStatusRequest);
+  expect(systemCalls).toHaveLength(3);
   expect(systemCalls.sort()).toEqual([
     '/api/health',
+    '/api/tasks/worker-status',
     '/api/tasks?view=safe&limit=5',
   ]);
 });
@@ -787,8 +935,8 @@ it('aborts both in-flight endpoint requests after the final consumer unmounts', 
   const { fetchMock, signals } = installPendingFetch();
 
   const mounted = renderApp();
-  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4));
-  expect(signals).toHaveLength(2);
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(5));
+  expect(signals).toHaveLength(3);
 
   mounted.unmount();
 
@@ -796,5 +944,5 @@ it('aborts both in-flight endpoint requests after the final consumer unmounts', 
     expect(signals.every((signal) => signal.aborted)).toBe(true),
   );
   await new Promise((resolve) => window.setTimeout(resolve, 20));
-  expect(fetchMock).toHaveBeenCalledTimes(4);
+  expect(fetchMock).toHaveBeenCalledTimes(5);
 });

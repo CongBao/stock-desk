@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -65,13 +66,25 @@ def test_production_worker_polls_tasks_quickly_without_locking_schedules_each_ti
     clock = _FakeMonotonic()
     monkeypatch.setattr(worker_runtime, "_monotonic", clock, raising=False)
     schedule_ticks: list[float] = []
+
+    class Heartbeat:
+        def raise_if_failed(self) -> None:
+            return None
+
     runtime = object.__new__(ProductionMarketWorker)
     runtime.scheduler = type(
         "Scheduler",
         (),
         {"tick": lambda _self: schedule_ticks.append(clock())},
     )()
-    runtime.worker = type("Worker", (), {"run_once": lambda _self: None})()
+    runtime.worker = type(
+        "Worker",
+        (),
+        {
+            "run_once": lambda _self: None,
+            "heartbeat_lifecycle": lambda _self, _stop: nullcontext(Heartbeat()),
+        },
+    )()
     stop = _RepeatedIdleWait(clock, limit=12)
 
     runtime.run_forever(stop)  # type: ignore[arg-type]

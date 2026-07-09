@@ -8,6 +8,7 @@ TaskEventLevel: TypeAlias = Literal["info", "warning", "error"]
 TaskPresentationStage: TypeAlias = Literal[
     "queued", "executing", "completed", "failed", "cancelled"
 ]
+WorkerState: TypeAlias = Literal["running", "not_detected"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,3 +108,9 @@ class TaskMetricsSnapshot:
     average_duration_ms: float | None
     min_duration_ms: float | None
     max_duration_ms: float | None
+
+
+@dataclass(frozen=True, slots=True)
+class WorkerStatusSnapshot:
+    state: WorkerState
+    last_seen_at: datetime | None

@@ -20,6 +20,7 @@ import { BacktestWorkspacePage } from '../features/backtests/BacktestWorkspacePa
 import { DataSourcesPage } from '../features/settings/DataSourcesPage';
 import { TaskCenterPage } from '../features/tasks/TaskCenterPage';
 import { useSystemStatus } from '../shared/api/useSystemStatus';
+import type { WorkerState } from '../shared/api/useSystemStatus';
 import { ContextPanel } from './ContextPanel';
 import { AppIcon } from './AppIcon';
 import { NotFoundPage } from './NotFoundPage';
@@ -44,6 +45,14 @@ const systemStateLabels = {
   degraded: '服务降级',
   unavailable: '服务不可用',
 } as const;
+
+const workerStateLabels: Record<WorkerState, string> = {
+  checking: 'Worker 检查中',
+  running: 'Worker 运行中',
+  not_detected: 'Worker 未检测',
+  unavailable: 'Worker 状态不可用',
+  api_offline: 'Worker：API 离线',
+};
 
 const productIdentity = {
   name: 'stock-desk',
@@ -288,7 +297,9 @@ function WorkspaceShell() {
                 <span className="status-symbol" aria-hidden="true" />
                 <span>{systemStateLabels[systemStatus.overall]}</span>
                 <span className="status-scope">已检测：API / 任务存储</span>
-                <span className="worker-scope">Worker 未检测</span>
+                <span className="worker-scope" data-state={systemStatus.worker}>
+                  {workerStateLabels[systemStatus.worker]}
+                </span>
               </span>
             </div>
             <div className="topbar-actions">

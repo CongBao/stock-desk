@@ -20,10 +20,15 @@ export type OverallSystemState =
 export type EndpointState =
   'checking' | 'available' | 'protocol' | 'unavailable';
 
+export type WorkerState =
+  'checking' | 'running' | 'not_detected' | 'unavailable' | 'api_offline';
+
 export type SystemStatus = {
   readonly overall: OverallSystemState;
   readonly health: EndpointState;
   readonly tasks: EndpointState;
+  readonly worker: WorkerState;
+  readonly workerLastSeenAt: string | null;
   readonly recentTasks: readonly RecentTask[];
   readonly isRetryDisabled: boolean;
   readonly checkedAt: number | null;
@@ -105,6 +110,33 @@ function decodeTasks(value: JsonValue | undefined): readonly RecentTask[] {
   }
 }
 
+function decodeWorkerStatus(value: JsonValue | undefined) {
+  if (!isRecord(value)) {
+    throw new ProtocolError();
+  }
+  const keys = Object.keys(value).sort();
+  const lastSeenAt = value.last_seen_at;
+  if (
+    keys.length !== 2 ||
+    keys[0] !== 'last_seen_at' ||
+    keys[1] !== 'state' ||
+    (value.state !== 'running' && value.state !== 'not_detected') ||
+    (value.state === 'running' && lastSeenAt === null) ||
+    (lastSeenAt !== null &&
+      (typeof lastSeenAt !== 'string' ||
+        !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/u.test(
+          lastSeenAt,
+        ) ||
+        !Number.isFinite(Date.parse(lastSeenAt))))
+  ) {
+    throw new ProtocolError();
+  }
+  return {
+    state: value.state,
+    lastSeenAt,
+  } as const;
+}
+
 function endpointState(query: {
   readonly isError: boolean;
   readonly isPending: boolean;
@@ -147,6 +179,33 @@ function overallState(
   return 'degraded';
 }
 
+function workerState(
+  health: EndpointState,
+  query: {
+    readonly data: { readonly state: 'running' | 'not_detected' } | undefined;
+    readonly error: unknown;
+    readonly isError: boolean;
+    readonly isPending: boolean;
+  },
+): WorkerState {
+  if (
+    health === 'unavailable' ||
+    (query.isError &&
+      (query.error instanceof RequestTimeoutError ||
+        (query.error instanceof ApiError && query.error.kind === 'network')))
+  ) {
+    return 'api_offline';
+  }
+  const endpoint = endpointState(query);
+  if (endpoint === 'checking') {
+    return 'checking';
+  }
+  if (endpoint !== 'available' || query.data === undefined) {
+    return 'unavailable';
+  }
+  return query.data.state;
+}
+
 function shouldRetry(failureCount: number, error: unknown): boolean {
   return (
     failureCount < 1 && !(error instanceof ApiError && error.kind === 'abort')
@@ -175,20 +234,35 @@ export function useSystemStatus(): SystemStatus {
     refetchInterval: 5_000,
     refetchIntervalInBackground: false,
   });
+  const workerQuery = useQuery({
+    queryKey: ['system-status', 'worker'],
+    queryFn: async ({ signal }) =>
+      decodeWorkerStatus(await getWithTimeout('/tasks/worker-status', signal)),
+    retry: shouldRetry,
+    retryDelay: 10,
+    staleTime: 1_000,
+    refetchInterval: 5_000,
+    refetchIntervalInBackground: false,
+  });
   const health = endpointState(healthQuery);
   const tasks = endpointState(tasksQuery);
-  const isInitialPending = healthQuery.isPending || tasksQuery.isPending;
+  const isInitialPending =
+    healthQuery.isPending || tasksQuery.isPending || workerQuery.isPending;
   const checkedAt = Math.max(
     healthQuery.dataUpdatedAt,
     healthQuery.errorUpdatedAt,
     tasksQuery.dataUpdatedAt,
     tasksQuery.errorUpdatedAt,
+    workerQuery.dataUpdatedAt,
+    workerQuery.errorUpdatedAt,
   );
 
   return {
     overall: overallState(health, tasks),
     health,
     tasks,
+    worker: workerState(health, workerQuery),
+    workerLastSeenAt: workerQuery.data?.lastSeenAt ?? null,
     recentTasks: tasksQuery.data ?? [],
     isRetryDisabled: isInitialPending || isManualRetrying,
     checkedAt: checkedAt > 0 ? checkedAt : null,
@@ -198,7 +272,11 @@ export function useSystemStatus(): SystemStatus {
       }
       setIsManualRetrying(true);
       try {
-        await Promise.all([healthQuery.refetch(), tasksQuery.refetch()]);
+        await Promise.all([
+          healthQuery.refetch(),
+          tasksQuery.refetch(),
+          workerQuery.refetch(),
+        ]);
       } finally {
         setIsManualRetrying(false);
       }

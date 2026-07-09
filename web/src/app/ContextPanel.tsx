@@ -4,6 +4,7 @@ import type {
   EndpointState,
   SystemStatus,
   TaskStatus,
+  WorkerState,
 } from '../shared/api/useSystemStatus';
 
 type ContextPanelProps = {
@@ -24,6 +25,14 @@ const overallLabels: Record<SystemStatus['overall'], string> = {
   healthy: '正常',
   degraded: '降级',
   unavailable: '不可用',
+};
+
+const workerLabels: Record<WorkerState, string> = {
+  checking: '检查中',
+  running: '运行中',
+  not_detected: '未检测',
+  unavailable: '状态不可用',
+  api_offline: 'API 离线',
 };
 
 const taskStatusLabels: Record<TaskStatus, string> = {
@@ -132,7 +141,12 @@ export function ContextPanel({
           </div>
           <div>
             <dt className="visually-hidden">任务 Worker</dt>
-            <dd>任务 Worker：未检测</dd>
+            <dd>任务 Worker：{workerLabels[systemStatus.worker]}</dd>
+            {systemStatus.workerLastSeenAt === null ? null : (
+              <dd className="worker-last-seen">
+                最近心跳：{formatTimestamp(systemStatus.workerLastSeenAt)}
+              </dd>
+            )}
           </div>
         </dl>
         <p className="last-checked">

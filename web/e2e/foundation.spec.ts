@@ -92,7 +92,7 @@ test('fresh user sees the live foundation shell and completed demo task', async 
   await expect(
     page.getByText('已检测：API / 任务存储', { exact: true }),
   ).toBeVisible();
-  await expect(page.getByText('Worker 未检测', { exact: true })).toBeVisible();
+  await expect(page.getByText('Worker 运行中', { exact: true })).toBeVisible();
 
   const panelToggle = page.getByRole('button', { name: '打开上下文面板' });
   await panelToggle.click();
@@ -103,8 +103,9 @@ test('fresh user sees the live foundation shell and completed demo task', async 
   await expect(page.getByText('API 服务可用', { exact: true })).toBeVisible();
   await expect(page.getByText('任务存储可用', { exact: true })).toBeVisible();
   await expect(
-    page.getByText('任务 Worker：未检测', { exact: true }),
+    page.getByText('任务 Worker：运行中', { exact: true }),
   ).toBeVisible();
+  await expect(page.getByText(/最近心跳：/u)).toBeVisible();
 
   const demoTask = page
     .getByRole('listitem', { name: /demo\.double/u })

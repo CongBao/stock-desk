@@ -19,9 +19,12 @@ from sqlalchemy import (
     null,
     or_,
     select,
+    text,
     update,
 )
 from sqlalchemy.engine import Connection, RowMapping
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.sql.elements import ColumnElement
 from filelock import FileLock, Timeout as FileLockTimeout
 
@@ -33,7 +36,7 @@ from stock_desk.storage.database import (
     create_engine_for_url,
     migrate,
 )
-from stock_desk.storage.models import TaskEvent, TaskRun
+from stock_desk.storage.models import TaskEvent, TaskRun, TaskWorkerHeartbeat
 from stock_desk.tasks.models import (
     TaskClaim,
     TaskEventLevel,
@@ -44,6 +47,7 @@ from stock_desk.tasks.models import (
     TaskPresentationTarget,
     TaskSnapshot,
     TaskStatus,
+    WorkerStatusSnapshot,
 )
 
 
@@ -70,6 +74,8 @@ _ANALYSIS_TASK_KIND = "analysis.run"
 _LEASED_TASK_KINDS = frozenset({_BACKTEST_TASK_KIND, _ANALYSIS_TASK_KIND})
 _DEFAULT_LEASE_DURATION = timedelta(minutes=2)
 _MAX_LEASE_DURATION = timedelta(hours=1)
+_DEFAULT_WORKER_STALE_AFTER = timedelta(seconds=15)
+_MAX_WORKER_FUTURE_SKEW = timedelta(seconds=5)
 _PRESENTATION_STAGES = frozenset(
     {"queued", "executing", "completed", "failed", "cancelled"}
 )
@@ -137,6 +143,34 @@ def validate_lease_duration(value: object) -> timedelta:
             "Task lease duration must be positive and at most one hour"
         )
     return value
+
+
+def _worker_heartbeat_upsert_statement(
+    dialect_name: str,
+    *,
+    worker_id: str,
+    sampled_at: datetime | None,
+) -> Any:
+    heartbeat_value: Any = (
+        sampled_at if sampled_at is not None else func.current_timestamp()
+    )
+    statement: Any
+    if dialect_name == "sqlite":
+        statement = sqlite_insert(TaskWorkerHeartbeat).values(
+            worker_id=worker_id,
+            heartbeat_at=heartbeat_value,
+        )
+    elif dialect_name == "postgresql":
+        statement = postgresql_insert(TaskWorkerHeartbeat).values(
+            worker_id=worker_id,
+            heartbeat_at=heartbeat_value,
+        )
+    else:
+        raise TaskRepositoryError("Task worker heartbeat storage is unsupported")
+    return statement.on_conflict_do_update(
+        index_elements=[TaskWorkerHeartbeat.worker_id],
+        set_={"heartbeat_at": statement.excluded.heartbeat_at},
+    )
 
 
 def _validated_json_object(
@@ -714,6 +748,83 @@ class TaskRepository:
         with self._engine.connect() as connection:
             rows = connection.execute(statement).mappings().all()
         return [_snapshot(row) for row in rows]
+
+    def record_worker_heartbeat(
+        self,
+        worker_id: str,
+        *,
+        now: datetime | None = None,
+        timeout_seconds: float | None = None,
+    ) -> None:
+        if not worker_id or worker_id != worker_id.strip() or len(worker_id) > 255:
+            raise TaskValidationError("Worker id must contain 1 to 255 characters")
+        sampled_at = (
+            None
+            if now is None
+            else _validated_aware_utc(now, field_name="heartbeat time")
+        )
+        if timeout_seconds is not None and (
+            isinstance(timeout_seconds, bool)
+            or not isinstance(timeout_seconds, (int, float))
+            or not math.isfinite(timeout_seconds)
+            or timeout_seconds <= 0
+        ):
+            raise TaskValidationError("Worker heartbeat timeout must be positive")
+        statement = _worker_heartbeat_upsert_statement(
+            self._engine.dialect.name,
+            worker_id=worker_id,
+            sampled_at=sampled_at,
+        )
+        with self._engine.begin() as connection:
+            if timeout_seconds is not None:
+                timeout_ms = max(1, math.ceil(timeout_seconds * 1_000))
+                if connection.dialect.name == "sqlite":
+                    connection.exec_driver_sql(f"PRAGMA busy_timeout={timeout_ms}")
+                elif connection.dialect.name == "postgresql":
+                    connection.execute(
+                        text("SELECT set_config('statement_timeout', :value, true)"),
+                        {"value": f"{timeout_ms}ms"},
+                    )
+            connection.execute(statement)
+
+    def worker_status(
+        self,
+        *,
+        now: datetime | None = None,
+        stale_after: timedelta = _DEFAULT_WORKER_STALE_AFTER,
+    ) -> WorkerStatusSnapshot:
+        if (
+            not isinstance(stale_after, timedelta)
+            or stale_after <= timedelta(0)
+            or stale_after > _MAX_LEASE_DURATION
+        ):
+            raise TaskValidationError(
+                "Worker freshness duration must be positive and at most one hour"
+            )
+        with self._engine.connect() as connection:
+            sampled_at = (
+                _aware_utc(connection.scalar(select(func.current_timestamp())))
+                if now is None
+                else _validated_aware_utc(now, field_name="status sample time")
+            )
+            if sampled_at is None:
+                raise TaskRepositoryError("Database clock is unavailable")
+            latest = _aware_utc(
+                connection.scalar(
+                    select(func.max(TaskWorkerHeartbeat.heartbeat_at)).where(
+                        TaskWorkerHeartbeat.heartbeat_at
+                        <= sampled_at + _MAX_WORKER_FUTURE_SKEW
+                    )
+                )
+            )
+        return WorkerStatusSnapshot(
+            state=(
+                "running"
+                if latest is not None and latest >= sampled_at - stale_after
+                else "not_detected"
+            ),
+            last_seen_at=latest,
+        )
 
     def list_events(self, task_id: str, *, limit: int = 100) -> list[TaskEventSnapshot]:
         if not 1 <= limit <= 100:

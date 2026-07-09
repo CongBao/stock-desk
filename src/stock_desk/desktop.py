@@ -414,9 +414,8 @@ def _worker_child(
         _settings_from_payload(settings_payload),
         worker_id=f"desktop-{socket.gethostname()}-{os.getpid()}",
     )
-    ready_event.set()
     try:
-        runtime.run_forever(stop_event)
+        runtime.run_forever(stop_event, ready_event=ready_event)
     finally:
         runtime.close()
 

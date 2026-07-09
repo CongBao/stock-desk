@@ -470,16 +470,21 @@ class ProductionMarketWorker:
         self.scheduler.tick()
         return self.worker.run_once()
 
-    def run_forever(self, stop_event: Event) -> None:
+    def run_forever(self, stop_event: Event, *, ready_event: Any | None = None) -> None:
         next_schedule_poll = 0.0
-        while not stop_event.is_set():
-            now = _monotonic()
-            if now >= next_schedule_poll:
-                self.scheduler.tick()
-                next_schedule_poll = now + _SCHEDULE_POLL_SECONDS
-            completed = self.worker.run_once()
-            if completed is None:
-                stop_event.wait(_IDLE_TASK_POLL_SECONDS)
+        with self.worker.heartbeat_lifecycle(stop_event) as heartbeat:
+            if ready_event is not None:
+                ready_event.set()
+            while not stop_event.is_set():
+                heartbeat.raise_if_failed()
+                now = _monotonic()
+                if now >= next_schedule_poll:
+                    self.scheduler.tick()
+                    next_schedule_poll = now + _SCHEDULE_POLL_SECONDS
+                completed = self.worker.run_once()
+                if completed is None:
+                    stop_event.wait(_IDLE_TASK_POLL_SECONDS)
+            heartbeat.raise_if_failed()
 
     def close(self) -> None:
         with self._close_lock:

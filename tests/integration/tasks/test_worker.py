@@ -4,11 +4,15 @@ from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor
 import logging
 import math
+import multiprocessing
+import sqlite3
 import threading
+import time
 from typing import Any, cast
 
 import pytest
-from sqlalchemy import event
+from sqlalchemy import event, select
+from sqlalchemy.dialects import postgresql, sqlite
 
 import stock_desk.tasks.repository as repository_module
 from stock_desk.storage.database import create_engine_for_url, migrate
@@ -25,6 +29,314 @@ def _repository(tmp_path: Path) -> TaskRepository:
     url = f"sqlite:///{tmp_path / 'tasks.db'}"
     migrate(url)
     return TaskRepository(create_engine_for_url(url), owns_engine=True)
+
+
+def _wait_until(condition: Any, *, timeout: float = 2.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if condition():
+            return
+        threading.Event().wait(0.01)
+    assert condition()
+
+
+def test_worker_heartbeat_status_uses_newest_fresh_utc_sample(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    sampled_at = datetime(2026, 7, 9, 2, 0, tzinfo=timezone.utc)
+    try:
+        missing = repository.worker_status(now=sampled_at)
+        assert missing.state == "not_detected"
+        assert missing.last_seen_at is None
+
+        repository.record_worker_heartbeat("worker-older", now=sampled_at)
+        repository.record_worker_heartbeat(
+            "worker-newer",
+            now=sampled_at + timedelta(seconds=4),
+        )
+
+        fresh = repository.worker_status(now=sampled_at + timedelta(seconds=10))
+        assert fresh.state == "running"
+        assert fresh.last_seen_at == sampled_at + timedelta(seconds=4)
+
+        stale = repository.worker_status(now=sampled_at + timedelta(seconds=20))
+        assert stale.state == "not_detected"
+        assert stale.last_seen_at == sampled_at + timedelta(seconds=4)
+    finally:
+        repository.close()
+
+
+def test_historical_task_worker_id_never_counts_as_live_heartbeat(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    try:
+        created = repository.create("historical.worker", {})
+        claimed = repository.claim_next("historical-host-4242")
+        assert claimed is not None and claimed.id == created.id
+        repository.complete(created.id, {})
+
+        status = repository.worker_status()
+
+        assert status.state == "not_detected"
+        assert status.last_seen_at is None
+    finally:
+        repository.close()
+
+
+def test_worker_heartbeat_upsert_replaces_corrupt_existing_sample(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    sampled_at = datetime(2026, 7, 9, 2, 0, tzinfo=timezone.utc)
+    try:
+        repository.record_worker_heartbeat(
+            "worker-1", now=sampled_at + timedelta(seconds=5)
+        )
+        repository.record_worker_heartbeat("worker-1", now=sampled_at)
+
+        status = repository.worker_status(now=sampled_at + timedelta(seconds=10))
+        assert status.last_seen_at == sampled_at
+    finally:
+        repository.close()
+
+
+def test_worker_heartbeat_replaces_corrupt_future_sample_with_database_time(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    future = datetime.now(timezone.utc) + timedelta(days=365)
+    try:
+        repository.record_worker_heartbeat("worker-1", now=future)
+        repository.record_worker_heartbeat("worker-1")
+
+        status = repository.worker_status()
+
+        assert status.state == "running"
+        assert status.last_seen_at is not None
+        assert status.last_seen_at < future
+    finally:
+        repository.close()
+
+
+def test_worker_status_ignores_future_worker_before_selecting_newest_valid_row(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    sampled_at = datetime(2026, 7, 9, 2, 0, tzinfo=timezone.utc)
+    try:
+        repository.record_worker_heartbeat(
+            "corrupt-future-worker", now=sampled_at + timedelta(days=365)
+        )
+        repository.record_worker_heartbeat("normal-worker", now=sampled_at)
+
+        status = repository.worker_status(now=sampled_at + timedelta(seconds=5))
+
+        assert status.state == "running"
+        assert status.last_seen_at == sampled_at
+    finally:
+        repository.close()
+
+
+def test_default_worker_status_uses_database_time_for_multiple_workers(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    try:
+        with repository.engine.connect() as connection:
+            database_now = connection.scalar(
+                select(repository_module.func.current_timestamp())
+            )
+        assert isinstance(database_now, datetime)
+        if database_now.tzinfo is None:
+            database_now = database_now.replace(tzinfo=timezone.utc)
+        repository.record_worker_heartbeat(
+            "older-normal-worker",
+            now=database_now - timedelta(seconds=2),
+        )
+        repository.record_worker_heartbeat(
+            "malicious-future-worker",
+            now=database_now + timedelta(days=365),
+        )
+        repository.record_worker_heartbeat("newest-normal-worker")
+
+        status = repository.worker_status()
+
+        assert status.state == "running"
+        assert status.last_seen_at is not None
+        assert status.last_seen_at > database_now - timedelta(seconds=2)
+        assert status.last_seen_at < database_now + timedelta(days=365)
+    finally:
+        repository.close()
+
+
+def test_blocked_heartbeat_io_has_bounded_startup_and_leaves_no_live_executor(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "blocked-heartbeat.db"
+    url = f"sqlite:///{database_path}"
+    migrate(url)
+    repository = TaskRepository(create_engine_for_url(url), owns_engine=True)
+    blocker = sqlite3.connect(database_path, isolation_level=None)
+    blocker.execute("BEGIN EXCLUSIVE")
+    worker = TaskWorker(
+        repository,
+        worker_id="blocked-heartbeat",
+        heartbeat_interval=0.02,
+        heartbeat_start_timeout=0.3,
+        heartbeat_stop_timeout=0.3,
+        heartbeat_io_timeout=5.0,
+    )
+    started = time.monotonic()
+    try:
+        with pytest.raises(RuntimeError, match="heartbeat did not become ready"):
+            worker.run_forever(threading.Event())
+
+        assert time.monotonic() - started < 1.5
+        assert not any(
+            child.name == "task-worker-heartbeat-blocked-heartbeat"
+            for child in multiprocessing.active_children()
+        )
+        assert not any(
+            thread.name == "task-worker-heartbeat-blocked-heartbeat"
+            for thread in threading.enumerate()
+        )
+    finally:
+        blocker.rollback()
+        blocker.close()
+        repository.close()
+
+
+def test_stop_terminates_heartbeat_blocked_after_readiness_before_engine_close(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database_path = tmp_path / "blocked-after-ready.db"
+    url = f"sqlite:///{database_path}"
+    migrate(url)
+    repository = TaskRepository(create_engine_for_url(url), owns_engine=True)
+    worker = TaskWorker(
+        repository,
+        worker_id="blocked-after-ready",
+        poll_interval=0.01,
+        heartbeat_interval=0.02,
+        heartbeat_start_timeout=1.0,
+        heartbeat_stop_timeout=0.3,
+        heartbeat_io_timeout=5.0,
+    )
+    monkeypatch.setattr(worker, "run_once", lambda: None)
+    stop_event = threading.Event()
+    runner = threading.Thread(target=worker.run_forever, args=(stop_event,))
+    blocker = sqlite3.connect(database_path, isolation_level=None)
+    try:
+        runner.start()
+        _wait_until(lambda: repository.worker_status().state == "running")
+        blocker.execute("BEGIN EXCLUSIVE")
+        threading.Event().wait(0.1)
+
+        started = time.monotonic()
+        stop_event.set()
+        runner.join(timeout=1.5)
+
+        assert time.monotonic() - started < 1.5
+        assert not runner.is_alive()
+        assert not any(
+            child.name == "task-worker-heartbeat-blocked-after-ready"
+            for child in multiprocessing.active_children()
+        )
+        assert not any(
+            thread.name == "task-worker-heartbeat-blocked-after-ready"
+            for thread in threading.enumerate()
+        )
+        repository.close()
+        threading.Event().wait(0.1)
+        assert not any(
+            child.name == "task-worker-heartbeat-blocked-after-ready"
+            for child in multiprocessing.active_children()
+        )
+    finally:
+        stop_event.set()
+        runner.join(timeout=2)
+        blocker.rollback()
+        blocker.close()
+        repository.close()
+
+
+def test_heartbeat_storage_failure_after_readiness_propagates_and_stops(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = _repository(tmp_path)
+    worker = TaskWorker(
+        repository,
+        worker_id="failure-after-ready",
+        poll_interval=0.01,
+        heartbeat_interval=0.05,
+        heartbeat_start_timeout=1.0,
+        heartbeat_stop_timeout=0.3,
+    )
+    monkeypatch.setattr(worker, "run_once", lambda: None)
+    stop_event = threading.Event()
+    errors: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            worker.run_forever(stop_event)
+        except BaseException as error:
+            errors.append(error)
+
+    runner = threading.Thread(target=run)
+    try:
+        runner.start()
+        _wait_until(lambda: repository.worker_status().state == "running")
+        with repository.engine.begin() as connection:
+            connection.exec_driver_sql("DROP TABLE task_worker_heartbeat")
+        _wait_until(lambda: not runner.is_alive())
+
+        assert len(errors) == 1
+        assert "heartbeat process failed" in str(errors[0])
+        assert not any(
+            child.name == "task-worker-heartbeat-failure-after-ready"
+            for child in multiprocessing.active_children()
+        )
+    finally:
+        stop_event.set()
+        runner.join(timeout=2)
+        repository.close()
+
+
+def test_worker_heartbeat_rejects_unsafe_identity_time_and_freshness(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    try:
+        with pytest.raises(TaskValidationError):
+            repository.record_worker_heartbeat(" host-1 ")
+        with pytest.raises(TaskValidationError):
+            repository.record_worker_heartbeat(
+                "worker-1", now=datetime(2026, 7, 9, 2, 0)
+            )
+        with pytest.raises(TaskValidationError):
+            repository.worker_status(stale_after=timedelta(0))
+    finally:
+        repository.close()
+
+
+@pytest.mark.parametrize(
+    ("dialect", "expected"),
+    [
+        (sqlite.dialect(), "ON CONFLICT"),
+        (postgresql.dialect(), "ON CONFLICT"),
+    ],
+)
+def test_worker_heartbeat_upsert_compiles_for_supported_databases(
+    dialect: object, expected: str
+) -> None:
+    statement_factory = getattr(repository_module, "_worker_heartbeat_upsert_statement")
+    statement = statement_factory(
+        dialect.name,
+        worker_id="worker-1",
+        sampled_at=datetime(2026, 7, 9, 2, 0, tzinfo=timezone.utc),
+    )
+
+    assert expected in str(statement.compile(dialect=dialect)).upper()
 
 
 def test_task_can_be_created_claimed_and_completed(tmp_path: Path) -> None:
@@ -871,6 +1183,46 @@ def test_worker_rejects_invalid_configuration(
         repository.close()
 
 
+@pytest.mark.parametrize("heartbeat_interval", [0.0, -0.1, math.nan, math.inf])
+def test_worker_rejects_invalid_heartbeat_interval(
+    tmp_path: Path, heartbeat_interval: float
+) -> None:
+    repository = _repository(tmp_path)
+    try:
+        with pytest.raises(ValueError, match="Heartbeat interval"):
+            TaskWorker(
+                repository,
+                worker_id="worker",
+                heartbeat_interval=heartbeat_interval,
+            )
+    finally:
+        repository.close()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("heartbeat_start_timeout", 0.0),
+        ("heartbeat_start_timeout", True),
+        ("heartbeat_stop_timeout", math.nan),
+        ("heartbeat_io_timeout", math.inf),
+    ],
+)
+def test_worker_rejects_invalid_heartbeat_process_timeout(
+    tmp_path: Path, field: str, value: float
+) -> None:
+    repository = _repository(tmp_path)
+    try:
+        with pytest.raises(ValueError, match="Heartbeat .* timeout"):
+            TaskWorker(
+                repository,
+                worker_id="worker",
+                **{field: value},
+            )
+    finally:
+        repository.close()
+
+
 def test_worker_rejects_registration_kind_with_surrounding_whitespace(
     tmp_path: Path,
 ) -> None:
@@ -905,4 +1257,147 @@ def test_run_forever_waits_on_stop_event_instead_of_busy_spinning(
 
         assert stop_event.wait_calls == [0.25]
     finally:
+        repository.close()
+
+
+def test_worker_heartbeat_thread_publishes_when_idle_and_stops_cleanly(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    stop_event = threading.Event()
+    worker = TaskWorker(
+        repository,
+        worker_id="heartbeat-idle",
+        poll_interval=0.01,
+        heartbeat_interval=0.02,
+    )
+    runner = threading.Thread(
+        target=worker.run_forever,
+        args=(stop_event,),
+        name="worker-test-idle",
+    )
+    try:
+        runner.start()
+        _wait_until(lambda: repository.worker_status().state == "running")
+
+        stop_event.set()
+        runner.join(timeout=2)
+
+        assert not runner.is_alive()
+        assert all(
+            thread.name != "task-worker-heartbeat-heartbeat-idle"
+            for thread in threading.enumerate()
+        )
+    finally:
+        stop_event.set()
+        runner.join(timeout=2)
+        repository.close()
+
+
+def test_worker_heartbeat_advances_while_task_handler_is_blocked(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    entered = threading.Event()
+    release = threading.Event()
+    stop_event = threading.Event()
+    repository.create("heartbeat.block", {})
+    worker = TaskWorker(
+        repository,
+        worker_id="heartbeat-blocked",
+        poll_interval=0.01,
+        heartbeat_interval=0.02,
+    )
+
+    def block(_task: object) -> dict[str, bool]:
+        entered.set()
+        assert release.wait(timeout=2)
+        return {"released": True}
+
+    worker.register("heartbeat.block", block)
+    runner = threading.Thread(target=worker.run_forever, args=(stop_event,))
+    try:
+        runner.start()
+        assert entered.wait(timeout=2)
+        first_seen = repository.worker_status().last_seen_at
+        assert first_seen is not None
+        _wait_until(lambda: repository.worker_status().last_seen_at > first_seen)
+
+        release.set()
+        stop_event.set()
+        runner.join(timeout=2)
+
+        assert not runner.is_alive()
+    finally:
+        release.set()
+        stop_event.set()
+        runner.join(timeout=2)
+        repository.close()
+
+
+def test_worker_heartbeat_failure_stops_loop_and_cleans_executor(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    worker = TaskWorker(
+        repository,
+        worker_id="heartbeat-failure",
+        poll_interval=0.01,
+        heartbeat_interval=0.01,
+    )
+
+    with repository.engine.begin() as connection:
+        connection.exec_driver_sql("DROP TABLE task_worker_heartbeat")
+    try:
+        with pytest.raises(RuntimeError, match="failed before readiness"):
+            worker.run_forever(threading.Event())
+
+        assert not any(
+            child.name == "task-worker-heartbeat-heartbeat-failure"
+            for child in multiprocessing.active_children()
+        )
+        assert all(
+            thread.name != "task-worker-heartbeat-heartbeat-failure"
+            for thread in threading.enumerate()
+        )
+    finally:
+        repository.close()
+
+
+def test_multiple_worker_heartbeat_threads_stop_without_leaks(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    stops = [threading.Event(), threading.Event()]
+    workers = [
+        TaskWorker(
+            repository,
+            worker_id=f"heartbeat-multi-{index}",
+            poll_interval=0.01,
+            heartbeat_interval=0.02,
+        )
+        for index in range(2)
+    ]
+    runners = [
+        threading.Thread(target=worker.run_forever, args=(stop,))
+        for worker, stop in zip(workers, stops)
+    ]
+    try:
+        for runner in runners:
+            runner.start()
+        _wait_until(lambda: repository.worker_status().state == "running")
+
+        for stop in stops:
+            stop.set()
+        for runner in runners:
+            runner.join(timeout=2)
+
+        assert all(not runner.is_alive() for runner in runners)
+        assert not any(
+            thread.name.startswith("task-worker-heartbeat-heartbeat-multi-")
+            for thread in threading.enumerate()
+        )
+    finally:
+        for stop in stops:
+            stop.set()
+        for runner in runners:
+            runner.join(timeout=2)
         repository.close()
