@@ -628,6 +628,7 @@ def test_release_publishes_only_the_attested_immutable_asset_directory() -> None
         "Download attested release assets",
         "Verify release asset checksums",
         "Verify complete release asset checksums",
+        "Verify remote tag still matches workflow commit",
         "Create GitHub release",
     ]
     download = steps[0]
@@ -640,7 +641,7 @@ def test_release_publishes_only_the_attested_immutable_asset_directory() -> None
     assert steps[2]["working-directory"] == "release-assets"
     assert "sha256sum -c SHA256SUMS.complete" in steps[2]["run"]
     assert (
-        steps[3]["run"] == 'gh release create "$GITHUB_REF_NAME" release-assets/* '
+        steps[4]["run"] == 'gh release create "$GITHUB_REF_NAME" release-assets/* '
         '--verify-tag --generate-notes --title "Stock Desk $GITHUB_REF_NAME"'
     )
 
@@ -1634,12 +1635,47 @@ def test_release_checksum_manifest_is_flat_and_verified_before_publish() -> None
     )
     native_commands = native_checksum_step["run"]
     assert "-eq 3" in native_commands
-    assert "-eq 4" in native_commands
     assert "SHA256SUMS.complete" in native_commands
     assert "wc -l < SHA256SUMS.complete" in native_commands
-    for pattern in ("*.exe", "*.dmg", "*.sbom.spdx.json"):
+    for pattern in ("*.exe", "*.dmg", "stock-desk.spdx.json", "*.sbom.spdx.json"):
         assert pattern in native_commands
     assert release_steps.index(native_checksum_step) < create_step_index
+
+
+def test_release_publish_gate_verifies_base_and_installer_sboms_separately() -> None:
+    workflow = _load_github_actions_yaml(_read(".github/workflows/release.yml"))
+    release_steps = workflow["jobs"]["release"]["steps"]
+    complete_step = next(
+        step
+        for step in release_steps
+        if step.get("name") == "Verify complete release asset checksums"
+    )
+    commands = complete_step["run"]
+
+    assert "test -s stock-desk.spdx.json" in commands
+    assert "-name 'stock-desk-*-*.sbom.spdx.json'" in commands
+    assert 'installer_sboms[@]}" -eq 3' in commands
+    assert "-name '*.sbom.spdx.json' | wc -l" not in commands
+
+
+def test_release_publish_gate_rejects_a_moved_remote_tag() -> None:
+    workflow = _load_github_actions_yaml(_read(".github/workflows/release.yml"))
+    release_steps = workflow["jobs"]["release"]["steps"]
+    create_index = next(
+        index
+        for index, step in enumerate(release_steps)
+        if step.get("name") == "Create GitHub release"
+    )
+    tag_step = release_steps[create_index - 1]
+
+    assert tag_step["name"] == "Verify remote tag still matches workflow commit"
+    commands = tag_step["run"]
+    assert (
+        'git ls-remote "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" '
+        '"refs/tags/${GITHUB_REF_NAME}^{}"' in commands
+    )
+    assert 'test -n "$remote_tag_target"' in commands
+    assert 'test "$remote_tag_target" = "$GITHUB_SHA"' in commands
 
 
 def test_codeowners_covers_source_web_docs_tests_and_automation() -> None:
