@@ -40,17 +40,20 @@ def test_all_first_release_acceptance_domains_and_full_journey_are_gated() -> No
     )
     assert "tests/acceptance/test_full_user_journey.py" in journey_gate
     assert "::" not in journey_gate
+    candidate_gates = verify_release_module._candidate_gates(target_performance=True)
     candidate_targets = {
-        gate.command[1]
-        for gate in verify_release_module._candidate_gates(target_performance=True)
-        if gate.command[:1] == ("make",)
+        gate.command[1] for gate in candidate_gates if gate.command[:1] == ("make",)
     }
     assert {
         "acceptance-domain-contracts",
         "acceptance-full-journey",
     } <= candidate_targets
-    assert "make acceptance-domain-contracts" in workflow
-    assert "make acceptance-full-journey" in workflow
+    assert candidate_gates[0] == verify_release_module.PRE_PUBLISH_EVIDENCE_GATE
+    assert candidate_gates.count(verify_release_module.PRE_PUBLISH_EVIDENCE_GATE) == 1
+    assert "scripts/verify_release.py" in workflow
+    assert "--candidate --target-performance" in workflow
+    assert "make acceptance-domain-contracts" not in workflow
+    assert "make acceptance-full-journey" not in workflow
     assert set(release_line.removeprefix("release-check:").split()) == {
         "test",
         "acceptance",
