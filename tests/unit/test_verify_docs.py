@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+from functools import lru_cache
 from pathlib import Path
 import re
 import struct
 import subprocess
+from typing import Any
 import zlib
 
 import pytest
@@ -49,6 +51,33 @@ EXPECTED_WIKI_PAGE_STEMS = (
     "Backup-Restore-Upgrade-and-Uninstall",
     "Troubleshooting",
 )
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+CAPTURE_COMMIT = "17912f5fa8cb43c1df7c41315b8cd60199b9d403"
+
+
+def _initialize_fixture_git(root: Path) -> None:
+    subprocess.run(("git", "init", "-q", str(root)), check=True)
+    object_directory = subprocess.check_output(
+        ("git", "rev-parse", "--git-path", "objects"),
+        cwd=PROJECT_ROOT,
+        text=True,
+    ).strip()
+    alternates = root / ".git/objects/info/alternates"
+    alternates.parent.mkdir(parents=True, exist_ok=True)
+    alternates.write_text(
+        f"{Path(object_directory).resolve()}\n",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ("git", "-C", str(root), "update-ref", "refs/heads/main", CAPTURE_COMMIT),
+        check=True,
+    )
+    subprocess.run(
+        ("git", "-C", str(root), "symbolic-ref", "HEAD", "refs/heads/main"),
+        check=True,
+    )
+
 
 EXPECTED_REPLACED_WIKI_PAGES = (
     "Installation.md",
@@ -2593,6 +2622,14 @@ def _write_repository(root: Path) -> None:
         ("bootstrap:\n\t@true\ndev:\n\t@true\ntest:\n\t@true\nacceptance:\n\t@true\n"),
         encoding="utf-8",
     )
+    routes = root / "web/src/app/route-paths.json"
+    routes.parent.mkdir(parents=True, exist_ok=True)
+    routes.write_text(
+        (PROJECT_ROOT / "web/src/app/route-paths.json").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    _write_readme_screenshot_manifest(root)
+    _initialize_fixture_git(root)
 
 
 def _planned_screenshot_id(stem: str) -> str:
@@ -3014,6 +3051,7 @@ screenshots:
     )
 
 
+@lru_cache(maxsize=128)
 def _png_bytes(width: int, height: int, *, varied: bool, seed: int = 0) -> bytes:
     def chunk(kind: bytes, payload: bytes) -> bytes:
         checksum = zlib.crc32(kind + payload) & 0xFFFFFFFF
@@ -3036,6 +3074,142 @@ def _png_bytes(width: int, height: int, *, varied: bool, seed: int = 0) -> bytes
         + chunk(b"IHDR", header)
         + chunk(b"IDAT", zlib.compress(bytes(rows), level=9))
         + chunk(b"IEND", b"")
+    )
+
+
+def _write_readme_screenshot_manifest(root: Path) -> None:
+    commit = subprocess.run(
+        ("git", "rev-parse", "HEAD"),
+        cwd=Path(__file__).resolve().parents[2],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    definitions: tuple[tuple[str, str, str, bool, str, str], ...] = (
+        (
+            "market-data-and-charts",
+            "/market",
+            "real_chart",
+            True,
+            "600519.SH",
+            "贵州茅台",
+        ),
+        (
+            "formula-studio",
+            "/formulas",
+            "real_formula_preview",
+            True,
+            "300750.SZ",
+            "宁德时代",
+        ),
+        (
+            "backtesting",
+            "/backtests",
+            "blocked_real_backtest_preflight",
+            True,
+            "000001.SZ",
+            "平安银行",
+        ),
+        (
+            "multi-agent-research",
+            "/analysis",
+            "analysis_readiness",
+            False,
+            "600036.SH",
+            "招商银行",
+        ),
+    )
+    dataset_versions = {
+        "market-data-and-charts": "sha256:aa8112c9eda7ed05ed8d92d21afe9dae45fafb295a0fa5ba278c1805a7533236",
+        "formula-studio": "sha256:7e7fbcce7ee0c7a0bd58b9ebd7d7e06c0755b4195ee3a32c49dfab269147f2fe",
+        "backtesting": "sha256:5a3d9256e58f5bafbad48a7d1fb4ec690d032552aee4c6ae4df7b9940356ec24",
+    }
+    image_sections = {
+        "README.md": """
+![带来源证据的 A 股行情图](docs/images/market-data-and-charts.png)
+
+贵州茅台 `600519.SH`，BaoStock 日线/前复权，数据截至 `2026-07-08T07:00:00Z`。仅作功能演示，不构成投资建议。
+
+| 真实公式预览 | 被阻断的真实回测预检 | 分析准备状态 |
+| --- | --- | --- |
+| ![宁德时代 MACD BUY/SELL 公式预览](docs/images/formula-studio.png)<br>宁德时代 `300750.SZ`；BaoStock，1d/qfq；截至 `2026-07-08T07:00:00Z`；显示 MACD BUY/SELL。仅作功能演示，不构成投资建议。 | ![平安银行 MACD 回测严格预检被阻断](docs/images/backtesting.png)<br>平安银行 `000001.SZ` 的真实 MACD 配置；BaoStock，1d/qfq；截至 `2026-07-08T07:00:00Z`。因没有合法的 Tushare execution-status 快照，严格预检被阻断；未创建任务或报告，不代表回测成功、结果或胜率。仅作功能演示，不构成投资建议。 | ![招商银行模型与证据准备状态](docs/images/multi-agent-research.png)<br>招商银行 `600036.SH` 的模型/证据准备状态：无已验证模型，未发起模型调用，也未生成报告。 |
+""",
+        "README.en.md": """
+![A-share market chart with provenance](docs/images/market-data-and-charts.png)
+
+Kweichow Moutai `600519.SH`; BaoStock daily/qfq data; cutoff `2026-07-08T07:00:00Z`. For feature demonstration only; not investment advice. （仅作功能演示，不构成投资建议。）
+
+| Real formula preview | Blocked real backtest preflight | Analysis readiness |
+| --- | --- | --- |
+| ![CATL MACD BUY/SELL formula preview](docs/images/formula-studio.png)<br>CATL `300750.SZ`; BaoStock, 1d/qfq; cutoff `2026-07-08T07:00:00Z`; MACD BUY/SELL are visible. For feature demonstration only; not investment advice. （仅作功能演示，不构成投资建议。） | ![Ping An Bank MACD strict preflight blocked](docs/images/backtesting.png)<br>Real MACD configuration for Ping An Bank `000001.SZ`; BaoStock, 1d/qfq; cutoff `2026-07-08T07:00:00Z`. Strict preflight is blocked because no authorized Tushare execution-status snapshot exists. No task or report was created; this is not a successful backtest, result, or win rate. For feature demonstration only; not investment advice. （仅作功能演示，不构成投资建议。） | ![China Merchants Bank model and evidence readiness](docs/images/multi-agent-research.png)<br>Model/evidence readiness for China Merchants Bank `600036.SH`: no verified model, no model call started, and no report generated. |
+""",
+    }
+    for readme_name, image_section in image_sections.items():
+        readme = root / readme_name
+        readme.write_text(
+            readme.read_text(encoding="utf-8") + image_section,
+            encoding="utf-8",
+        )
+
+    entries: list[dict[str, Any]] = []
+    for ordinal, (
+        screenshot_id,
+        route,
+        state,
+        contains_market_data,
+        symbol,
+        name,
+    ) in enumerate(definitions, start=1):
+        relative_path = f"docs/images/{screenshot_id}.png"
+        payload = _png_bytes(1440, 1000, varied=True, seed=ordinal)
+        image = root / relative_path
+        image.parent.mkdir(parents=True, exist_ok=True)
+        image.write_bytes(payload)
+        market_data = None
+        if contains_market_data:
+            market_data = {
+                "symbol": symbol,
+                "name": name,
+                "period": "1d",
+                "adjustment": "qfq",
+                "start": "2021-01-01",
+                "end": "2026-07-08",
+                "source": "baostock",
+                "data_cutoff": "2026-07-08T07:00:00Z",
+                "dataset_version": dataset_versions[screenshot_id],
+            }
+        entries.append(
+            {
+                "screenshot_id": screenshot_id,
+                "path": relative_path,
+                "state": state,
+                "route": route,
+                "viewport": {
+                    "width": 1440,
+                    "height": 1000,
+                    "device_scale_factor": 1,
+                },
+                "product": {"version": "1.0.0", "git_commit": commit},
+                "captured_at": "2026-07-09T00:00:00Z",
+                "sha256": hashlib.sha256(payload).hexdigest(),
+                "contains_market_data": contains_market_data,
+                "market_data": market_data,
+                "capture": "in-app-browser",
+                "editing": "none",
+                "redaction": "passed",
+                "disclaimer": "仅作功能演示，不构成投资建议",
+            }
+        )
+    (root / "docs/images/manifest.yml").write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": "stock-desk-documentation-screenshots-v1",
+                "screenshots": entries,
+            },
+            sort_keys=False,
+            allow_unicode=True,
+        ),
+        encoding="utf-8",
     )
 
 
@@ -3176,6 +3350,509 @@ def test_repository_documentation_contract_passes_for_complete_tree(
     _write_repository(tmp_path)
 
     assert verify_repository(tmp_path) == []
+
+
+def _readme_manifest(root: Path) -> tuple[Path, dict[str, Any]]:
+    path = root / "docs/images/manifest.yml"
+    loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert isinstance(loaded, dict)
+    return path, loaded
+
+
+def test_repository_requires_readme_screenshot_manifest(tmp_path: Path) -> None:
+    _write_repository(tmp_path)
+    (tmp_path / "docs/images/manifest.yml").unlink()
+
+    failures = verify_repository(tmp_path)
+
+    assert any("README screenshot manifest is missing" in item for item in failures)
+
+
+def test_repository_rejects_symlinked_readme_manifest(tmp_path: Path) -> None:
+    _write_repository(tmp_path)
+    manifest = tmp_path / "docs/images/manifest.yml"
+    target = tmp_path / "manifest-target.yml"
+    manifest.replace(target)
+    manifest.symlink_to(target)
+
+    failures = verify_repository(tmp_path)
+
+    assert any("manifest" in item.casefold() and "symlink" in item for item in failures)
+
+
+def test_repository_rejects_symlink_in_readme_image_parent_path(tmp_path: Path) -> None:
+    _write_repository(tmp_path)
+    images = tmp_path / "docs/images"
+    target = tmp_path / "images-target"
+    images.replace(target)
+    images.symlink_to(target, target_is_directory=True)
+
+    failures = verify_repository(tmp_path)
+
+    assert any("docs/images" in item and "symlink" in item for item in failures)
+
+
+def test_repository_rejects_symlinked_readme_image(tmp_path: Path) -> None:
+    _write_repository(tmp_path)
+    image = tmp_path / "docs/images/market-data-and-charts.png"
+    target = tmp_path / "outside-market.png"
+    image.replace(target)
+    image.symlink_to(target)
+
+    failures = verify_repository(tmp_path)
+
+    assert any(
+        "market-data-and-charts.png" in item and "symlink" in item for item in failures
+    )
+
+
+def test_repository_rejects_nul_image_path_without_raising(tmp_path: Path) -> None:
+    _write_repository(tmp_path)
+    manifest_path, manifest = _readme_manifest(tmp_path)
+    manifest["screenshots"][0]["path"] = "docs/images/bad\0name.png"
+    manifest_path.write_text(
+        yaml.safe_dump(manifest, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
+
+    failures = verify_repository(tmp_path)
+
+    assert any("invalid docs/images path" in item for item in failures)
+
+
+def test_repository_reports_unreadable_image_hash_without_raising(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_repository(tmp_path)
+    target = (tmp_path / "docs/images/market-data-and-charts.png").resolve()
+    original = Path.read_bytes
+
+    def unreadable(path: Path) -> bytes:
+        if path.resolve() == target:
+            raise PermissionError("portable unreadable image simulation")
+        return original(path)
+
+    monkeypatch.setattr(Path, "read_bytes", unreadable)
+
+    failures = verify_repository(tmp_path)
+
+    assert any("image is unreadable" in item for item in failures)
+
+
+def test_repository_reports_pillow_reopen_error_without_raising(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_repository(tmp_path)
+    target = (tmp_path / "docs/images/market-data-and-charts.png").resolve()
+    original = verify_docs_module.Image.open
+    target_calls = 0
+
+    def fail_third_open(path: object, *args: object, **kwargs: object) -> object:
+        nonlocal target_calls
+        if Path(path).resolve() == target:
+            target_calls += 1
+            if target_calls == 3:
+                raise OSError("portable Pillow reopen simulation")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(verify_docs_module.Image, "open", fail_third_open)
+
+    failures = verify_repository(tmp_path)
+
+    assert any("image metadata is unreadable" in item for item in failures)
+
+
+def test_repository_reports_corrupt_manifest_image_without_raising(
+    tmp_path: Path,
+) -> None:
+    _write_repository(tmp_path)
+    image_path = tmp_path / "docs/images/market-data-and-charts.png"
+    image_path.write_bytes(b"not a raster image")
+    manifest_path, manifest = _readme_manifest(tmp_path)
+    manifest["screenshots"][0]["sha256"] = hashlib.sha256(
+        image_path.read_bytes()
+    ).hexdigest()
+    manifest_path.write_text(
+        yaml.safe_dump(manifest, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
+
+    failures = verify_repository(tmp_path)
+
+    assert any("image decode failed" in item for item in failures)
+
+
+def test_repository_readme_manifest_binds_stable_id_to_path_state_and_route(
+    tmp_path: Path,
+) -> None:
+    _write_repository(tmp_path)
+    manifest_path, manifest = _readme_manifest(tmp_path)
+    manifest["screenshots"][0]["screenshot_id"] = "renamed-market-shot"
+    manifest_path.write_text(
+        yaml.safe_dump(manifest, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
+
+    failures = verify_repository(tmp_path)
+
+    assert any("stable identity binding" in item for item in failures)
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    (
+        ("symbol", "600000.SH"),
+        ("name", "浦发银行"),
+        ("period", "1w"),
+        ("adjustment", "hfq"),
+        ("start", "2020-01-01"),
+        ("end", "2026-07-07"),
+        ("source", "tushare"),
+        ("data_cutoff", "2026-07-08T06:00:00Z"),
+        ("dataset_version", "sha256:" + "b" * 64),
+    ),
+)
+def test_repository_readme_manifest_binds_complete_market_data_identity(
+    tmp_path: Path, field: str, replacement: str
+) -> None:
+    _write_repository(tmp_path)
+    manifest_path, manifest = _readme_manifest(tmp_path)
+    manifest["screenshots"][0]["market_data"][field] = replacement
+    manifest_path.write_text(
+        yaml.safe_dump(manifest, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
+
+    failures = verify_repository(tmp_path)
+
+    assert any("stable market-data identity" in item for item in failures)
+
+
+def test_repository_readme_manifest_rejects_extra_market_data_key(
+    tmp_path: Path,
+) -> None:
+    _write_repository(tmp_path)
+    manifest_path, manifest = _readme_manifest(tmp_path)
+    manifest["screenshots"][0]["market_data"]["is_real"] = False
+    manifest_path.write_text(
+        yaml.safe_dump(manifest, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
+
+    failures = verify_repository(tmp_path)
+
+    assert any("market_data keys must match exactly" in item for item in failures)
+
+
+def test_market_fake_markers_ignore_hashes_and_dates() -> None:
+    assert not verify_docs_module._market_provenance_has_forbidden_marker(
+        {
+            "name": "贵州茅台",
+            "source": "baostock",
+            "start": "demo-date",
+            "dataset_version": "sha256:cc0demo",
+        }
+    )
+
+
+def test_repository_uses_routes_from_verified_root(tmp_path: Path) -> None:
+    _write_repository(tmp_path)
+    routes = tmp_path / "web/src/app/route-paths.json"
+    routes.parent.mkdir(parents=True, exist_ok=True)
+    routes.write_text("{}\n", encoding="utf-8")
+
+    failures = verify_repository(tmp_path)
+
+    assert any(
+        "Unable to load canonical application routes" in item for item in failures
+    )
+
+
+def test_repository_requires_commit_reachable_from_verified_root(
+    tmp_path: Path,
+) -> None:
+    _write_repository(tmp_path)
+    git = tmp_path / ".git"
+    if git.is_dir():
+        for path in sorted(git.rglob("*"), reverse=True):
+            if path.is_file() or path.is_symlink():
+                path.unlink()
+            elif path.is_dir():
+                path.rmdir()
+        git.rmdir()
+
+    failures = verify_repository(tmp_path)
+
+    assert any("reachable repository commit" in item for item in failures)
+
+
+def test_wiki_uses_routes_from_explicit_repository_root(tmp_path: Path) -> None:
+    wiki = tmp_path / "wiki"
+    wiki.mkdir()
+    _write_complete_final_wiki(wiki)
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    _write_repository(repository)
+    routes = repository / "web/src/app/route-paths.json"
+    routes.parent.mkdir(parents=True, exist_ok=True)
+    routes.write_text("{}\n", encoding="utf-8")
+
+    failures = verify_wiki(wiki, final=True, repo_root=repository)
+
+    assert any(
+        "Unable to load canonical application routes" in item for item in failures
+    )
+
+
+@pytest.mark.parametrize("mutation", ("missing", "duplicate", "extra"))
+def test_repository_readme_images_and_manifest_paths_match_exactly_once(
+    tmp_path: Path, mutation: str
+) -> None:
+    _write_repository(tmp_path)
+    manifest_path, manifest = _readme_manifest(tmp_path)
+    entries = manifest["screenshots"]
+    assert isinstance(entries, list)
+    if mutation == "missing":
+        entries.pop()
+    elif mutation == "duplicate":
+        entries[-1]["path"] = entries[0]["path"]
+    else:
+        extra = dict(entries[-1])
+        extra["screenshot_id"] = "unreferenced-extra"
+        extra["path"] = "docs/images/unreferenced-extra.png"
+        (tmp_path / extra["path"]).write_bytes(
+            _png_bytes(1440, 1000, varied=True, seed=99)
+        )
+        extra["sha256"] = hashlib.sha256(
+            (tmp_path / extra["path"]).read_bytes()
+        ).hexdigest()
+        entries.append(extra)
+    manifest_path.write_text(
+        yaml.safe_dump(manifest, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
+
+    failures = verify_repository(tmp_path)
+
+    assert any("exactly once" in item for item in failures)
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid", "expected"),
+    (
+        ("sha256", "0" * 64, "SHA-256 does not match"),
+        ("path", "../outside.png", "escapes docs/images"),
+        (
+            "viewport",
+            {"width": 0, "height": 1000, "device_scale_factor": 1},
+            "1440x1000",
+        ),
+        (
+            "product",
+            {
+                "version": "0.9.9",
+                "git_commit": "17912f5fa8cb43c1df7c41315b8cd60199b9d403",
+            },
+            "version 1.0.0",
+        ),
+        (
+            "product",
+            {"version": "1.0.0", "git_commit": "f" * 40},
+            "reachable repository commit",
+        ),
+        ("captured_at", "2026-07-09T08:00:00+08:00", "aware UTC captured_at"),
+    ),
+)
+def test_repository_readme_manifest_rejects_invalid_capture_metadata(
+    tmp_path: Path, field: str, invalid: object, expected: str
+) -> None:
+    _write_repository(tmp_path)
+    manifest_path, manifest = _readme_manifest(tmp_path)
+    manifest["screenshots"][0][field] = invalid
+    manifest_path.write_text(
+        yaml.safe_dump(manifest, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
+
+    failures = verify_repository(tmp_path)
+
+    assert any(expected in item for item in failures)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected"),
+    (
+        ("fake_source", "real market provenance"),
+        ("market_null", "requires real market provenance"),
+        ("readiness_market", "market_data must be null"),
+    ),
+)
+def test_repository_readme_manifest_enforces_truthful_market_provenance(
+    tmp_path: Path, mutation: str, expected: str
+) -> None:
+    _write_repository(tmp_path)
+    manifest_path, manifest = _readme_manifest(tmp_path)
+    entries = manifest["screenshots"]
+    if mutation == "fake_source":
+        entries[0]["market_data"]["source"] = "synthetic fixture"
+    elif mutation == "market_null":
+        entries[0]["market_data"] = None
+    else:
+        entries[-1]["market_data"] = dict(entries[0]["market_data"])
+    manifest_path.write_text(
+        yaml.safe_dump(manifest, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
+
+    failures = verify_repository(tmp_path)
+
+    assert any(expected in item for item in failures)
+
+
+@pytest.mark.parametrize("forbidden_marker", ("DEMO dataset", "cC0 licensed data"))
+def test_repository_readme_manifest_rejects_each_demo_or_cc0_marker(
+    tmp_path: Path, forbidden_marker: str
+) -> None:
+    _write_repository(tmp_path)
+    manifest_path, manifest = _readme_manifest(tmp_path)
+    manifest["screenshots"][0]["market_data"]["name"] = forbidden_marker
+    manifest_path.write_text(
+        yaml.safe_dump(manifest, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
+
+    failures = verify_repository(tmp_path)
+
+    assert any("requires real market provenance" in item for item in failures)
+
+
+def test_repository_readme_manifest_rejects_legacy_cutoff_field(
+    tmp_path: Path,
+) -> None:
+    _write_repository(tmp_path)
+    manifest_path, manifest = _readme_manifest(tmp_path)
+    market_data = manifest["screenshots"][0]["market_data"]
+    market_data["cutoff"] = market_data.pop("data_cutoff")
+    manifest_path.write_text(
+        yaml.safe_dump(manifest, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
+
+    failures = verify_repository(tmp_path)
+
+    assert any("aware UTC data_cutoff" in item for item in failures)
+
+
+@pytest.mark.parametrize(
+    ("readme_name", "truthful", "misleading", "image_name"),
+    (
+        (
+            "README.md",
+            "不代表回测成功、结果或胜率",
+            "回测成功，已有结果和胜率",
+            "backtesting.png",
+        ),
+        (
+            "README.en.md",
+            "no verified model, no model call started, and no report generated",
+            "verified model, model call completed, and report generated",
+            "multi-agent-research.png",
+        ),
+        (
+            "README.md",
+            "显示 MACD BUY/SELL。仅作功能演示，不构成投资建议。",
+            "显示 MACD BUY/SELL。",
+            "formula-studio.png",
+        ),
+    ),
+)
+def test_repository_readme_manifest_requires_local_truthful_image_context(
+    tmp_path: Path,
+    readme_name: str,
+    truthful: str,
+    misleading: str,
+    image_name: str,
+) -> None:
+    _write_repository(tmp_path)
+    readme = tmp_path / readme_name
+    readme.write_text(
+        readme.read_text(encoding="utf-8").replace(truthful, misleading, 1),
+        encoding="utf-8",
+    )
+
+    failures = verify_repository(tmp_path)
+
+    assert any(
+        readme_name in item and image_name in item and "local truthful caption" in item
+        for item in failures
+    )
+
+
+@pytest.mark.parametrize(
+    ("readme_name", "truthful", "contradiction"),
+    (
+        (
+            "README.en.md",
+            "this is not a successful backtest, result, or win rate",
+            "this is not a successful backtest, result, or win rate; "
+            "however, this is a successful backtest result with a 99% win rate",
+        ),
+        (
+            "README.md",
+            "不代表回测成功、结果或胜率",
+            "不代表回测成功、结果或胜率；但回测成功，胜率 99%",
+        ),
+        (
+            "README.en.md",
+            "this is not a successful backtest, result, or win rate",
+            "this is not a successful backtest, result, or win rate; "
+            "the backtest succeeded and achieved a 99% win rate",
+        ),
+        (
+            "README.md",
+            "不代表回测成功、结果或胜率",
+            "不代表回测成功、结果或胜率；该回测已经成功，胜率为 99%",
+        ),
+    ),
+)
+def test_repository_readme_manifest_rejects_local_contradictory_backtest_claim(
+    tmp_path: Path,
+    readme_name: str,
+    truthful: str,
+    contradiction: str,
+) -> None:
+    _write_repository(tmp_path)
+    readme = tmp_path / readme_name
+    readme.write_text(
+        readme.read_text(encoding="utf-8").replace(truthful, contradiction, 1),
+        encoding="utf-8",
+    )
+
+    failures = verify_repository(tmp_path)
+
+    assert any(
+        readme_name in item
+        and "backtesting.png" in item
+        and ("contradictory claim" in item or "exact local caption contract" in item)
+        for item in failures
+    )
+
+
+@pytest.mark.parametrize("addition", (r" escaped\|pipe", " `inline|code`"))
+def test_repository_table_context_conservatively_rejects_pipe_alterations(
+    tmp_path: Path, addition: str
+) -> None:
+    _write_repository(tmp_path)
+    readme = tmp_path / "README.en.md"
+    truthful = "not a successful backtest, result, or win rate"
+    readme.write_text(
+        readme.read_text(encoding="utf-8").replace(truthful, truthful + addition, 1),
+        encoding="utf-8",
+    )
+
+    failures = verify_repository(tmp_path)
+
+    assert any("exact local caption contract" in item for item in failures)
 
 
 def test_complete_final_wiki_fixture_passes_every_publication_gate(
@@ -5366,10 +6043,12 @@ def test_application_routes_use_shared_json_as_the_single_source_of_truth() -> N
     assert isinstance(contract, dict)
     source = (repo / "web/src/app/routes.ts").read_text(encoding="utf-8")
     assert "./route-paths.json" in source
-    assert verify_docs_module._canonical_app_routes() == frozenset(contract.values())
+    assert verify_docs_module._canonical_app_routes(repo) == frozenset(
+        contract.values()
+    )
     for key in contract:
         assert source.count(f"routePaths.{key}") == 1
-    assert "/comment-only-route" not in verify_docs_module._canonical_app_routes()
+    assert "/comment-only-route" not in verify_docs_module._canonical_app_routes(repo)
 
 
 def test_wiki_feature_index_rejects_every_unparsed_table_body_row(
@@ -5517,7 +6196,9 @@ def test_repository_audit_supports_distinct_ssh_identity_policy_surface() -> Non
     assert (
         verify_docs_module._surface_failure(
             ("repository-audit", "ssh-identity-policy"),
-            verify_docs_module._canonical_app_routes(),
+            verify_docs_module._canonical_app_routes(
+                Path(__file__).resolve().parents[2]
+            ),
         )
         is None
     )

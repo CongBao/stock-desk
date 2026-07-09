@@ -2534,6 +2534,238 @@ MIN_SCREENSHOT_WIDTH = 320
 MIN_SCREENSHOT_HEIGHT = 180
 SCREENSHOT_MANIFEST_SCHEMA = "stock-desk-documentation-screenshots-v1"
 SCREENSHOT_DISCLAIMER = "\u4ec5\u4f5c\u529f\u80fd\u6f14\u793a\uff0c\u4e0d\u6784\u6210\u6295\u8d44\u5efa\u8bae"
+README_ENGLISH_SCREENSHOT_DISCLAIMER = (
+    "For feature demonstration only; not investment advice."
+)
+README_SCREENSHOT_MANIFEST = "docs/images/manifest.yml"
+README_SCREENSHOT_STATES = {
+    "real_chart": ("/market", True),
+    "real_formula_preview": ("/formulas", True),
+    "blocked_real_backtest_preflight": ("/backtests", True),
+    "analysis_readiness": ("/analysis", False),
+}
+
+
+@dataclass(frozen=True)
+class ReadmeScreenshotBinding:
+    path: str
+    state: str
+    route: str
+    contains_market_data: bool
+
+
+@dataclass(frozen=True)
+class ReadmeMarketDataIdentity:
+    symbol: str
+    name: str
+    period: str
+    adjustment: str
+    start: str
+    end: str
+    source: str
+    data_cutoff: str
+    dataset_version: str
+
+
+README_MARKET_DATA_KEYS = frozenset(ReadmeMarketDataIdentity.__dataclass_fields__)
+README_SCREENSHOT_BINDINGS = {
+    "market-data-and-charts": ReadmeScreenshotBinding(
+        "docs/images/market-data-and-charts.png",
+        "real_chart",
+        "/market",
+        True,
+    ),
+    "formula-studio": ReadmeScreenshotBinding(
+        "docs/images/formula-studio.png",
+        "real_formula_preview",
+        "/formulas",
+        True,
+    ),
+    "backtesting": ReadmeScreenshotBinding(
+        "docs/images/backtesting.png",
+        "blocked_real_backtest_preflight",
+        "/backtests",
+        True,
+    ),
+    "multi-agent-research": ReadmeScreenshotBinding(
+        "docs/images/multi-agent-research.png",
+        "analysis_readiness",
+        "/analysis",
+        False,
+    ),
+}
+README_SCREENSHOT_MARKET_IDENTITIES = {
+    "market-data-and-charts": ReadmeMarketDataIdentity(
+        "600519.SH",
+        "贵州茅台",
+        "1d",
+        "qfq",
+        "2021-01-01",
+        "2026-07-08",
+        "baostock",
+        "2026-07-08T07:00:00Z",
+        "sha256:aa8112c9eda7ed05ed8d92d21afe9dae45fafb295a0fa5ba278c1805a7533236",
+    ),
+    "formula-studio": ReadmeMarketDataIdentity(
+        "300750.SZ",
+        "宁德时代",
+        "1d",
+        "qfq",
+        "2021-01-01",
+        "2026-07-08",
+        "baostock",
+        "2026-07-08T07:00:00Z",
+        "sha256:7e7fbcce7ee0c7a0bd58b9ebd7d7e06c0755b4195ee3a32c49dfab269147f2fe",
+    ),
+    "backtesting": ReadmeMarketDataIdentity(
+        "000001.SZ",
+        "平安银行",
+        "1d",
+        "qfq",
+        "2021-01-01",
+        "2026-07-08",
+        "baostock",
+        "2026-07-08T07:00:00Z",
+        "sha256:5a3d9256e58f5bafbad48a7d1fb4ec690d032552aee4c6ae4df7b9940356ec24",
+    ),
+    "multi-agent-research": None,
+}
+README_SCREENSHOT_CAPTION_MARKERS = {
+    "README.md": {
+        "docs/images/market-data-and-charts.png": (
+            "贵州茅台",
+            "600519.SH",
+            "BaoStock",
+            SCREENSHOT_DISCLAIMER,
+        ),
+        "docs/images/formula-studio.png": (
+            "宁德时代",
+            "300750.SZ",
+            "BaoStock",
+            "MACD BUY/SELL",
+            SCREENSHOT_DISCLAIMER,
+        ),
+        "docs/images/backtesting.png": (
+            "平安银行",
+            "000001.SZ",
+            "BaoStock",
+            "严格预检被阻断",
+            "没有合法的 Tushare execution-status 快照",
+            "未创建任务或报告",
+            "不代表回测成功、结果或胜率",
+            SCREENSHOT_DISCLAIMER,
+        ),
+        "docs/images/multi-agent-research.png": (
+            "招商银行",
+            "600036.SH",
+            "无已验证模型",
+            "未发起模型调用",
+            "未生成报告",
+        ),
+    },
+    "README.en.md": {
+        "docs/images/market-data-and-charts.png": (
+            "Kweichow Moutai",
+            "600519.SH",
+            "BaoStock",
+            SCREENSHOT_DISCLAIMER,
+            README_ENGLISH_SCREENSHOT_DISCLAIMER,
+        ),
+        "docs/images/formula-studio.png": (
+            "CATL",
+            "300750.SZ",
+            "BaoStock",
+            "MACD BUY/SELL",
+            SCREENSHOT_DISCLAIMER,
+            README_ENGLISH_SCREENSHOT_DISCLAIMER,
+        ),
+        "docs/images/backtesting.png": (
+            "Ping An Bank",
+            "000001.SZ",
+            "BaoStock",
+            "Strict preflight is blocked",
+            "no authorized Tushare execution-status snapshot",
+            "No task or report was created",
+            "not a successful backtest, result, or win rate",
+            SCREENSHOT_DISCLAIMER,
+            README_ENGLISH_SCREENSHOT_DISCLAIMER,
+        ),
+        "docs/images/multi-agent-research.png": (
+            "China Merchants Bank",
+            "600036.SH",
+            "no verified model",
+            "no model call started",
+            "no report generated",
+        ),
+    },
+}
+README_SCREENSHOT_LOCAL_CONTEXTS = {
+    "README.md": {
+        "docs/images/market-data-and-charts.png": (
+            "![带来源证据的 A 股行情图](docs/images/market-data-and-charts.png) "
+            "贵州茅台 `600519.SH`，BaoStock 日线/前复权，数据截至 "
+            "`2026-07-08T07:00:00Z`。仅作功能演示，不构成投资建议。"
+        ),
+        "docs/images/formula-studio.png": (
+            "![宁德时代 MACD BUY/SELL 公式预览](docs/images/formula-studio.png)"
+            "<br>宁德时代 `300750.SZ`；BaoStock，1d/qfq；截至 "
+            "`2026-07-08T07:00:00Z`；显示 MACD BUY/SELL。"
+            "仅作功能演示，不构成投资建议。"
+        ),
+        "docs/images/backtesting.png": (
+            "![平安银行 MACD 回测严格预检被阻断](docs/images/backtesting.png)"
+            "<br>平安银行 `000001.SZ` 的真实 MACD 配置；BaoStock，1d/qfq；截至 "
+            "`2026-07-08T07:00:00Z`。因没有合法的 Tushare execution-status "
+            "快照，严格预检被阻断；未创建任务或报告，不代表回测成功、结果或胜率。"
+            "仅作功能演示，不构成投资建议。"
+        ),
+        "docs/images/multi-agent-research.png": (
+            "![招商银行模型与证据准备状态](docs/images/multi-agent-research.png)"
+            "<br>招商银行 `600036.SH` 的模型/证据准备状态：无已验证模型，"
+            "未发起模型调用，也未生成报告。"
+        ),
+    },
+    "README.en.md": {
+        "docs/images/market-data-and-charts.png": (
+            "![A-share market chart with provenance]"
+            "(docs/images/market-data-and-charts.png) Kweichow Moutai `600519.SH`; "
+            "BaoStock daily/qfq data; cutoff `2026-07-08T07:00:00Z`. "
+            "For feature demonstration only; not investment advice. "
+            "（仅作功能演示，不构成投资建议。）"
+        ),
+        "docs/images/formula-studio.png": (
+            "![CATL MACD BUY/SELL formula preview](docs/images/formula-studio.png)"
+            "<br>CATL `300750.SZ`; BaoStock, 1d/qfq; cutoff "
+            "`2026-07-08T07:00:00Z`; MACD BUY/SELL are visible. "
+            "For feature demonstration only; not investment advice. "
+            "（仅作功能演示，不构成投资建议。）"
+        ),
+        "docs/images/backtesting.png": (
+            "![Ping An Bank MACD strict preflight blocked](docs/images/backtesting.png)"
+            "<br>Real MACD configuration for Ping An Bank `000001.SZ`; BaoStock, "
+            "1d/qfq; cutoff `2026-07-08T07:00:00Z`. Strict preflight is blocked "
+            "because no authorized Tushare execution-status snapshot exists. No task "
+            "or report was created; this is not a successful backtest, result, or win "
+            "rate. For feature demonstration only; not investment advice. "
+            "（仅作功能演示，不构成投资建议。）"
+        ),
+        "docs/images/multi-agent-research.png": (
+            "![China Merchants Bank model and evidence readiness]"
+            "(docs/images/multi-agent-research.png)<br>Model/evidence readiness for "
+            "China Merchants Bank `600036.SH`: no verified model, no model call "
+            "started, and no report generated."
+        ),
+    },
+}
+README_SCREENSHOT_CONTRADICTORY_MARKERS = {
+    "README.md": {
+        "docs/images/backtesting.png": ("回测成功，胜率",),
+    },
+    "README.en.md": {
+        "docs/images/backtesting.png": ("successful backtest result with a",),
+    },
+}
+FORBIDDEN_MARKET_PROVENANCE_MARKERS = ("synthetic", "fixture", "demo", "cc0")
 ACTIVE_REQUIREMENT_IDS = frozenset(f"R-{number:03d}" for number in range(1, 80))
 MARKET_SCREENSHOT_PAGE_PREFIXES = (
     "Market-",
@@ -3787,6 +4019,7 @@ def _raster_failure(path: Path) -> str | None:
         Image.DecompressionBombError,
         Image.DecompressionBombWarning,
         OSError,
+        RuntimeError,
         UnidentifiedImageError,
         ValueError,
     ) as error:
@@ -3930,6 +4163,8 @@ def verify_repository(repo_root: Path) -> list[str]:
                 f"{relative_path}: source-free installers must precede source setup"
             )
 
+    failures.extend(_readme_screenshot_manifest_failures(root, documents))
+
     configuration = documents.get("docs/configuration.md", "")
     for setting in sorted(_required_settings(root)):
         if setting not in configuration:
@@ -3937,6 +4172,490 @@ def verify_repository(repo_root: Path) -> list[str]:
 
     failures.extend(_tracked_boundary_failures(root))
     return sorted(set(failures))
+
+
+def _readme_image_paths(
+    root: Path, documents: dict[str, str]
+) -> tuple[dict[str, tuple[str, ...]], list[str]]:
+    targets: dict[str, tuple[str, ...]] = {}
+    failures: list[str] = []
+    for readme_name in ("README.md", "README.en.md"):
+        readme_path = root / readme_name
+        image_paths: list[str] = []
+        for rendered in _rendered_targets(documents.get(readme_name, "")):
+            if rendered.kind != "image":
+                continue
+            destination = _local_destination(root, readme_path, rendered.target)
+            if destination is None:
+                continue
+            try:
+                relative_path = destination.relative_to(root).as_posix()
+            except ValueError:
+                failures.append(
+                    f"{readme_name}: local image escapes repository: {rendered.target}"
+                )
+                continue
+            image_paths.append(relative_path)
+        targets[readme_name] = tuple(image_paths)
+    return targets, failures
+
+
+def _readme_local_image_context(document: str, target: str) -> str:
+    image_pattern = re.compile(rf"!\[[^\]]*\]\({re.escape(target)}\)")
+    lines = document.splitlines()
+    for position, line in enumerate(lines):
+        if image_pattern.search(line) is None:
+            continue
+        stripped = line.strip()
+        if stripped.startswith("|") and stripped.endswith("|"):
+            for cell in stripped.strip("|").split("|"):
+                if image_pattern.search(cell) is not None:
+                    return cell.strip()
+        context = [line]
+        for following in lines[position + 1 :]:
+            if following.strip():
+                context.append(following)
+                break
+        return "\n".join(context)
+    return ""
+
+
+def _readme_truthful_caption_failures(documents: dict[str, str]) -> list[str]:
+    failures: list[str] = []
+    for readme_name, contracts in README_SCREENSHOT_CAPTION_MARKERS.items():
+        document = documents.get(readme_name, "")
+        for image_path, markers in contracts.items():
+            context = _readme_local_image_context(document, image_path)
+            normalized_context = re.sub(r"\s+", " ", context).strip()
+            expected_context = README_SCREENSHOT_LOCAL_CONTEXTS[readme_name][image_path]
+            normalized_expected = re.sub(r"\s+", " ", expected_context).strip()
+            if normalized_context != normalized_expected:
+                failures.append(
+                    f"{readme_name}: {image_path} violates its exact local caption "
+                    "contract"
+                )
+            context_casefolded = context.casefold()
+            missing = [
+                marker
+                for marker in markers
+                if marker.casefold() not in context_casefolded
+            ]
+            if missing:
+                failures.append(
+                    f"{readme_name}: {image_path} local truthful caption is missing "
+                    f"required markers: {missing!r}"
+                )
+            contradictory = [
+                marker
+                for marker in README_SCREENSHOT_CONTRADICTORY_MARKERS.get(
+                    readme_name, {}
+                ).get(image_path, ())
+                if marker.casefold() in context_casefolded
+            ]
+            if contradictory:
+                failures.append(
+                    f"{readme_name}: {image_path} local truthful caption contains a "
+                    f"contradictory claim: {contradictory!r}"
+                )
+    return failures
+
+
+def _market_provenance_has_forbidden_marker(market_data: dict[object, object]) -> bool:
+    serialized = " ".join(
+        str(market_data.get(key, "")) for key in ("name", "source")
+    ).casefold()
+    return any(
+        forbidden in serialized for forbidden in FORBIDDEN_MARKET_PROVENANCE_MARKERS
+    )
+
+
+def _normalized_manifest_utc_timestamp(value: object) -> str:
+    if isinstance(value, datetime):
+        candidate = value
+    elif isinstance(value, str):
+        try:
+            candidate = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return value
+    else:
+        return str(value)
+    if candidate.tzinfo is None or candidate.utcoffset() != timezone.utc.utcoffset(
+        candidate
+    ):
+        return str(value)
+    return candidate.isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _readme_market_data_identity(
+    market_data: object,
+) -> ReadmeMarketDataIdentity | tuple[()] | None:
+    if market_data is None:
+        return None
+    if not isinstance(market_data, dict):
+        return ()
+    return ReadmeMarketDataIdentity(
+        str(market_data.get("symbol", "")),
+        str(market_data.get("name", "")),
+        str(market_data.get("period", "")),
+        str(market_data.get("adjustment", "")),
+        str(market_data.get("start", "")),
+        str(market_data.get("end", "")),
+        str(market_data.get("source", "")),
+        _normalized_manifest_utc_timestamp(market_data.get("data_cutoff")),
+        str(market_data.get("dataset_version", "")),
+    )
+
+
+def _relative_symlink(root: Path, relative_path: Path) -> Path | None:
+    """Return the first symlink in a repository-relative path, if any."""
+
+    current = root
+    for part in relative_path.parts:
+        current /= part
+        try:
+            if current.is_symlink():
+                return current
+        except (OSError, ValueError, RuntimeError):
+            return current
+    return None
+
+
+def _safe_is_file(path: Path) -> bool:
+    try:
+        return path.is_file()
+    except (OSError, ValueError, RuntimeError):
+        return False
+
+
+def _readme_screenshot_manifest_failures(
+    root: Path, documents: dict[str, str]
+) -> list[str]:
+    """Validate provenance for every local image rendered by both main READMEs."""
+
+    manifest_path = root / README_SCREENSHOT_MANIFEST
+    manifest_relative = Path(README_SCREENSHOT_MANIFEST)
+    manifest_symlink = _relative_symlink(root, manifest_relative)
+    if manifest_symlink is not None:
+        return [
+            "README screenshot manifest path must not contain a symlink: "
+            f"{manifest_symlink.relative_to(root).as_posix()}"
+        ]
+    if not _safe_is_file(manifest_path):
+        return [f"README screenshot manifest is missing: {README_SCREENSHOT_MANIFEST}"]
+    try:
+        loaded = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, RuntimeError, UnicodeError, ValueError, yaml.YAMLError) as error:
+        return [f"README screenshot manifest is unreadable: {type(error).__name__}"]
+    if not isinstance(loaded, dict):
+        return ["README screenshot manifest root must be a mapping"]
+
+    failures: list[str] = []
+    if loaded.get("schema_version") != SCREENSHOT_MANIFEST_SCHEMA:
+        failures.append(
+            "README screenshot manifest has an unsupported schema_version: "
+            f"{loaded.get('schema_version')!r}"
+        )
+    screenshots = loaded.get("screenshots")
+    if not isinstance(screenshots, list):
+        return [
+            *failures,
+            "README screenshot manifest screenshots must be a list",
+        ]
+
+    readme_targets, target_failures = _readme_image_paths(root, documents)
+    failures.extend(target_failures)
+    failures.extend(_readme_truthful_caption_failures(documents))
+    for readme_name, targets in readme_targets.items():
+        duplicates = sorted(
+            target for target in set(targets) if targets.count(target) != 1
+        )
+        if duplicates:
+            failures.append(
+                f"{readme_name}: every local image must appear exactly once; "
+                f"duplicates={duplicates!r}"
+            )
+    if set(readme_targets.get("README.md", ())) != set(
+        readme_targets.get("README.en.md", ())
+    ):
+        failures.append(
+            "README.md and README.en.md must reference the same local images exactly once"
+        )
+
+    images_relative = Path("docs/images")
+    images_symlink = _relative_symlink(root, images_relative)
+    if images_symlink is not None:
+        failures.append(
+            "README screenshot image path must not contain a symlink: "
+            f"{images_symlink.relative_to(root).as_posix()}"
+        )
+    try:
+        images_root = (root / images_relative).resolve()
+    except (OSError, ValueError, RuntimeError) as error:
+        failures.append(
+            f"README screenshot image directory is unreadable: {type(error).__name__}"
+        )
+        images_root = root / images_relative
+    manifest_paths: list[str] = []
+    screenshot_ids: set[str] = set()
+    states: list[str] = []
+    canonical_routes = _canonical_app_routes(root)
+    if not canonical_routes:
+        failures.append("Unable to load canonical application routes")
+    for position, raw_entry in enumerate(screenshots, start=1):
+        label = f"README screenshot manifest entry {position}"
+        if not isinstance(raw_entry, dict):
+            failures.append(f"{label} must be a mapping")
+            continue
+        entry = {str(key): value for key, value in raw_entry.items()}
+        screenshot_id = entry.get("screenshot_id")
+        if not isinstance(screenshot_id, str) or not re.fullmatch(
+            r"[a-z0-9][a-z0-9-]*", screenshot_id
+        ):
+            failures.append(f"{label} has an invalid screenshot_id")
+        elif screenshot_id in screenshot_ids:
+            failures.append(f"{label} duplicates screenshot_id: {screenshot_id}")
+        else:
+            screenshot_ids.add(screenshot_id)
+            label = f"README screenshot manifest {screenshot_id}"
+
+        relative_path = entry.get("path")
+        image_path: Path | None = None
+        if isinstance(relative_path, str):
+            manifest_paths.append(relative_path)
+            if "\0" not in relative_path and ".." in Path(relative_path).parts:
+                failures.append(f"{label} path escapes docs/images: {relative_path}")
+        valid_relative_path = (
+            isinstance(relative_path, str)
+            and "\0" not in relative_path
+            and re.fullmatch(
+                r"docs/images/[A-Za-z0-9][A-Za-z0-9._/-]*\.(?:png|jpe?g|webp)",
+                relative_path,
+                re.IGNORECASE,
+            )
+            is not None
+            and not Path(relative_path).is_absolute()
+            and ".." not in Path(relative_path).parts
+        )
+        if valid_relative_path:
+            relative_image_path = Path(relative_path)
+            image_symlink = _relative_symlink(root, relative_image_path)
+            if image_symlink is not None:
+                failures.append(
+                    f"{label} image path must not contain a symlink: "
+                    f"{image_symlink.relative_to(root).as_posix()}"
+                )
+            else:
+                candidate = root / relative_image_path
+                try:
+                    image_path = candidate.resolve()
+                    image_path.relative_to(images_root)
+                except (OSError, ValueError, RuntimeError):
+                    image_path = None
+                    failures.append(
+                        f"{label} path escapes docs/images: {relative_path}"
+                    )
+        if not valid_relative_path:
+            failures.append(f"{label} has an invalid docs/images path")
+
+        state = entry.get("state")
+        expected_binding = README_SCREENSHOT_BINDINGS.get(str(screenshot_id))
+        actual_binding = ReadmeScreenshotBinding(
+            str(relative_path),
+            str(state),
+            str(entry.get("route")),
+            entry.get("contains_market_data") is True,
+        )
+        if expected_binding is None or actual_binding != expected_binding:
+            failures.append(f"{label} violates its stable identity binding")
+        expected_route_and_market = README_SCREENSHOT_STATES.get(str(state))
+        if expected_route_and_market is None:
+            failures.append(f"{label} has an unsupported truthful state: {state!r}")
+        else:
+            states.append(str(state))
+            expected_route, expected_market = expected_route_and_market
+            if entry.get("route") != expected_route:
+                failures.append(
+                    f"{label} route does not match state: {entry.get('route')!r}"
+                )
+            if entry.get("contains_market_data") is not expected_market:
+                failures.append(
+                    f"{label} contains_market_data does not match state {state}"
+                )
+        route = entry.get("route")
+        if not isinstance(route, str) or route not in canonical_routes:
+            failures.append(f"{label} route is not a canonical application route")
+
+        viewport = entry.get("viewport")
+        if not isinstance(viewport, dict) or any(
+            type(viewport.get(key)) is not int or viewport[key] <= 0
+            for key in ("width", "height", "device_scale_factor")
+        ):
+            failures.append(
+                f"{label} viewport must use positive integers and be 1440x1000 at dsf 1"
+            )
+        elif viewport != {
+            "width": 1440,
+            "height": 1000,
+            "device_scale_factor": 1,
+        }:
+            failures.append(f"{label} viewport must be 1440x1000 at dsf 1")
+
+        product = entry.get("product")
+        if not isinstance(product, dict):
+            failures.append(f"{label} requires product provenance")
+        else:
+            version = product.get("version")
+            commit = product.get("git_commit")
+            version_match = (
+                re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", version)
+                if isinstance(version, str)
+                else None
+            )
+            if version_match is None or tuple(
+                int(part) for part in version_match.groups()
+            ) < (1, 0, 0):
+                failures.append(f"{label} requires product version 1.0.0 or later")
+            if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit):
+                failures.append(f"{label} requires a 40-character git commit")
+            elif not _repository_commit_is_reachable(root, commit):
+                failures.append(
+                    f"{label} git_commit is not a reachable repository commit"
+                )
+
+        if not _manifest_timestamp_is_utc(entry.get("captured_at")):
+            failures.append(f"{label} requires an aware UTC captured_at")
+        if entry.get("capture") not in {"in-app-browser", "playwright"}:
+            failures.append(f"{label} has an unsupported capture method")
+        if entry.get("editing") not in {"none", "crop-only"}:
+            failures.append(f"{label} has unsupported editing metadata")
+        if entry.get("redaction") != "passed":
+            failures.append(f"{label} requires redaction: passed")
+        if entry.get("disclaimer") != SCREENSHOT_DISCLAIMER:
+            failures.append(f"{label} has an invalid disclaimer")
+
+        digest = entry.get("sha256")
+        if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+            failures.append(f"{label} requires a lowercase SHA-256")
+        elif image_path is None or not _safe_is_file(image_path):
+            failures.append(f"{label} image does not exist: {relative_path}")
+        else:
+            try:
+                actual_digest = hashlib.sha256(image_path.read_bytes()).hexdigest()
+            except (OSError, ValueError, RuntimeError) as error:
+                failures.append(
+                    f"{label} image is unreadable for SHA-256: {type(error).__name__}"
+                )
+            else:
+                if actual_digest != digest:
+                    failures.append(f"{label} SHA-256 does not match: {relative_path}")
+        if image_path is not None and _safe_is_file(image_path):
+            raster_failure = _raster_failure(image_path)
+            if raster_failure is not None:
+                failures.append(f"{label} {raster_failure}")
+            else:
+                try:
+                    with Image.open(image_path) as image:
+                        if image.size != (1440, 1000):
+                            failures.append(f"{label} raster must be 1440x1000")
+                except (
+                    OSError,
+                    ValueError,
+                    RuntimeError,
+                    UnidentifiedImageError,
+                ) as error:
+                    failures.append(
+                        f"{label} image metadata is unreadable: {type(error).__name__}"
+                    )
+
+        contains_market_data = entry.get("contains_market_data")
+        market_data = entry.get("market_data")
+        if type(contains_market_data) is not bool:
+            failures.append(f"{label} requires boolean contains_market_data")
+        if contains_market_data is False:
+            if market_data is not None:
+                failures.append(
+                    f"{label} market_data must be null when contains_market_data is false"
+                )
+        elif contains_market_data is True:
+            if not isinstance(market_data, dict):
+                failures.append(f"{label} requires real market provenance")
+            else:
+                market_keys = frozenset(str(key) for key in market_data)
+                if market_keys != README_MARKET_DATA_KEYS:
+                    failures.append(
+                        f"{label} market_data keys must match exactly: "
+                        f"{sorted(README_MARKET_DATA_KEYS)!r}"
+                    )
+                if _market_provenance_has_forbidden_marker(market_data):
+                    failures.append(f"{label} requires real market provenance")
+                symbol = market_data.get("symbol")
+                if not isinstance(symbol, str) or not re.fullmatch(
+                    r"(?:[036]\d{5})\.(?:SH|SZ)", symbol
+                ):
+                    failures.append(f"{label} has an invalid canonical A-share symbol")
+                name = market_data.get("name")
+                if not isinstance(name, str) or not name.strip():
+                    failures.append(f"{label} requires a market instrument name")
+                if market_data.get("period") not in {"1d", "1w", "60m"}:
+                    failures.append(f"{label} has an invalid market period")
+                if market_data.get("adjustment") not in {"none", "qfq", "hfq"}:
+                    failures.append(f"{label} has an invalid adjustment")
+                source = market_data.get("source")
+                if (
+                    not isinstance(source, str)
+                    or source not in _real_market_source_ids()
+                ):
+                    failures.append(f"{label} requires real market provenance")
+                start = str(market_data.get("start", ""))
+                end = str(market_data.get("end", ""))
+                if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", start) or not re.fullmatch(
+                    r"\d{4}-\d{2}-\d{2}", end
+                ):
+                    failures.append(f"{label} requires market start and end dates")
+                elif start > end:
+                    failures.append(f"{label} market date range is reversed")
+                if "cutoff" in market_data:
+                    failures.append(f"{label} does not allow legacy market cutoff")
+                if not _manifest_timestamp_is_utc(market_data.get("data_cutoff")):
+                    failures.append(f"{label} requires an aware UTC data_cutoff")
+                dataset_version = market_data.get("dataset_version")
+                if not isinstance(dataset_version, str) or not re.fullmatch(
+                    r"sha256:[0-9a-f]{64}", dataset_version
+                ):
+                    failures.append(f"{label} requires a dataset version")
+                elif isinstance(digest, str) and dataset_version == f"sha256:{digest}":
+                    failures.append(
+                        f"{label} dataset_version must differ from screenshot SHA-256"
+                    )
+        expected_market_identity = README_SCREENSHOT_MARKET_IDENTITIES.get(
+            str(screenshot_id)
+        )
+        if (
+            str(screenshot_id) not in README_SCREENSHOT_MARKET_IDENTITIES
+            or _readme_market_data_identity(market_data) != expected_market_identity
+        ):
+            failures.append(f"{label} violates its stable market-data identity")
+
+    duplicate_manifest_paths = sorted(
+        path for path in set(manifest_paths) if manifest_paths.count(path) != 1
+    )
+    expected_targets = set(readme_targets.get("README.md", ()))
+    if duplicate_manifest_paths or set(manifest_paths) != expected_targets:
+        failures.append(
+            "README local images and manifest paths must match exactly once; "
+            f"duplicates={duplicate_manifest_paths!r}, "
+            f"missing={sorted(expected_targets - set(manifest_paths))!r}, "
+            f"extra={sorted(set(manifest_paths) - expected_targets)!r}"
+        )
+    duplicate_states = sorted(
+        state for state in set(states) if states.count(state) != 1
+    )
+    if duplicate_states or set(states) != set(README_SCREENSHOT_STATES):
+        failures.append(
+            "README screenshot truthful states must each appear exactly once; "
+            f"duplicates={duplicate_states!r}"
+        )
+    return failures
 
 
 def _manifest_timestamp_is_utc(value: object) -> bool:
@@ -3967,13 +4686,11 @@ def _manifest_market_page(page_pairs: object) -> bool:
     )
 
 
-def _canonical_app_routes() -> frozenset[str]:
-    routes_path = (
-        Path(__file__).resolve().parent.parent / "web/src/app/route-paths.json"
-    )
+def _canonical_app_routes(repo_root: Path) -> frozenset[str]:
+    routes_path = repo_root / "web/src/app/route-paths.json"
     try:
         loaded = json.loads(routes_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
+    except (OSError, RuntimeError, UnicodeError, ValueError, json.JSONDecodeError):
         return frozenset()
     if not isinstance(loaded, dict) or not all(
         isinstance(key, str)
@@ -3991,13 +4708,20 @@ def _real_market_source_ids() -> frozenset[str]:
     return frozenset(provider.value for provider in BAR_SOURCE_PROVIDER_IDS)
 
 
+def _repository_commit_is_reachable(repo_root: Path, commit: str) -> bool:
+    try:
+        root_key = os.fspath(repo_root.resolve())
+    except (OSError, ValueError, RuntimeError):
+        return False
+    return _repository_commit_is_reachable_cached(root_key, commit)
+
+
 @lru_cache(maxsize=128)
-def _repository_commit_is_reachable(commit: str) -> bool:
-    repo = Path(__file__).resolve().parent.parent
+def _repository_commit_is_reachable_cached(root_key: str, commit: str) -> bool:
     try:
         subprocess.run(
             ("git", "cat-file", "-e", f"{commit}^{{commit}}"),
-            cwd=repo,
+            cwd=root_key,
             check=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -4005,7 +4729,7 @@ def _repository_commit_is_reachable(commit: str) -> bool:
         )
         subprocess.run(
             ("git", "merge-base", "--is-ancestor", commit, "HEAD"),
-            cwd=repo,
+            cwd=root_key,
             check=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -4065,6 +4789,7 @@ def _surface_failure(
 def _screenshot_manifest(
     root: Path,
     *,
+    repository_root: Path,
     final: bool,
     publication_files: frozenset[Path],
     documents: dict[str, str],
@@ -4272,7 +4997,7 @@ def _screenshot_manifest(
                 failures.append(f"{label} requires product version 1.0.0 or later")
             if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit):
                 failures.append(f"{label} requires a 40-character git commit")
-            elif not _repository_commit_is_reachable(commit):
+            elif not _repository_commit_is_reachable(repository_root, commit):
                 failures.append(
                     f"{label} git_commit is not a reachable repository commit"
                 )
@@ -4290,11 +5015,7 @@ def _screenshot_manifest(
             if not isinstance(market_data, dict):
                 failures.append(f"{label} requires real market provenance")
             else:
-                serialized_market = str(market_data).casefold()
-                if any(
-                    forbidden in serialized_market
-                    for forbidden in ("synthetic", "cc0 demo", "fixture")
-                ):
+                if _market_provenance_has_forbidden_marker(market_data):
                     failures.append(f"{label} requires real market provenance")
                 if not re.fullmatch(
                     r"(?:[036]\d{5})\.(?:SH|SZ)", str(market_data.get("symbol", ""))
@@ -4609,7 +5330,9 @@ def _feature_index_failures(
     return failures
 
 
-def verify_wiki(wiki_root: Path, *, final: bool) -> list[str]:
+def verify_wiki(
+    wiki_root: Path, *, final: bool, repo_root: Path | None = None
+) -> list[str]:
     """Verify bilingual external Wiki staging or its final publication boundary."""
 
     if wiki_root.is_symlink():
@@ -4690,11 +5413,15 @@ def verify_wiki(wiki_root: Path, *, final: bool) -> list[str]:
             if image_failure is not None:
                 failures.append(f"{relative_path}: {image_failure}")
 
-    canonical_routes = _canonical_app_routes()
+    repository_root = (
+        repo_root if repo_root is not None else Path(__file__).resolve().parent.parent
+    )
+    canonical_routes = _canonical_app_routes(repository_root)
     if not canonical_routes:
         failures.append("Unable to load canonical application routes")
     screenshot_entries, valid_captured_images, manifest_failures = _screenshot_manifest(
         root,
+        repository_root=repository_root,
         final=final,
         publication_files=publication_files,
         documents=documents,
@@ -5271,7 +5998,13 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--final-wiki requires --wiki-root")
     failures = verify_repository(arguments.repo_root)
     if arguments.wiki_root is not None:
-        failures.extend(verify_wiki(arguments.wiki_root, final=arguments.final_wiki))
+        failures.extend(
+            verify_wiki(
+                arguments.wiki_root,
+                final=arguments.final_wiki,
+                repo_root=arguments.repo_root,
+            )
+        )
     if failures:
         print("Documentation verification failed:", file=sys.stderr)
         for failure in sorted(set(failures)):
