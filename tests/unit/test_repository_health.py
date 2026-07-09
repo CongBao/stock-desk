@@ -31,7 +31,7 @@ _GitHubActionsLoader.add_implicit_resolver(
 
 REQUIRED_FILES = {
     "README.md",
-    "README.zh-CN.md",
+    "README.en.md",
     "LICENSE",
     "CONTRIBUTING.md",
     "CODE_OF_CONDUCT.md",
@@ -193,8 +193,8 @@ def test_required_open_source_files_exist() -> None:
 
 
 def test_readme_language_switches_are_the_exact_first_lines() -> None:
-    assert _read("README.md").splitlines()[0] == "[简体中文](README.zh-CN.md)"
-    assert _read("README.zh-CN.md").splitlines()[0] == "[English](README.md)"
+    assert _read("README.md").splitlines()[0] == "[English](README.en.md)"
+    assert _read("README.en.md").splitlines()[0] == "[简体中文](README.md)"
 
 
 def test_local_markdown_links_resolve() -> None:
@@ -1445,18 +1445,14 @@ def test_sdist_uses_an_explicit_source_only_allowlist() -> None:
 
 
 def test_readmes_are_concise_product_entries_with_detailed_guide_links() -> None:
-    english = _read("README.md")
-    chinese = _read("README.zh-CN.md")
+    chinese = _read("README.md")
+    english = _read("README.en.md")
     for content in (english, chinese):
-        assert len(content.splitlines()) <= 120
+        assert len(content.splitlines()) <= 100
         for shared_fact in (
             "https://github.com/CongBao/stock-desk/wiki",
-            "CONTRIBUTING.md",
             "SECURITY.md",
-            "SUPPORT.md",
-            "LICENSE",
-            "docker compose up --build --wait",
-            "STOCK_DESK_MASTER_KEY",
+            "https://github.com/CongBao/stock-desk/releases/latest",
         ):
             assert shared_fact in content
         assert (
@@ -1464,8 +1460,8 @@ def test_readmes_are_concise_product_entries_with_detailed_guide_links() -> None
         )
         assert "cache" in content.casefold() or "缓存" in content
 
-    assert english.splitlines()[0] == "[简体中文](README.zh-CN.md)"
-    assert chinese.splitlines()[0] == "[English](README.md)"
+    assert english.splitlines()[0] == "[简体中文](README.md)"
+    assert chinese.splitlines()[0] == "[English](README.en.md)"
 
     contributing = _read("CONTRIBUTING.md")
     for detailed_fact in (

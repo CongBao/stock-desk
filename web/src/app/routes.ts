@@ -1,4 +1,5 @@
 import type { AppIconName } from './AppIcon';
+import routePaths from './route-paths.json';
 
 export type AppRoute = {
   readonly description: string;
@@ -13,7 +14,7 @@ export type AppRoute = {
 export const appRoutes = [
   {
     label: '行情',
-    path: '/market',
+    path: routePaths.market,
     icon: 'market',
     title: '行情工作区',
     release: 'v0.2.0',
@@ -23,7 +24,7 @@ export const appRoutes = [
   },
   {
     label: '自定义公式',
-    path: '/formulas',
+    path: routePaths.formulas,
     icon: 'formulas',
     title: '自定义公式',
     release: 'v0.3.0',
@@ -33,7 +34,7 @@ export const appRoutes = [
   },
   {
     label: '策略回测',
-    path: '/backtests',
+    path: routePaths.backtests,
     icon: 'backtests',
     title: '策略回测',
     release: 'v0.4.0',
@@ -42,7 +43,7 @@ export const appRoutes = [
   },
   {
     label: '智能分析',
-    path: '/analysis',
+    path: routePaths.analysis,
     icon: 'analysis',
     title: '智能分析',
     release: 'v0.5.0',
@@ -51,7 +52,7 @@ export const appRoutes = [
   },
   {
     label: '任务中心',
-    path: '/tasks',
+    path: routePaths.tasks,
     icon: 'tasks',
     title: '任务中心',
     release: 'v1.0.0',
@@ -61,7 +62,7 @@ export const appRoutes = [
   },
   {
     label: '设置',
-    path: '/settings',
+    path: routePaths.settings,
     icon: 'settings',
     title: '数据源设置',
     release: 'v0.2.0',

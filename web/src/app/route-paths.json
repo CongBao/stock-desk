@@ -1,0 +1,8 @@
+{
+  "market": "/market",
+  "formulas": "/formulas",
+  "backtests": "/backtests",
+  "analysis": "/analysis",
+  "tasks": "/tasks",
+  "settings": "/settings"
+}

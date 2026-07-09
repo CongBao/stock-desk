@@ -1,0 +1,85 @@
+schema_version: stock-desk-documentation-screenshots-v1
+screenshots:
+  - screenshot_id: market-data-and-charts
+    path: docs/images/market-data-and-charts.png
+    state: real_chart
+    route: /market
+    viewport: {width: 1440, height: 1000, device_scale_factor: 1}
+    product: {version: 1.0.0, git_commit: 17912f5fa8cb43c1df7c41315b8cd60199b9d403}
+    captured_at: 2026-07-09T14:17:20Z
+    sha256: 4a92e11bd5fcc6f6e8d3ddd6d93f9ef0b9a7280afaf878b306da464aadbe82cd
+    contains_market_data: true
+    market_data:
+      symbol: 600519.SH
+      name: 贵州茅台
+      period: 1d
+      adjustment: qfq
+      start: 2021-01-01
+      end: 2026-07-08
+      source: baostock
+      data_cutoff: 2026-07-08T07:00:00Z
+      dataset_version: sha256:aa8112c9eda7ed05ed8d92d21afe9dae45fafb295a0fa5ba278c1805a7533236
+    capture: in-app-browser
+    editing: none
+    redaction: passed
+    disclaimer: 仅作功能演示，不构成投资建议
+  - screenshot_id: formula-studio
+    path: docs/images/formula-studio.png
+    state: real_formula_preview
+    route: /formulas
+    viewport: {width: 1440, height: 1000, device_scale_factor: 1}
+    product: {version: 1.0.0, git_commit: 17912f5fa8cb43c1df7c41315b8cd60199b9d403}
+    captured_at: 2026-07-09T14:17:20Z
+    sha256: 9f3ec0b61857fd506587c20fc561b3432b17d5fbf4e2b08bf1ff3fe4897fb7fb
+    contains_market_data: true
+    market_data:
+      symbol: 300750.SZ
+      name: 宁德时代
+      period: 1d
+      adjustment: qfq
+      start: 2021-01-01
+      end: 2026-07-08
+      source: baostock
+      data_cutoff: 2026-07-08T07:00:00Z
+      dataset_version: sha256:7e7fbcce7ee0c7a0bd58b9ebd7d7e06c0755b4195ee3a32c49dfab269147f2fe
+    capture: in-app-browser
+    editing: none
+    redaction: passed
+    disclaimer: 仅作功能演示，不构成投资建议
+  - screenshot_id: backtesting
+    path: docs/images/backtesting.png
+    state: blocked_real_backtest_preflight
+    route: /backtests
+    viewport: {width: 1440, height: 1000, device_scale_factor: 1}
+    product: {version: 1.0.0, git_commit: 17912f5fa8cb43c1df7c41315b8cd60199b9d403}
+    captured_at: 2026-07-09T14:23:47Z
+    sha256: 03912a80293441f935c86a95d8fab24716623c267ae2be41093bc05af8a7951c
+    contains_market_data: true
+    market_data:
+      symbol: 000001.SZ
+      name: 平安银行
+      period: 1d
+      adjustment: qfq
+      start: 2021-01-01
+      end: 2026-07-08
+      source: baostock
+      data_cutoff: 2026-07-08T07:00:00Z
+      dataset_version: sha256:5a3d9256e58f5bafbad48a7d1fb4ec690d032552aee4c6ae4df7b9940356ec24
+    capture: in-app-browser
+    editing: none
+    redaction: passed
+    disclaimer: 仅作功能演示，不构成投资建议
+  - screenshot_id: multi-agent-research
+    path: docs/images/multi-agent-research.png
+    state: analysis_readiness
+    route: /analysis
+    viewport: {width: 1440, height: 1000, device_scale_factor: 1}
+    product: {version: 1.0.0, git_commit: 17912f5fa8cb43c1df7c41315b8cd60199b9d403}
+    captured_at: 2026-07-09T14:18:48Z
+    sha256: 12d3e48ebdee7fec1f65c11d33285dcbf7ddcb5b337df49309c352215f8b77f6
+    contains_market_data: false
+    market_data: null
+    capture: in-app-browser
+    editing: none
+    redaction: passed
+    disclaimer: 仅作功能演示，不构成投资建议

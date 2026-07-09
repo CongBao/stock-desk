@@ -49,6 +49,7 @@ from stock_desk.market.types import (
     BarFailure,
     BarQuery,
     BarResult,
+    BAR_SOURCE_PROVIDER_IDS,
     CapabilityGap,
     CapabilityReport,
     CapabilityState,
@@ -65,12 +66,7 @@ from stock_desk.market.types import (
 class SourcePriorities(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 
-    bars: tuple[ProviderId, ...] = (
-        ProviderId.TUSHARE,
-        ProviderId.AKSHARE,
-        ProviderId.BAOSTOCK,
-        ProviderId.TDX_LOCAL,
-    )
+    bars: tuple[ProviderId, ...] = BAR_SOURCE_PROVIDER_IDS
     daily_bars: tuple[ProviderId, ...] | None = None
     weekly_bars: tuple[ProviderId, ...] | None = None
     minute_bars: tuple[ProviderId, ...] | None = None
