@@ -131,6 +131,32 @@ def test_manifest_has_exact_ids_and_unique_semantics(matrix: dict[str, object]) 
     )
 
 
+def test_release_documentation_contract_is_chinese_first_and_uses_real_market_data(
+    matrix: dict[str, object],
+) -> None:
+    by_id = {item["id"]: item for item in matrix["requirements"]}
+
+    assert by_id["R-073"]["acceptance"] == (
+        "README.md is the Simplified-Chinese default public product entry, "
+        "README.en.md is its reciprocal English entry, and both keep a concise "
+        "introduction, core features, screenshots, essential installation and use "
+        "entry points, and GitHub Wiki guidance."
+    )
+    assert by_id["R-074"]["acceptance"] == (
+        "Every delivered feature has a detailed GitHub Wiki usage page with a real "
+        "product screenshot; screenshots of market quotes, candlesticks, formulas, "
+        "or backtests use real A-share market data and record symbol, source, cutoff "
+        "date, application route, release version, and redaction-review evidence; "
+        "different feature pages may use different suitable real stocks."
+    )
+    assert by_id["R-075"]["acceptance"] == (
+        "GitHub Wiki Home.md is the Simplified-Chinese default home, links "
+        "reciprocally to English Home-en.md through the Home-en Wiki link target, "
+        "and every complete English and Simplified-Chinese feature-page pair uses "
+        "shared navigation with no placeholders."
+    )
+
+
 def test_manifest_matches_the_frozen_authoritative_registry(
     checker: ModuleType,
     matrix: dict[str, object],

@@ -913,7 +913,7 @@ requirements:
     category: publication
     kind: publication
     behavior_key: final_readme_is_concise_bilingual_entry
-    acceptance: "After all stages, the public README is a concise bilingual product entry containing only introduction, core features, screenshots, and essential install and use entry points, with detailed guidance in the GitHub Wiki."
+    acceptance: "README.md is the Simplified-Chinese default public product entry, README.en.md is its reciprocal English entry, and both keep a concise introduction, core features, screenshots, essential installation and use entry points, and GitHub Wiki guidance."
     source_refs: [{capability: release-publication, requirement: verified-reciprocal-readme, scenario: verify-readme-pair}]
     owning_stage: 5
     status: mapped
@@ -924,7 +924,7 @@ requirements:
     category: publication
     kind: publication
     behavior_key: every_feature_has_wiki_steps_and_real_screenshot
-    acceptance: "Every delivered feature has a detailed GitHub Wiki usage page with a real product screenshot that lets users understand and use it quickly."
+    acceptance: "Every delivered feature has a detailed GitHub Wiki usage page with a real product screenshot; screenshots of market quotes, candlesticks, formulas, or backtests use real A-share market data and record symbol, source, cutoff date, application route, release version, and redaction-review evidence; different feature pages may use different suitable real stocks."
     source_refs: [{capability: release-publication, requirement: feature-wiki-screenshots-and-steps, scenario: validate-feature-page-image-and-steps}]
     owning_stage: 5
     status: mapped
@@ -934,7 +934,7 @@ requirements:
     category: publication
     kind: publication
     behavior_key: wiki_is_complete_and_bilingual
-    acceptance: "Feature documentation in the GitHub Wiki has complete English and Simplified-Chinese content with switchable navigation."
+    acceptance: "GitHub Wiki Home.md is the Simplified-Chinese default home, links reciprocally to English Home-en.md through the Home-en Wiki link target, and every complete English and Simplified-Chinese feature-page pair uses shared navigation with no placeholders."
     source_refs: [{capability: release-publication, requirement: reciprocal-bilingual-wiki, scenario: navigate-language-pair}]
     owning_stage: 5
     status: mapped
