@@ -616,10 +616,19 @@ jobs:
         run: |
           set -euo pipefail
           test "$(find . -maxdepth 1 -type f \( -name '*.exe' -o -name '*.dmg' \) | wc -l)" -eq 3
-          test "$(find . -maxdepth 1 -type f -name '*.sbom.spdx.json' | wc -l)" -eq 4
+          test -s stock-desk.spdx.json
+          mapfile -t installer_sboms < <(find . -maxdepth 1 -type f -name 'stock-desk-*-*.sbom.spdx.json' -printf '%f\n' | sort)
+          test "${#installer_sboms[@]}" -eq 3
           test -s SHA256SUMS.complete
           test "$(wc -l < SHA256SUMS.complete)" -eq "$(find . -maxdepth 1 -type f ! -name 'SHA256SUMS.complete' | wc -l)"
           sha256sum -c SHA256SUMS.complete
+      - name: Verify remote tag still matches workflow commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          remote_tag_target="$(git ls-remote "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "refs/tags/${GITHUB_REF_NAME}^{}" | awk 'NR == 1 {print $1}')"
+          test -n "$remote_tag_target"
+          test "$remote_tag_target" = "$GITHUB_SHA"
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
