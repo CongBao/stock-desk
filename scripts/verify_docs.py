@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -1371,19 +1372,40 @@ REQUIRED_WIKI_WORKFLOW_CONTENT = {
         ),
     ),
     "Model-Provider-Setup.md": (
-        ("提供商", "Base URL", "模型", "API Key", "已验证", "错误代码"),
-        ("重试次数", "重试延迟"),
+        (
+            "当前版本只提供 DeepSeek、OpenAI-compatible 和 Ollama 三种提供商",
+            "提供商",
+            "Base URL",
+            "模型",
+            "API Key",
+            "Temperature",
+            "超时（秒）",
+            "最大输出 Tokens",
+            "最大重试次数是每次新建分析的 0–5 参数，不是模型配置字段",
+            "已验证",
+            "错误代码",
+        ),
+        ("DeepSeek V4 已内置", "Ollama 需要 API Key", "模型设置中的重试次数"),
     ),
     "Model-Provider-Setup-en.md": (
         (
+            "The current release offers exactly DeepSeek, OpenAI-compatible, and Ollama",
             "Provider（提供商）",
             "Base URL（Base URL）",
             "Model（模型）",
             "API Key（API Key）",
+            "temperature",
+            "timeout",
+            "maximum output",
+            "Maximum retries is a per-run value from 0 to 5, not a model-setting field",
             "Verified（已验证）",
             "Error code（错误代码）",
         ),
-        ("retry count", "retry delay"),
+        (
+            "DeepSeek V4 is built in",
+            "Ollama requires an API key",
+            "retry count in model settings",
+        ),
     ),
     "Task-Center.md": (
         (
@@ -1392,43 +1414,40 @@ REQUIRED_WIKI_WORKFLOW_CONTENT = {
             "安全任务摘要",
             "安全事件时间线",
             "取消任务",
-            "安全事件时间线只显示可见的审计事件，不是运行日志",
-            "回测任务使用回测报告深链",
-            "其他任务只显示安全摘要和状态",
-            "响应包含 `backtest_run` target 时就显示回测报告链接，任务仍在运行时也可以显示",
-            "其他不含该 target 的任务不显示此链接",
+            "任务中心读取最近 100 项任务的安全视图",
+            "只显示经过约束的可见审计事件，不是运行日志",
+            "当前只有包含 `backtest_run` target 的任务显示回测报告深链",
+            "任务运行中也可以显示",
+            "行情更新与智能分析当前不提供任务中心深链",
+            "取消结果未知时先刷新任务状态，再决定是否重试",
         ),
         (
-            "时间筛选",
-            "逐项结果",
-            "通用日志",
-            "数据分析深链",
-            "没有日志控件",
-            "仅已完成",
+            "时间筛选控件",
+            "显示完整运行日志",
+            "所有任务都有结果深链",
+            "仅已完成任务显示回测报告",
         ),
     ),
     "Task-Center-en.md": (
         (
             "Status filter（状态筛选）",
             "Type filter（类型筛选）",
-            "safe task summary",
+            "safe summary",
             "Security event timeline（安全事件时间线）",
             "Open backtest report（打开回测报告）",
             "Cancel task（取消任务）",
-            "visible audit events rather than runtime logs",
-            "Backtest tasks use the backtest-report deep link",
-            "Other task types show only their safe summary and status",
-            "The backtest report link appears whenever the response contains a `backtest_run` target, including while the task is still running",
-            "Other tasks without that target do not show the link",
+            "Task Center reads the safe view for the most recent 100 tasks",
+            "constrained visible audit events, not runtime logs",
+            "Only a task with a `backtest_run` target currently exposes a report deep link",
+            "including while a task is still running",
+            "Market updates and analysis currently have no Task Center result deep link",
+            "When cancellation outcome is unknown, refresh task state before deciding whether to retry",
         ),
         (
-            "time filter",
-            "item results",
-            "generic logs",
-            "data or analysis deep link",
-            "no log control",
-            "completed backtest targets",
-            "only completed",
+            "time-filter control",
+            "shows complete runtime logs",
+            "every task has a result deep link",
+            "only completed tasks show a backtest report",
         ),
     ),
 }
@@ -2008,6 +2027,411 @@ REQUIRED_WIKI_BACKTEST_GUIDE_SOURCE_CLAIMS = {
 }
 
 
+REQUIRED_WIKI_ANALYSIS_PLATFORM_GUIDE_SOURCE_CLAIMS = {
+    "Model-Provider-Setup.md": (
+        (
+            "当前版本只提供 DeepSeek、OpenAI-compatible 和 Ollama 三种提供商",
+            "src/stock_desk/analysis/model_config.py",
+            "class ModelProviderKind(StrEnum):",
+        ),
+        (
+            "远程 API Key 是只写字段；Ollama 不接收 API Key",
+            "src/stock_desk/analysis/model_config.py",
+            'json_schema_extra={"writeOnly": True}',
+        ),
+        (
+            "最大重试次数是每次新建分析的 0–5 参数，不是模型配置字段",
+            "web/src/features/analysis/AnalysisRunPanel.tsx",
+            "const maxRetriesIsValid = /^[0-5]$/u.test(maxRetries);",
+        ),
+        (
+            "编辑会创建后继配置，原配置保持不可变",
+            "web/src/features/analysis/ModelSettings.tsx",
+            "后继配置已创建，原配置保持不可变。",
+        ),
+    ),
+    "Model-Provider-Setup-en.md": (
+        (
+            "The current release offers exactly DeepSeek, OpenAI-compatible, and Ollama",
+            "src/stock_desk/analysis/model_config.py",
+            "class ModelProviderKind(StrEnum):",
+        ),
+        (
+            "A remote API key is write-only, while Ollama does not accept an API key",
+            "src/stock_desk/analysis/model_config.py",
+            'json_schema_extra={"writeOnly": True}',
+        ),
+        (
+            "Maximum retries is a per-run value from 0 to 5, not a model-setting field",
+            "web/src/features/analysis/AnalysisRunPanel.tsx",
+            "const maxRetriesIsValid = /^[0-5]$/u.test(maxRetries);",
+        ),
+        (
+            "Editing creates a successor configuration and leaves the original immutable",
+            "web/src/features/analysis/ModelSettings.tsx",
+            "后继配置已创建，原配置保持不可变。",
+        ),
+    ),
+    "Research-Reports-and-Evidence.md": (
+        (
+            "九阶段流程由四个数据快照阶段和五个模型研究阶段组成",
+            "src/stock_desk/analysis/models.py",
+            "('market','fundamentals','announcements','news','technical',",
+        ),
+        (
+            "五级评级是强烈看多、看多、中性、看空和强烈看空",
+            "web/src/features/analysis/ConclusionPanel.tsx",
+            "strong_bearish: '强烈看空'",
+        ),
+        (
+            "证据卡显示记录、数据版本、发布时间、数据截止、采集时间、质量标记和来源路由",
+            "web/src/features/analysis/EvidencePanel.tsx",
+            "JSON.stringify(item.route)",
+        ),
+    ),
+    "Research-Reports-and-Evidence-en.md": (
+        (
+            "The nine-stage process contains four data-snapshot stages and five model-research stages",
+            "src/stock_desk/analysis/models.py",
+            "('market','fundamentals','announcements','news','technical',",
+        ),
+        (
+            "The five ratings are Strong bullish, Bullish, Neutral, Bearish, and Strong bearish",
+            "web/src/features/analysis/ConclusionPanel.tsx",
+            "strong_bearish: '强烈看空'",
+        ),
+        (
+            "Each evidence card shows record, dataset version, publication time, data cutoff, fetch time, quality flags, and source route",
+            "web/src/features/analysis/EvidencePanel.tsx",
+            "JSON.stringify(item.route)",
+        ),
+    ),
+    "Research-Failures-Retries-and-Safety.md": (
+        (
+            "部分报告不输出评级，置信度固定为 0",
+            "src/stock_desk/analysis/report.py",
+            "partial report state is inconsistent",
+        ),
+        (
+            "只有报告列出的失败模型阶段可创建阶段重试",
+            "src/stock_desk/analysis/service.py",
+            "allowed = frozenset(item.stage.value for item in report.retry_actions)",
+        ),
+        (
+            "阶段重试创建子运行，父运行保持不可变",
+            "web/src/features/analysis/ProcessRail.tsx",
+            "父运行保持不可变",
+        ),
+        (
+            "新闻、公告与模型输出按不可信数据块处理，不能把其中指令当成控制指令",
+            "src/stock_desk/analysis/content_policy.py",
+            'UNTRUSTED_DATA_LABEL: Final = "untrusted-data"',
+        ),
+    ),
+    "Research-Failures-Retries-and-Safety-en.md": (
+        (
+            "A partial report has no rating and its confidence is fixed at 0",
+            "src/stock_desk/analysis/report.py",
+            "partial report state is inconsistent",
+        ),
+        (
+            "Only failed model stages listed by the report are eligible for stage retry",
+            "src/stock_desk/analysis/service.py",
+            "allowed = frozenset(item.stage.value for item in report.retry_actions)",
+        ),
+        (
+            "A stage retry creates a child run and keeps the parent run immutable",
+            "web/src/features/analysis/ProcessRail.tsx",
+            "父运行保持不可变",
+        ),
+        (
+            "News, announcements, and model output are untrusted data blocks; their instructions are not control instructions",
+            "src/stock_desk/analysis/content_policy.py",
+            'UNTRUSTED_DATA_LABEL: Final = "untrusted-data"',
+        ),
+    ),
+    "Task-Center.md": (
+        (
+            "任务中心读取最近 100 项任务的安全视图",
+            "web/src/features/tasks/taskApi.ts",
+            "'/tasks?view=safe&limit=100'",
+        ),
+        (
+            "当前只有包含 `backtest_run` target 的任务显示回测报告深链",
+            "web/src/features/tasks/TaskCenterPage.tsx",
+            "selectedTask.presentation.target?.type === 'backtest_run'",
+        ),
+        (
+            "取消结果未知时先刷新任务状态，再决定是否重试",
+            "web/src/features/tasks/TaskCenterPage.tsx",
+            "取消结果未知。请先刷新任务状态，再决定是否重试。",
+        ),
+    ),
+    "Task-Center-en.md": (
+        (
+            "Task Center reads the safe view for the most recent 100 tasks",
+            "web/src/features/tasks/taskApi.ts",
+            "'/tasks?view=safe&limit=100'",
+        ),
+        (
+            "Only a task with a `backtest_run` target currently exposes a report deep link",
+            "web/src/features/tasks/TaskCenterPage.tsx",
+            "selectedTask.presentation.target?.type === 'backtest_run'",
+        ),
+        (
+            "When cancellation outcome is unknown, refresh task state before deciding whether to retry",
+            "web/src/features/tasks/TaskCenterPage.tsx",
+            "取消结果未知。请先刷新任务状态，再决定是否重试。",
+        ),
+    ),
+    "Responsive-Navigation-and-Accessibility.md": (
+        (
+            "视口不超过 1200px 时导航自动收成图标栏",
+            "web/src/app/App.tsx",
+            "window.matchMedia('(max-width: 1200px)')",
+        ),
+        (
+            "收起后使用完整产品图标，不使用文字缩写",
+            "web/src/app/App.tsx",
+            "<AppIcon name={route.icon} />",
+        ),
+        (
+            "发布矩阵覆盖 200% 缩放等效视口且要求页面无横向裁切和组件重叠",
+            "docs/accessibility.md",
+            "effective viewports representing 200% zoom",
+        ),
+    ),
+    "Responsive-Navigation-and-Accessibility-en.md": (
+        (
+            "At or below 1200px, navigation automatically collapses to an icon rail",
+            "web/src/app/App.tsx",
+            "window.matchMedia('(max-width: 1200px)')",
+        ),
+        (
+            "The collapsed rail uses full product icons, not letter abbreviations",
+            "web/src/app/App.tsx",
+            "<AppIcon name={route.icon} />",
+        ),
+        (
+            "The release matrix covers 200% zoom-equivalent viewports and requires no horizontal clipping or shell overlap",
+            "docs/accessibility.md",
+            "effective viewports representing 200% zoom",
+        ),
+    ),
+    "Credentials-Logs-and-Local-Security.md": (
+        (
+            "提供方密钥使用 Fernet 在本地加密，界面只显示掩码状态",
+            "src/stock_desk/security/secrets.py",
+            'self._fernet.encrypt(value.encode("utf-8"))',
+        ),
+        (
+            "原生应用只监听随机的 `127.0.0.1` 端口",
+            "src/stock_desk/desktop.py",
+            "api_socket.bind((_LOOPBACK_HOST, 0))",
+        ),
+        (
+            "自动日志脱敏只替换已登记的明文秘密，分享前仍须人工检查路径、研究内容和受许可数据",
+            "src/stock_desk/security/redaction.py",
+            "_replace_known_strings(normalized_text, secrets, markers.redacted)",
+        ),
+    ),
+    "Credentials-Logs-and-Local-Security-en.md": (
+        (
+            "Provider secrets are encrypted locally with Fernet and the UI exposes only masked status",
+            "src/stock_desk/security/secrets.py",
+            'self._fernet.encrypt(value.encode("utf-8"))',
+        ),
+        (
+            "The native app listens only on a random `127.0.0.1` port",
+            "src/stock_desk/desktop.py",
+            "api_socket.bind((_LOOPBACK_HOST, 0))",
+        ),
+        (
+            "Automatic log redaction replaces registered plaintext secrets only; paths, research content, and licensed data still need manual review before sharing",
+            "src/stock_desk/security/redaction.py",
+            "_replace_known_strings(normalized_text, secrets, markers.redacted)",
+        ),
+    ),
+    "Backup-Restore-Upgrade-and-Uninstall.md": (
+        (
+            "无源码 Windows 和 macOS 安装包都不内置备份/恢复命令行工具",
+            "docs/backup-and-restore.md",
+            "The source-free Windows and macOS installers do not bundle this operator CLI.",
+        ),
+        (
+            "便携归档永不包含主密钥",
+            "docs/backup-and-restore.md",
+            "still never includes the master key",
+        ),
+        (
+            "非空目标恢复必须在全部进程停止后使用 `--offline`",
+            "docs/backup-and-restore.md",
+            "`--offline` is mandatory for a non-empty destination",
+        ),
+        (
+            "不能用 Alembic downgrade 作为运行回滚",
+            "docs/backup-and-restore.md",
+            "Never use Alembic downgrade as an operational rollback.",
+        ),
+    ),
+    "Backup-Restore-Upgrade-and-Uninstall-en.md": (
+        (
+            "Source-free Windows and macOS installers do not bundle the backup/restore operator CLI",
+            "docs/backup-and-restore.md",
+            "The source-free Windows and macOS installers do not bundle this operator CLI.",
+        ),
+        (
+            "A portable archive never contains the master key",
+            "docs/backup-and-restore.md",
+            "still never includes the master key",
+        ),
+        (
+            "Restoring a non-empty destination requires every process to be stopped and `--offline`",
+            "docs/backup-and-restore.md",
+            "`--offline` is mandatory for a non-empty destination",
+        ),
+        (
+            "Alembic downgrade is not an operational rollback mechanism",
+            "docs/backup-and-restore.md",
+            "Never use Alembic downgrade as an operational rollback.",
+        ),
+    ),
+    "Troubleshooting.md": (
+        (
+            "原生安装版使用随机本机端口，不要按源码/容器的固定 8000 端口排查",
+            "src/stock_desk/desktop.py",
+            "api_socket.bind((_LOOPBACK_HOST, 0))",
+        ),
+        (
+            "任务排查使用安全任务与安全事件视图，不等同于原始运行日志",
+            "web/src/features/tasks/taskApi.ts",
+            "`/tasks/${id}/events?view=safe&limit=100`",
+        ),
+        (
+            "行情图表只读本地不可变缓存，不会因缺失区间静默联网抓取",
+            "docs/data-sources.md",
+            "Chart GET requests never invoke providers",
+        ),
+        (
+            "恢复日志与暂存目录必须保留，不能手工编辑或删除",
+            "docs/backup-and-restore.md",
+            "Do not delete or edit a journal",
+        ),
+    ),
+    "Troubleshooting-en.md": (
+        (
+            "The native installer uses a random local port; do not troubleshoot it as source/Compose port 8000",
+            "src/stock_desk/desktop.py",
+            "api_socket.bind((_LOOPBACK_HOST, 0))",
+        ),
+        (
+            "Task diagnosis uses safe task and safe event views, not raw runtime logs",
+            "web/src/features/tasks/taskApi.ts",
+            "`/tasks/${id}/events?view=safe&limit=100`",
+        ),
+        (
+            "Market charts read the local immutable cache and never silently fetch a missing range",
+            "docs/data-sources.md",
+            "Chart GET requests never invoke providers",
+        ),
+        (
+            "Preserve recovery journals and staging directories; never edit or delete them manually",
+            "docs/backup-and-restore.md",
+            "Do not delete or edit a journal",
+        ),
+    ),
+}
+
+
+REQUIRED_WIKI_ANALYSIS_PLATFORM_CONTENT = {
+    "Model-Provider-Setup.md": (
+        (
+            "模型连接错误码只包括 `timeout`、`authentication`、`rate_limit`、`server`、`transport`、`dns`、`unsafe_endpoint`、`invalid_response` 和 `storage`",
+            "模型列表中找不到配置模型时也会折叠为 `invalid_response`",
+            "[Ollama 官方快速开始](https://docs.ollama.com/quickstart)",
+        ),
+        ("model_not_found", "not_found 错误码"),
+    ),
+    "Model-Provider-Setup-en.md": (
+        (
+            "Model connection error codes are limited to `timeout`, `authentication`, `rate_limit`, `server`, `transport`, `dns`, `unsafe_endpoint`, `invalid_response`, and `storage`",
+            "A configured model missing from the provider's model list is also folded into `invalid_response`",
+            "[official Ollama quickstart](https://docs.ollama.com/quickstart)",
+        ),
+        ("model_not_found", "a `not_found` error code"),
+    ),
+    "Responsive-Navigation-and-Accessibility.md": (
+        (
+            "分析流程和证据抽屉没有 Escape 快捷关闭",
+            "点击“关闭分析流程”或“关闭证据”",
+            "关闭分析流程后焦点返回“查看分析流程”",
+            "关闭证据后焦点返回原判断；若由工具栏打开，则返回“查看证据”",
+        ),
+        ("按 Escape 关闭分析抽屉", "Escape 会关闭分析抽屉"),
+    ),
+    "Responsive-Navigation-and-Accessibility-en.md": (
+        (
+            "The analysis process and evidence drawers do not have an Escape shortcut",
+            "use the visible Close analysis process or Close evidence button",
+            "Closing the process drawer returns focus to View analysis process",
+            "Closing evidence returns focus to the originating claim, or to View evidence when opened from the toolbar",
+        ),
+        ("Escape closes an analysis drawer", "close analysis drawers with Escape"),
+    ),
+    "Backup-Restore-Upgrade-and-Uninstall.md": (
+        (
+            "便携归档永不包含主密钥",
+            "原生整目录离线副本包含 `config/master.key`",
+            "整目录副本必须整体加密并限制访问",
+            "用户必须在副本旁另存产品版本、安装包文件名和 SHA-256 记录",
+        ),
+        ("副本位置的版本记录", "整目录副本不包含主密钥"),
+    ),
+    "Backup-Restore-Upgrade-and-Uninstall-en.md": (
+        (
+            "A portable archive never contains the master key",
+            "A full native offline directory copy contains `config/master.key`",
+            "The full-directory copy must be encrypted as a whole and access controlled",
+            "The user must store product version, installer filename, and SHA-256 beside the copy as a separate record",
+        ),
+        (
+            "the version record in the copy",
+            "A full-directory copy never contains the master key",
+        ),
+    ),
+    "Credentials-Logs-and-Local-Security.md": (
+        (
+            "[私密安全报告渠道](https://github.com/CongBao/stock-desk/blob/main/SECURITY.md)",
+        ),
+        ("`SECURITY.md` 指定的",),
+    ),
+    "Credentials-Logs-and-Local-Security-en.md": (
+        (
+            "[private security reporting channel](https://github.com/CongBao/stock-desk/blob/main/SECURITY.md)",
+        ),
+        ("in `SECURITY.md`",),
+    ),
+    "Troubleshooting.md": (
+        (
+            "启动条件是完整证券代码、已验证模型、0–5 的最大重试次数，以及与当前代码和模型匹配的预检",
+            "数据覆盖不足仍允许运行，但报告不会给出评级",
+            "[公开支持指南](https://github.com/CongBao/stock-desk/blob/main/SUPPORT.md)",
+            "[私密安全报告渠道](https://github.com/CongBao/stock-desk/blob/main/SECURITY.md)",
+        ),
+        ("数据覆盖不足会阻止启动", "预检不允许启动"),
+    ),
+    "Troubleshooting-en.md": (
+        (
+            "Start requires a complete symbol, a verified model, maximum retries from 0 to 5, and preflight that still matches the current symbol and model",
+            "Insufficient data coverage still allows a run, but the report emits no rating",
+            "[public support guide](https://github.com/CongBao/stock-desk/blob/main/SUPPORT.md)",
+            "[private security reporting channel](https://github.com/CongBao/stock-desk/blob/main/SECURITY.md)",
+        ),
+        ("insufficient coverage blocks start", "preflight blocks start"),
+    ),
+}
+
+
 REQUIRED_WIKI_ENTRY_FILES = (
     "Home.md",
     "Home-en.md",
@@ -2411,6 +2835,585 @@ def _tracked_source_text(relative_path: str) -> str:
         return (repo / relative_path).read_text(encoding="utf-8")
     except (OSError, UnicodeError):
         return ""
+
+
+def _python_str_enum_members(source: str, class_name: str) -> dict[str, str] | None:
+    try:
+        module = ast.parse(source)
+    except SyntaxError:
+        return None
+    enum_class = next(
+        (
+            node
+            for node in module.body
+            if isinstance(node, ast.ClassDef) and node.name == class_name
+        ),
+        None,
+    )
+    if enum_class is None or not any(
+        (isinstance(base, ast.Name) and base.id == "StrEnum")
+        or (isinstance(base, ast.Attribute) and base.attr == "StrEnum")
+        for base in enum_class.bases
+    ):
+        return None
+    members: dict[str, str] = {}
+    for statement in enum_class.body:
+        if (
+            isinstance(statement, ast.Assign)
+            and len(statement.targets) == 1
+            and isinstance(statement.targets[0], ast.Name)
+            and statement.targets[0].id.isupper()
+            and isinstance(statement.value, ast.Constant)
+            and isinstance(statement.value.value, str)
+        ):
+            members[statement.targets[0].id] = statement.value.value
+    return members
+
+
+def _python_class_method(
+    source: str, class_name: str, method_name: str
+) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
+    try:
+        module = ast.parse(source)
+    except SyntaxError:
+        return None
+    class_node = next(
+        (
+            node
+            for node in module.body
+            if isinstance(node, ast.ClassDef) and node.name == class_name
+        ),
+        None,
+    )
+    if class_node is None:
+        return None
+    return next(
+        (
+            node
+            for node in class_node.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == method_name
+        ),
+        None,
+    )
+
+
+def _expression_dump(expression: str) -> str:
+    return ast.dump(ast.parse(expression, mode="eval").body, include_attributes=False)
+
+
+def _node_is_expression(node: ast.AST, expression: str) -> bool:
+    return ast.dump(node, include_attributes=False) == _expression_dump(expression)
+
+
+def _tree_contains_expression(node: ast.AST, expression: str) -> bool:
+    expected = _expression_dump(expression)
+    return any(
+        ast.dump(candidate, include_attributes=False) == expected
+        for candidate in ast.walk(node)
+    )
+
+
+def _model_missing_maps_to_invalid_response(source: str) -> bool:
+    method = _python_class_method(source, "OpenAICompatibleProvider", "test_connection")
+    if method is None:
+        return False
+    missing_check = next(
+        (
+            node
+            for node in ast.walk(method)
+            if isinstance(node, ast.If)
+            and _node_is_expression(
+                node.test,
+                "not any(entry.id == self.model for entry in models.data)",
+            )
+            and any(
+                isinstance(child, ast.Raise)
+                and (
+                    (isinstance(child.exc, ast.Name) and child.exc.id == "ValueError")
+                    or (
+                        isinstance(child.exc, ast.Call)
+                        and isinstance(child.exc.func, ast.Name)
+                        and child.exc.func.id == "ValueError"
+                    )
+                )
+                for child in node.body
+            )
+        ),
+        None,
+    )
+    invalid_response_fold = any(
+        isinstance(node, ast.IfExp)
+        and _node_is_expression(node.test, "isinstance(error, ModelProviderError)")
+        and isinstance(node.orelse, ast.Call)
+        and isinstance(node.orelse.func, ast.Name)
+        and node.orelse.func.id == "ModelInvalidResponseError"
+        for node in ast.walk(method)
+    )
+    return missing_check is not None and invalid_response_fold
+
+
+def _typescript_literal_record(source: str, name: str) -> dict[str, str] | None:
+    match = re.search(
+        rf"\bconst\s+{re.escape(name)}\s*:[^=]+?=\s*\{{(?P<body>.*?)^\}};",
+        source,
+        re.MULTILINE | re.DOTALL,
+    )
+    if match is None:
+        return None
+    members: dict[str, str] = {}
+    for line in match.group("body").splitlines():
+        if not line.strip():
+            continue
+        item = re.fullmatch(
+            r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*'([^']*)'\s*,?\s*",
+            line,
+        )
+        if item is None or item.group(1) in members:
+            return None
+        members[item.group(1)] = item.group(2)
+    return members
+
+
+def _analysis_report_state_invariants(source: str) -> bool:
+    method = _python_class_method(source, "ResearchReport", "validate_report")
+    if method is None:
+        return False
+    complete = next(
+        (
+            node
+            for node in method.body
+            if isinstance(node, ast.If)
+            and _node_is_expression(node.test, "self.status is ReportStatus.COMPLETE")
+        ),
+        None,
+    )
+    if complete is None or not complete.orelse:
+        return False
+    partial = complete.orelse[0]
+    if not (
+        isinstance(partial, ast.If)
+        and _node_is_expression(partial.test, "self.status is ReportStatus.PARTIAL")
+        and complete.body
+        and isinstance(complete.body[0], ast.If)
+        and partial.body
+        and isinstance(partial.body[0], ast.If)
+        and partial.orelse
+        and isinstance(partial.orelse[0], ast.If)
+    ):
+        return False
+    complete_guard = complete.body[0].test
+    partial_guard = partial.body[0].test
+    insufficient = partial.orelse[0]
+    if not _node_is_expression(
+        insufficient.test,
+        "self.rating is not None or self.confidence != 0.0",
+    ):
+        return False
+    retry_guard = insufficient.orelse[0] if insufficient.orelse else None
+    return (
+        _tree_contains_expression(complete_guard, "self.rating is None")
+        and _tree_contains_expression(partial_guard, "self.rating is not None")
+        and _tree_contains_expression(partial_guard, "self.confidence != 0.0")
+        and _tree_contains_expression(partial_guard, "not self.missing_modules")
+        and _tree_contains_expression(partial_guard, "not self.retry_actions")
+        and isinstance(retry_guard, ast.If)
+        and _node_is_expression(retry_guard.test, "self.retry_actions")
+    )
+
+
+def _python_class_annotated_fields(source: str, class_name: str) -> frozenset[str]:
+    try:
+        module = ast.parse(source)
+    except SyntaxError:
+        return frozenset()
+    class_node = next(
+        (
+            node
+            for node in module.body
+            if isinstance(node, ast.ClassDef) and node.name == class_name
+        ),
+        None,
+    )
+    if class_node is None:
+        return frozenset()
+    return frozenset(
+        statement.target.id
+        for statement in class_node.body
+        if isinstance(statement, ast.AnnAssign)
+        and isinstance(statement.target, ast.Name)
+    )
+
+
+def _evidence_display_contract(domain_source: str, component_source: str) -> bool:
+    required_fields = frozenset(
+        {
+            "canonical_source",
+            "source_record",
+            "published_at",
+            "data_cutoff",
+            "fetched_at",
+            "dataset_version",
+            "quality_flags",
+            "route",
+        }
+    )
+    if not required_fields <= _python_class_annotated_fields(
+        domain_source, "EvidenceItem"
+    ):
+        return False
+    expected_binding_counts = {
+        "item.canonicalSource": 1,
+        "item.sourceRecord": 1,
+        "item.publishedAt": 2,
+        "item.dataCutoff": 1,
+        "item.fetchedAt": 1,
+        "item.datasetVersion": 1,
+        "item.qualityFlags": 2,
+        "item.route": 3,
+    }
+    if any(
+        component_source.count(binding) != expected_count
+        for binding, expected_count in expected_binding_counts.items()
+    ):
+        return False
+    return all(
+        marker in component_source
+        for marker in (
+            "<dt>记录</dt>",
+            "<dt>数据版本</dt>",
+            "<dt>发布时间：</dt>",
+            "<dt>数据截止</dt>",
+            "<dt>采集时间</dt>",
+            "<dt>质量标记：</dt>",
+            "<dt>来源路由：</dt>",
+        )
+    )
+
+
+def _module_string_constant(source: str, name: str) -> str | None:
+    try:
+        module = ast.parse(source)
+    except SyntaxError:
+        return None
+    for statement in module.body:
+        target: ast.expr | None = None
+        value: ast.expr | None = None
+        if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
+            target = statement.targets[0]
+            value = statement.value
+        elif isinstance(statement, ast.AnnAssign):
+            target = statement.target
+            value = statement.value
+        if (
+            isinstance(target, ast.Name)
+            and target.id == name
+            and isinstance(value, ast.Constant)
+            and isinstance(value.value, str)
+        ):
+            return value.value
+    return None
+
+
+def _branch_calls(branch: ast.If, function_name: str) -> bool:
+    return any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == function_name
+        for statement in branch.body
+        for node in ast.walk(statement)
+    )
+
+
+def _prompt_trust_boundary_contract(source: str) -> bool:
+    if (
+        _module_string_constant(source, "UNTRUSTED_DATA_LABEL") != "untrusted-data"
+        or _module_string_constant(source, "TRUSTED_CONTROL_LABEL") != "trusted-control"
+    ):
+        return False
+    try:
+        module = ast.parse(source)
+    except SyntaxError:
+        return False
+    make_block = next(
+        (
+            node
+            for node in module.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "make_untrusted_data_block"
+        ),
+        None,
+    )
+    validate_blocks = next(
+        (
+            node
+            for node in module.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "validate_prompt_blocks"
+        ),
+        None,
+    )
+    if make_block is None or validate_blocks is None:
+        return False
+    envelope_is_untrusted = any(
+        isinstance(node, ast.Dict)
+        and any(
+            isinstance(key, ast.Constant)
+            and key.value == "trust_label"
+            and isinstance(value, ast.Name)
+            and value.id == "UNTRUSTED_DATA_LABEL"
+            for key, value in zip(node.keys, node.values, strict=True)
+        )
+        for node in ast.walk(make_block)
+    )
+    untrusted_branch = next(
+        (
+            node
+            for node in ast.walk(validate_blocks)
+            if isinstance(node, ast.If)
+            and _node_is_expression(node.test, "label == UNTRUSTED_DATA_LABEL")
+        ),
+        None,
+    )
+    trusted_branch = next(
+        (
+            node
+            for node in ast.walk(validate_blocks)
+            if isinstance(node, ast.If)
+            and _node_is_expression(node.test, "label == TRUSTED_CONTROL_LABEL")
+        ),
+        None,
+    )
+    return (
+        envelope_is_untrusted
+        and untrusted_branch is not None
+        and _branch_calls(untrusted_branch, "_validate_untrusted_block")
+        and trusted_branch is not None
+        and _branch_calls(trusted_branch, "_validate_trusted_control_block")
+    )
+
+
+def _responsive_e2e_contract(source: str) -> bool:
+    routes_match = re.search(
+        r"\bconst\s+routes\s*=\s*\[(?P<body>.*?)\]\s*as\s+const;",
+        source,
+        re.DOTALL,
+    )
+    viewports_match = re.search(
+        r"\bconst\s+viewports\s*=\s*\[(?P<body>.*?)\]\s*as\s+const;",
+        source,
+        re.DOTALL,
+    )
+    if routes_match is None or viewports_match is None:
+        return False
+    routes = tuple(re.findall(r"'(/[^']+)'", routes_match.group("body")))
+    viewport_values: list[tuple[str, int, int, bool]] = []
+    for item in re.findall(r"\{(?P<body>[^{}]+)\}", viewports_match.group("body")):
+        name = re.search(r"name:\s*'([^']+)'", item)
+        width = re.search(r"width:\s*(\d+)", item)
+        height = re.search(r"height:\s*(\d+)", item)
+        collapsed = re.search(r"collapsed:\s*(true|false)", item)
+        if None in {name, width, height, collapsed}:
+            return False
+        assert name is not None and width is not None and height is not None
+        assert collapsed is not None
+        viewport_values.append(
+            (
+                name.group(1),
+                int(width.group(1)),
+                int(height.group(1)),
+                collapsed.group(1) == "true",
+            )
+        )
+    expected_routes = (
+        "/market",
+        "/formulas",
+        "/backtests",
+        "/analysis",
+        "/tasks",
+        "/settings",
+    )
+    expected_viewports = (
+        ("wide desktop", 1600, 900, False),
+        ("narrow desktop", 1100, 700, True),
+        ("tablet landscape", 1024, 768, True),
+        ("tablet portrait", 768, 1024, True),
+        ("mobile portrait", 390, 844, True),
+        ("200 percent effective viewport", 640, 450, True),
+        ("short landscape effective viewport", 640, 360, True),
+    )
+    required_matrix_code = (
+        "for (const viewport of viewports)",
+        "for (const route of routes)",
+        "await expectNoShellOverlap(page);",
+        "await expectNoInteractiveControlOverlap(page);",
+        "await expectNavigationIsOperable(page);",
+        "overflow.scrollWidth",
+        "overflow.clientWidth + 1",
+        "navigation auto-collapses only when crossing the narrow breakpoint",
+        "collapsed navigation renders icons without textual abbreviations",
+        "link.locator('.nav-icon svg')",
+        "link.locator('.nav-label')",
+    )
+    return (
+        routes == expected_routes
+        and tuple(viewport_values) == expected_viewports
+        and all(marker in source for marker in required_matrix_code)
+    )
+
+
+def _analysis_start_eligibility_contract(source: str) -> bool:
+    start_index = source.find("async function start()")
+    start_end = source.find("\n  return (", start_index)
+    label_index = source.find("'启动智能分析'")
+    button_start = source.rfind("<button", 0, label_index)
+    button_end = source.find("</button>", label_index)
+    if min(start_index, start_end, label_index, button_start, button_end) < 0:
+        return False
+    start_section = source[start_index:start_end]
+    button_section = source[button_start : button_end + len("</button>")]
+    start_required = (
+        "if (!maxRetriesIsValid)",
+        "preflight === null",
+        "preflight.symbol !== symbol",
+        "!verifiedModels.some((model) => model.id === modelId)",
+    )
+    button_required = (
+        "preflight === null",
+        "preflight.symbol !== symbol",
+        "!selectedModelIsVerified",
+        "!maxRetriesIsValid",
+    )
+    return (
+        "const maxRetriesIsValid = /^[0-5]$/u.test(maxRetries);" in source
+        and all(marker in start_section for marker in start_required)
+        and all(marker in button_section for marker in button_required)
+        and "ratingEligible" not in start_section
+        and "ratingEligible" not in button_section
+    )
+
+
+def _analysis_drawer_focus_contract(source: str) -> bool:
+    start = source.find("function closeDrawer()")
+    end = source.find("\n  const cancellable", start)
+    if start < 0 or end < 0:
+        return False
+    close_section = source[start:end]
+    required_focus = (
+        "processButtonRef.current?.focus();",
+        "claimTriggerRef.current.focus();",
+        "evidenceButtonRef.current?.focus();",
+        "setDrawer(null);",
+    )
+    return (
+        all(marker in close_section for marker in required_focus)
+        and "event.key === 'Escape'" not in source
+        and source.count("onClick={closeDrawer}") == 2
+        and source.count("关闭分析流程") == 1
+        and source.count("关闭证据") == 1
+    )
+
+
+def _analysis_platform_source_invariant_failures() -> list[str]:
+    provider_members = {
+        "DEEPSEEK": "deepseek",
+        "OPENAI_COMPATIBLE": "openai_compatible",
+        "OLLAMA": "ollama",
+    }
+    error_members = {
+        "TIMEOUT": "timeout",
+        "AUTHENTICATION": "authentication",
+        "RATE_LIMIT": "rate_limit",
+        "SERVER": "server",
+        "TRANSPORT": "transport",
+        "DNS": "dns",
+        "UNSAFE_ENDPOINT": "unsafe_endpoint",
+        "INVALID_RESPONSE": "invalid_response",
+        "STORAGE": "storage",
+    }
+    rating_members = {
+        "strong_bullish": "强烈看多",
+        "bullish": "看多",
+        "neutral": "中性",
+        "bearish": "看空",
+        "strong_bearish": "强烈看空",
+    }
+    checks = (
+        (
+            "Model-Provider-Setup: ModelProviderKind exact enum",
+            _python_str_enum_members(
+                _tracked_source_text("src/stock_desk/analysis/model_config.py"),
+                "ModelProviderKind",
+            )
+            == provider_members,
+        ),
+        (
+            "Model-Provider-Setup: ModelErrorCode exact enum",
+            _python_str_enum_members(
+                _tracked_source_text("src/stock_desk/analysis/providers/base.py"),
+                "ModelErrorCode",
+            )
+            == error_members,
+        ),
+        (
+            "Model-Provider-Setup: missing model folds to invalid_response",
+            _model_missing_maps_to_invalid_response(
+                _tracked_source_text(
+                    "src/stock_desk/analysis/providers/openai_compatible.py"
+                )
+            ),
+        ),
+        (
+            "Research-Reports-and-Evidence: exact five-level rating record",
+            _typescript_literal_record(
+                _tracked_source_text("web/src/features/analysis/ConclusionPanel.tsx"),
+                "ratingLabels",
+            )
+            == rating_members,
+        ),
+        (
+            "Research-Reports-and-Evidence: report state invariants",
+            _analysis_report_state_invariants(
+                _tracked_source_text("src/stock_desk/analysis/report.py")
+            ),
+        ),
+        (
+            "Research-Reports-and-Evidence: evidence fields and UI bindings",
+            _evidence_display_contract(
+                _tracked_source_text("src/stock_desk/analysis/evidence.py"),
+                _tracked_source_text("web/src/features/analysis/EvidencePanel.tsx"),
+            ),
+        ),
+        (
+            "Research-Failures-Retries-and-Safety: prompt trust boundary",
+            _prompt_trust_boundary_contract(
+                _tracked_source_text("src/stock_desk/analysis/content_policy.py")
+            ),
+        ),
+        (
+            "Responsive-Navigation-and-Accessibility: executable route matrix",
+            _responsive_e2e_contract(
+                _tracked_source_text("web/e2e/responsive.spec.ts")
+            ),
+        ),
+        (
+            "Research-Reports-and-Evidence: run eligibility excludes rating coverage",
+            _analysis_start_eligibility_contract(
+                _tracked_source_text("web/src/features/analysis/AnalysisRunPanel.tsx")
+            ),
+        ),
+        (
+            "Responsive-Navigation-and-Accessibility: drawer close and focus behavior",
+            _analysis_drawer_focus_contract(
+                _tracked_source_text("web/src/features/analysis/AnalysisPage.tsx")
+            ),
+        ),
+    )
+    return [
+        f"source invariant failed: {description}"
+        for description, valid in checks
+        if not valid
+    ]
 
 
 @lru_cache(maxsize=None)
@@ -3796,6 +4799,19 @@ def verify_wiki(wiki_root: Path, *, final: bool) -> list[str]:
                 f"missing={missing!r}, forbidden={present_forbidden!r}"
             )
 
+    for (
+        filename,
+        (required, forbidden),
+    ) in REQUIRED_WIKI_ANALYSIS_PLATFORM_CONTENT.items():
+        document = documents.get(filename, "")
+        missing = [marker for marker in required if marker not in document]
+        present_forbidden = [marker for marker in forbidden if marker in document]
+        if missing or present_forbidden:
+            failures.append(
+                f"{filename}: analysis/platform content contract mismatch; "
+                f"missing={missing!r}, forbidden={present_forbidden!r}"
+            )
+
     for filename, (
         section_headings,
         forbidden,
@@ -3889,6 +4905,30 @@ def verify_wiki(wiki_root: Path, *, final: bool) -> list[str]:
                 f"{filename}: source-backed backtest-guide contract mismatch; "
                 f"missing={missing_claims!r}, invalid_sources={invalid_sources!r}"
             )
+
+    for (
+        filename,
+        claims,
+    ) in REQUIRED_WIKI_ANALYSIS_PLATFORM_GUIDE_SOURCE_CLAIMS.items():
+        document = documents.get(filename, "")
+        missing_claims = [
+            wiki_marker
+            for wiki_marker, _relative_path, _source_marker in claims
+            if wiki_marker not in document
+        ]
+        invalid_sources = [
+            f"{relative_path}:{source_marker}"
+            for _wiki_marker, relative_path, source_marker in claims
+            if source_marker not in _tracked_source_text(relative_path)
+        ]
+        if missing_claims or invalid_sources:
+            failures.append(
+                f"{filename}: source-backed analysis/platform-guide contract "
+                f"mismatch; missing={missing_claims!r}, "
+                f"invalid_sources={invalid_sources!r}"
+            )
+
+    failures.extend(_analysis_platform_source_invariant_failures())
 
     for filename, required_link in (
         ("_Sidebar.md", "[English](Home-en)"),
