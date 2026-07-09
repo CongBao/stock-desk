@@ -3078,13 +3078,7 @@ def _png_bytes(width: int, height: int, *, varied: bool, seed: int = 0) -> bytes
 
 
 def _write_readme_screenshot_manifest(root: Path) -> None:
-    commit = subprocess.run(
-        ("git", "rev-parse", "HEAD"),
-        cwd=Path(__file__).resolve().parents[2],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
+    commit = CAPTURE_COMMIT
     definitions: tuple[tuple[str, str, str, bool, str, str], ...] = (
         (
             "market-data-and-charts",
