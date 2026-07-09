@@ -1160,10 +1160,147 @@ def test_baostock_catalog_filters_non_stock_and_b_share_rows() -> None:
     )
 
 
-def test_akshare_unknown_board_is_rejected_without_guessing() -> None:
+@pytest.mark.parametrize("source", [ProviderId.BAOSTOCK, ProviderId.AKSHARE])
+def test_current_shenzhen_a_share_prefix_is_preserved(source: ProviderId) -> None:
+    case = next(case for case in _provider_cases() if case.source is source)
+    fixture = load_fixture(case.fixture_name)
+    if source is ProviderId.AKSHARE:
+        fixture["instruments"] = [
+            {"code": row["代码"], "name": row["名称"]} for row in fixture["instruments"]
+        ]
+    fixture["instruments"].append(
+        {
+            "code": "sz.302132",
+            "code_name": "中航成飞",
+            "ipoDate": "2010-08-27",
+            "outDate": "",
+            "type": "1",
+            "status": "1",
+        }
+        if source is ProviderId.BAOSTOCK
+        else {"code": "302132", "name": "中航成飞"}
+    )
+    client = case.client_type(fixture)
+    provider = cast(
+        MarketDataProvider, case.provider_type(client=client, clock=lambda: FETCHED_AT)
+    )
+
+    outcome = provider.fetch_instruments()
+
+    assert isinstance(outcome, ProviderBatch)
+    instrument = next(item for item in outcome.items if item.symbol == "302132.SZ")
+    assert instrument.name == "中航成飞"
+    assert instrument.exchange is Exchange.SZ
+
+
+def test_akshare_catalog_filters_explicit_b_share_rows() -> None:
     case = next(case for case in _provider_cases() if case.source is ProviderId.AKSHARE)
     fixture = load_fixture("akshare")
-    fixture["instruments"].append({"代码": "777777", "名称": "未知板块"})
+    fixture["instruments"] = [
+        {"code": row["代码"], "name": row["名称"]} for row in fixture["instruments"]
+    ]
+    fixture["instruments"].extend(
+        (
+            {"code": "900901", "name": "沪市B股样本"},
+            {"code": "200002", "name": "深市B股样本"},
+        )
+    )
+    provider = cast(
+        MarketDataProvider,
+        case.provider_type(
+            client=case.client_type(fixture),
+            clock=lambda: FETCHED_AT,
+        ),
+    )
+
+    outcome = provider.fetch_instruments()
+
+    assert isinstance(outcome, ProviderBatch)
+    assert tuple(item.symbol for item in outcome.items) == (
+        "000001.SZ",
+        "600000.SH",
+        "920000.BJ",
+    )
+
+
+@pytest.mark.parametrize("source", [ProviderId.BAOSTOCK, ProviderId.AKSHARE])
+def test_catalog_with_only_explicitly_out_of_scope_rows_is_no_data(
+    source: ProviderId,
+) -> None:
+    case = next(case for case in _provider_cases() if case.source is source)
+    fixture = load_fixture(case.fixture_name)
+    fixture["instruments"] = [
+        {
+            "code": "sh.900901",
+            "code_name": "沪市B股样本",
+            "ipoDate": "1992-02-21",
+            "outDate": "",
+            "type": "1",
+            "status": "1",
+        }
+        if source is ProviderId.BAOSTOCK
+        else {"代码": "900901", "名称": "沪市B股样本"}
+    ]
+    provider = cast(
+        MarketDataProvider,
+        case.provider_type(
+            client=case.client_type(fixture),
+            clock=lambda: FETCHED_AT,
+        ),
+    )
+
+    outcome = provider.fetch_instruments()
+
+    assert isinstance(outcome, ProviderBatchFailure)
+    assert outcome.reason is FailureReason.NO_DATA
+
+
+@pytest.mark.parametrize("source", [ProviderId.BAOSTOCK, ProviderId.AKSHARE])
+def test_malformed_instrument_codes_still_fail_closed(source: ProviderId) -> None:
+    case = next(case for case in _provider_cases() if case.source is source)
+    fixture = load_fixture(case.fixture_name)
+    fixture["instruments"].append(
+        {
+            "code": "sh.90090",
+            "code_name": "畸形记录",
+            "ipoDate": "1992-02-21",
+            "outDate": "",
+            "type": "1",
+            "status": "1",
+        }
+        if source is ProviderId.BAOSTOCK
+        else {"代码": "90090", "名称": "畸形记录"}
+    )
+    provider = cast(
+        MarketDataProvider,
+        case.provider_type(
+            client=case.client_type(fixture),
+            clock=lambda: FETCHED_AT,
+        ),
+    )
+
+    outcome = provider.fetch_instruments()
+
+    assert isinstance(outcome, ProviderBatchFailure)
+    assert outcome.reason is FailureReason.INVALID_RESPONSE
+
+
+@pytest.mark.parametrize("source", [ProviderId.BAOSTOCK, ProviderId.AKSHARE])
+def test_unknown_board_is_rejected_without_guessing(source: ProviderId) -> None:
+    case = next(case for case in _provider_cases() if case.source is source)
+    fixture = load_fixture(case.fixture_name)
+    fixture["instruments"].append(
+        {
+            "code": "sh.777777",
+            "code_name": "未知板块",
+            "ipoDate": "2024-01-02",
+            "outDate": "",
+            "type": "1",
+            "status": "1",
+        }
+        if source is ProviderId.BAOSTOCK
+        else {"代码": "777777", "名称": "未知板块"}
+    )
     client = case.client_type(fixture)
     provider = cast(
         MarketDataProvider, case.provider_type(client=client, clock=lambda: FETCHED_AT)

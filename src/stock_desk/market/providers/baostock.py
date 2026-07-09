@@ -183,7 +183,7 @@ _CALENDAR_COLUMNS = frozenset({"calendar_date", "is_trading_day"})
 _NON_STOCK_TYPES = frozenset({"2", "3", "4", "5"})
 _A_SHARE_PREFIXES = {
     Exchange.SH: ("600", "601", "603", "605", "688", "689"),
-    Exchange.SZ: ("000", "001", "002", "003", "300", "301"),
+    Exchange.SZ: ("000", "001", "002", "003", "300", "301", "302"),
     Exchange.BJ: ("43", "83", "87", "88", "92"),
 }
 _B_SHARE_PREFIXES = {Exchange.SH: ("900",), Exchange.SZ: ("200",)}
