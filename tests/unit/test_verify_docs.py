@@ -17,6 +17,8 @@ from scripts.verify_docs import (
     verify_repository,
     verify_wiki,
 )
+from stock_desk.formula.compiler import FormulaCompileError, compile_formula
+from stock_desk.formula.functions.registry import V1_REGISTRY
 
 
 EXPECTED_WIKI_PAGE_STEMS = (
@@ -159,14 +161,28 @@ EXPECTED_WIKI_APP_UI_LABELS = {
     "Formula-Studio-Quickstart": (
         ("Formula Studio", "公式工作台"),
         ("Custom formulas", "自定义公式"),
+        ("Functions and templates", "函数与模板"),
+        ("Trading system", "交易系统"),
+        ("Subchart", "副图"),
         ("Validate now", "立即校验"),
+        ("Save draft", "保存草稿"),
+        ("Save as new version", "保存为新版本"),
         ("Run preview", "运行预览"),
     ),
     "Formula-Compatibility-and-Errors": (
+        ("Technical indicator", "技术指标"),
+        ("Trading system", "交易系统"),
+        ("Functions, fields, or descriptions", "函数、字段或说明"),
         ("Validate now", "立即校验"),
-        ("Open saved formula", "打开已保存公式"),
+        ("Open formula", "打开公式"),
+        ("Save draft", "保存草稿"),
     ),
     "Formula-Versions-and-Safety": (
+        ("Open formula", "打开公式"),
+        ("Read-only historical versions", "历史版本（只读）"),
+        ("Copy to current draft", "复制到当前草稿"),
+        ("Save draft", "保存草稿"),
+        ("Save as new version", "保存为新版本"),
         ("Formula version", "公式版本"),
         ("Run preview", "运行预览"),
     ),
@@ -279,10 +295,12 @@ EXPECTED_WIKI_APP_UI_SOURCE_FILES = {
     ),
     "Formula-Compatibility-and-Errors": (
         "web/src/features/formulas/FormulaStudioPage.tsx",
+        "web/src/features/formulas/FunctionLibrary.tsx",
     ),
     "Formula-Versions-and-Safety": (
         "web/src/features/formulas/FormulaStudioPage.tsx",
         "web/src/features/formulas/FormulaPreview.tsx",
+        "web/src/features/backtests/steps/FormulaStep.tsx",
     ),
     "MACD-Backtest-Tutorial": (
         "web/src/app/routes.ts",
@@ -323,6 +341,58 @@ EXPECTED_WIKI_APP_UI_SOURCE_FILES = {
         "web/src/app/routes.ts",
         "web/src/features/tasks/TaskCenterPage.tsx",
     ),
+}
+
+EXPECTED_WIKI_VISIBLE_APP_UI_SOURCE_EVIDENCE = {
+    "Formula-Studio-Quickstart": {
+        "公式工作台": ("web/src/features/formulas/FormulaStudioPage.tsx", "jsx_text"),
+        "自定义公式": ("web/src/app/routes.ts", "route_label"),
+        "函数与模板": ("web/src/features/formulas/FunctionLibrary.tsx", "jsx_text"),
+        "交易系统": ("web/src/features/formulas/FormulaStudioPage.tsx", "jsx_text"),
+        "副图": ("web/src/features/formulas/FormulaStudioPage.tsx", "jsx_text"),
+        "立即校验": ("web/src/features/formulas/FormulaStudioPage.tsx", "jsx_text"),
+        "保存草稿": ("web/src/features/formulas/FormulaStudioPage.tsx", "jsx_text"),
+        "保存为新版本": (
+            "web/src/features/formulas/FormulaStudioPage.tsx",
+            "button_expression",
+        ),
+        "运行预览": (
+            "web/src/features/formulas/FormulaPreview.tsx",
+            "button_expression",
+        ),
+    },
+    "Formula-Compatibility-and-Errors": {
+        "技术指标": ("web/src/features/formulas/FormulaStudioPage.tsx", "jsx_text"),
+        "交易系统": ("web/src/features/formulas/FormulaStudioPage.tsx", "jsx_text"),
+        "函数、字段或说明": (
+            "web/src/features/formulas/FunctionLibrary.tsx",
+            "placeholder",
+        ),
+        "立即校验": ("web/src/features/formulas/FormulaStudioPage.tsx", "jsx_text"),
+        "打开公式": ("web/src/features/formulas/FormulaStudioPage.tsx", "jsx_text"),
+        "保存草稿": ("web/src/features/formulas/FormulaStudioPage.tsx", "jsx_text"),
+    },
+    "Formula-Versions-and-Safety": {
+        "打开公式": ("web/src/features/formulas/FormulaStudioPage.tsx", "jsx_text"),
+        "历史版本（只读）": (
+            "web/src/features/formulas/FormulaStudioPage.tsx",
+            "jsx_text",
+        ),
+        "复制到当前草稿": (
+            "web/src/features/formulas/FormulaStudioPage.tsx",
+            "jsx_text",
+        ),
+        "保存草稿": ("web/src/features/formulas/FormulaStudioPage.tsx", "jsx_text"),
+        "保存为新版本": (
+            "web/src/features/formulas/FormulaStudioPage.tsx",
+            "button_expression",
+        ),
+        "公式版本": ("web/src/features/backtests/steps/FormulaStep.tsx", "jsx_text"),
+        "运行预览": (
+            "web/src/features/formulas/FormulaPreview.tsx",
+            "button_expression",
+        ),
+    },
 }
 
 EXPECTED_WIKI_WORKFLOW_CONTENT = {
@@ -550,17 +620,217 @@ EXPECTED_WIKI_WORKFLOW_CONTENT = {
         ),
     ),
     "Formula-Studio-Quickstart.md": (
-        ("K 线主图与公式副图", "BUY 买点", "SELL 卖点", "运行预览"),
-        (),
+        (
+            "MACD 金叉 / 死叉",
+            "函数与模板",
+            "交易系统",
+            "副图",
+            "DIF:EMA(C,12)-EMA(C,26)",
+            "输入后会自动校验",
+            "Ctrl/⌘ + Enter",
+            "保存为新版本",
+            "运行预览",
+            "K 线主图与公式副图",
+            "BUY 买点",
+            "SELL 卖点",
+            "300750.SZ",
+            "sha256:7e7fbcce7ee0c7a0bd58b9ebd7d7e06c0755b4195ee3a32c49dfab269147f2fe",
+            "2026-07-08",
+            "54 个买点",
+            "55 个卖点",
+            "sha256:47d4a02851407ae0d2730497f7b93bd2b249f02c3f03a84b8e42a1e20c2530a0",
+            "待截图元数据",
+            "不是已捕获声明",
+            "不公开原始行",
+            "保存草稿可以保留尚未通过校验的文本",
+            "不会生成可预览或可回测版本",
+            "复制公式",
+            "技术指标主要用于绘图输出",
+            "即使技术指标保存了 BUY/SELL",
+            "也不会出现在回测向导",
+        ),
+        ("编辑草稿时会自动运行预览", "直接预览未保存草稿"),
     ),
     "Formula-Studio-Quickstart-en.md": (
         (
+            "MACD golden-cross / death-cross",
+            "Functions and templates（函数与模板）",
+            "Trading system（交易系统）",
+            "Subchart（副图）",
+            "DIF:EMA(C,12)-EMA(C,26)",
+            "validates automatically after input",
+            "Ctrl/⌘ + Enter",
+            "Save as new version（保存为新版本）",
             "K-line main chart and formula subchart",
             "BUY 买点",
             "SELL 卖点",
             "Run preview（运行预览）",
+            "300750.SZ",
+            "sha256:7e7fbcce7ee0c7a0bd58b9ebd7d7e06c0755b4195ee3a32c49dfab269147f2fe",
+            "2026-07-08",
+            "54 BUY signals",
+            "55 SELL signals",
+            "sha256:47d4a02851407ae0d2730497f7b93bd2b249f02c3f03a84b8e42a1e20c2530a0",
+            "future-screenshot metadata",
+            "not a capture-complete claim",
+            "No raw rows",
+            "Save draft（保存草稿） can preserve text that has not passed validation",
+            "does not create a previewable or backtestable version",
+            "Copy formula",
+            "Technical indicator（技术指标） is intended for plotted outputs",
+            "can still save BUY/SELL outputs",
+            "does not appear in the backtest wizard",
         ),
-        (),
+        (
+            "preview runs automatically while editing",
+            "preview an unsaved draft directly",
+        ),
+    ),
+    "Formula-Compatibility-and-Errors.md": (
+        (
+            "技术指标",
+            "交易系统",
+            "`:=` 声明隐藏中间量",
+            "`:` 声明公开输出",
+            "公开的非信号输出必须是数值",
+            "BUY 和 SELL 必须成对且是可见布尔输出",
+            "自动补全、函数帮助和参数提示",
+            "第 1 行，第 1 列",
+            "`formula_syntax_error`",
+            "`unsupported_function`",
+            "`invalid_argument_count`",
+            "`invalid_signal_output`",
+            "`future_data`",
+            "`repainting`",
+            "[完整兼容清单](https://github.com/CongBao/stock-desk/blob/main/docs/formula-compatibility.md)",
+            "`tdx-v1`",
+            "条件选股、五彩 K 线、平台专有绘图、外部数据",
+            "从第一条诊断开始",
+            "逐段替换",
+            "保存草稿",
+            "不能预览、保存为新版本或用于回测",
+            "页面不显示稳定诊断码",
+            "高级 / API 诊断码参考",
+            "当前 `tdx-v1` 的 17 个函数",
+            "仅有 `current_only` 或 `past_only`",
+            "`repainting` 是为未来兼容登记表保留的安全诊断",
+            "未登记的不安全函数先返回 `unsupported_function`",
+            "技术指标主要用于绘图输出",
+            "即使保存 BUY/SELL",
+            "不会进入回测向导",
+        ),
+        (
+            "完全兼容所有通达信公式",
+            "自动修复粘贴公式",
+            "查看诊断代码",
+            "搜索函数或模板",
+            "打开已保存公式",
+        ),
+    ),
+    "Formula-Compatibility-and-Errors-en.md": (
+        (
+            "Technical indicator（技术指标）",
+            "Trading system（交易系统）",
+            "`:=` declares a hidden intermediate",
+            "`:` declares a public output",
+            "public non-signal outputs must be numeric",
+            "BUY and SELL must appear as a pair of visible Boolean outputs",
+            "autocomplete, function help, and parameter hints",
+            "line 1, column 1",
+            "`formula_syntax_error`",
+            "`unsupported_function`",
+            "`invalid_argument_count`",
+            "`invalid_signal_output`",
+            "`future_data`",
+            "`repainting`",
+            "[complete compatibility list](https://github.com/CongBao/stock-desk/blob/main/docs/formula-compatibility.md)",
+            "`tdx-v1`",
+            "condition selection, colored K-lines, platform-specific drawing, and external data",
+            "start with the first diagnostic",
+            "replace one section at a time",
+            "Save draft（保存草稿）",
+            "cannot be previewed, saved as a new version, or used in a backtest",
+            "The visible panel does not show stable diagnostic codes",
+            "Advanced / API diagnostic-code reference",
+            "The current `tdx-v1` registry has 17 functions",
+            "only `current_only` or `past_only`",
+            "`repainting` is a reserved safety diagnostic for a future compatibility registry",
+            "an unregistered unsafe function first returns `unsupported_function`",
+            "Technical indicator（技术指标） is intended for plotted outputs",
+            "can still save BUY/SELL",
+            "does not enter the backtest wizard",
+        ),
+        (
+            "fully compatible with every TongdaXin formula",
+            "automatically repairs pasted formulas",
+            "inspect the diagnostic code",
+            "Search functions or templates（搜索函数或模板）",
+            "Open saved formula（打开已保存公式）",
+        ),
+    ),
+    "Formula-Versions-and-Safety.md": (
+        (
+            "保存草稿",
+            "保存为新版本",
+            "历史版本（只读）",
+            "复制到当前草稿",
+            "公式版本",
+            "回测只能选择已保存且可执行的交易公式版本",
+            "当前版本没有公式启用、停用或删除控件",
+            "也没有对应 API",
+            "已保存版本不能从 UI 删除",
+            "回测对公式版本的引用不会被用户操作悬空",
+            "`future_data`",
+            "`repainting`",
+            "阻止预览、保存为新版本和回测",
+            "受控语法",
+            "不执行 Python 或其他任意代码",
+            "不提供文件或网络访问",
+            "3 秒执行上限",
+            "独立计算进程",
+            "`revision_conflict`",
+            "重新打开最新版本",
+            "创建下一个不可变版本",
+            "编辑、校验并保存为新版本后，再运行预览",
+            "当前 `tdx-v1` 不登记 `future` 或 `repainting` 函数",
+            "`repainting` 是未来兼容登记表的保留安全诊断",
+            "未登记函数先返回 `unsupported_function`",
+        ),
+        ("修改历史版本", "点击停用公式", "点击删除版本"),
+    ),
+    "Formula-Versions-and-Safety-en.md": (
+        (
+            "Save draft（保存草稿）",
+            "Save as new version（保存为新版本）",
+            "Read-only historical versions（历史版本（只读））",
+            "Copy to current draft（复制到当前草稿）",
+            "Formula version（公式版本）",
+            "A backtest can select only a saved, executable trading-formula version",
+            "The current release has no formula enable, disable, or delete control",
+            "and no corresponding API",
+            "Saved versions cannot be deleted from the UI",
+            "user actions cannot leave a backtest formula-version reference dangling",
+            "`future_data`",
+            "`repainting`",
+            "block preview, saving a new version, and backtesting",
+            "controlled grammar",
+            "does not execute Python or other arbitrary code",
+            "provides no file or network access",
+            "3-second execution limit",
+            "isolated computation process",
+            "`revision_conflict`",
+            "reopen the latest formula",
+            "create the next immutable version",
+            "edit, validate, save as a new version, and only then run preview",
+            "The current `tdx-v1` registry contains no `future` or `repainting` function",
+            "`repainting` is reserved for a future compatibility registry",
+            "an unregistered function first returns `unsupported_function`",
+        ),
+        (
+            "modify a historical version",
+            "click Disable formula",
+            "click Delete version",
+        ),
     ),
     "Model-Provider-Setup.md": (
         ("提供商", "Base URL", "模型", "API Key", "已验证", "错误代码"),
@@ -810,6 +1080,142 @@ EXPECTED_WIKI_MARKET_GUIDE_SOURCE_CLAIMS = {
             "At or below 1200px, primary navigation collapses automatically",
             "web/src/app/App.tsx",
             "window.matchMedia('(max-width: 1200px)')",
+        ),
+    ),
+}
+
+
+EXPECTED_WIKI_FORMULA_GUIDE_SOURCE_CLAIMS = {
+    "Formula-Studio-Quickstart.md": (
+        (
+            "保存为新版本后才能运行预览",
+            "web/src/features/formulas/FormulaPreview.tsx",
+            "预览只运行已保存且校验通过的不可变版本",
+        ),
+        (
+            "保存草稿可以保留尚未通过校验的文本",
+            "src/stock_desk/formula/repository.py",
+            "executable_version_id=None",
+        ),
+        (
+            "预览结果绑定数据集版本、数据截止时间、公式版本和公式摘要",
+            "web/src/features/formulas/formulaApi.ts",
+            "readonly formulaChecksum: string;",
+        ),
+        (
+            "技术指标主要用于绘图输出；即使技术指标保存了 BUY/SELL，也不会出现在回测向导",
+            "web/src/features/backtests/BacktestWorkspacePage.tsx",
+            "item.formulaType === 'trading'",
+        ),
+    ),
+    "Formula-Studio-Quickstart-en.md": (
+        (
+            "Run preview（运行预览） is available only after Save as new version（保存为新版本）",
+            "web/src/features/formulas/FormulaPreview.tsx",
+            "预览只运行已保存且校验通过的不可变版本",
+        ),
+        (
+            "Save draft（保存草稿） can preserve text that has not passed validation",
+            "src/stock_desk/formula/repository.py",
+            "executable_version_id=None",
+        ),
+        (
+            "The preview result binds dataset version, data cutoff, formula version, and formula checksum",
+            "web/src/features/formulas/formulaApi.ts",
+            "readonly formulaChecksum: string;",
+        ),
+        (
+            "Technical indicator（技术指标） is intended for plotted outputs; it can still save BUY/SELL outputs, but it does not appear in the backtest wizard",
+            "web/src/features/backtests/BacktestWorkspacePage.tsx",
+            "item.formulaType === 'trading'",
+        ),
+    ),
+    "Formula-Compatibility-and-Errors.md": (
+        (
+            "公开的非信号输出必须是数值",
+            "src/stock_desk/formula/compiler.py",
+            "public non-signal outputs must be numeric",
+        ),
+        (
+            "BUY 和 SELL 必须成对且是可见布尔输出",
+            "src/stock_desk/formula/compiler.py",
+            "BUY and SELL must be visible boolean outputs",
+        ),
+        (
+            "自动补全、函数帮助和参数提示",
+            "web/src/features/formulas/tdxLanguage.ts",
+            "registerSignatureHelpProvider",
+        ),
+        (
+            "页面不显示稳定诊断码",
+            "web/src/features/formulas/FormulaStudioPage.tsx",
+            "<strong>{diagnostic.explanation}</strong>",
+        ),
+        (
+            "`repainting` 是为未来兼容登记表保留的安全诊断",
+            "src/stock_desk/formula/analysis.py",
+            'elif behavior == "repainting":',
+        ),
+    ),
+    "Formula-Compatibility-and-Errors-en.md": (
+        (
+            "public non-signal outputs must be numeric",
+            "src/stock_desk/formula/compiler.py",
+            "public non-signal outputs must be numeric",
+        ),
+        (
+            "BUY and SELL must appear as a pair of visible Boolean outputs",
+            "src/stock_desk/formula/compiler.py",
+            "BUY and SELL must be visible boolean outputs",
+        ),
+        (
+            "autocomplete, function help, and parameter hints",
+            "web/src/features/formulas/tdxLanguage.ts",
+            "registerSignatureHelpProvider",
+        ),
+        (
+            "The visible panel does not show stable diagnostic codes",
+            "web/src/features/formulas/FormulaStudioPage.tsx",
+            "<strong>{diagnostic.explanation}</strong>",
+        ),
+        (
+            "`repainting` is a reserved safety diagnostic for a future compatibility registry",
+            "src/stock_desk/formula/analysis.py",
+            'elif behavior == "repainting":',
+        ),
+    ),
+    "Formula-Versions-and-Safety.md": (
+        (
+            "历史版本（只读）",
+            "web/src/features/formulas/FormulaStudioPage.tsx",
+            "为不可变历史版本",
+        ),
+        (
+            "回测只能选择已保存且可执行的交易公式版本",
+            "web/src/features/backtests/steps/FormulaStep.tsx",
+            "选择已保存、可执行的交易公式版本",
+        ),
+        (
+            "3 秒执行上限",
+            "web/src/features/formulas/FormulaStudioPage.tsx",
+            "公式预览超过 3 秒执行上限",
+        ),
+    ),
+    "Formula-Versions-and-Safety-en.md": (
+        (
+            "Read-only historical versions（历史版本（只读））",
+            "web/src/features/formulas/FormulaStudioPage.tsx",
+            "为不可变历史版本",
+        ),
+        (
+            "A backtest can select only a saved, executable trading-formula version",
+            "web/src/features/backtests/steps/FormulaStep.tsx",
+            "选择已保存、可执行的交易公式版本",
+        ),
+        (
+            "3-second execution limit",
+            "web/src/features/formulas/FormulaStudioPage.tsx",
+            "公式预览超过 3 秒执行上限",
         ),
     ),
 }
@@ -1352,6 +1758,24 @@ Return to the task center and retry.
             english_contract = EXPECTED_WIKI_WORKFLOW_CONTENT.get(f"{stem}-en.md")
             if english_contract is not None:
                 english += "\n" + "; ".join(english_contract[0]) + "\n"
+            chinese_source_contract = EXPECTED_WIKI_FORMULA_GUIDE_SOURCE_CLAIMS.get(
+                f"{stem}.md"
+            )
+            if chinese_source_contract is not None:
+                chinese += (
+                    "\n"
+                    + "；".join(claim[0] for claim in chinese_source_contract)
+                    + "\n"
+                )
+            english_source_contract = EXPECTED_WIKI_FORMULA_GUIDE_SOURCE_CLAIMS.get(
+                f"{stem}-en.md"
+            )
+            if english_source_contract is not None:
+                english += (
+                    "\n"
+                    + "; ".join(claim[0] for claim in english_source_contract)
+                    + "\n"
+                )
             for heading, markers in EXPECTED_WIKI_LOW_CODE_SECTION_REQUIRED.get(
                 f"{stem}.md", {}
             ).items():
@@ -2088,6 +2512,26 @@ def test_english_articles_require_numbered_chinese_ui_label_mappings(
     )
 
 
+def test_ui_label_parser_preserves_parentheses_inside_visible_chinese_label() -> None:
+    document = """# Formula versions
+
+## Chinese UI labels
+
+1. `Read-only historical versions（历史版本（只读））` — select a version.
+2. `Save draft（保存草稿）` — save work.
+
+## Steps
+"""
+
+    assert verify_docs_module._wiki_ui_label_mappings(document) == (
+        (
+            ("Read-only historical versions", "历史版本（只读）"),
+            ("Save draft", "保存草稿"),
+        ),
+        True,
+    )
+
+
 def test_wiki_app_ui_labels_are_backed_by_tracked_production_source() -> None:
     assert (
         getattr(verify_docs_module, "REQUIRED_WIKI_APP_UI_LABELS", None)
@@ -2096,6 +2540,14 @@ def test_wiki_app_ui_labels_are_backed_by_tracked_production_source() -> None:
     assert (
         getattr(verify_docs_module, "REQUIRED_WIKI_APP_UI_SOURCE_FILES", None)
         == EXPECTED_WIKI_APP_UI_SOURCE_FILES
+    )
+    assert (
+        getattr(
+            verify_docs_module,
+            "REQUIRED_WIKI_VISIBLE_APP_UI_SOURCE_EVIDENCE",
+            None,
+        )
+        == EXPECTED_WIKI_VISIBLE_APP_UI_SOURCE_EVIDENCE
     )
     checker = getattr(verify_docs_module, "_app_ui_label_in_page_source", None)
     assert callable(checker)
@@ -2115,6 +2567,48 @@ def test_wiki_app_ui_labels_are_backed_by_tracked_production_source() -> None:
     for stem, labels in EXPECTED_WIKI_APP_UI_LABELS.items():
         for _english, chinese in labels:
             assert checker(stem, chinese), f"{stem}: {chinese}"
+
+
+def test_formula_ui_evidence_rejects_aria_and_hidden_text_as_visible_labels() -> None:
+    checker = getattr(verify_docs_module, "_source_contains_visible_ui_label", None)
+    assert callable(checker)
+    assert not checker(
+        '<input aria-label="搜索函数或模板" />',
+        "搜索函数或模板",
+        "placeholder",
+    )
+    assert not checker(
+        '<span className="visually-hidden">搜索函数或模板</span>',
+        "搜索函数或模板",
+        "jsx_text",
+    )
+    assert checker(
+        '<input placeholder="函数、字段或说明" />',
+        "函数、字段或说明",
+        "placeholder",
+    )
+    assert checker("<span>打开公式</span>", "打开公式", "jsx_text")
+    assert not checker(
+        '<button aria-label="运行预览"></button>',
+        "运行预览",
+        "button_expression",
+    )
+    assert checker(
+        "<button>{isLoading ? '计算中…' : '运行预览'}</button>",
+        "运行预览",
+        "button_expression",
+    )
+
+
+def test_formula_ui_visible_source_contract_covers_every_mapped_label() -> None:
+    formula_stems = {
+        "Formula-Studio-Quickstart",
+        "Formula-Compatibility-and-Errors",
+        "Formula-Versions-and-Safety",
+    }
+    for stem in formula_stems:
+        mapped = {chinese for _english, chinese in EXPECTED_WIKI_APP_UI_LABELS[stem]}
+        assert set(EXPECTED_WIKI_VISIBLE_APP_UI_SOURCE_EVIDENCE[stem]) == mapped
 
 
 def test_page_specific_ui_source_rejects_cross_page_borrowing(
@@ -2580,6 +3074,130 @@ def test_market_guide_pages_require_source_backed_claims(tmp_path: Path) -> None
     for filename in EXPECTED_WIKI_MARKET_GUIDE_SOURCE_CLAIMS:
         assert any(
             filename in failure and "source-backed market-guide contract" in failure
+            for failure in failures
+        )
+
+
+def test_formula_guide_claims_are_backed_by_tracked_product_source() -> None:
+    assert (
+        getattr(verify_docs_module, "REQUIRED_WIKI_FORMULA_GUIDE_SOURCE_CLAIMS", None)
+        == EXPECTED_WIKI_FORMULA_GUIDE_SOURCE_CLAIMS
+    )
+    repo = Path(__file__).resolve().parents[2]
+    tracked = set(
+        subprocess.run(
+            ("git", "ls-files"),
+            cwd=repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.splitlines()
+    )
+    for claims in EXPECTED_WIKI_FORMULA_GUIDE_SOURCE_CLAIMS.values():
+        for _wiki_marker, relative_path, source_marker in claims:
+            assert relative_path in tracked
+            assert source_marker in (repo / relative_path).read_text(encoding="utf-8")
+
+
+def test_formula_guide_pages_require_source_backed_claims(tmp_path: Path) -> None:
+    _write_wiki(tmp_path)
+
+    for filename, claims in EXPECTED_WIKI_FORMULA_GUIDE_SOURCE_CLAIMS.items():
+        page = tmp_path / filename
+        page.write_text(
+            page.read_text(encoding="utf-8").replace(
+                claims[0][0], "removed source-backed formula claim"
+            ),
+            encoding="utf-8",
+        )
+
+    failures = verify_wiki(tmp_path, final=False)
+
+    for filename in EXPECTED_WIKI_FORMULA_GUIDE_SOURCE_CLAIMS:
+        assert any(
+            filename in failure and "source-backed formula-guide contract" in failure
+            for failure in failures
+        )
+
+
+def test_formula_lifecycle_docs_match_current_no_delete_or_toggle_api() -> None:
+    repo = Path(__file__).resolve().parents[2]
+    router = (repo / "src/stock_desk/api/formulas.py").read_text(encoding="utf-8")
+    api = (repo / "web/src/features/formulas/formulaApi.ts").read_text(encoding="utf-8")
+    studio = (repo / "web/src/features/formulas/FormulaStudioPage.tsx").read_text(
+        encoding="utf-8"
+    )
+
+    assert "@router.delete" not in router
+    assert '/disable"' not in router
+    assert '/enable"' not in router
+    assert "deleteFormula" not in api
+    assert "disableFormula" not in api
+    assert "enableFormula" not in api
+    for fictional_label in ("删除公式", "停用公式", "启用公式"):
+        assert fictional_label not in studio
+
+
+def test_formula_docs_lock_current_tdx_v1_time_behavior_boundary() -> None:
+    assert tuple(
+        (function.name, function.future_behavior)
+        for function in V1_REGISTRY.functions()
+    ) == (
+        ("ABS", "current_only"),
+        ("BARSLAST", "past_only"),
+        ("COUNT", "past_only"),
+        ("CROSS", "past_only"),
+        ("EMA", "past_only"),
+        ("FILTER", "past_only"),
+        ("HHV", "past_only"),
+        ("IF", "current_only"),
+        ("LLV", "past_only"),
+        ("LONGCROSS", "past_only"),
+        ("MA", "past_only"),
+        ("MAX", "current_only"),
+        ("MIN", "current_only"),
+        ("REF", "past_only"),
+        ("SMA", "past_only"),
+        ("STD", "past_only"),
+        ("SUM", "past_only"),
+    )
+    with pytest.raises(FormulaCompileError) as captured:
+        compile_formula("BUY:BACKSET(C>0,1);SELL:C<0;")
+    assert captured.value.code == "unsupported_function"
+
+
+def test_formula_pages_keep_bilingual_fixed_capture_metadata(tmp_path: Path) -> None:
+    _write_wiki(tmp_path)
+    expected = {
+        "Formula-Studio-Quickstart.md": (
+            "300750.SZ",
+            "sha256:7e7fbcce7ee0c7a0bd58b9ebd7d7e06c0755b4195ee3a32c49dfab269147f2fe",
+            "2026-07-08",
+            "54 个买点",
+            "55 个卖点",
+            "待截图元数据",
+            "不是已捕获声明",
+        ),
+        "Formula-Studio-Quickstart-en.md": (
+            "300750.SZ",
+            "sha256:7e7fbcce7ee0c7a0bd58b9ebd7d7e06c0755b4195ee3a32c49dfab269147f2fe",
+            "2026-07-08",
+            "54 BUY signals",
+            "55 SELL signals",
+            "future-screenshot metadata",
+            "not a capture-complete claim",
+        ),
+    }
+    for filename, markers in expected.items():
+        page = tmp_path / filename
+        document = page.read_text(encoding="utf-8")
+        page.write_text(document.replace(markers[0], "600000.SH", 1), encoding="utf-8")
+
+    failures = verify_wiki(tmp_path, final=False)
+
+    for filename in expected:
+        assert any(
+            filename in failure and "workflow content contract" in failure
             for failure in failures
         )
 
