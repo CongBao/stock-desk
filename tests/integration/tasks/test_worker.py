@@ -15,6 +15,7 @@ from sqlalchemy import event, select
 from sqlalchemy.dialects import postgresql, sqlite
 
 import stock_desk.tasks.repository as repository_module
+import stock_desk.tasks.worker as worker_module
 from stock_desk.storage.database import create_engine_for_url, migrate
 from stock_desk.tasks.repository import (
     TaskConflict,
@@ -38,6 +39,31 @@ def _wait_until(condition: Any, *, timeout: float = 2.0) -> None:
             return
         threading.Event().wait(0.01)
     assert condition()
+
+
+class _DelayStatusUntilControllerSettlement:
+    def __init__(self, receiver: Any, controller: Any) -> None:
+        self._receiver = receiver
+        self._controller = controller
+
+    def poll(self, timeout: float = 0.0) -> bool:
+        if not self._controller._stopping:  # noqa: SLF001
+            threading.Event().wait(timeout)
+            return False
+        return bool(self._receiver.poll(timeout))
+
+    def recv(self) -> Any:
+        return self._receiver.recv()
+
+    def close(self) -> None:
+        self._receiver.close()
+
+
+def _delay_status_until_settlement(controller: Any) -> None:
+    controller._receiver = _DelayStatusUntilControllerSettlement(  # noqa: SLF001
+        controller._receiver,  # noqa: SLF001
+        controller,
+    )
 
 
 def test_worker_heartbeat_status_uses_newest_fresh_utc_sample(tmp_path: Path) -> None:
@@ -210,6 +236,80 @@ def test_blocked_heartbeat_io_has_bounded_startup_and_leaves_no_live_executor(
         repository.close()
 
 
+def test_heartbeat_death_before_readiness_settles_delayed_error_payload(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    database_url = repository.engine.url.render_as_string(hide_password=False)
+    with repository.engine.begin() as connection:
+        connection.exec_driver_sql("DROP TABLE task_worker_heartbeat")
+    controller = worker_module._HeartbeatProcessController(  # noqa: SLF001
+        database_url=database_url,
+        worker_id="delayed-before-ready-error",
+        interval=0.01,
+        start_timeout=1.0,
+        stop_timeout=0.3,
+        io_timeout=0.05,
+    )
+    _delay_status_until_settlement(controller)
+    try:
+        with pytest.raises(RuntimeError) as captured:
+            controller.start()
+
+        message = str(captured.value)
+        assert "heartbeat failed before readiness" in message
+        assert "sqlalchemy.exc.OperationalError" in message
+        assert "sqlite3.OperationalError" in message
+        assert "no such table: task_worker_heartbeat" in message
+        assert "SQLITE_ERROR" in message
+        assert not any(
+            child.name == "task-worker-heartbeat-delayed-before-ready-error"
+            for child in multiprocessing.active_children()
+        )
+    finally:
+        controller.stop()
+        repository.close()
+
+
+def test_running_heartbeat_death_joins_before_consuming_delayed_error_payload(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    controller = worker_module._HeartbeatProcessController(  # noqa: SLF001
+        database_url=repository.engine.url.render_as_string(hide_password=False),
+        worker_id="delayed-running-error",
+        interval=0.01,
+        start_timeout=1.0,
+        stop_timeout=0.3,
+        io_timeout=0.05,
+    )
+    controller.start()
+    _delay_status_until_settlement(controller)
+    try:
+        with repository.engine.begin() as connection:
+            connection.exec_driver_sql("DROP TABLE task_worker_heartbeat")
+        _wait_until(lambda: not controller._process.is_alive())  # noqa: SLF001
+
+        started = time.monotonic()
+        with pytest.raises(RuntimeError) as captured:
+            controller.raise_if_failed()
+
+        assert time.monotonic() - started < 1.0
+        message = str(captured.value)
+        assert "heartbeat process failed" in message
+        assert "sqlalchemy.exc.OperationalError" in message
+        assert "sqlite3.OperationalError" in message
+        assert "no such table: task_worker_heartbeat" in message
+        assert "SQLITE_ERROR" in message
+        assert not any(
+            child.name == "task-worker-heartbeat-delayed-running-error"
+            for child in multiprocessing.active_children()
+        )
+    finally:
+        controller.stop()
+        repository.close()
+
+
 def test_stop_terminates_heartbeat_blocked_after_readiness_before_engine_close(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -266,6 +366,122 @@ def test_stop_terminates_heartbeat_blocked_after_readiness_before_engine_close(
         repository.close()
 
 
+def test_transient_sqlite_heartbeat_lock_recovers_without_stopping_worker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database_path = tmp_path / "transient-heartbeat-lock.db"
+    url = f"sqlite:///{database_path}"
+    migrate(url)
+    repository = TaskRepository(create_engine_for_url(url), owns_engine=True)
+    worker = TaskWorker(
+        repository,
+        worker_id="transient-heartbeat-lock",
+        poll_interval=0.01,
+        heartbeat_interval=0.01,
+        heartbeat_stop_timeout=0.3,
+        heartbeat_io_timeout=0.05,
+    )
+    monkeypatch.setattr(worker, "run_once", lambda: None)
+    stop_event = threading.Event()
+    errors: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            worker.run_forever(stop_event)
+        except BaseException as error:
+            errors.append(error)
+
+    runner = threading.Thread(target=run)
+    blocker = sqlite3.connect(database_path, isolation_level=None)
+    try:
+        runner.start()
+        _wait_until(lambda: repository.worker_status().state == "running")
+        before_lock = repository.worker_status().last_seen_at
+        assert before_lock is not None
+
+        blocker.execute("BEGIN EXCLUSIVE")
+        threading.Event().wait(0.08)
+        blocker.rollback()
+
+        _wait_until(lambda: repository.worker_status().last_seen_at > before_lock)
+        assert runner.is_alive()
+        assert errors == []
+
+        stop_event.set()
+        runner.join(timeout=2)
+        assert not runner.is_alive()
+        assert not any(
+            child.name == "task-worker-heartbeat-transient-heartbeat-lock"
+            for child in multiprocessing.active_children()
+        )
+    finally:
+        stop_event.set()
+        runner.join(timeout=2)
+        blocker.rollback()
+        blocker.close()
+        repository.close()
+
+
+def test_persistent_sqlite_heartbeat_lock_fails_bounded_with_diagnostics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database_path = tmp_path / "persistent-heartbeat-lock.db"
+    url = f"sqlite:///{database_path}"
+    migrate(url)
+    repository = TaskRepository(create_engine_for_url(url), owns_engine=True)
+    worker = TaskWorker(
+        repository,
+        worker_id="persistent-heartbeat-lock",
+        poll_interval=0.01,
+        heartbeat_interval=0.01,
+        heartbeat_stop_timeout=0.3,
+        heartbeat_io_timeout=0.05,
+    )
+    monkeypatch.setattr(worker, "run_once", lambda: None)
+    stop_event = threading.Event()
+    errors: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            worker.run_forever(stop_event)
+        except BaseException as error:
+            errors.append(error)
+
+    runner = threading.Thread(target=run)
+    blocker = sqlite3.connect(database_path, isolation_level=None)
+    try:
+        runner.start()
+        _wait_until(lambda: repository.worker_status().state == "running")
+        blocker.execute("BEGIN EXCLUSIVE")
+
+        _wait_until(lambda: not runner.is_alive(), timeout=1.0)
+        assert len(errors) == 1
+        message = str(errors[0])
+        assert "sqlalchemy.exc.OperationalError" in message
+        assert "database is locked" in message
+        assert "SQLITE_BUSY" in message
+        assert not any(
+            child.name == "task-worker-heartbeat-persistent-heartbeat-lock"
+            for child in multiprocessing.active_children()
+        )
+
+        last_seen = repository.worker_status().last_seen_at
+        assert last_seen is not None
+        assert (
+            repository.worker_status(
+                now=last_seen + timedelta(seconds=0.2),
+                stale_after=timedelta(seconds=0.1),
+            ).state
+            == "not_detected"
+        )
+    finally:
+        stop_event.set()
+        runner.join(timeout=2)
+        blocker.rollback()
+        blocker.close()
+        repository.close()
+
+
 def test_heartbeat_storage_failure_after_readiness_propagates_and_stops(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -299,7 +515,10 @@ def test_heartbeat_storage_failure_after_readiness_propagates_and_stops(
         _wait_until(lambda: not runner.is_alive())
 
         assert len(errors) == 1
-        assert "heartbeat process failed" in str(errors[0])
+        message = str(errors[0])
+        assert "heartbeat process failed" in message
+        assert "sqlalchemy.exc.OperationalError" in message
+        assert "no such table: task_worker_heartbeat" in message
         assert not any(
             child.name == "task-worker-heartbeat-failure-after-ready"
             for child in multiprocessing.active_children()
