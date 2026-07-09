@@ -347,8 +347,8 @@ jobs:
           Invoke-WebRequest -Uri 'https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe' -OutFile $installer
           $actual = (Get-FileHash -Algorithm SHA256 $installer).Hash.ToLowerInvariant()
           if ($actual -ne $expected) { throw "Inno Setup package digest mismatch: $actual" }
-          & $installer /VERYSILENT /SUPPRESSMSGBOXES /NORESTART "/DIR=$installDir"
-          if ($LASTEXITCODE -ne 0) { throw "Inno Setup installation failed: $LASTEXITCODE" }
+          $installProcess = Start-Process -FilePath $installer -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$installDir" -Wait -PassThru
+          if ($installProcess.ExitCode -ne 0) { throw "Inno Setup installation failed: $($installProcess.ExitCode)" }
           $compiler = Join-Path $installDir 'ISCC.exe'
           if (-not (Test-Path -LiteralPath $compiler -PathType Leaf)) { throw 'ISCC.exe is missing' }
           "INNO_SETUP_COMPILER=$compiler" >> $env:GITHUB_ENV
@@ -392,7 +392,7 @@ jobs:
           STOCK_DESK_WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.STOCK_DESK_WINDOWS_CERTIFICATE_PASSWORD }}
         run: |
           $version = $env:GITHUB_REF_NAME.Substring(1)
-          uv run --frozen python scripts/build_installer.py $version
+          uv run --frozen python -m scripts.build_installer $version
       - name: Build macOS installer
         if: runner.os == 'macOS'
         shell: bash
@@ -401,7 +401,7 @@ jobs:
           STOCK_DESK_MACOS_SIGNING_IDENTITY: ${{ secrets.STOCK_DESK_MACOS_SIGNING_IDENTITY }}
         run: |
           set -euo pipefail
-          uv run --frozen python scripts/build_installer.py "${GITHUB_REF_NAME#v}"
+          uv run --frozen python -m scripts.build_installer "${GITHUB_REF_NAME#v}"
       - name: Generate installer SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:

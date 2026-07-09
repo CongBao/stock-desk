@@ -1087,6 +1087,51 @@ def test_release_workflow_uses_candidate_gate_and_always_uploads_its_report() ->
     assert '"source_fingerprint"' in build_script
 
 
+def test_release_native_installer_steps_use_module_entrypoint() -> None:
+    workflow_text = _read(".github/workflows/release.yml")
+    workflow = _load_github_actions_yaml(workflow_text)
+    installer_steps = workflow["jobs"]["build-installers"]["steps"]
+    native_builds = {
+        step["name"]: str(step["run"]).splitlines()
+        for step in installer_steps
+        if step.get("name") in {"Build Windows installer", "Build macOS installer"}
+    }
+
+    assert native_builds == {
+        "Build Windows installer": [
+            "$version = $env:GITHUB_REF_NAME.Substring(1)",
+            "uv run --frozen python -m scripts.build_installer $version",
+        ],
+        "Build macOS installer": [
+            "set -euo pipefail",
+            'uv run --frozen python -m scripts.build_installer "${GITHUB_REF_NAME#v}"',
+        ],
+    }
+    assert "python scripts/build_installer.py" not in workflow_text
+
+
+def test_release_waits_for_inno_setup_and_checks_its_process_exit_code() -> None:
+    workflow = _load_github_actions_yaml(_read(".github/workflows/release.yml"))
+    installer_steps = workflow["jobs"]["build-installers"]["steps"]
+    install_inno = next(
+        step for step in installer_steps if step.get("name") == "Install Inno Setup"
+    )
+    command = str(install_inno["run"])
+
+    assert (
+        "$installProcess = Start-Process -FilePath $installer -ArgumentList "
+        "'/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', \"/DIR=$installDir\" "
+        "-Wait -PassThru"
+    ) in command
+    assert (
+        'if ($installProcess.ExitCode -ne 0) { throw "Inno Setup installation '
+        'failed: $($installProcess.ExitCode)" }'
+    ) in command
+    assert "$LASTEXITCODE" not in command
+    assert "Get-FileHash -Algorithm SHA256 $installer" in command
+    assert "Test-Path -LiteralPath $compiler -PathType Leaf" in command
+
+
 def test_release_workflow_delegates_all_source_gates_to_candidate_verifier() -> None:
     workflow = _load_github_actions_yaml(_read(".github/workflows/release.yml"))
     steps = workflow["jobs"]["verify"]["steps"]
