@@ -1,4 +1,5 @@
 from pathlib import Path
+from datetime import datetime, timedelta, timezone
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -14,6 +15,7 @@ from stock_desk.tasks.repository import (
     TaskRepositoryError,
     TaskValidationError,
 )
+import stock_desk.tasks.repository as repository_module
 
 
 def _injected_repository(tmp_path: Path) -> tuple[TaskRepository, Engine]:
@@ -33,6 +35,91 @@ def _task_event_counts(engine: Engine) -> tuple[int, int]:
             )
         ).one()
     return int(row[0]), int(row[1])
+
+
+def test_worker_status_api_reports_fresh_heartbeat_without_identity(
+    tmp_path: Path,
+) -> None:
+    repository, engine = _injected_repository(tmp_path)
+    try:
+        repository.record_worker_heartbeat("private-hostname-4242")
+        with TestClient(create_app(task_repository=repository)) as client:
+            response = client.get("/api/tasks/worker-status")
+
+        assert response.status_code == 200
+        assert response.json()["state"] == "running"
+        assert response.json()["last_seen_at"].endswith("Z")
+        assert set(response.json()) == {"state", "last_seen_at"}
+        assert "private-hostname" not in response.text
+        assert "worker_id" not in response.text
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.parametrize("clock_skew_seconds", [-20, 20])
+def test_worker_status_api_uses_database_clock_despite_application_clock_skew(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    clock_skew_seconds: int,
+) -> None:
+    repository, engine = _injected_repository(tmp_path)
+    application_now = datetime.now(timezone.utc) + timedelta(seconds=clock_skew_seconds)
+    monkeypatch.setattr(repository_module, "_utc_now", lambda: application_now)
+    try:
+        repository.record_worker_heartbeat("database-clock-worker")
+        with TestClient(create_app(task_repository=repository)) as client:
+            response = client.get("/api/tasks/worker-status")
+
+        assert response.status_code == 200
+        assert response.json()["state"] == "running"
+        assert response.json()["last_seen_at"] is not None
+    finally:
+        engine.dispose()
+
+
+def test_worker_status_api_distinguishes_missing_and_stale_heartbeat(
+    tmp_path: Path,
+) -> None:
+    repository, engine = _injected_repository(tmp_path)
+    try:
+        with TestClient(create_app(task_repository=repository)) as client:
+            missing = client.get("/api/tasks/worker-status")
+
+            stale_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+            repository.record_worker_heartbeat("stale-worker", now=stale_at)
+            stale = client.get("/api/tasks/worker-status")
+
+        assert missing.json() == {"state": "not_detected", "last_seen_at": None}
+        assert stale.status_code == 200
+        assert stale.json() == {
+            "state": "not_detected",
+            "last_seen_at": stale_at.isoformat().replace("+00:00", "Z"),
+        }
+    finally:
+        engine.dispose()
+
+
+def test_worker_status_api_sanitizes_storage_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository, engine = _injected_repository(tmp_path)
+
+    def fail_status() -> None:
+        raise TaskRepositoryError("TOP-SECRET worker database failure")
+
+    monkeypatch.setattr(repository, "worker_status", fail_status)
+    try:
+        with TestClient(
+            create_app(task_repository=repository),
+            raise_server_exceptions=False,
+        ) as client:
+            response = client.get("/api/tasks/worker-status")
+
+        assert response.status_code == 503
+        assert response.json() == {"code": "storage_unavailable"}
+        assert "TOP-SECRET" not in response.text
+    finally:
+        engine.dispose()
 
 
 def test_task_api_exact_lifecycle_and_health_regression(tmp_path: Path) -> None:

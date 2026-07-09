@@ -9,6 +9,7 @@ from stock_desk.market.providers.base import (
     Clock,
     InstrumentFetchOutcome,
     ProviderInvalidResponse,
+    ProviderNoData,
     ProviderOperation,
     ProviderUnsupported,
     ProviderUnavailable,
@@ -132,6 +133,7 @@ _PERIODS = {Period.DAY: "daily", Period.WEEK: "weekly"}
 _SDK_PERIODS = {value: key for key, value in _PERIODS.items()}
 _SDK_BAR_ROW_LIMIT = 1_000_000
 _BAR_COLUMNS = frozenset({"日期", "股票代码", "开盘", "最高", "最低", "收盘", "成交量"})
+_B_SHARE_PREFIXES = ("200", "900")
 
 
 def _sdk_temporal_identity(row: dict[str, object]) -> tuple[date, Hashable]:
@@ -144,7 +146,7 @@ def _sdk_temporal_identity(row: dict[str, object]) -> tuple[date, Hashable]:
 def _stock_exchange(code: str) -> Exchange | None:
     if code.startswith(("600", "601", "603", "605", "688", "689")):
         return Exchange.SH
-    if code.startswith(("000", "001", "002", "003", "300", "301")):
+    if code.startswith(("000", "001", "002", "003", "300", "301", "302")):
         return Exchange.SZ
     if code.startswith(("43", "83", "87", "88", "92")):
         return Exchange.BJ
@@ -269,19 +271,21 @@ class AkShareProvider:
             table = self._client.stock_info_a_code_name()
             rows = records_from_table(table, required=frozenset())
             code_field, name_field = self._instrument_schema(rows)
-            instruments = tuple(
-                sorted(
-                    (
-                        self._instrument(
-                            row,
-                            code_field=code_field,
-                            name_field=name_field,
-                        )
-                        for row in rows
-                    ),
-                    key=lambda item: item.symbol,
+            selected: list[Instrument] = []
+            for row in rows:
+                raw_code = self._instrument_code(row[code_field])
+                if raw_code.startswith(_B_SHARE_PREFIXES):
+                    continue
+                selected.append(
+                    self._instrument(
+                        row,
+                        code_field=code_field,
+                        name_field=name_field,
+                    )
                 )
-            )
+            instruments = tuple(sorted(selected, key=lambda item: item.symbol))
+            if not instruments:
+                raise ProviderNoData()
             require_unique(tuple(item.symbol for item in instruments))
             observed_at = aware_now(self._clock)
             return cast(
@@ -343,14 +347,7 @@ class AkShareProvider:
         code_field: str,
         name_field: str,
     ) -> Instrument:
-        raw_code = row[code_field]
-        if (
-            not isinstance(raw_code, str)
-            or len(raw_code) != 6
-            or not raw_code.isascii()
-            or not raw_code.isdigit()
-        ):
-            raise ValueError
+        raw_code = AkShareProvider._instrument_code(row[code_field])
         exchange = _stock_exchange(raw_code)
         if exchange is None:
             raise ProviderUnsupported()
@@ -363,3 +360,14 @@ class AkShareProvider:
             listed_on=None,
             delisted_on=None,
         )
+
+    @staticmethod
+    def _instrument_code(raw_code: object) -> str:
+        if (
+            not isinstance(raw_code, str)
+            or len(raw_code) != 6
+            or not raw_code.isascii()
+            or not raw_code.isdigit()
+        ):
+            raise ValueError
+        return raw_code

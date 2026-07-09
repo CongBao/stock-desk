@@ -17,6 +17,7 @@ from stock_desk.tasks.models import (
     TaskPresentationSnapshot,
     TaskSnapshot,
     TaskStatus,
+    WorkerStatusSnapshot,
 )
 from stock_desk.tasks.repository import (
     TaskConflict,
@@ -357,6 +358,17 @@ class TaskMetricsResponse(BaseModel):
         )
 
 
+class WorkerStatusResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    state: Literal["running", "not_detected"]
+    last_seen_at: datetime | None
+
+    @classmethod
+    def from_snapshot(cls, status: WorkerStatusSnapshot) -> "WorkerStatusResponse":
+        return cls(state=status.state, last_seen_at=status.last_seen_at)
+
+
 def get_task_repository(request: Request) -> TaskRepository:
     provider = cast(
         Callable[[], TaskRepository], request.app.state.task_repository_provider
@@ -444,6 +456,11 @@ def list_tasks(
 @router.get("/metrics", response_model=TaskMetricsResponse)
 def get_task_metrics(repository: RepositoryDependency) -> TaskMetricsResponse:
     return TaskMetricsResponse.from_snapshot(repository.metrics())
+
+
+@router.get("/worker-status", response_model=WorkerStatusResponse)
+def get_worker_status(repository: RepositoryDependency) -> WorkerStatusResponse:
+    return WorkerStatusResponse.from_snapshot(repository.worker_status())
 
 
 @router.get(

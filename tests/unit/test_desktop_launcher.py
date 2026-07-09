@@ -9,6 +9,7 @@ import stat
 import sys
 from types import ModuleType
 from typing import Any
+from urllib.request import urlopen
 
 import pytest
 
@@ -158,6 +159,13 @@ def test_launcher_uses_private_os_data_dir_localhost_and_dynamic_port(
         assert running.health().status == "ok"
         assert running.api_alive
         assert running.worker_alive
+        with urlopen(  # nosec B310
+            f"http://{running.host}:{running.port}/api/tasks/worker-status",
+            timeout=2,
+        ) as response:
+            worker_status = json.load(response)
+        assert worker_status["state"] == "running"
+        assert worker_status["last_seen_at"] is not None
     finally:
         running.stop()
 
@@ -270,6 +278,85 @@ def test_child_settings_payload_is_absolute_and_secret_backed(tmp_path: Path) ->
     assert settings.data_dir == tmp_path / "data"
     assert settings.master_key.get_secret_value() == "private-key"
     assert settings.web_dist_dir == tmp_path / "web-dist"
+
+
+def test_worker_child_signals_ready_only_from_running_heartbeat_lifecycle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    desktop = _desktop()
+    ready_event = desktop.threading.Event()
+    stop_event = desktop.threading.Event()
+    calls: list[str] = []
+
+    class Runtime:
+        def run_forever(self, stop: object, *, ready_event: object) -> None:
+            calls.append("run")
+            assert stop is stop_event
+            assert not getattr(ready_event, "is_set")()
+            getattr(ready_event, "set")()
+
+        def close(self) -> None:
+            calls.append("close")
+
+    monkeypatch.setattr(
+        "stock_desk.market.worker_runtime.ProductionMarketWorker.open",
+        lambda *_args, **_kwargs: Runtime(),
+    )
+    monkeypatch.setattr(desktop, "_configure_file_logging", lambda _path: None)
+
+    desktop._worker_child(
+        {
+            "data_dir": "/tmp/data",
+            "database_url": "sqlite:////tmp/data.db",
+            "master_key": "private-key",
+            "web_dist_dir": "/tmp/web",
+        },
+        stop_event,
+        ready_event,
+        "/tmp/worker.log",
+    )
+
+    assert ready_event.is_set()
+    assert calls == ["run", "close"]
+
+
+def test_worker_child_first_heartbeat_failure_never_signals_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    desktop = _desktop()
+    ready_event = desktop.threading.Event()
+    calls: list[str] = []
+
+    class Runtime:
+        def run_forever(self, _stop: object, *, ready_event: object) -> None:
+            calls.append("run")
+            assert not getattr(ready_event, "is_set")()
+            raise RuntimeError("first heartbeat failed")
+
+        def close(self) -> None:
+            calls.append("close")
+
+    monkeypatch.setattr(
+        "stock_desk.market.worker_runtime.ProductionMarketWorker.open",
+        lambda *_args, **_kwargs: Runtime(),
+    )
+    monkeypatch.setattr(desktop, "_configure_file_logging", lambda _path: None)
+
+    with pytest.raises(RuntimeError, match="first heartbeat failed"):
+        desktop._worker_child(
+            {
+                "data_dir": "/tmp/data",
+                "database_url": "sqlite:////tmp/data.db",
+                "master_key": "private-key",
+                "web_dist_dir": "/tmp/web",
+            },
+            desktop.threading.Event(),
+            ready_event,
+            "/tmp/worker.log",
+        )
+
+    assert not ready_event.is_set()
+    assert calls == ["run", "close"]
 
 
 def test_windows_acl_command_replaces_and_validates_the_complete_dacl(

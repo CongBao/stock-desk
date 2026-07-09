@@ -71,6 +71,14 @@ describe('canonical performance evidence', () => {
     expect(progressWindowsDemonstrateChange(initial, [initial, initial])).toBe(
       false,
     );
+    expect(
+      progressWindowsDemonstrateChange(initial, [
+        initial,
+        initial,
+        firstChange,
+        firstChange,
+      ]),
+    ).toBe(true);
   });
 
   it('requires a strictly newer completed generation without sampling transient pending DOM', () => {

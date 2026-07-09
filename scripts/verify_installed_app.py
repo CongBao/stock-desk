@@ -17,7 +17,7 @@ from urllib.request import urlopen
 
 STARTUP_TIMEOUT_SECONDS: Final = 90.0
 V050_SCHEMA_REVISION: Final = "0009_analysis_model_configs"
-CURRENT_SCHEMA_REVISION: Final = "0010_parent_active_retry"
+CURRENT_SCHEMA_REVISION: Final = "0011_worker_heartbeat"
 DISTRIBUTION_TASK_ID: Final = "00000000-0000-4000-8000-000000000500"
 _EXPECTED_DISTRIBUTION_TASK: Final = (
     "distribution.fixture",

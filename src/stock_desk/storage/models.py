@@ -297,6 +297,16 @@ class TaskRun(Base):
     )
 
 
+class TaskWorkerHeartbeat(Base):
+    __tablename__ = "task_worker_heartbeat"
+    __table_args__ = (Index("ix_task_worker_heartbeat_at", "heartbeat_at"),)
+
+    worker_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    heartbeat_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+
 class TaskEvent(Base):
     __tablename__ = "task_event"
     __table_args__ = (

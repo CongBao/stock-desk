@@ -1684,17 +1684,214 @@ def test_pool_ui_long_task_measurement_uses_a_fresh_browser_context() -> None:
     assert "page = await context.newPage();" in setup
 
 
+def test_pool_long_task_windows_exclude_playwright_dom_probe_work() -> None:
+    source = _read("web/e2e/performance.spec.ts")
+    marker = "await beginLongTaskWindow(page);"
+    assert source.count(marker) == 3
+    windows = [
+        part.split("await endLongTaskWindow(", maxsplit=1)[0]
+        for part in source.split(marker)[1:]
+    ]
+
+    for window in windows:
+        for probe in (
+            ".getByRole(",
+            ".getByText(",
+            ".getByLabel(",
+            ".getByTestId(",
+            ".locator(",
+            ".getAttribute(",
+            ".textContent(",
+            ".innerText(",
+            ".isVisible(",
+            ".waitFor(",
+            "expect(",
+            "observeMatchedProgress(",
+        ):
+            assert probe not in window
+    assert "await progressResponseStatePromise;" in windows[0]
+    assert "await progressPaintReadyPromise;" in windows[0]
+    assert "await page.mouse.click(" in windows[1]
+    assert "await navigationResponseCountPromise;" in windows[1]
+    assert "await navigationRenderReadyPromise;" in windows[1]
+    assert "await cancelRequestResponsePromise;" in windows[2]
+    assert "await cancelledProgressStatePromise;" in windows[2]
+    assert "await cancellationRenderReadyPromise;" in windows[2]
+    assert "waitForTimeout(100)" not in source
+
+
+def test_pool_progress_window_orders_trigger_response_render_and_observer_end() -> None:
+    source = _read("web/e2e/performance.spec.ts")
+    start = source.index("  for (let index = 0; index < SAMPLE_COUNT - 2;")
+    end = source.index("\n  expect(\n    progressWindowsDemonstrateChange", start)
+    progress = source[start:end]
+
+    install = source.index("await installRenderSignalObserver(page)")
+    assert install < start
+    arm = progress.index("await armNextProgressResponse(")
+    assert "progressResponseGate.matches(response)" in progress
+    observer = progress.index("await beginLongTaskWindow(page);")
+    trigger = progress.index("progressResponseGate.release();")
+    response = progress.index("await progressResponseStatePromise;")
+    stop_routing = progress.index("await progressResponseGate.stopRouting();")
+    render = progress.index("await progressPaintReadyPromise;")
+    finish = progress.index("endLongTaskWindow(page, `progress-${index}`)")
+    token_count = progress.index("expect(progressResponseGate.finish()).toBe(1);")
+    assert (
+        arm
+        < observer
+        < trigger
+        < response
+        < stop_routing
+        < render
+        < finish
+        < token_count
+    )
+
+
+def test_pool_progress_windows_allow_authoritative_repeated_snapshots() -> None:
+    source = _read("web/e2e/performance.spec.ts")
+    start = source.index("  for (let index = 0; index < SAMPLE_COUNT - 2;")
+    end = source.index("\n  expect(\n    progressWindowsDemonstrateChange", start)
+    progress = source[start:end]
+
+    assert "requiredChangeFrom" not in progress
+    assert "expect(progressKey(apiState)).not.toBe" not in progress
+    assert "expect(renderedState).toEqual(apiState);" in progress
+    assert "await progressPaintReadyPromise;" in progress
+
+
+def test_progress_paint_signal_is_preinstalled_and_causally_bound_to_token() -> None:
+    source = _read("web/e2e/performance.spec.ts")
+    loop = source.index("  for (let index = 0; index < SAMPLE_COUNT - 2;")
+    install = source.index("await installProgressPaintSignals(page)")
+    assert install < loop
+
+    install_start = source.index("async function installProgressPaintSignals")
+    install_end = source.index("\nfunction renderReadyAfter", install_start)
+    instrument = source[install_start:install_end]
+    assert "response.headers.get(headerName)" in instrument
+    consumed = instrument.index("const value: unknown = await originalJson();")
+    first_frame = instrument.index("browser.requestAnimationFrame(() =>", consumed)
+    second_frame = instrument.index(
+        "browser.requestAnimationFrame(() =>", first_frame + 1
+    )
+    report = instrument.index("report?.({ token", second_frame)
+    assert consumed < first_frame < second_frame < report
+    assert instrument.count("requestAnimationFrame(() =>") >= 2
+    assert "report?.({ token" in instrument
+
+    gate_start = source.index("async function armNextProgressResponse")
+    gate_end = source.index("\ntest('records aggregate", gate_start)
+    gate = source[gate_start:gate_end]
+    assert "await route.fetch(" in gate
+    assert "await route.fulfill(" in gate
+    assert "response.headers()[PROGRESS_GATE_HEADER] === token" in gate
+
+
+def test_progress_paint_signal_and_unique_route_are_cleaned_up() -> None:
+    source = _read("web/e2e/performance.spec.ts")
+    start = source.index("async function installProgressPaintSignals")
+    end = source.index("\nfunction renderReadyAfter", start)
+    instrument = source[start:end]
+    assert "browser.fetch = originalFetch;" in instrument
+    assert "ledger.dispose();" in instrument
+
+    loop = source.index("  for (let index = 0; index < SAMPLE_COUNT - 2;")
+    aggregate = source.index("\n  expect(\n    progressWindowsDemonstrateChange", loop)
+    progress = source[loop:aggregate]
+    assert "await progressResponseGate.stopRouting();" in progress
+    assert "expect(progressResponseGate.finish()).toBe(1);" in progress
+    assert "await progressPaintSignals.dispose();" in progress
+
+
+def test_progress_response_gate_tags_exactly_one_request_and_counts_one_response() -> (
+    None
+):
+    source = _read("web/e2e/performance.spec.ts")
+    start = source.index("async function armNextProgressResponse")
+    end = source.index("\ntest('records aggregate", start)
+    gate = source[start:end]
+
+    assert "let taggedRequest = false;" in gate
+    assert "if (taggedRequest)" in gate
+    assert "taggedRequest = true;" in gate
+    assert "tokenResponseCount += 1;" in gate
+    assert "stopRouting:" in gate
+    assert "finish:" in gate
+
+
+def test_pool_long_task_failure_log_preserves_strict_threshold_and_attribution() -> (
+    None
+):
+    source = _read("web/e2e/performance.spec.ts")
+    start = source.index("async function endLongTaskWindow")
+    end = source.index("\ntype ProgressState", start)
+    collector = source[start:end]
+
+    assert "entry['duration'] > 50" in collector
+    for field in ("duration", "startTime", "name", "attribution"):
+        assert f"{field}: entry['{field}']" in collector
+    assert "JSON.stringify({ label, longTasks })" in collector
+
+
+def test_pool_cancel_window_clicks_the_prefetched_control_without_dom_probes() -> None:
+    source = _read("web/e2e/performance.spec.ts")
+    start = source.index("  const cancelButton =")
+    end = source.index("\n  const poolSemanticEvidence =", start)
+    cancellation = source[start:end]
+
+    bounds = cancellation.index("cancelButton.boundingBox()")
+    observer = cancellation.index("await beginLongTaskWindow(page);")
+    click = cancellation.index("await page.mouse.click(")
+    cancel_response = cancellation.index("await cancelRequestResponsePromise;")
+    progress_response = cancellation.index("await cancelledProgressStatePromise;")
+    render = cancellation.index("await cancellationRenderReadyPromise;")
+    finish = cancellation.index("endLongTaskWindow(page, 'cancel')")
+    assert (
+        bounds
+        < observer
+        < click
+        < cancel_response
+        < progress_response
+        < render
+        < finish
+    )
+    assert "cancelButtonBounds?.x" in cancellation
+    assert "cancelButtonBounds?.y" in cancellation
+
+
 def test_pool_navigation_interactivity_uses_rendered_spa_and_long_task_evidence() -> (
     None
 ):
     source = _read("web/e2e/performance.spec.ts")
-    start = source.index(
-        "await beginLongTaskWindow(page);\n  await page.getByRole('link', { name: '任务' })"
-    )
-    end = source.index("\n  await beginLongTaskWindow(page);", start + 1)
+    start = source.index("  const taskCenterLink =")
+    end = source.index("\n  const cancelButton =", start)
     navigation = source[start:end]
 
+    predicate_start = source.index("function isTaskCenterListResponse")
+    predicate_end = source.index(
+        "\nasync function taskListResponseCount", predicate_start
+    )
+    predicate = source[predicate_start:predicate_end]
+    assert "searchParams.size === 2" in predicate
+    assert "searchParams.get('view') === 'safe'" in predicate
+    assert "searchParams.get('limit') === '100'" in predicate
+    assert "isTaskCenterListResponse(response)" in navigation
+    assert "limit=5" not in navigation
+
     assert "navigationStarted" not in navigation
+    assert navigation.index("taskCenterLink.boundingBox()") < navigation.index(
+        "await beginLongTaskWindow(page);"
+    )
+    observer = navigation.index("await beginLongTaskWindow(page);")
+    click = navigation.index("await page.mouse.click(")
+    response = navigation.index("await navigationResponseCountPromise;")
+    render = navigation.index("await navigationRenderReadyPromise;")
+    finish = navigation.index("endLongTaskWindow(page, 'navigation')")
+    assertion = navigation.index("await expect(taskCenterHeading).toBeVisible();")
+    assert observer < click < response < render < finish < assertion
+    assert "taskCount: navigationResponseCount" in navigation
     assert "taskCenterVisible" in navigation
     assert "runPageVisible" in navigation
     assert "progressVisible" in navigation
@@ -1702,7 +1899,7 @@ def test_pool_navigation_interactivity_uses_rendered_spa_and_long_task_evidence(
         "interactive: taskCenterVisible && runPageVisible && progressVisible"
         in navigation
     )
-    assert "long_task_count: await endLongTaskWindow(page)" in navigation
+    assert "long_task_count: navigationLongTaskCount" in navigation
 
 
 def test_performance_target_ci_is_explicit_and_requirement_is_verified() -> None:

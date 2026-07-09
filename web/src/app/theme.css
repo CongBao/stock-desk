@@ -412,6 +412,20 @@ a {
   color: #fbbf24;
 }
 
+.worker-scope[data-state='running'] {
+  color: #86efac;
+}
+
+.worker-scope[data-state='api_offline'],
+.worker-scope[data-state='unavailable'] {
+  color: #fca5a5;
+}
+
+.worker-last-seen {
+  color: var(--text-muted);
+  font-size: 9px;
+}
+
 .status-symbol {
   width: 7px;
   height: 7px;

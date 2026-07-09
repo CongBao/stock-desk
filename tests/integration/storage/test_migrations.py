@@ -19,7 +19,7 @@ from stock_desk.storage.metadata import Base
 from stock_desk.tasks.repository import TaskRepository
 
 
-HEAD_REVISION = "0010_parent_active_retry"
+HEAD_REVISION = "0011_worker_heartbeat"
 INSTRUMENT_TABLES = {
     "instrument_dataset",
     "instrument_dataset_item",
@@ -65,6 +65,7 @@ ANALYSIS_TABLES = {
     "analysis_report",
 }
 MODEL_CONFIG_TABLES = {"analysis_model_config"}
+WORKER_HEARTBEAT_TABLES = {"task_worker_heartbeat"}
 CORE_TABLES = {
     "app_setting",
     "task_event",
@@ -75,6 +76,7 @@ CORE_TABLES = {
     *BACKTEST_TABLES,
     *ANALYSIS_TABLES,
     *MODEL_CONFIG_TABLES,
+    *WORKER_HEARTBEAT_TABLES,
 }
 BACKTEST_TABLE_COLUMNS = {
     "backtest_run": {
@@ -150,6 +152,7 @@ TASK_EVENT_COLUMNS = {
     "detail_json",
     "occurred_at",
 }
+WORKER_HEARTBEAT_COLUMNS = {"worker_id", "heartbeat_at"}
 MARKET_TABLE_COLUMNS = {
     "execution_status_dataset": {
         "dataset_version",
@@ -552,6 +555,9 @@ def test_upgrade_creates_core_tables(tmp_path: Path) -> None:
         assert TASK_EVENT_COLUMNS == {
             column["name"] for column in inspector.get_columns("task_event")
         }
+        assert WORKER_HEARTBEAT_COLUMNS == {
+            column["name"] for column in inspector.get_columns("task_worker_heartbeat")
+        }
         for table, expected_columns in MARKET_TABLE_COLUMNS.items():
             assert expected_columns == {
                 column["name"] for column in inspector.get_columns(table)
@@ -571,6 +577,9 @@ def test_upgrade_creates_core_tables(tmp_path: Path) -> None:
         assert inspector.get_pk_constraint("task_event")["constrained_columns"] == [
             "id"
         ]
+        assert inspector.get_pk_constraint("task_worker_heartbeat")[
+            "constrained_columns"
+        ] == ["worker_id"]
         assert inspector.get_foreign_keys("task_event") == [
             {
                 "name": None,
@@ -589,6 +598,10 @@ def test_upgrade_creates_core_tables(tmp_path: Path) -> None:
             (index["name"], tuple(index["column_names"]))
             for index in inspector.get_indexes("task_event")
         } == {("ix_task_event_task_id_occurred_at", ("task_id", "occurred_at"))}
+        assert {
+            (index["name"], tuple(index["column_names"]))
+            for index in inspector.get_indexes("task_worker_heartbeat")
+        } == {("ix_task_worker_heartbeat_at", ("heartbeat_at",))}
         assert _trigger_names(engine) == ALL_TRIGGER_NAMES
     finally:
         _dispose(engine)
@@ -1541,6 +1554,27 @@ def test_observability_revision_downgrades_and_reupgrades(tmp_path: Path) -> Non
     try:
         assert _current_revision(engine) == HEAD_REVISION
         assert CORE_TABLES <= set(inspect(engine).get_table_names())
+    finally:
+        _dispose(engine)
+
+
+def test_worker_heartbeat_revision_downgrades_and_reupgrades(tmp_path: Path) -> None:
+    url = f"sqlite:///{tmp_path / 'worker-heartbeat-roundtrip.db'}"
+    migrate(url)
+
+    downgrade(url, "0010_parent_active_retry")
+    engine = create_engine_for_url(url)
+    try:
+        assert _current_revision(engine) == "0010_parent_active_retry"
+        assert WORKER_HEARTBEAT_TABLES.isdisjoint(inspect(engine).get_table_names())
+    finally:
+        _dispose(engine)
+
+    migrate(url)
+    engine = create_engine_for_url(url)
+    try:
+        assert _current_revision(engine) == HEAD_REVISION
+        assert WORKER_HEARTBEAT_TABLES <= set(inspect(engine).get_table_names())
     finally:
         _dispose(engine)
 

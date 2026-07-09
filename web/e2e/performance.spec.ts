@@ -4,6 +4,7 @@ import {
   type BrowserContext,
   type Page,
   type Response,
+  type Route,
 } from '@playwright/test';
 import { execFile } from 'node:child_process';
 import { readFileSync } from 'node:fs';
@@ -18,6 +19,7 @@ import {
   portableCommandTokens,
   ProcessIdentityTracker,
   ProgressResponseLedger,
+  progressEvidenceState,
   progressWindowsDemonstrateChange,
   providerEvidence,
   type RootExpectation,
@@ -28,6 +30,8 @@ import {
 
 const SAMPLE_COUNT = 20;
 const RSS_SAMPLE_INTERVAL_MS = 500;
+const PROGRESS_GATE_HEADER = 'x-stock-desk-performance-window';
+let progressGateGeneration = 0;
 const OUTPUT = process.env['STOCK_DESK_PERFORMANCE_RAW_OUTPUT'];
 const PROCESS_FILE = process.env['STOCK_DESK_PERFORMANCE_PROCESS_FILE'];
 const FIXTURE_FILE = process.env['STOCK_DESK_PERFORMANCE_FIXTURE'];
@@ -691,9 +695,13 @@ async function backtestAction(
 
 async function beginLongTaskWindow(page: Page) {
   await page.evaluate(() => {
-    const durations: number[] = [];
+    const records: Record<string, unknown>[] = [];
     const observer = new PerformanceObserver((entries) => {
-      for (const entry of entries.getEntries()) durations.push(entry.duration);
+      for (const entry of entries.getEntries()) {
+        const record: unknown = entry.toJSON();
+        if (typeof record === 'object' && record !== null)
+          records.push(record as Record<string, unknown>);
+      }
     });
     (
       observer as unknown as {
@@ -701,19 +709,19 @@ async function beginLongTaskWindow(page: Page) {
       }
     ).observe({ type: 'longtask' });
     Object.assign(globalThis, {
-      __stockDeskLongTaskWindow: { durations, observer },
+      __stockDeskLongTaskWindow: { records, observer },
     });
   });
 }
 
-async function endLongTaskWindow(page: Page): Promise<number> {
-  const durations = await page.evaluate(() => {
+async function endLongTaskWindow(page: Page, label: string): Promise<number> {
+  const records = await page.evaluate(() => {
     const state = (
       globalThis as unknown as {
         __stockDeskLongTaskWindow: {
-          durations: number[];
+          records: Record<string, unknown>[];
           observer: {
-            takeRecords(): { duration: number }[];
+            takeRecords(): { toJSON(): Record<string, unknown> }[];
             disconnect(): void;
           };
         };
@@ -721,13 +729,26 @@ async function endLongTaskWindow(page: Page): Promise<number> {
     ).__stockDeskLongTaskWindow;
     state.observer
       .takeRecords()
-      .forEach((entry: { duration: number }) =>
-        state.durations.push(entry.duration),
-      );
+      .forEach((entry) => state.records.push(entry.toJSON()));
     state.observer.disconnect();
-    return state.durations;
+    return state.records;
   });
-  return durations.filter((duration) => duration > 50).length;
+  const longTasks = records
+    .filter(
+      (entry) =>
+        typeof entry['duration'] === 'number' && entry['duration'] > 50,
+    )
+    .map((entry) => ({
+      duration: entry['duration'],
+      startTime: entry['startTime'],
+      name: entry['name'],
+      attribution: entry['attribution'],
+    }));
+  if (longTasks.length > 0)
+    console.log(
+      `[performance-long-task-window] ${JSON.stringify({ label, longTasks })}`,
+    );
+  return longTasks.length;
 }
 
 type ProgressState = {
@@ -737,6 +758,287 @@ type ProgressState = {
   readonly total: number;
   readonly failed: number;
 };
+
+type RenderSignal = {
+  readonly sequence: number;
+  readonly pathname: string;
+  readonly progressKey: string | null;
+  readonly heading: string | null;
+  readonly taskCount: number;
+};
+
+type RenderSignalWaiter = {
+  readonly predicate: (signal: RenderSignal) => boolean;
+  readonly resolve: (signal: RenderSignal) => void;
+  readonly reject: (error: Error) => void;
+  readonly timer: ReturnType<typeof setTimeout>;
+};
+
+class RenderSignalLedger {
+  private readonly signals: RenderSignal[] = [];
+  private readonly waiters = new Set<RenderSignalWaiter>();
+
+  get latestSequence() {
+    return this.signals.at(-1)?.sequence ?? 0;
+  }
+
+  record(value: unknown) {
+    if (typeof value !== 'object' || value === null) return;
+    const candidate = value as Record<string, unknown>;
+    const { sequence, pathname, progressKey, heading, taskCount } = candidate;
+    if (
+      !Number.isSafeInteger(sequence) ||
+      typeof pathname !== 'string' ||
+      (progressKey !== null && typeof progressKey !== 'string') ||
+      (heading !== null && typeof heading !== 'string') ||
+      !Number.isSafeInteger(taskCount) ||
+      Number(taskCount) < 0
+    ) {
+      return;
+    }
+    const signal = {
+      sequence: Number(sequence),
+      pathname,
+      progressKey,
+      heading,
+      taskCount: Number(taskCount),
+    } satisfies RenderSignal;
+    this.signals.push(signal);
+    for (const waiter of this.waiters) {
+      if (!waiter.predicate(signal)) continue;
+      clearTimeout(waiter.timer);
+      this.waiters.delete(waiter);
+      waiter.resolve(signal);
+    }
+  }
+
+  nextMatching(
+    predicate: (signal: RenderSignal) => boolean,
+    description: string,
+  ): Promise<RenderSignal> {
+    const existing = this.signals.findLast(predicate);
+    if (existing !== undefined) return Promise.resolve(existing);
+    return new Promise((resolve, reject) => {
+      const waiter: RenderSignalWaiter = {
+        predicate,
+        resolve,
+        reject,
+        timer: setTimeout(() => {
+          this.waiters.delete(waiter);
+          reject(
+            new Error(`${description} render-ready signal was not observed`),
+          );
+        }, 45_000),
+      };
+      this.waiters.add(waiter);
+    });
+  }
+}
+
+type ProgressPaintSignal = {
+  readonly sequence: number;
+  readonly token: string;
+};
+
+type ProgressPaintWaiter = {
+  readonly token: string;
+  readonly resolve: (signal: ProgressPaintSignal) => void;
+  readonly reject: (error: Error) => void;
+  readonly timer: ReturnType<typeof setTimeout>;
+};
+
+class ProgressPaintSignalLedger {
+  private readonly signals: ProgressPaintSignal[] = [];
+  private readonly waiters = new Set<ProgressPaintWaiter>();
+
+  record(value: unknown) {
+    if (typeof value !== 'object' || value === null) return;
+    const candidate = value as Record<string, unknown>;
+    const { sequence, token } = candidate;
+    if (
+      !Number.isSafeInteger(sequence) ||
+      typeof token !== 'string' ||
+      token.length === 0
+    ) {
+      return;
+    }
+    const signal = {
+      sequence: Number(sequence),
+      token,
+    } satisfies ProgressPaintSignal;
+    this.signals.push(signal);
+    for (const waiter of this.waiters) {
+      if (waiter.token !== token) continue;
+      clearTimeout(waiter.timer);
+      this.waiters.delete(waiter);
+      waiter.resolve(signal);
+    }
+  }
+
+  next(token: string, description: string): Promise<ProgressPaintSignal> {
+    const existing = this.signals.findLast((signal) => signal.token === token);
+    if (existing !== undefined) return Promise.resolve(existing);
+    return new Promise((resolve, reject) => {
+      const waiter: ProgressPaintWaiter = {
+        token,
+        resolve,
+        reject,
+        timer: setTimeout(() => {
+          this.waiters.delete(waiter);
+          reject(
+            new Error(`${description} paint-ready signal was not observed`),
+          );
+        }, 45_000),
+      };
+      this.waiters.add(waiter);
+    });
+  }
+
+  dispose() {
+    for (const waiter of this.waiters) {
+      clearTimeout(waiter.timer);
+      waiter.reject(new Error('progress paint signal ledger was disposed'));
+    }
+    this.waiters.clear();
+  }
+}
+
+async function installRenderSignalObserver(page: Page) {
+  const ledger = new RenderSignalLedger();
+  const binding = '__stockDeskPerformanceRenderSignal';
+  await page.exposeFunction(binding, (value: unknown) => ledger.record(value));
+  await page.evaluate((bindingName) => {
+    const browser = globalThis as unknown as {
+      document: {
+        body: object;
+        querySelector(selector: string): {
+          getAttribute(name: string): string | null;
+          textContent: string | null;
+        } | null;
+        querySelectorAll(selector: string): { length: number };
+      };
+      location: { pathname: string };
+      MutationObserver: new (callback: () => void) => {
+        observe(
+          target: object,
+          options: {
+            attributes: boolean;
+            attributeFilter: string[];
+            childList: boolean;
+            subtree: boolean;
+          },
+        ): void;
+      };
+    };
+    let sequence = 0;
+    const report = (
+      globalThis as unknown as Record<
+        string,
+        (value: RenderSignal) => Promise<void>
+      >
+    )[bindingName];
+    const emit = () => {
+      const progress = browser.document.querySelector(
+        '[data-rendered-progress]',
+      );
+      const heading = browser.document.querySelector('[data-page-heading]');
+      void report?.({
+        sequence: ++sequence,
+        pathname: browser.location.pathname,
+        progressKey: progress?.getAttribute('data-rendered-progress') ?? null,
+        heading: heading?.textContent?.trim() ?? null,
+        taskCount: browser.document.querySelectorAll('.task-center-list > li')
+          .length,
+      });
+    };
+    const observer = new browser.MutationObserver(emit);
+    observer.observe(browser.document.body, {
+      attributes: true,
+      attributeFilter: ['data-rendered-progress'],
+      childList: true,
+      subtree: true,
+    });
+    Object.assign(globalThis, {
+      __stockDeskPerformanceRenderObserver: observer,
+    });
+    emit();
+  }, binding);
+  return ledger;
+}
+
+async function installProgressPaintSignals(page: Page) {
+  const ledger = new ProgressPaintSignalLedger();
+  const binding = '__stockDeskPerformancePaintReady';
+  await page.exposeFunction(binding, (value: unknown) => ledger.record(value));
+  await page.evaluate(
+    ({ bindingName, headerName }) => {
+      const browser = globalThis as unknown as {
+        fetch: typeof fetch;
+        requestAnimationFrame(callback: (timestamp: number) => void): number;
+        __stockDeskPerformancePaintCleanup?: () => void;
+      };
+      let sequence = 0;
+      const originalFetch = browser.fetch;
+      const report = (
+        globalThis as unknown as Record<
+          string,
+          (value: ProgressPaintSignal) => Promise<void>
+        >
+      )[bindingName];
+      const wrappedFetch: typeof fetch = async (...args) => {
+        const response = await originalFetch.apply(globalThis, args);
+        const token = response.headers.get(headerName);
+        if (token !== null) {
+          const originalJson = response.json.bind(response);
+          Object.defineProperty(response, 'json', {
+            configurable: true,
+            value: async () => {
+              const value: unknown = await originalJson();
+              browser.requestAnimationFrame(() => {
+                browser.requestAnimationFrame(() => {
+                  void report?.({ token, sequence: ++sequence });
+                });
+              });
+              return value;
+            },
+          });
+        }
+        return response;
+      };
+      browser.fetch = wrappedFetch;
+      browser.__stockDeskPerformancePaintCleanup = () => {
+        if (browser.fetch === wrappedFetch) browser.fetch = originalFetch;
+        delete browser.__stockDeskPerformancePaintCleanup;
+      };
+    },
+    { bindingName: binding, headerName: PROGRESS_GATE_HEADER },
+  );
+  return {
+    next: (token: string, description: string) =>
+      ledger.next(token, description),
+    dispose: async () => {
+      ledger.dispose();
+      await page.evaluate(() => {
+        const browser = globalThis as unknown as {
+          fetch: typeof fetch;
+          __stockDeskPerformancePaintCleanup?: () => void;
+        };
+        browser.__stockDeskPerformancePaintCleanup?.();
+      });
+    },
+  };
+}
+
+function renderReadyAfter<T>(
+  ledger: RenderSignalLedger,
+  expected: Promise<T>,
+  predicate: (signal: RenderSignal, value: T) => boolean,
+  description: string,
+) {
+  return expected.then((value) =>
+    ledger.nextMatching((signal) => predicate(signal, value), description),
+  );
+}
 
 function progressKey(state: ProgressState): string {
   return [
@@ -796,6 +1098,124 @@ async function observeMatchedProgress(
   if (matched === undefined)
     throw new Error('rendered/API progress did not match');
   return matched;
+}
+
+function isProgressResponse(response: Response, runId: string) {
+  return (
+    new URL(response.url()).pathname === `/api/backtests/${runId}` &&
+    response.request().method() === 'GET' &&
+    response.ok()
+  );
+}
+
+async function responseProgressState(
+  responsePromise: Promise<Response>,
+): Promise<ProgressState> {
+  const response = await responsePromise;
+  const state = progressEvidenceState(await response.json());
+  if (state === null) throw new Error('progress response is malformed');
+  return state;
+}
+
+function nextProgressState(
+  page: Page,
+  runId: string,
+  predicate: (state: ProgressState) => boolean,
+): Promise<ProgressState> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      page.off('response', inspect);
+      reject(new Error('matching progress response was not observed'));
+    }, 45_000);
+    const inspect = (response: Response) => {
+      if (!isProgressResponse(response, runId)) return;
+      void response
+        .json()
+        .then((body: unknown) => {
+          const state = progressEvidenceState(body);
+          if (state === null || !predicate(state)) return;
+          clearTimeout(timeout);
+          page.off('response', inspect);
+          resolve(state);
+        })
+        .catch(() => undefined);
+    };
+    page.on('response', inspect);
+  });
+}
+
+function isTaskCenterListResponse(response: Response) {
+  const url = new URL(response.url());
+  return (
+    url.pathname === '/api/tasks' &&
+    url.searchParams.size === 2 &&
+    url.searchParams.get('view') === 'safe' &&
+    url.searchParams.get('limit') === '100' &&
+    response.request().method() === 'GET' &&
+    response.ok()
+  );
+}
+
+async function taskListResponseCount(responsePromise: Promise<Response>) {
+  const response = await responsePromise;
+  const body: unknown = await response.json();
+  if (!Array.isArray(body)) throw new Error('task list response is malformed');
+  return body.length;
+}
+
+async function armNextProgressResponse(page: Page, runId: string) {
+  const pattern = `**/api/backtests/${runId}`;
+  const token = `${runId}:${++progressGateGeneration}`;
+  let taggedRequest = false;
+  let tokenResponseCount = 0;
+  let routing = true;
+  let release: () => void = () => undefined;
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const handler = async (route: Route) => {
+    if (taggedRequest) {
+      await route.fallback();
+      return;
+    }
+    taggedRequest = true;
+    await released;
+    const response = await route.fetch({
+      headers: {
+        ...route.request().headers(),
+        [PROGRESS_GATE_HEADER]: token,
+      },
+    });
+    await route.fulfill({
+      response,
+      headers: {
+        ...response.headers(),
+        [PROGRESS_GATE_HEADER]: token,
+      },
+    });
+  };
+  const capture = (response: Response) => {
+    if (response.headers()[PROGRESS_GATE_HEADER] === token)
+      tokenResponseCount += 1;
+  };
+  page.on('response', capture);
+  await page.route(pattern, handler);
+  return {
+    token,
+    release,
+    matches: (response: Response) =>
+      isProgressResponse(response, runId) &&
+      response.headers()[PROGRESS_GATE_HEADER] === token,
+    stopRouting: async () => {
+      if (!routing) return;
+      routing = false;
+      await page.unroute(pattern, handler);
+    },
+    finish: () => {
+      page.off('response', capture);
+      return tokenResponseCount;
+    },
+  };
 }
 
 test('records aggregate 2/3/5 budgets and worker-backed UI responsiveness', async ({
@@ -1021,6 +1441,8 @@ test('records aggregate 2/3/5 budgets and worker-backed UI responsiveness', asyn
     snapshot_id: string;
   };
   await expect(page).toHaveURL(`/backtests/${poolSubmission.run_id}`);
+  const renderSignals = await installRenderSignalObserver(page);
+  const progressPaintSignals = await installProgressPaintSignals(page);
   const observedProgressStates: ProgressState[] = [];
   const poolSamples: {
     long_task_count: number;
@@ -1046,17 +1468,41 @@ test('records aggregate 2/3/5 budgets and worker-backed UI responsiveness', asyn
     null,
   );
   const initialProgressKey = progressKey(initialProgress.rendered_state);
-  let requiredChangeFrom = initialProgressKey;
+  // Keep Playwright's DOM probes outside each observer window: locator and
+  // assertion scripts execute in the renderer and are not product UI work.
   for (let index = 0; index < SAMPLE_COUNT - 2; index += 1) {
-    await beginLongTaskWindow(page);
-    const progressEvidence = await observeMatchedProgress(
+    const progressResponseGate = await armNextProgressResponse(
       page,
       poolSubmission.run_id,
-      progressResponses,
-      index < 2 ? requiredChangeFrom : null,
     );
-    if (index < 2)
-      requiredChangeFrom = progressKey(progressEvidence.rendered_state);
+    const progressResponsePromise = page.waitForResponse((response) =>
+      progressResponseGate.matches(response),
+    );
+    const progressResponseStatePromise = responseProgressState(
+      progressResponsePromise,
+    );
+    const progressPaintReadyPromise = progressPaintSignals.next(
+      progressResponseGate.token,
+      `progress-${index}`,
+    );
+    await beginLongTaskWindow(page);
+    progressResponseGate.release();
+    const apiState = await progressResponseStatePromise;
+    await progressResponseGate.stopRouting();
+    await progressPaintReadyPromise;
+    const longTaskCount = await endLongTaskWindow(page, `progress-${index}`);
+    expect(progressResponseGate.finish()).toBe(1);
+    const renderedState = parseRenderedProgress(
+      await page
+        .getByRole('region', { name: '运行进度' })
+        .getAttribute('data-rendered-progress'),
+    );
+    expect(renderedState).not.toBeNull();
+    expect(renderedState).toEqual(apiState);
+    const progressEvidence = {
+      rendered_state: renderedState ?? apiState,
+      api_state: apiState,
+    };
     observedProgressStates.push(progressEvidence.rendered_state);
     const cancelVisible = await page
       .getByRole('button', { name: '取消回测' })
@@ -1064,24 +1510,56 @@ test('records aggregate 2/3/5 budgets and worker-backed UI responsiveness', asyn
     const progressVisible = await page
       .getByRole('progressbar', { name: '运行进度' })
       .isVisible();
-    await page.waitForTimeout(25);
     poolSamples.push({
-      long_task_count: await endLongTaskWindow(page),
+      long_task_count: longTaskCount,
       interaction_kind: 'progress',
       interactive: cancelVisible && progressVisible,
       ...progressEvidence,
       correctness_hash: '',
     });
   }
+  await progressPaintSignals.dispose();
   expect(
     progressWindowsDemonstrateChange(
       initialProgressKey,
       observedProgressStates.map(progressKey),
     ),
   ).toBe(true);
+  const taskCenterLink = page.getByRole('link', { name: '任务' });
+  const taskCenterLinkBounds = await taskCenterLink.boundingBox();
+  expect(taskCenterLinkBounds).not.toBeNull();
+  const navigationRenderSequence = renderSignals.latestSequence;
+  const navigationResponsePromise = page.waitForResponse((response) =>
+    isTaskCenterListResponse(response),
+  );
+  const navigationResponseCountPromise = taskListResponseCount(
+    navigationResponsePromise,
+  );
+  const navigationRenderReadyPromise = renderReadyAfter(
+    renderSignals,
+    navigationResponseCountPromise,
+    (signal, taskCount) =>
+      signal.sequence > navigationRenderSequence &&
+      signal.pathname === '/tasks' &&
+      signal.heading === '任务中心' &&
+      signal.taskCount === taskCount,
+    'navigation',
+  );
   await beginLongTaskWindow(page);
-  await page.getByRole('link', { name: '任务' }).click();
+  await page.mouse.click(
+    (taskCenterLinkBounds?.x ?? 0) + (taskCenterLinkBounds?.width ?? 0) / 2,
+    (taskCenterLinkBounds?.y ?? 0) + (taskCenterLinkBounds?.height ?? 0) / 2,
+  );
+  const navigationResponseCount = await navigationResponseCountPromise;
+  const navigationRenderReady = await navigationRenderReadyPromise;
+  const navigationLongTaskCount = await endLongTaskWindow(page, 'navigation');
+  expect(navigationRenderReady).toMatchObject({
+    pathname: '/tasks',
+    heading: '任务中心',
+    taskCount: navigationResponseCount,
+  });
   const taskCenterHeading = page.getByRole('heading', { name: '任务中心' });
+  await expect(page).toHaveURL('/tasks');
   await expect(taskCenterHeading).toBeVisible();
   const taskCenterVisible = await taskCenterHeading.isVisible();
   await page.goBack();
@@ -1098,29 +1576,63 @@ test('records aggregate 2/3/5 budgets and worker-backed UI responsiveness', asyn
     null,
   );
   poolSamples.push({
-    long_task_count: await endLongTaskWindow(page),
+    long_task_count: navigationLongTaskCount,
     interaction_kind: 'navigation',
     interactive: taskCenterVisible && runPageVisible && progressVisible,
     ...navigationEvidence,
     correctness_hash: '',
   });
-  await beginLongTaskWindow(page);
   const cancelButton = page.getByRole('button', { name: '取消回测' });
   await expect(cancelButton).toBeVisible();
-  await cancelButton.click();
+  const cancelButtonBounds = await cancelButton.boundingBox();
+  expect(cancelButtonBounds).not.toBeNull();
+  const cancellationRenderSequence = renderSignals.latestSequence;
+  const cancelRequestResponsePromise = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname ===
+        `/api/backtests/${poolSubmission.run_id}/cancel` &&
+      response.request().method() === 'POST',
+  );
+  const cancelledProgressStatePromise = nextProgressState(
+    page,
+    poolSubmission.run_id,
+    (state) => state.status === 'cancelled',
+  );
+  const cancellationRenderReadyPromise = renderReadyAfter(
+    renderSignals,
+    cancelledProgressStatePromise,
+    (signal, state) =>
+      signal.sequence > cancellationRenderSequence &&
+      signal.pathname === `/backtests/${poolSubmission.run_id}` &&
+      signal.progressKey === progressKey(state),
+    'cancellation',
+  );
+  await beginLongTaskWindow(page);
+  await page.mouse.click(
+    (cancelButtonBounds?.x ?? 0) + (cancelButtonBounds?.width ?? 0) / 2,
+    (cancelButtonBounds?.y ?? 0) + (cancelButtonBounds?.height ?? 0) / 2,
+  );
+  const cancelRequestResponse = await cancelRequestResponsePromise;
+  const finalOverview = await cancelledProgressStatePromise;
+  await cancellationRenderReadyPromise;
+  const cancellationLongTaskCount = await endLongTaskWindow(page, 'cancel');
+  expect(cancelRequestResponse.ok()).toBe(true);
   await expect(
     page.locator('.run-progress .status-badge[data-status="cancelled"]'),
   ).toBeVisible({ timeout: 45_000 });
-  const cancellationEvidence = await observeMatchedProgress(
-    page,
-    poolSubmission.run_id,
-    progressResponses,
-    null,
+  const finalRenderedState = parseRenderedProgress(
+    await page
+      .getByRole('region', { name: '运行进度' })
+      .getAttribute('data-rendered-progress'),
   );
-  const finalOverview = cancellationEvidence.api_state;
+  expect(finalRenderedState).toEqual(finalOverview);
+  const cancellationEvidence = {
+    rendered_state: finalRenderedState ?? finalOverview,
+    api_state: finalOverview,
+  };
   expect(finalOverview.status).toBe('cancelled');
   poolSamples.push({
-    long_task_count: await endLongTaskWindow(page),
+    long_task_count: cancellationLongTaskCount,
     interaction_kind: 'cancel',
     interactive: finalOverview.status === 'cancelled',
     ...cancellationEvidence,
