@@ -220,36 +220,39 @@ class SubprocessGateRunner:
 
 def _candidate_gates(*, target_performance: bool) -> tuple[GateCommand, ...]:
     performance = "performance-target" if target_performance else "performance"
-    return tuple(
-        GateCommand(("make", target), timeout_seconds=1800)
-        for target in (
-            "test",
-            "acceptance",
-            "acceptance-formula",
-            "acceptance-backtest",
-            "acceptance-analysis",
-            "acceptance-domain-contracts",
-            "acceptance-full-journey",
-            "performance-regressions",
-            performance,
-            "e2e-foundation",
-            "e2e-market",
-            "e2e-formula",
-            "e2e-backtest",
-            "e2e-analysis",
-            "e2e-task-center",
-            "e2e-accessibility",
-            "lint",
-            "typecheck",
-            "security",
+    return (
+        (PRE_PUBLISH_EVIDENCE_GATE,)
+        + tuple(
+            GateCommand(("make", target), timeout_seconds=1800)
+            for target in (
+                "test",
+                "acceptance",
+                "acceptance-formula",
+                "acceptance-backtest",
+                "acceptance-analysis",
+                "acceptance-domain-contracts",
+                "acceptance-full-journey",
+                "performance-regressions",
+                performance,
+                "e2e-foundation",
+                "e2e-market",
+                "e2e-formula",
+                "e2e-backtest",
+                "e2e-analysis",
+                "e2e-task-center",
+                "e2e-accessibility",
+                "lint",
+                "typecheck",
+                "security",
+            )
         )
-    ) + (
-        GateCommand(
-            ("uv", "run", "--frozen", "python", "scripts/verify_docs.py"),
-            timeout_seconds=300,
-        ),
-        GateCommand(("make", "public-tree"), timeout_seconds=300),
-        PRE_PUBLISH_EVIDENCE_GATE,
+        + (
+            GateCommand(
+                ("uv", "run", "--frozen", "python", "scripts/verify_docs.py"),
+                timeout_seconds=300,
+            ),
+            GateCommand(("make", "public-tree"), timeout_seconds=300),
+        )
     )
 
 
