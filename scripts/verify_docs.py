@@ -131,6 +131,8 @@ REQUIRED_WIKI_APP_UI_LABELS = {
     ),
     "Data-Sources-and-Tushare": (
         ("Data source settings", "数据源设置"),
+        ("Category priority", "分类优先级"),
+        ("Tushare Token", "Tushare Token"),
         ("Save data source settings", "保存数据源设置"),
         ("Test Tushare connection", "测试 Tushare 连接"),
     ),
@@ -142,16 +144,30 @@ REQUIRED_WIKI_APP_UI_LABELS = {
     ),
     "Data-Updates-and-Provenance": (
         ("Data update", "数据更新"),
+        ("Current symbol", "当前证券"),
+        ("Current stock pool", "当前股票池"),
+        ("Start update", "启动更新"),
         ("Cancel update", "取消更新"),
         ("Save daily schedule", "保存每日计划"),
     ),
     "Stock-Pools": (
         ("Stock pools", "股票池"),
+        ("New custom pool", "新建自定义池"),
         ("Create stock pool", "创建股票池"),
+        ("Update instrument catalog", "更新证券目录"),
+        ("Save stock pool", "保存股票池"),
+        ("Delete stock pool", "删除股票池"),
+        ("Pool creation failed; check members", "股票池创建失败，请检查成员。"),
+        ("Pool save failed; check members", "股票池保存失败，请检查成员。"),
     ),
     "Market-Charts": (
         ("Market workspace", "行情工作区"),
+        ("K-line period", "K 线周期"),
+        ("Adjustment method", "复权方式"),
+        ("Reset chart zoom", "重置图表缩放"),
         ("Reset view", "重置视图"),
+        ("Formula Studio", "公式工作台"),
+        ("Run preview", "运行预览"),
     ),
     "Formula-Studio-Quickstart": (
         ("Formula Studio", "公式工作台"),
@@ -289,6 +305,8 @@ REQUIRED_WIKI_APP_UI_SOURCE_FILES = {
     "Market-Charts": (
         "web/src/features/market/MarketPage.tsx",
         "web/src/features/market/MarketChart.tsx",
+        "web/src/app/routes.ts",
+        "web/src/features/formulas/FormulaPreview.tsx",
     ),
     "Formula-Studio-Quickstart": (
         "web/src/app/routes.ts",
@@ -358,6 +376,13 @@ REQUIRED_WIKI_FEATURE_BINDINGS = {
         "governance-requirements",
         "repository-audit:requirements-boundary",
     ),
+    "R-056": (
+        "Formula-Studio-Quickstart#适用场景",
+        "Formula-Studio-Quickstart-en#when-to-use-this",
+        "适用场景 / When to use this",
+        "formula-studio-wide",
+        "app-route:/formulas",
+    ),
     "R-073": (
         "Project-Governance-and-Release-Evidence#交付与公开边界",
         "Project-Governance-and-Release-Evidence-en#delivery-and-public-boundary",
@@ -406,16 +431,221 @@ REQUIRED_WIKI_WORKFLOW_CONTENT = {
         ),
         (),
     ),
+    "Data-Sources-and-Tushare.md": (
+        (
+            "九类数据分别维护优先级",
+            "日线行情、周线行情、60 分钟行情、证券目录、交易日历、回测执行状态、基本面、公告和新闻",
+            "Tushare Token 不会从服务端回填到浏览器",
+            "配置已变更，请重新检测",
+            "同一段行情不会跨来源拼接",
+            "Eastmoney 当前适配器尚未交付",
+        ),
+        ("自动拼接行情", "Token 会回填", "Eastmoney 已可用"),
+    ),
+    "Data-Sources-and-Tushare-en.md": (
+        (
+            "nine data categories keep independent priority orders",
+            "daily bars, weekly bars, 60-minute bars, instruments, trading calendar, execution status, fundamentals, announcements, and news",
+            "The Tushare token is never read back into the browser",
+            "configuration changed; test again",
+            "One bar segment is never spliced across providers",
+            "Eastmoney adapter is not delivered",
+        ),
+        ("automatically splices bars", "token is read back", "Eastmoney is available"),
+    ),
     "Local-TDX-Data.md": (
-        ("通达信 vipdoc 目录", "测试 通达信本地 连接"),
-        ("目录选择器", "目录校验", "启用备用源"),
+        (
+            "通达信 vipdoc 目录",
+            "测试 通达信本地 连接",
+            "只支持通达信日线 `.day` 文件",
+            "`sh/lday`",
+            "`sz/lday`",
+            "不支持周线或 60 分钟文件",
+            "清空路径并保存",
+            "绝对路径会由本地设置 API 返回并回填到本机设置页",
+            "路径只在本机可见",
+            "诊断错误、任务日志和来源证据不得包含路径",
+            "公开截图必须完整遮蔽",
+        ),
+        (
+            "目录选择器",
+            "目录校验",
+            "启用备用源",
+            "路径不会由 API 返回",
+            "设置页不会回填路径",
+        ),
     ),
     "Local-TDX-Data-en.md": (
         (
             "TongdaXin vipdoc directory（通达信 vipdoc 目录）",
             "Test Local TDX connection（测试 通达信本地 连接）",
+            "supports only TongdaXin daily `.day` files",
+            "`sh/lday`",
+            "`sz/lday`",
+            "does not support weekly or 60-minute files",
+            "clear the path and save",
+            "the absolute path is returned by the local settings API and filled back into the local settings page",
+            "the path is visible only on the local machine",
+            "Diagnostic errors, task logs, and provenance must not contain the path",
+            "public screenshots must fully redact it",
         ),
-        ("directory picker", "directory validation", "enable the fallback"),
+        (
+            "directory picker",
+            "directory validation",
+            "enable the fallback",
+            "path is never returned by the API",
+            "settings page never fills the path",
+        ),
+    ),
+    "Data-Updates-and-Provenance.md": (
+        (
+            "当前证券",
+            "当前股票池",
+            "开始日期",
+            "结束日期",
+            "启动更新",
+            "逐证券更新结果最多显示前 100 项",
+            "保存每日计划",
+            "图表始终只读本地缓存",
+            "成功后在右侧“数据来源”面板核对",
+            "数据版本和路由尝试",
+            "修复原因后重新提交",
+        ),
+        ("预检按钮", "选择数据类别", "任务列表直接显示提供方"),
+    ),
+    "Data-Updates-and-Provenance-en.md": (
+        (
+            "Current symbol（当前证券）",
+            "Current stock pool（当前股票池）",
+            "start date",
+            "end date",
+            "Start update（启动更新）",
+            "per-symbol result list shows at most the first 100 items",
+            "Save daily schedule（保存每日计划）",
+            "Charts always read only local cache",
+            "after success, inspect the Data provenance panel on the right",
+            "dataset version and routing attempts",
+            "Resubmit after fixing the reason",
+        ),
+        (
+            "preflight button",
+            "select data categories",
+            "task list directly shows provider",
+        ),
+    ),
+    "Stock-Pools.md": (
+        (
+            "全 A、指数和行业预设",
+            "更新证券目录",
+            "新建自定义池",
+            "创建股票池",
+            "编辑当前股票池",
+            "保存股票池",
+            "删除股票池",
+            "使用上移、下移和移除按钮维护顺序",
+            "自定义池最多 5,000 只证券",
+            "普通 UI 在通用提示后最多附加 20 个 `#序号 issue-code`",
+            "高级 API 的成员级响应返回完整 `issues` 数组，不受 20 项 UI 显示上限限制",
+            "超过 5,000 只返回 `code=invalid_request` 和空列表 `issues: []`",
+            "不包含成员位置，也不是成员级 issues",
+            "缩减列表到 5,000 只以内后重试",
+            "股票池创建失败，请检查成员。",
+            "股票池保存失败，请检查成员。",
+            "### 高级：API 诊断",
+            "普通 UI 不显示 `code` 或 `issues` 字段",
+            "股票池回测",
+            "修正失败成员后再次保存",
+        ),
+        ("拖动排序", "股票池会共享资金", "不返回 issues"),
+    ),
+    "Stock-Pools-en.md": (
+        (
+            "all-A, index, and industry presets",
+            "Update instrument catalog（更新证券目录）",
+            "New custom pool（新建自定义池）",
+            "Create stock pool（创建股票池）",
+            "edit the current custom pool",
+            "Save stock pool（保存股票池）",
+            "Delete stock pool（删除股票池）",
+            "use the move-up, move-down, and remove buttons",
+            "A custom pool is capped at 5,000 symbols",
+            "the generic message is followed by at most 20 `#ordinal issue-code` entries",
+            "The advanced member-level API response returns the complete `issues` array without the UI's 20-item display limit",
+            "More than 5,000 symbols returns `code=invalid_request` with an empty `issues: []` list",
+            "It contains no member positions or member-level issues",
+            "reduce the list to at most 5,000 symbols and retry",
+            "Pool creation failed; check members（股票池创建失败，请检查成员。）",
+            "Pool save failed; check members（股票池保存失败，请检查成员。）",
+            "### Advanced: API diagnostics",
+            "The normal UI does not display `code` or `issues` fields",
+            "pool backtest",
+            "save again after correcting failed members",
+        ),
+        (
+            "drag to reorder",
+            "shared-capital portfolio",
+            "does not return issues",
+            "no issues array",
+        ),
+    ),
+    "Market-Charts.md": (
+        (
+            "行情工作区只读本地缓存",
+            "日线、周线和 60 分钟",
+            "不复权、前复权和后复权",
+            "十字光标查看 OHLCV",
+            "滚轮/双指缩放",
+            "拖动平移",
+            "重置视图",
+            "公式图层需在公式工作台运行预览",
+            "K 线主图与公式副图",
+            "BUY 买点",
+            "SELL 卖点",
+            "视口不超过 1200px 时主导航自动收起",
+            "1100px 以下",
+            "900px 以下",
+            "图标导航轨",
+            "market-daily-narrow",
+        ),
+        ("行情工作区选择公式", "浏览图表会自动下载", "文字缩写导航"),
+    ),
+    "Market-Charts-en.md": (
+        (
+            "Market workspace（行情工作区） reads only local cache",
+            "daily, weekly, and 60-minute",
+            "no adjustment, qfq, and hfq",
+            "crosshair to read OHLCV",
+            "wheel or pinch to zoom",
+            "drag to pan",
+            "Reset view（重置视图）",
+            "Formula layers require Run preview（运行预览） in Formula Studio（公式工作台）",
+            "K-line main chart and formula subchart",
+            "BUY 买点",
+            "SELL 卖点",
+            "At or below 1200px, primary navigation collapses automatically",
+            "Below 1100px",
+            "below 900px",
+            "icon navigation rail",
+            "market-daily-narrow",
+        ),
+        (
+            "choose a formula in Market workspace",
+            "chart browsing downloads data",
+            "text-abbreviation rail",
+        ),
+    ),
+    "Formula-Studio-Quickstart.md": (
+        ("K 线主图与公式副图", "BUY 买点", "SELL 卖点", "运行预览"),
+        (),
+    ),
+    "Formula-Studio-Quickstart-en.md": (
+        (
+            "K-line main chart and formula subchart",
+            "BUY 买点",
+            "SELL 卖点",
+            "Run preview（运行预览）",
+        ),
+        (),
     ),
     "Model-Provider-Setup.md": (
         ("提供商", "Base URL", "模型", "API Key", "已验证", "错误代码"),
@@ -476,6 +706,195 @@ REQUIRED_WIKI_WORKFLOW_CONTENT = {
             "no log control",
             "completed backtest targets",
             "only completed",
+        ),
+    ),
+}
+
+REQUIRED_WIKI_LOW_CODE_SECTION_FORBIDDEN = {
+    "Stock-Pools.md": (
+        ("操作步骤", "预期结果"),
+        ("`code", "`issues"),
+    ),
+    "Stock-Pools-en.md": (
+        ("Steps", "Expected result"),
+        ("`code", "`issues"),
+    ),
+}
+
+REQUIRED_WIKI_LOW_CODE_SECTION_REQUIRED = {
+    "Stock-Pools.md": {
+        "操作步骤": (
+            "通用提示后最多附加 20 个 `#序号 issue-code`",
+            "逐项修正",
+            "整体超限仍只有通用提示，不附加成员条目",
+        ),
+        "预期结果": (
+            "成员级校验最多显示 20 个成员条目",
+            "整体超限不显示成员条目",
+        ),
+    },
+    "Stock-Pools-en.md": {
+        "Steps": (
+            "the generic message is followed by at most 20 `#ordinal issue-code` entries",
+            "correct each displayed member",
+            "A whole-request limit failure keeps only the generic message and appends no member entries",
+        ),
+        "Expected result": (
+            "member-level validation displays at most 20 member entries",
+            "a whole-request limit failure displays no member entries",
+        ),
+    },
+}
+
+REQUIRED_WIKI_MARKET_GUIDE_SOURCE_CLAIMS = {
+    "Data-Sources-and-Tushare.md": (
+        (
+            "九类数据分别维护优先级",
+            "web/src/features/settings/sourceSettingsApi.ts",
+            "sourceCategories = [",
+        ),
+        (
+            "Eastmoney 当前适配器尚未交付",
+            "web/src/features/settings/DataSourcesPage.tsx",
+            "当前适配器尚未交付",
+        ),
+    ),
+    "Data-Sources-and-Tushare-en.md": (
+        (
+            "nine data categories keep independent priority orders",
+            "web/src/features/settings/sourceSettingsApi.ts",
+            "sourceCategories = [",
+        ),
+        (
+            "Eastmoney adapter is not delivered",
+            "web/src/features/settings/DataSourcesPage.tsx",
+            "当前适配器尚未交付",
+        ),
+    ),
+    "Local-TDX-Data.md": (
+        (
+            "只支持通达信日线 `.day` 文件",
+            "src/stock_desk/market/providers/tdx_local.py",
+            "_TDX_FILE_PATTERNS",
+        ),
+        (
+            "清空路径并保存",
+            "web/src/features/settings/DataSourcesPage.tsx",
+            "tdxPath.length > 0 ? tdxPath : null",
+        ),
+        (
+            "绝对路径会由本地设置 API 返回并回填到本机设置页",
+            "web/src/features/settings/DataSourcesPage.tsx",
+            "setTdxPath(value.tdx_path ?? '')",
+        ),
+    ),
+    "Local-TDX-Data-en.md": (
+        (
+            "supports only TongdaXin daily `.day` files",
+            "src/stock_desk/market/providers/tdx_local.py",
+            "_TDX_FILE_PATTERNS",
+        ),
+        (
+            "clear the path and save",
+            "web/src/features/settings/DataSourcesPage.tsx",
+            "tdxPath.length > 0 ? tdxPath : null",
+        ),
+        (
+            "the absolute path is returned by the local settings API and filled back into the local settings page",
+            "web/src/features/settings/DataSourcesPage.tsx",
+            "setTdxPath(value.tdx_path ?? '')",
+        ),
+    ),
+    "Data-Updates-and-Provenance.md": (
+        (
+            "逐证券更新结果最多显示前 100 项",
+            "web/src/features/market/MarketOperationsPanel.tsx",
+            "items.data.slice(0, 100)",
+        ),
+        (
+            "成功后在右侧“数据来源”面板核对",
+            "web/src/features/market/MarketPage.tsx",
+            "<ProvenancePanel data={bars.data} />",
+        ),
+    ),
+    "Data-Updates-and-Provenance-en.md": (
+        (
+            "per-symbol result list shows at most the first 100 items",
+            "web/src/features/market/MarketOperationsPanel.tsx",
+            "items.data.slice(0, 100)",
+        ),
+        (
+            "after success, inspect the Data provenance panel on the right",
+            "web/src/features/market/MarketPage.tsx",
+            "<ProvenancePanel data={bars.data} />",
+        ),
+    ),
+    "Stock-Pools.md": (
+        (
+            "自定义池最多 5,000 只证券",
+            "src/stock_desk/market/pools.py",
+            "MAX_CUSTOM_MEMBERS = 5_000",
+        ),
+        (
+            "使用上移、下移和移除按钮维护顺序",
+            "web/src/features/market/MarketOperationsPanel.tsx",
+            "上移 ${symbol}",
+        ),
+        (
+            "普通 UI 在通用提示后最多附加 20 个 `#序号 issue-code`",
+            "web/src/features/market/MarketOperationsPanel.tsx",
+            ".slice(0, 20)",
+        ),
+        (
+            "高级 API 的成员级响应返回完整 `issues` 数组，不受 20 项 UI 显示上限限制",
+            "src/stock_desk/api/market.py",
+            "for issue in error.issues",
+        ),
+    ),
+    "Stock-Pools-en.md": (
+        (
+            "A custom pool is capped at 5,000 symbols",
+            "src/stock_desk/market/pools.py",
+            "MAX_CUSTOM_MEMBERS = 5_000",
+        ),
+        (
+            "use the move-up, move-down, and remove buttons",
+            "web/src/features/market/MarketOperationsPanel.tsx",
+            "上移 ${symbol}",
+        ),
+        (
+            "the generic message is followed by at most 20 `#ordinal issue-code` entries",
+            "web/src/features/market/MarketOperationsPanel.tsx",
+            ".slice(0, 20)",
+        ),
+        (
+            "The advanced member-level API response returns the complete `issues` array without the UI's 20-item display limit",
+            "src/stock_desk/api/market.py",
+            "for issue in error.issues",
+        ),
+    ),
+    "Market-Charts.md": (
+        (
+            "公式图层需在公式工作台运行预览",
+            "web/src/features/formulas/FormulaPreview.tsx",
+            "formula={formulaLayer}",
+        ),
+        (
+            "视口不超过 1200px 时主导航自动收起",
+            "web/src/app/App.tsx",
+            "window.matchMedia('(max-width: 1200px)')",
+        ),
+    ),
+    "Market-Charts-en.md": (
+        (
+            "Formula layers require Run preview（运行预览） in Formula Studio（公式工作台）",
+            "web/src/features/formulas/FormulaPreview.tsx",
+            "formula={formulaLayer}",
+        ),
+        (
+            "At or below 1200px, primary navigation collapses automatically",
+            "web/src/app/App.tsx",
+            "window.matchMedia('(max-width: 1200px)')",
         ),
     ),
 }
@@ -782,6 +1201,15 @@ def _heading_sequence(document: str) -> tuple[str, ...]:
     return tuple(headings)
 
 
+def _level_two_section(document: str, heading: str) -> str:
+    match = re.search(
+        rf"^##\s+{re.escape(heading)}\s*$\n(?P<body>.*?)(?=^##\s+|\Z)",
+        document,
+        re.MULTILINE | re.DOTALL,
+    )
+    return "" if match is None else match.group("body")
+
+
 def _wiki_screenshot_evidence_ids(document: str) -> tuple[str, ...]:
     identifiers: list[str] = []
     for line in document.splitlines():
@@ -836,6 +1264,35 @@ def _tracked_web_source_paths() -> frozenset[str]:
         )
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         return frozenset()
+
+
+@lru_cache(maxsize=1)
+def _tracked_repository_paths() -> frozenset[str]:
+    repo = Path(__file__).resolve().parent.parent
+    try:
+        return frozenset(
+            subprocess.run(
+                ("git", "ls-files"),
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            ).stdout.splitlines()
+        )
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return frozenset()
+
+
+@lru_cache(maxsize=None)
+def _tracked_source_text(relative_path: str) -> str:
+    if relative_path not in _tracked_repository_paths():
+        return ""
+    repo = Path(__file__).resolve().parent.parent
+    try:
+        return (repo / relative_path).read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return ""
 
 
 @lru_cache(maxsize=None)
@@ -2151,6 +2608,64 @@ def verify_wiki(wiki_root: Path, *, final: bool) -> list[str]:
             failures.append(
                 f"{filename}: workflow content contract mismatch; "
                 f"missing={missing!r}, forbidden={present_forbidden!r}"
+            )
+
+    for filename, (
+        headings,
+        forbidden,
+    ) in REQUIRED_WIKI_LOW_CODE_SECTION_FORBIDDEN.items():
+        document = documents.get(filename, "")
+        exposed = {
+            heading: [
+                marker
+                for marker in forbidden
+                if marker in _level_two_section(document, heading)
+            ]
+            for heading in headings
+        }
+        exposed = {heading: markers for heading, markers in exposed.items() if markers}
+        if exposed:
+            failures.append(
+                f"{filename}: low-code section exposes advanced API fields: {exposed!r}"
+            )
+
+    for filename, sections in REQUIRED_WIKI_LOW_CODE_SECTION_REQUIRED.items():
+        document = documents.get(filename, "")
+        missing_by_heading = {
+            heading: [
+                marker
+                for marker in required
+                if marker not in _level_two_section(document, heading)
+            ]
+            for heading, required in sections.items()
+        }
+        missing_by_heading = {
+            heading: markers
+            for heading, markers in missing_by_heading.items()
+            if markers
+        }
+        if missing_by_heading:
+            failures.append(
+                f"{filename}: low-code section is missing required UI guidance: "
+                f"{missing_by_heading!r}"
+            )
+
+    for filename, claims in REQUIRED_WIKI_MARKET_GUIDE_SOURCE_CLAIMS.items():
+        document = documents.get(filename, "")
+        missing_claims = [
+            wiki_marker
+            for wiki_marker, _relative_path, _source_marker in claims
+            if wiki_marker not in document
+        ]
+        invalid_sources = [
+            f"{relative_path}:{source_marker}"
+            for _wiki_marker, relative_path, source_marker in claims
+            if source_marker not in _tracked_source_text(relative_path)
+        ]
+        if missing_claims or invalid_sources:
+            failures.append(
+                f"{filename}: source-backed market-guide contract mismatch; "
+                f"missing={missing_claims!r}, invalid_sources={invalid_sources!r}"
             )
 
     for filename, required_link in (
