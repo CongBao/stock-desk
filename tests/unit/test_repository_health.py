@@ -1971,7 +1971,28 @@ def test_pool_navigation_interactivity_uses_rendered_spa_and_long_task_evidence(
 def test_performance_target_ci_is_explicit_and_requirement_is_verified() -> None:
     workflow = _load_github_actions_yaml(_read(".github/workflows/ci.yml"))
     assert workflow["jobs"]["python"]["steps"][0]["with"] == {"fetch-depth": 0}
-    assert workflow["jobs"]["public-tree"]["steps"][0]["with"] == {"fetch-depth": 0}
+    public_tree_steps = workflow["jobs"]["public-tree"]["steps"]
+    assert public_tree_steps[0]["with"] == {"fetch-depth": 0}
+    expected_main_only_tools = {
+        "Set up pnpm for pre-publish evidence",
+        "Set up Node.js for pre-publish evidence",
+        "Install locked web dependencies for pre-publish evidence",
+    }
+    main_only_tools = {
+        step["name"]: step
+        for step in public_tree_steps
+        if step["name"] in expected_main_only_tools
+    }
+    assert set(main_only_tools) == expected_main_only_tools
+    assert all(
+        step["if"] == "github.event_name == 'push'" for step in main_only_tools.values()
+    )
+    assert (
+        main_only_tools["Install locked web dependencies for pre-publish evidence"][
+            "run"
+        ]
+        == "pnpm install --frozen-lockfile"
+    )
     e2e = workflow["jobs"]["e2e"]
     assert e2e["runs-on"] == "ubuntu-24.04"
     stable_source_sha = (
