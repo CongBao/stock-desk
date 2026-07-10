@@ -1971,9 +1971,7 @@ def test_pool_navigation_interactivity_uses_rendered_spa_and_long_task_evidence(
 def test_performance_target_ci_is_explicit_and_requirement_is_verified() -> None:
     workflow = _load_github_actions_yaml(_read(".github/workflows/ci.yml"))
     assert workflow["jobs"]["python"]["steps"][0]["with"] == {"fetch-depth": 0}
-    assert workflow["jobs"]["public-tree"]["steps"][0]["with"] == {
-        "fetch-depth": 0
-    }
+    assert workflow["jobs"]["public-tree"]["steps"][0]["with"] == {"fetch-depth": 0}
     e2e = workflow["jobs"]["e2e"]
     assert e2e["runs-on"] == "ubuntu-24.04"
     stable_source_sha = (
