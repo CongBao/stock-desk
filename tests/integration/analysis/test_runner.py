@@ -214,15 +214,23 @@ class ScriptedSectionLoader:
 
 
 class BlockingSectionLoader(ScriptedSectionLoader):
-    def __init__(self, section, started: threading.Event, release: threading.Event):
+    def __init__(
+        self,
+        section,
+        started: threading.Event,
+        release: threading.Event,
+        *,
+        wait_timeout: float | None = 5.0,
+    ):
         super().__init__(section)
         self.started = started
         self.release = release
+        self.wait_timeout = wait_timeout
 
     def load(self, _symbol):
         self.calls += 1
         self.started.set()
-        self.release.wait(timeout=5.0)
+        self.release.wait(timeout=self.wait_timeout)
         return self.section
 
 
@@ -1660,6 +1668,11 @@ def test_abandoned_data_workers_are_process_bounded(tmp_path, monkeypatch) -> No
         "_DATA_WORKER_CAPACITY",
         runner_module._DataWorkerCapacity(_MAX_DATA_WORKER_THREADS),
     )
+    existing_workers = {
+        thread
+        for thread in threading.enumerate()
+        if thread.name.startswith("analysis-data-")
+    }
     snapshot = frozen_snapshot()
     releases: list[threading.Event] = []
     started: list[threading.Event] = []
@@ -1673,7 +1686,10 @@ def test_abandoned_data_workers_are_process_bounded(tmp_path, monkeypatch) -> No
             service = ResearchDataService(
                 loaders=(
                     BlockingSectionLoader(
-                        snapshot.sections[0], market_started, market_release
+                        snapshot.sections[0],
+                        market_started,
+                        market_release,
+                        wait_timeout=None,
                     ),
                     *(ScriptedSectionLoader(item) for item in snapshot.sections[1:]),
                 ),
@@ -1772,8 +1788,32 @@ def test_abandoned_data_workers_are_process_bounded(tmp_path, monkeypatch) -> No
     finally:
         for release in releases:
             release.set()
+        for thread in threading.enumerate():
+            if thread not in existing_workers and thread.name.startswith(
+                "analysis-data-"
+            ):
+                thread.join(timeout=1.0)
         for engine in engines:
             engine.dispose()
+
+
+def test_data_worker_capacity_poison_contract_is_deterministic() -> None:
+    capacity = runner_module._DataWorkerCapacity(2)
+    first = capacity.acquire(restart_on_poisoned=False)
+    second = capacity.acquire(restart_on_poisoned=False)
+    capacity.mark_timeout(first)
+    capacity.mark_timeout(second)
+
+    assert capacity.restart_required
+    with pytest.raises(runner_module.AnalysisWorkerRestartRequired):
+        capacity.acquire(restart_on_poisoned=True)
+
+    capacity.release(first)
+    assert not capacity.restart_required
+    replacement = capacity.acquire(restart_on_poisoned=True)
+
+    capacity.release(second)
+    capacity.release(replacement)
 
 
 def test_restart_required_is_a_process_boundary_not_an_exception() -> None:
