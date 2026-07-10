@@ -31,6 +31,8 @@ RELEASE_WORKFLOW = PROJECT_ROOT / ".github" / "workflows" / "release.yml"
 FINAL_WIKI_URL = "https://github.com/CongBao/stock-desk/wiki"
 MARKDOWN_IMAGE = re.compile(r"!\[[^\]]+\]\((?P<target>[^)]+)\)")
 README_SCREENSHOT_MANIFEST = PROJECT_ROOT / "docs/images/manifest.yml"
+FINAL_AUDIT = PROJECT_ROOT / "docs/releases/v1.0.0-final-audit.md"
+REQUIREMENTS_MATRIX = PROJECT_ROOT / "tests/acceptance/requirements.yml"
 
 
 def _copy_repository_for_docs_acceptance(tmp_path: Path) -> Path:
@@ -448,3 +450,23 @@ def test_wiki_publication_contract_uses_chinese_default_paths() -> None:
     assert "MACD-Backtest-Tutorial" in stems
     assert "Responsive-Navigation-and-Accessibility" in stems
     assert not hasattr(verify_docs_module, "REQUIRED_WIKI_PAGES")
+
+
+def test_v1_final_audit_binds_every_completed_manual_procedure() -> None:
+    matrix = yaml.safe_load(REQUIREMENTS_MATRIX.read_text(encoding="utf-8"))
+    audit = FINAL_AUDIT.read_text(encoding="utf-8")
+    manual = [
+        evidence
+        for requirement in matrix["requirements"]
+        for evidence in requirement["evidence"]
+        if evidence["state"] == "manual"
+        and evidence["required_by_gate"] == "final-release-audit"
+    ]
+
+    assert len(manual) == 15
+    assert all(evidence["completed"] is True for evidence in manual)
+    assert all(evidence["procedure_id"] in audit for evidence in manual)
+    assert "Main CI #126" in audit
+    assert "Release #27" in audit
+    assert "f980697bc876a57d1d1fe91483ecbc89e0c656d4" in audit
+    assert "signed: false" in audit

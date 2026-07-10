@@ -188,7 +188,7 @@ def test_release_documentation_contract_is_chinese_first_and_uses_real_market_da
         for evidence in by_id["R-074"]["evidence"]
         if evidence.get("procedure_id") == "wiki-screenshot-review"
     )
-    assert screenshot_review["completed"] is False
+    assert screenshot_review["completed"] is True
     assert screenshot_review["final_artifact_contract"] == (
         "The matrix maps every shipped feature to a public page and validated "
         "release-candidate screenshot, records symbol, source, cutoff date, "
@@ -253,7 +253,7 @@ def test_late_confirmed_requirements_preserve_scope_and_deadline_semantics(
             if evidence["state"] == "manual"
         ]
         assert manual
-        assert all(evidence["completed"] is False for evidence in manual)
+        assert all(evidence["completed"] is True for evidence in manual)
 
 
 def test_manifest_matches_the_frozen_authoritative_registry(
@@ -530,7 +530,7 @@ def test_no_planned_evidence_remains_before_release(
     assert planned == {}
 
 
-def test_release_acceptance_manual_review_is_complete_but_final_audit_is_deferred(
+def test_release_acceptance_and_final_audit_manual_reviews_are_complete(
     matrix: dict[str, object],
 ) -> None:
     by_id = {item["id"]: item for item in matrix["requirements"]}
@@ -555,7 +555,7 @@ def test_release_acceptance_manual_review_is_complete_but_final_audit_is_deferre
         "R-065": True,
     }
     assert final_audit
-    assert not any(final_audit.values())
+    assert all(final_audit.values())
 
     reviewed_release_evidence = {
         "R-066": (
@@ -604,7 +604,7 @@ def test_release_acceptance_manual_review_is_complete_but_final_audit_is_deferre
     )
 
 
-def test_release_mode_rejects_planned_and_incomplete_manual_evidence() -> None:
+def test_release_mode_accepts_completed_post_release_evidence() -> None:
     result = subprocess.run(
         [sys.executable, str(SCRIPT), "--mode", "release"],
         cwd=ROOT,
@@ -613,9 +613,9 @@ def test_release_mode_rejects_planned_and_incomplete_manual_evidence() -> None:
         check=False,
     )
 
-    assert result.returncode == 1
-    assert "planned evidence" not in result.stderr
-    assert "incomplete manual evidence" in result.stderr
+    assert result.returncode == 0, result.stderr
+    assert "82/82 requirements mapped" in result.stdout
+    assert "0 planned" in result.stdout
 
 
 def test_duplicate_yaml_keys_are_rejected(checker: ModuleType, tmp_path: Path) -> None:
@@ -739,19 +739,19 @@ def test_exact_schema_and_status_strength_are_enforced(
     message: str,
 ) -> None:
     changed = copy.deepcopy(matrix)
-    item = (
-        next(
+    item = changed["requirements"][0]
+    if message == "verified item":
+        item = next(
             requirement
             for requirement in changed["requirements"]
             if requirement["status"] == "mapped"
             and any(
-                evidence["state"] == "manual" and not evidence["completed"]
-                for evidence in requirement["evidence"]
+                evidence["state"] == "manual" for evidence in requirement["evidence"]
             )
         )
-        if message == "verified item"
-        else changed["requirements"][0]
-    )
+        next(
+            evidence for evidence in item["evidence"] if evidence["state"] == "manual"
+        )["completed"] = False
     mutation(item)
 
     with pytest.raises(checker.ValidationError, match=message):

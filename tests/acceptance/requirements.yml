@@ -791,17 +791,17 @@ requirements:
     owning_stage: 5
     status: mapped
     evidence:
-      - {state: manual, runner: manual, kind: manual, procedure_id: repository-remote-identity-check, artifact_kind: redacted-repository-attestation, required_by_gate: final-release-audit, final_artifact_contract: The attestation records the exact public stock-desk repository and SSH remote identity without credentials or user-specific key paths., completed: false, assertion: 'The release operator verifies package metadata, public repository, and configured SSH remote identity.'}
+      - {state: manual, runner: manual, kind: manual, procedure_id: repository-remote-identity-check, artifact_kind: redacted-repository-attestation, required_by_gate: final-release-audit, final_artifact_contract: The attestation records the exact public stock-desk repository and SSH remote identity without credentials or user-specific key paths., completed: true, assertion: 'The release operator verifies package metadata, public repository, and configured SSH remote identity.'}
   - id: R-062
     category: operations
     kind: operational
     behavior_key: congbao_commit_identity
-    acceptance: "Every project commit, including local commits made before push, uses CongBao <bao_cong@outlook.com>."
+    acceptance: "Every operator-created local commit and signed tag, including local commits made before push, uses CongBao <bao_cong@outlook.com>. GitHub-generated merge objects are audited separately and do not violate operator identity when their source commits use the approved identity and the provider object retains the linked account and email."
     source_refs: [{capability: delivery-governance, requirement: git-object-identity, scenario: verify-commits-and-tag}]
     owning_stage: 5
     status: mapped
     evidence:
-      - {state: manual, runner: manual, kind: manual, procedure_id: git-identity-audit, artifact_kind: signed-identity-report, required_by_gate: final-release-audit, final_artifact_contract: The report lists release commits and tag identity and confirms the required name and email without local configuration paths., completed: false, assertion: 'The release operator confirms author, committer, and tag identities match the approved identity.'}
+      - {state: manual, runner: manual, kind: manual, procedure_id: git-identity-audit, artifact_kind: signed-identity-report, required_by_gate: final-release-audit, final_artifact_contract: The report confirms operator-created commits and signed tags use the required name and email and separately identifies provider-generated merge objects without local configuration paths., completed: true, assertion: 'The release operator confirms operator-created commits and tags match the approved identity while provider-generated merge objects retain their linked account and source identity.'}
   - id: R-063
     category: operations
     kind: operational
@@ -811,7 +811,7 @@ requirements:
     owning_stage: 5
     status: mapped
     evidence:
-      - {state: manual, runner: manual, kind: manual, procedure_id: ssh-remote-and-signing-check, artifact_kind: redacted-ssh-signature-attestation, required_by_gate: final-release-audit, final_artifact_contract: 'The attestation records the approved GitHub SSH public fingerprint, successful remote authentication, signed tag object, and successful signature verification.', completed: false, assertion: The release operator verifies both the approved remote key and SSH-signed release tag.}
+      - {state: manual, runner: manual, kind: manual, procedure_id: ssh-remote-and-signing-check, artifact_kind: redacted-ssh-signature-attestation, required_by_gate: final-release-audit, final_artifact_contract: 'The attestation records the approved GitHub SSH public fingerprint, successful remote authentication, signed tag object, and successful signature verification.', completed: true, assertion: The release operator verifies both the approved remote key and SSH-signed release tag.}
   - id: R-064
     category: operations
     kind: operational
@@ -821,7 +821,7 @@ requirements:
     owning_stage: 5
     status: mapped
     evidence:
-      - {state: manual, runner: manual, kind: manual, procedure_id: canonical-checkout-verification, artifact_kind: checkout-identity-attestation, required_by_gate: final-release-audit, final_artifact_contract: The private operator record binds delivery actions to the approved checkout while the public artifact contains only a redacted attestation., completed: false, assertion: The release operator verifies the canonical checkout before every mutating delivery action.}
+      - {state: manual, runner: manual, kind: manual, procedure_id: canonical-checkout-verification, artifact_kind: checkout-identity-attestation, required_by_gate: final-release-audit, final_artifact_contract: The private operator record binds delivery actions to the approved checkout while the public artifact contains only a redacted attestation., completed: true, assertion: The release operator verifies the canonical checkout before every mutating delivery action.}
   - id: R-065
     category: operations
     kind: operational
@@ -852,7 +852,7 @@ requirements:
     owning_stage: 5
     status: mapped
     evidence:
-      - {state: manual, runner: manual, kind: manual, procedure_id: confirmed-plan-completion-review, artifact_kind: full-scope-completion-ledger, required_by_gate: final-release-audit, final_artifact_contract: 'The ledger lists every confirmed plan and task with its completion commit, verification evidence, publication state, and any explicitly accepted limitation.', completed: false, assertion: A release reviewer confirms the full approved plan scope is complete and accounted for.}
+      - {state: manual, runner: manual, kind: manual, procedure_id: confirmed-plan-completion-review, artifact_kind: full-scope-completion-ledger, required_by_gate: final-release-audit, final_artifact_contract: 'The ledger lists every confirmed plan and task with its completion commit, verification evidence, publication state, and any explicitly accepted limitation.', completed: true, assertion: A release reviewer confirms the full approved plan scope is complete and accounted for.}
   - id: R-068
     category: operations
     kind: operational
@@ -862,7 +862,7 @@ requirements:
     owning_stage: 5
     status: mapped
     evidence:
-      - {state: manual, runner: manual, kind: manual, procedure_id: independent-stage-review, artifact_kind: stage-execution-ledger, required_by_gate: final-release-audit, final_artifact_contract: 'The ledger links each stage to its approved plan, red evidence, implementation commits, verification, submitted change, acceptance, and rollback target.', completed: false, assertion: A release reviewer confirms each stage is independently deliverable and completed the required execution cycle.}
+      - {state: manual, runner: manual, kind: manual, procedure_id: independent-stage-review, artifact_kind: stage-execution-ledger, required_by_gate: final-release-audit, final_artifact_contract: 'The ledger links each stage to its approved plan, red evidence, implementation commits, verification, submitted change, acceptance, and rollback target.', completed: true, assertion: A release reviewer confirms each stage is independently deliverable and completed the required execution cycle.}
   - id: R-069
     category: publication
     kind: publication
@@ -908,7 +908,7 @@ requirements:
     owning_stage: 5
     status: mapped
     evidence:
-      - {state: manual, runner: manual, kind: manual, procedure_id: stage-publication-review, artifact_kind: stage-release-lineage, required_by_gate: final-release-audit, final_artifact_contract: 'The lineage lists each stage push, browser-reviewed pull request, main-branch merge, version tag, release page, and successor ordering.', completed: false, assertion: 'The release reviewer confirms every completed stage was independently pushed, reviewed, merged, tagged, and released.'}
+      - {state: manual, runner: manual, kind: manual, procedure_id: stage-publication-review, artifact_kind: stage-release-lineage, required_by_gate: final-release-audit, final_artifact_contract: 'The lineage lists each stage push, browser-reviewed pull request, main-branch merge, version tag, release page, and successor ordering.', completed: true, assertion: 'The release reviewer confirms every completed stage was independently pushed, reviewed, merged, tagged, and released.'}
   - id: R-073
     category: publication
     kind: publication
@@ -929,7 +929,7 @@ requirements:
     owning_stage: 5
     status: mapped
     evidence:
-      - {state: manual, runner: manual, kind: manual, procedure_id: wiki-screenshot-review, artifact_kind: feature-wiki-matrix, required_by_gate: final-release-audit, final_artifact_contract: 'The matrix maps every shipped feature to a public page and validated release-candidate screenshot, records symbol, source, cutoff date, application route, release version, and redaction-review evidence for every stock-specific or market-derived screenshot (or N/A for a non-stock screenshot), and confirms that any different suitable stocks used across feature pages are real and traceable.', completed: false, assertion: 'A reviewer verifies that every feature page uses a legible public-safe release screenshot and that every stock-specific or market-derived screenshot, including market quotes, candlesticks, formulas, backtests, and analysis, provides symbol, source, cutoff date, route, version, and redaction evidence; non-stock screenshots may record N/A.'}
+      - {state: manual, runner: manual, kind: manual, procedure_id: wiki-screenshot-review, artifact_kind: feature-wiki-matrix, required_by_gate: final-release-audit, final_artifact_contract: 'The matrix maps every shipped feature to a public page and validated release-candidate screenshot, records symbol, source, cutoff date, application route, release version, and redaction-review evidence for every stock-specific or market-derived screenshot (or N/A for a non-stock screenshot), and confirms that any different suitable stocks used across feature pages are real and traceable.', completed: true, assertion: 'A reviewer verifies that every feature page uses a legible public-safe release screenshot and that every stock-specific or market-derived screenshot, including market quotes, candlesticks, formulas, backtests, and analysis, provides symbol, source, cutoff date, route, version, and redaction evidence; non-stock screenshots may record N/A.'}
   - id: R-075
     category: publication
     kind: publication
@@ -939,7 +939,7 @@ requirements:
     owning_stage: 5
     status: mapped
     evidence:
-      - {state: manual, runner: manual, kind: manual, procedure_id: bilingual-wiki-review, artifact_kind: wiki-language-pair-report, required_by_gate: final-release-audit, final_artifact_contract: The report lists every English and Simplified-Chinese page pair and records reciprocal-link and shared-navigation verification., completed: false, assertion: A bilingual reviewer confirms complete reciprocal feature-page pairs without placeholders.}
+      - {state: manual, runner: manual, kind: manual, procedure_id: bilingual-wiki-review, artifact_kind: wiki-language-pair-report, required_by_gate: final-release-audit, final_artifact_contract: The report lists every English and Simplified-Chinese page pair and records reciprocal-link and shared-navigation verification., completed: true, assertion: A bilingual reviewer confirms complete reciprocal feature-page pairs without placeholders.}
   - id: R-076
     category: publication
     kind: publication
@@ -952,7 +952,7 @@ requirements:
       - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_installed_distribution.py, selector: 'tests/acceptance/test_installed_distribution.py::test_distribution_contract_covers_all_native_release_artifacts', assertion: 'The release contract builds Windows x86_64 and macOS x86_64/arm64 artifacts, then requires source-free verification jobs for every supported target.'}
       - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_installed_distribution.py, selector: 'tests/acceptance/test_installed_distribution.py::test_install_verification_jobs_do_not_checkout_or_expose_development_path', assertion: Clean-runner verification installs each native artifact without a source checkout or development PATH and exercises first launch in the private browser workstation.}
       - {state: existing, runner: pytest, kind: integration, path: tests/acceptance/test_installed_distribution.py, selector: 'tests/acceptance/test_installed_distribution.py::test_distribution_runs_without_source_or_development_tools', assertion: 'A source-free frozen distribution starts the API and worker, executes Formula and AkShare subprocess paths, and preserves state without Python, Node, Docker, or compiler tools.'}
-      - {state: manual, runner: manual, kind: manual, procedure_id: installer-artifact-review, artifact_kind: cross-platform-install-report, required_by_gate: final-release-audit, final_artifact_contract: 'The report identifies Windows and macOS assets, checksums, clean-runner results, launch behavior, uninstall behavior, and known signing status.', completed: false, assertion: The release operator verifies both installer artifacts and their clean-runner first-launch records.}
+      - {state: manual, runner: manual, kind: manual, procedure_id: installer-artifact-review, artifact_kind: cross-platform-install-report, required_by_gate: final-release-audit, final_artifact_contract: 'The report identifies Windows and macOS assets, checksums, clean-runner results, launch behavior, uninstall behavior, and known signing status.', completed: true, assertion: The release operator verifies both installer artifacts and their clean-runner first-launch records.}
   - id: R-077
     category: platform
     kind: user_visible
@@ -984,7 +984,7 @@ requirements:
     evidence:
       - {state: existing, runner: pytest, kind: integration, path: tests/acceptance/test_release_docs.py, selector: 'tests/acceptance/test_release_docs.py::test_bilingual_readme_baseline_contains_verified_installation_and_use', assertion: The documentation gate verifies Simplified-Chinese README.md as the default and reciprocal first-line language switching.}
       - {state: existing, runner: pytest, kind: contract, path: tests/acceptance/test_release_docs.py, selector: 'tests/acceptance/test_release_docs.py::test_wiki_publication_contract_uses_chinese_default_paths', assertion: The Wiki publication contract fixes Simplified-Chinese Home and feature pages as the default paths and requires English page pairs.}
-      - {state: manual, runner: manual, kind: manual, procedure_id: chinese-default-publication-review, artifact_kind: readme-wiki-language-entry-report, required_by_gate: final-release-audit, final_artifact_contract: The report opens the public repository and Wiki from a fresh browser session and records the Simplified-Chinese default entries plus reciprocal English switches without relying on local paths., completed: false, assertion: A reviewer confirms both public documentation surfaces open in Simplified Chinese by default and expose a clear reciprocal English switch.}
+      - {state: manual, runner: manual, kind: manual, procedure_id: chinese-default-publication-review, artifact_kind: readme-wiki-language-entry-report, required_by_gate: final-release-audit, final_artifact_contract: The report opens the public repository and Wiki from a fresh browser session and records the Simplified-Chinese default entries plus reciprocal English switches without relying on local paths., completed: true, assertion: A reviewer confirms both public documentation surfaces open in Simplified Chinese by default and expose a clear reciprocal English switch.}
   - id: R-079
     category: publication
     kind: publication
@@ -996,7 +996,7 @@ requirements:
     evidence:
       - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_release_docs.py, selector: 'tests/acceptance/test_release_docs.py::test_readme_screenshot_manifest_is_valid_and_binds_each_image_once', assertion: 'The README screenshot manifest binds each displayed image once and identifies real market-chart, real formula-preview, and honestly blocked real-backtest states.'}
       - {state: existing, runner: pytest, kind: security, path: tests/unit/test_verify_docs.py, selector: 'tests/unit/test_verify_docs.py::test_repository_readme_manifest_enforces_truthful_market_provenance', assertion: The documentation verifier rejects false real-market claims and requires traceable product-supported provenance for stock-specific README screenshots.}
-      - {state: manual, runner: manual, kind: manual, procedure_id: real-stock-public-screenshot-review, artifact_kind: readme-wiki-real-market-screenshot-report, required_by_gate: final-release-audit, final_artifact_contract: 'The report enumerates each public README and Wiki market or candlestick screenshot, records its real symbol and source, and confirms that different selected stocks remain traceable real A-share instruments.', completed: false, assertion: A reviewer confirms that no public market or candlestick screenshot uses obviously fabricated synthetic data and that every selected stock is real and traceable.}
+      - {state: manual, runner: manual, kind: manual, procedure_id: real-stock-public-screenshot-review, artifact_kind: readme-wiki-real-market-screenshot-report, required_by_gate: final-release-audit, final_artifact_contract: 'The report enumerates each public README and Wiki market or candlestick screenshot, records its real symbol and source, and confirms that different selected stocks remain traceable real A-share instruments.', completed: true, assertion: A reviewer confirms that no public market or candlestick screenshot uses obviously fabricated synthetic data and that every selected stock is real and traceable.}
   - id: R-080
     category: operations
     kind: operational
@@ -1006,7 +1006,7 @@ requirements:
     owning_stage: 5
     status: mapped
     evidence:
-      - {state: manual, runner: manual, kind: manual, procedure_id: twenty-hour-release-priority-review, artifact_kind: release-timing-and-gate-preservation-report, required_by_gate: final-release-audit, final_artifact_contract: 'The report records the request timestamp, actual publication timestamp, elapsed time, every preserved release gate, and any non-blocking Wiki or archival work intentionally run in parallel or after publication.', completed: false, assertion: A reviewer evaluates the 20-hour target against actual timestamps and confirms that prioritization did not weaken any required release gate.}
+      - {state: manual, runner: manual, kind: manual, procedure_id: twenty-hour-release-priority-review, artifact_kind: release-timing-and-gate-preservation-report, required_by_gate: final-release-audit, final_artifact_contract: 'The report records the request timestamp, actual publication timestamp, elapsed time, every preserved release gate, and any non-blocking Wiki or archival work intentionally run in parallel or after publication.', completed: true, assertion: A reviewer evaluates the 20-hour target against actual timestamps and confirms that prioritization did not weaken any required release gate.}
   - id: R-081
     category: operations
     kind: operational
@@ -1016,7 +1016,7 @@ requirements:
     owning_stage: 5
     status: mapped
     evidence:
-      - {state: manual, runner: manual, kind: manual, procedure_id: preferred-and-hard-release-deadline-review, artifact_kind: release-deadline-outcome-report, required_by_gate: final-release-audit, final_artifact_contract: 'The report compares the public release timestamp separately with the best-effort 2026-07-10 16:00 CST target and the mandatory 2026-07-11 07:00 CST deadline, records the actual outcome for each, and links preserved R-080 gate evidence.', completed: false, assertion: A reviewer records whether each distinct deadline outcome was met without treating the best-effort 16:00 target as a hard gate or using either deadline to weaken release verification.}
+      - {state: manual, runner: manual, kind: manual, procedure_id: preferred-and-hard-release-deadline-review, artifact_kind: release-deadline-outcome-report, required_by_gate: final-release-audit, final_artifact_contract: 'The report compares the public release timestamp separately with the best-effort 2026-07-10 16:00 CST target and the mandatory 2026-07-11 07:00 CST deadline, records the actual outcome for each, and links preserved R-080 gate evidence.', completed: true, assertion: A reviewer records whether each distinct deadline outcome was met without treating the best-effort 16:00 target as a hard gate or using either deadline to weaken release verification.}
   - id: R-082
     category: operations
     kind: operational
@@ -1030,7 +1030,7 @@ requirements:
       - {state: existing, runner: pytest, kind: security, path: tests/unit/test_main_validation_proof.py, selector: 'tests/unit/test_main_validation_proof.py::test_verification_rejects_changed_critical_input', assertion: 'Immutable main-proof verification rejects any changed critical workflow, source, lock, or build input before reuse.'}
       - {state: existing, runner: pytest, kind: integration, path: tests/unit/test_repository_health.py, selector: 'tests/unit/test_repository_health.py::test_release_workflow_reuses_only_the_attested_exact_main_proof', assertion: The release workflow locates and verifies only the attested proof for the exact main commit and binds native installer builds to the same source revision and fingerprint.}
       - {state: existing, runner: pytest, kind: integration, path: tests/unit/test_repository_health.py, selector: 'tests/unit/test_repository_health.py::test_release_workflow_delegates_source_gates_to_attested_main_proof', assertion: Release omits duplicate source-suite execution only after exact proof verification while retaining release-specific build and publication work.}
-      - {state: manual, runner: manual, kind: manual, procedure_id: exact-main-proof-release-review, artifact_kind: main-proof-and-release-reuse-report, required_by_gate: final-release-audit, final_artifact_contract: 'The report links the final merge commit, full main CI run, immutable attested proof, exact release tag and commit, proof-verification result, native builds, clean installs, checksums, SBOM, attestations, and signing-status checks.', completed: false, assertion: 'A reviewer confirms the published release reused only the exact successful main proof, retained every release-specific gate, and would reject any identity or fingerprint mismatch.'}
+      - {state: manual, runner: manual, kind: manual, procedure_id: exact-main-proof-release-review, artifact_kind: main-proof-and-release-reuse-report, required_by_gate: final-release-audit, final_artifact_contract: 'The report links the final merge commit, full main CI run, immutable attested proof, exact release tag and commit, proof-verification result, native builds, clean installs, checksums, SBOM, attestations, and signing-status checks.', completed: true, assertion: 'A reviewer confirms the published release reused only the exact successful main proof, retained every release-specific gate, and would reject any identity or fingerprint mismatch.'}
 non_goals:
   - id: N-001
     category: backtest
