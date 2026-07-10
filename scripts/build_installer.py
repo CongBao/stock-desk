@@ -23,6 +23,13 @@ INNO_SETUP_VERSION: Final = "6.7.3"
 INNO_SETUP_PACKAGE_SHA256: Final = (
     "9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732"
 )
+INNO_SETUP_VERSION_PROBE: Final = (
+    "[Setup]\n"
+    "AppName=Stock Desk Compiler Probe\n"
+    "AppVersion=0\n"
+    "DefaultDirName={tmp}\\Stock Desk Compiler Probe\n"
+    "Uninstallable=no\n"
+)
 SOURCE_REVISION_PATTERN: Final = re.compile(r"[0-9a-f]{40}")
 SOURCE_FINGERPRINT_PATTERN: Final = re.compile(r"[0-9a-f]{64}")
 
@@ -143,13 +150,17 @@ def _verify_inno_compiler(compiler: Path) -> dict[str, str]:
     if package_digest != INNO_SETUP_PACKAGE_SHA256:
         raise RuntimeError("Inno Setup package digest was not verified")
     completed = subprocess.run(  # noqa: S603 -- configured, digest-bound compiler
-        [os.fspath(compiler), "/?"],
+        [os.fspath(compiler), "/O-", "-"],
         check=False,
         capture_output=True,
+        input=INNO_SETUP_VERSION_PROBE,
         text=True,
     )
     output = f"{completed.stdout}\n{completed.stderr}"
-    if completed.returncode != 0 or INNO_SETUP_VERSION not in output:
+    if completed.returncode != 0:
+        raise RuntimeError("Inno Setup compiler probe failed")
+    expected_banner = f"Compiler engine version: Inno Setup {INNO_SETUP_VERSION}"
+    if expected_banner not in {line.strip() for line in output.splitlines()}:
         raise RuntimeError(f"expected Inno Setup compiler version {INNO_SETUP_VERSION}")
     return {
         "compiler_sha256": _sha256(compiler),
