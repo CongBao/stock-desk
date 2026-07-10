@@ -62,6 +62,10 @@ jobs:
         run: uv sync --frozen --all-groups --extra providers
       - name: Execute Windows ACL contract
         run: uv run --frozen pytest -W error tests/integration/test_windows_runtime_acl.py
+      - name: Execute Windows first-start journal contract
+        run: >-
+          uv run --frozen pytest -W error tests/unit/storage/test_backup.py
+          -k restore_journal
 
   public-tree:
     name: Public tree and repository health
@@ -191,6 +195,8 @@ jobs:
           tests/unit/test_desktop_launcher.py
           tests/unit/test_installer_scripts.py
           tests/unit/test_repository_health.py
+          tests/unit/storage/test_backup.py
+          tests/integration/storage/test_restore_recovery.py
           tests/acceptance/test_installed_distribution.py
           tests/acceptance/test_release_acceptance_scope.py
           tests/acceptance/test_release_docs.py

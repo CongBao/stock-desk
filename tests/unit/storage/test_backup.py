@@ -16,6 +16,7 @@ from sqlalchemy import insert
 import stock_desk.storage.backup as backup_module
 from stock_desk.storage.backup import (
     BackupValidationError,
+    RestoreRecoveryRequired,
     create_backup,
     inspect_backup,
 )
@@ -31,6 +32,32 @@ ROOT = Path(__file__).resolve().parents[3]
 
 def _sha256(payload: bytes) -> str:
     return f"sha256:{hashlib.sha256(payload).hexdigest()}"
+
+
+def test_missing_restore_journal_does_not_require_no_follow_support(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(backup_module.os, "O_NOFOLLOW", 0, raising=False)
+
+    assert backup_module._read_restore_journal(tmp_path) is None
+
+
+def test_existing_restore_journal_still_fails_closed_without_no_follow_support(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backup_module._journal_path(tmp_path).write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(backup_module.os, "O_NOFOLLOW", 0, raising=False)
+
+    with pytest.raises(
+        RestoreRecoveryRequired,
+        match="restore journal is not a safe regular file",
+    ) as raised:
+        backup_module._read_restore_journal(tmp_path)
+
+    assert isinstance(raised.value.__cause__, BackupValidationError)
+    assert "requires no-follow" in str(raised.value.__cause__)
 
 
 def test_portable_backup_has_canonical_manifest_and_bounded_catalog(

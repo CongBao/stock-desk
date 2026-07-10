@@ -38,16 +38,19 @@ _RELEASE_DESKTOP_FILES = frozenset(
         "scripts/main_validation_proof.py",
         "scripts/verify_installed_app.py",
         "src/stock_desk/desktop.py",
+        "src/stock_desk/storage/backup.py",
         "tests/acceptance/test_installed_distribution.py",
         "tests/acceptance/test_release_acceptance_scope.py",
         "tests/acceptance/test_release_artifacts.py",
         "tests/acceptance/test_release_docs.py",
         "tests/integration/test_windows_runtime_acl.py",
+        "tests/integration/storage/test_restore_recovery.py",
         "tests/unit/test_ci_impact.py",
         "tests/unit/test_desktop_launcher.py",
         "tests/unit/test_installer_scripts.py",
         "tests/unit/test_main_validation_proof.py",
         "tests/unit/test_repository_health.py",
+        "tests/unit/storage/test_backup.py",
     }
 )
 
