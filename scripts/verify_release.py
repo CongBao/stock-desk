@@ -228,9 +228,7 @@ def _candidate_gates(*, target_performance: bool) -> tuple[GateCommand, ...]:
             GateCommand(
                 ("make", target),
                 timeout_seconds=(
-                    CANDIDATE_FULL_PYTHON_TIMEOUT_SECONDS
-                    if target == "test"
-                    else 1800
+                    CANDIDATE_FULL_PYTHON_TIMEOUT_SECONDS if target == "test" else 1800
                 ),
             )
             for target in (
