@@ -103,6 +103,24 @@ def test_windows_install_and_uninstall_prove_exit_codes_and_postconditions() -> 
         "{ throw 'user data was deleted' }"
     ) in uninstall
 
+    install_step = next(
+        step
+        for step in steps
+        if step.get("name") == "Install and verify without development PATH"
+    )
+    assert "--diagnostic-dir $evidence" in install_step["run"]
+    stage = next(
+        step for step in steps if step.get("name") == "Stage Windows installer evidence"
+    )
+    assert stage["if"] == "always()"
+    upload = next(
+        step
+        for step in steps
+        if step.get("name") == "Upload Windows installer-logs and screenshot"
+    )
+    assert upload["with"]["path"] == "installer-evidence/windows/"
+    assert upload["with"]["if-no-files-found"] == "error"
+
 
 def test_release_workflow_generates_checksums_sbom_and_provenance() -> None:
     workflow_text = RELEASE_WORKFLOW.read_text(encoding="utf-8").lower()

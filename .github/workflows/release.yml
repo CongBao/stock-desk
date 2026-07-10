@@ -14,10 +14,12 @@ concurrency:
 
 jobs:
   verify:
-    name: Verify and build release assets
+    name: Verify main proof and build release assets
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 15
     permissions:
+      actions: read
+      attestations: read
       contents: read
     steps:
       - name: Check out source
@@ -59,25 +61,43 @@ jobs:
           set -euo pipefail
           release_version="${GITHUB_REF_NAME#v}"
           RELEASE_VERSION="$release_version" uv run --frozen python -c 'import os; from pathlib import Path; from scripts.verify_release import check_changelog, check_versions; version = os.environ["RELEASE_VERSION"]; check_versions(Path.cwd(), version); check_changelog(Path.cwd(), version)'
-      - name: Install Playwright Chromium
-        run: pnpm exec playwright install --with-deps chromium
-      - name: Run release gates
+      - name: Locate exact successful main validation proof
+        id: proof
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          release_version="${GITHUB_REF_NAME#v}"
-          uv run --frozen python scripts/verify_release.py "$release_version" --candidate --target-performance --report test-results/release/candidate.json
-      - name: Upload release performance evidence
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+          payload="$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" -f branch=main -f event=push -f status=success -f per_page=100)"
+          run_id="$(jq -r --arg sha "$GITHUB_SHA" '[.workflow_runs[] | select(.head_sha == $sha and .head_branch == "main" and .event == "push" and .conclusion == "success")] | sort_by(.run_attempt) | last | .id // empty' <<<"$payload")"
+          test -n "$run_id"
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+      - name: Download exact main validation proof
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: release-performance-evidence
-          path: |
-            test-results/performance/
-            test-results/playwright/
-            test-results/release/candidate.json
-          if-no-files-found: ignore
-          retention-days: 7
+          name: main-validation-proof-${{ github.sha }}
+          path: main-validation-proof
+          github-token: ${{ github.token }}
+          run-id: ${{ steps.proof.outputs.run_id }}
+      - name: Verify main validation proof identity and inputs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          proof=main-validation-proof/proof.json
+          gh attestation verify "$proof" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/ci.yml" \
+            --source-ref refs/heads/main \
+            --source-digest "$GITHUB_SHA" \
+            --signer-digest "$GITHUB_SHA" \
+            --deny-self-hosted-runners
+          uv run --frozen python scripts/main_validation_proof.py verify \
+            --repo-root . \
+            --repository "$GITHUB_REPOSITORY" \
+            --ref refs/heads/main \
+            --proof "$proof"
       - name: Build final release assets
         run: make build
       - name: Verify built release artifacts
@@ -110,89 +130,6 @@ jobs:
           path: dist/
           if-no-files-found: error
           retention-days: 7
-
-  codeql:
-    name: Release CodeQL (${{ matrix.language }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    permissions:
-      contents: read
-      security-events: write
-    strategy:
-      fail-fast: false
-      matrix:
-        language:
-          - python
-          - javascript-typescript
-    steps:
-      - name: Check out source
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@54f647b7e1bb85c95cddabcd46b0c578ec92bc1a # v4.36.3
-        with:
-          languages: ${{ matrix.language }}
-          build-mode: none
-          config-file: ./.github/codeql/codeql-config.yml
-      - name: Analyze
-        uses: github/codeql-action/analyze@54f647b7e1bb85c95cddabcd46b0c578ec92bc1a # v4.36.3
-        with:
-          category: /release/language:${{ matrix.language }}
-
-  container:
-    name: Verify release container
-    runs-on: ubuntu-latest
-    timeout-minutes: 35
-    steps:
-      - name: Check out source
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - name: Set up Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
-        with:
-          python-version: "3.12"
-      - name: Set up uv
-        uses: astral-sh/setup-uv@d31148d669074a8d0a63714ba94f3201e7020bc3 # v8.3.0
-        with:
-          enable-cache: true
-      - name: Install smoke-test dependencies
-        run: uv sync --frozen --all-groups --extra providers
-      - name: Build, start, and smoke-test Compose
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          cleanup() {
-            status=$?
-            docker compose down --volumes --remove-orphans || true
-            exit "$status"
-          }
-          trap cleanup EXIT
-          docker compose down --volumes --remove-orphans
-          docker compose build --pull
-          docker compose up --wait --no-build
-          make smoke
-      - name: Report all high and critical release image CVEs
-        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
-        with:
-          image-ref: stock-desk-runtime:local
-          format: json
-          output: stock-desk-release-image-vulnerabilities.json
-          severity: CRITICAL,HIGH
-          ignore-unfixed: false
-          exit-code: 0
-      - name: Upload release image vulnerability report
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: stock-desk-release-image-vulnerabilities
-          path: stock-desk-release-image-vulnerabilities.json
-          if-no-files-found: error
-          retention-days: 30
-      - name: Reject fixable high and critical release image CVEs
-        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
-        with:
-          image-ref: stock-desk-runtime:local
-          format: table
-          severity: CRITICAL,HIGH
-          ignore-unfixed: true
-          exit-code: 1
 
   attest:
     name: Attest verified release assets
@@ -452,14 +389,16 @@ jobs:
           STOCK_DESK_INSTALL_TEST_PATH: ${{ runner.temp }}\system-path-only
         run: |
           $installer = Get-ChildItem installer\*.exe | Select-Object -First 1
-          $log = Join-Path $env:RUNNER_TEMP 'stock-desk-install.log'
+          $evidence = Join-Path $env:GITHUB_WORKSPACE 'installer-evidence\windows'
+          New-Item -ItemType Directory -Force -Path $evidence | Out-Null
+          $log = Join-Path $evidence 'stock-desk-install.log'
           $installProcess = Start-Process -FilePath $installer.FullName -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=$log" -Wait -PassThru
           if ($installProcess.ExitCode -ne 0) { throw "installer failed with exit code $($installProcess.ExitCode)" }
           $command = Join-Path $env:LOCALAPPDATA 'Programs\Stock Desk\stock-desk.exe'
           $runtime = Join-Path $env:LOCALAPPDATA 'stock-desk\runtime\runtime.json'
           $systemPath = "$env:SystemRoot\System32;$env:SystemRoot"
           $env:STOCK_DESK_INSTALL_TEST_PATH = $systemPath
-          python verifier\scripts\verify_installed_app.py --command $command --runtime-record $runtime --sanitized-path $systemPath --fixture-sql verifier\tests\fixtures\distribution\v0.5.0.sql
+          python verifier\scripts\verify_installed_app.py --command $command --runtime-record $runtime --sanitized-path $systemPath --fixture-sql verifier\tests\fixtures\distribution\v0.5.0.sql --diagnostic-dir $evidence
       - name: Set up Playwright Node.js
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
@@ -472,14 +411,24 @@ jobs:
           $command = Join-Path $env:LOCALAPPDATA 'Programs\Stock Desk\stock-desk.exe'
           $runtime = Join-Path $env:LOCALAPPDATA 'stock-desk\runtime\runtime.json'
           $developerPath = $env:PATH
-          $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
-          Start-Process -FilePath $command -ArgumentList '--no-browser' -WorkingDirectory $env:RUNNER_TEMP
-          $env:PATH = $developerPath
-          for ($attempt = 0; $attempt -lt 300 -and -not (Test-Path $runtime); $attempt++) { Start-Sleep -Milliseconds 200 }
-          $port = (Get-Content $runtime | ConvertFrom-Json).port
-          npx --yes playwright@1.61.1 install chromium
-          npx --yes playwright@1.61.1 screenshot "http://127.0.0.1:$port/market" "$env:RUNNER_TEMP\installed-market.png"
-          & $command --shutdown
+          $appProcess = $null
+          try {
+            $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+            $appProcess = Start-Process -FilePath $command -ArgumentList '--no-browser' -WorkingDirectory $env:RUNNER_TEMP -PassThru
+            $env:PATH = $developerPath
+            for ($attempt = 0; $attempt -lt 300 -and -not (Test-Path $runtime); $attempt++) { Start-Sleep -Milliseconds 200 }
+            $port = (Get-Content $runtime | ConvertFrom-Json).port
+            npx --yes playwright@1.61.1 install chromium
+            $screenshot = Join-Path $env:GITHUB_WORKSPACE 'installer-evidence\windows\installed-market.png'
+            npx --yes playwright@1.61.1 screenshot "http://127.0.0.1:$port/market" $screenshot
+            if ($LASTEXITCODE -ne 0) { throw "Playwright screenshot failed: $LASTEXITCODE" }
+          } finally {
+            $env:PATH = $developerPath
+            & $command --shutdown
+            if ($null -ne $appProcess -and -not $appProcess.HasExited) {
+              Stop-Process -Id $appProcess.Id -Force -ErrorAction SilentlyContinue
+            }
+          }
       - name: Uninstall without deleting user data
         shell: pwsh
         run: |
@@ -494,16 +443,23 @@ jobs:
           if (Test-Path -LiteralPath $uninstaller) { throw 'uninstaller remains after uninstall' }
           if (Test-Path -LiteralPath $applicationDir) { throw 'application directory remains after uninstall' }
           if (-not (Test-Path -LiteralPath $persistence)) { throw 'user data was deleted' }
+      - name: Stage Windows installer evidence
+        if: always()
+        shell: pwsh
+        run: |
+          $evidence = Join-Path $env:GITHUB_WORKSPACE 'installer-evidence\windows'
+          New-Item -ItemType Directory -Force -Path $evidence | Out-Null
+          $appLogs = Join-Path $env:LOCALAPPDATA 'stock-desk\logs'
+          if (Test-Path -LiteralPath $appLogs) {
+            Copy-Item -LiteralPath $appLogs -Destination (Join-Path $evidence 'app-logs') -Recurse -Force
+          }
       - name: Upload Windows installer-logs and screenshot
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: windows-installer-logs
-          path: |
-            ${{ runner.temp }}/stock-desk-install.log
-            ${{ runner.temp }}/installed-market.png
-            ${{ env.LOCALAPPDATA }}/stock-desk/logs/
-          if-no-files-found: ignore
+          path: installer-evidence/windows/
+          if-no-files-found: error
           retention-days: 7
 
   verify-macos-installer:
@@ -593,8 +549,6 @@ jobs:
     needs:
       - verify
       - attest
-      - codeql
-      - container
       - verify-windows-installer
       - verify-macos-installer
     runs-on: ubuntu-latest

@@ -407,10 +407,18 @@ def test_security_workflow_fails_closed_on_dependencies_sbom_and_image_cves() ->
 def test_tag_release_generates_and_attests_sbom_and_artifacts() -> None:
     release = _load_github_actions_yaml(_read(".github/workflows/release.yml"))
     verify = release["jobs"]["verify"]
-    assert verify["permissions"] == {"contents": "read"}
-    assert 60 <= verify["timeout-minutes"] <= 90
+    assert verify["permissions"] == {
+        "actions": "read",
+        "attestations": "read",
+        "contents": "read",
+    }
+    assert 10 <= verify["timeout-minutes"] <= 20
     steps = verify["steps"]
     names = [step.get("name") for step in steps]
+    proof_index = names.index("Verify main validation proof identity and inputs")
+    build_index = names.index("Build final release assets")
+    assert proof_index < build_index
+    assert "Run release gates" not in names
     archive_index = names.index("Prepare release archives")
     sbom_index = names.index("Generate release SBOM")
     checksums_index = names.index("Prepare checksummed assets")
@@ -440,7 +448,10 @@ def test_tag_release_generates_and_attests_sbom_and_artifacts() -> None:
         if job_name == "attest":
             continue
         permissions = job.get("permissions", {})
-        assert "attestations" not in permissions
+        if job_name == "verify":
+            assert permissions.get("attestations") == "read"
+        else:
+            assert "attestations" not in permissions
         assert "id-token" not in permissions
     attest_steps = attest["steps"]
     attest_names = [step.get("name") for step in attest_steps]
@@ -495,75 +506,13 @@ def test_tag_release_generates_and_attests_sbom_and_artifacts() -> None:
     assert "! -name 'SHA256SUMS'" not in native_verification
     assert "wc -l < SHA256SUMS.complete" in native_verification
 
-    codeql = release["jobs"]["codeql"]
-    assert codeql["permissions"] == {
-        "contents": "read",
-        "security-events": "write",
-    }
-    assert codeql["strategy"]["matrix"]["language"] == [
-        "python",
-        "javascript-typescript",
-    ]
-    assert [step.get("name") for step in codeql["steps"]] == [
-        "Check out source",
-        "Initialize CodeQL",
-        "Analyze",
-    ]
-    assert any(
-        str(step.get("uses", "")).startswith("github/codeql-action/analyze@")
-        for step in codeql["steps"]
-    )
-
-    container = release["jobs"]["container"]
-    trivy_steps = [
-        step
-        for step in container["steps"]
-        if str(step.get("uses", "")).startswith("aquasecurity/trivy-action@")
-    ]
-    assert [step["name"] for step in trivy_steps] == [
-        "Report all high and critical release image CVEs",
-        "Reject fixable high and critical release image CVEs",
-    ]
-    report, gate = trivy_steps
-    assert report["with"] == {
-        "image-ref": "stock-desk-runtime:local",
-        "format": "json",
-        "output": "stock-desk-release-image-vulnerabilities.json",
-        "severity": "CRITICAL,HIGH",
-        "ignore-unfixed": False,
-        "exit-code": 0,
-    }
-    assert gate["with"] == {
-        "image-ref": "stock-desk-runtime:local",
-        "format": "table",
-        "severity": "CRITICAL,HIGH",
-        "ignore-unfixed": True,
-        "exit-code": 1,
-    }
-    vulnerability_upload = next(
-        step
-        for step in container["steps"]
-        if step.get("name") == "Upload release image vulnerability report"
-    )
-    assert vulnerability_upload["with"] == {
-        "name": "stock-desk-release-image-vulnerabilities",
-        "path": "stock-desk-release-image-vulnerabilities.json",
-        "if-no-files-found": "error",
-        "retention-days": 30,
-    }
-    assert container["steps"].index(report) < container["steps"].index(
-        vulnerability_upload
-    )
-    assert container["steps"].index(vulnerability_upload) < container["steps"].index(
-        gate
-    )
+    assert "codeql" not in release["jobs"]
+    assert "container" not in release["jobs"]
 
     publish = release["jobs"]["release"]
     assert set(publish["needs"]) == {
         "verify",
         "attest",
-        "codeql",
-        "container",
         "verify-windows-installer",
         "verify-macos-installer",
     }
@@ -924,14 +873,15 @@ def test_ci_uploads_coverage_reports_and_release_uses_canonical_test() -> None:
     assert any("web/coverage/lcov.info" in path for path in artifact_paths)
 
     release = _load_github_actions_yaml(_read(".github/workflows/release.yml"))
-    release_steps = release["jobs"]["verify"]["steps"]
-    release_gates = next(
-        step for step in release_steps if step.get("name") == "Run release gates"
+    proof = next(
+        step
+        for step in release["jobs"]["verify"]["steps"]
+        if step.get("name") == "Verify main validation proof identity and inputs"
     )
-    command = str(release_gates["run"])
-    assert "scripts/verify_release.py" in command
-    assert "--candidate" in command
-    assert "--target-performance" in command
+    command = str(proof["run"])
+    assert "gh attestation verify" in command
+    assert "scripts/main_validation_proof.py verify" in command
+    assert "--source-digest" in command
 
 
 def test_security_target_audits_only_locked_production_dependencies() -> None:
@@ -978,13 +928,25 @@ def test_ci_and_release_run_the_canonical_dependency_audit_gate() -> None:
     )
     assert audit_step["run"] == "make security"
 
-    release = _load_github_actions_yaml(_read(".github/workflows/release.yml"))
-    release_steps = release["jobs"]["verify"]["steps"]
-    release_gates = next(
-        step for step in release_steps if step.get("name") == "Run release gates"
-    )
-    command = str(release_gates["run"])
-    assert command.count("scripts/verify_release.py") == 1
+    ci = _load_github_actions_yaml(_read(".github/workflows/ci.yml"))
+    proof = ci["jobs"]["validation-proof"]
+    assert proof["if"] == "github.event_name == 'push'"
+    assert set(proof["needs"]) == {
+        "windows-runtime-acl",
+        "public-tree",
+        "dependency-audit",
+        "python",
+        "web",
+        "e2e",
+        "container",
+    }
+    command = "\n".join(str(step.get("run", "")) for step in proof["steps"])
+    assert "scripts/main_validation_proof.py generate" in command
+    assert "CodeQL" in command and "Security" in command
+    assert "status=success" not in command
+    assert '[[ "$status" == completed ]]' in command
+    assert 'test "$conclusion" = success' in command
+    assert "sleep 15" in command
     assert '"security"' in _read("scripts/verify_release.py")
 
 
@@ -1026,9 +988,9 @@ def test_ci_and_release_gate_the_chromium_end_to_end_slice() -> None:
     assert (
         'git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main' in release
     )
-    assert "pnpm exec playwright install --with-deps chromium" in release
-    assert "scripts/verify_release.py" in release
-    assert "--candidate --target-performance" in release
+    assert "pnpm exec playwright install --with-deps chromium" not in release
+    assert "scripts/main_validation_proof.py verify" in release
+    assert "gh attestation verify" in release
     assert "contents: write" in release
     assert 'tags:\n      - "v*"' in release
 
@@ -1038,38 +1000,46 @@ def test_release_builds_final_artifacts_only_after_all_source_gates() -> None:
     steps = workflow["jobs"]["verify"]["steps"]
     step_names = [step.get("name") for step in steps]
 
-    gate_index = step_names.index("Run release gates")
+    gate_index = step_names.index("Verify main validation proof identity and inputs")
     build_index = step_names.index("Build final release assets")
     verify_index = step_names.index("Verify built release artifacts")
     assert gate_index < build_index < verify_index
 
     gate_commands = str(steps[gate_index]["run"])
-    assert "scripts/verify_release.py" in gate_commands
-    assert "--candidate" in gate_commands
+    assert "scripts/main_validation_proof.py verify" in gate_commands
+    assert "gh attestation verify" in gate_commands
     assert "make build" not in gate_commands
     assert steps[build_index]["run"] == "make build"
 
 
-def test_release_workflow_uses_candidate_gate_and_always_uploads_its_report() -> None:
+def test_release_workflow_reuses_only_the_attested_exact_main_proof() -> None:
     workflow = _load_github_actions_yaml(_read(".github/workflows/release.yml"))
     steps = workflow["jobs"]["verify"]["steps"]
-    gate = next(step for step in steps if step.get("name") == "Run release gates")
-    command = str(gate["run"])
-
-    assert 'release_version="${GITHUB_REF_NAME#v}"' in command
-    assert (
-        'uv run --frozen python scripts/verify_release.py "$release_version" '
-        "--candidate --target-performance "
-        "--report test-results/release/candidate.json"
-    ) in command.replace("\n", " ")
-
-    evidence = next(
+    locate = next(
         step
         for step in steps
-        if step.get("name") == "Upload release performance evidence"
+        if step.get("name") == "Locate exact successful main validation proof"
     )
-    assert evidence["if"] == "always()"
-    assert "test-results/release/candidate.json" in evidence["with"]["path"]
+    assert "head_sha == $sha" in locate["run"]
+    download = next(
+        step
+        for step in steps
+        if step.get("name") == "Download exact main validation proof"
+    )
+    assert download["with"]["name"] == "main-validation-proof-${{ github.sha }}"
+    proof = next(
+        step
+        for step in steps
+        if step.get("name") == "Verify main validation proof identity and inputs"
+    )
+    command = str(proof["run"])
+    for required in (
+        "--source-ref refs/heads/main",
+        '--source-digest "$GITHUB_SHA"',
+        '--signer-digest "$GITHUB_SHA"',
+        "--deny-self-hosted-runners",
+    ):
+        assert required in command
 
     installer_steps = workflow["jobs"]["build-installers"]["steps"]
     native_builds = [
@@ -1132,23 +1102,18 @@ def test_release_waits_for_inno_setup_and_checks_its_process_exit_code() -> None
     assert "Test-Path -LiteralPath $compiler -PathType Leaf" in command
 
 
-def test_release_workflow_delegates_all_source_gates_to_candidate_verifier() -> None:
+def test_release_workflow_delegates_source_gates_to_attested_main_proof() -> None:
     workflow = _load_github_actions_yaml(_read(".github/workflows/release.yml"))
     steps = workflow["jobs"]["verify"]["steps"]
-    gate = next(step for step in steps if step.get("name") == "Run release gates")
-    commands = [
-        line.strip()
-        for line in str(gate["run"]).splitlines()
-        if line.strip()
-        and line.strip() != "set -euo pipefail"
-        and not line.strip().startswith("release_version=")
-    ]
-
-    assert commands == [
-        'uv run --frozen python scripts/verify_release.py "$release_version" '
-        "--candidate --target-performance --report "
-        "test-results/release/candidate.json"
-    ]
+    names = [step.get("name") for step in steps]
+    assert "Run release gates" not in names
+    assert "Install Playwright Chromium" not in names
+    proof = next(
+        step
+        for step in steps
+        if step.get("name") == "Verify main validation proof identity and inputs"
+    )
+    assert "scripts/main_validation_proof.py verify" in proof["run"]
 
 
 def test_e2e_is_a_root_script_without_changing_the_make_contract() -> None:
@@ -1273,7 +1238,8 @@ def test_stage_two_formula_gates_extend_every_release_surface() -> None:
     ):
         target = command.removeprefix("make ")
         assert f'"{target}"' in candidate
-    assert "scripts/verify_release.py" in release
+    assert "scripts/main_validation_proof.py verify" in release
+    assert "scripts/main_validation_proof.py generate" in ci_commands
 
 
 def test_stage_three_backtest_gates_extend_every_release_surface() -> None:
@@ -1324,7 +1290,8 @@ def test_stage_three_backtest_gates_extend_every_release_surface() -> None:
     ):
         target = command.removeprefix("make ")
         assert f'"{target}"' in candidate
-    assert "scripts/verify_release.py" in release
+    assert "scripts/main_validation_proof.py verify" in release
+    assert "scripts/main_validation_proof.py generate" in ci_commands
 
 
 def test_stage_four_analysis_gates_extend_every_release_surface() -> None:
@@ -1362,7 +1329,8 @@ def test_stage_four_analysis_gates_extend_every_release_surface() -> None:
         assert command in ci_commands
         target = command.removeprefix("make ")
         assert f'"{target}"' in candidate
-    assert "scripts/verify_release.py" in release
+    assert "scripts/main_validation_proof.py verify" in release
+    assert "scripts/main_validation_proof.py generate" in ci_commands
 
 
 def test_task_center_e2e_gate_extends_every_release_surface() -> None:
@@ -1388,12 +1356,9 @@ def test_task_center_e2e_gate_extends_every_release_surface() -> None:
     ]
     assert ci_commands.count("make e2e-task-center") == 1
 
-    release = _load_github_actions_yaml(_read(".github/workflows/release.yml"))
-    release_steps = release["jobs"]["verify"]["steps"]
-    release_gates = next(
-        step for step in release_steps if step.get("name") == "Run release gates"
-    )
-    assert "scripts/verify_release.py" in str(release_gates["run"])
+    ci = _load_github_actions_yaml(_read(".github/workflows/ci.yml"))
+    e2e_steps = ci["jobs"]["e2e"]["steps"]
+    assert any(step.get("run") == "make e2e-task-center" for step in e2e_steps)
     assert '"e2e-task-center"' in _read("scripts/verify_release.py")
 
 
@@ -2100,7 +2065,7 @@ def test_python_ci_publishes_bounded_junit_failure_diagnostics() -> None:
     notice = steps[notice_index]
 
     assert notice_index == test_index + 1
-    assert notice["if"] == "failure()"
+    assert notice["if"] == "failure() && needs.impact.outputs.full == 'true'"
     command = notice["run"]
     for required in (
         "python-test-results.xml",

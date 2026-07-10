@@ -623,6 +623,120 @@ def test_verifier_lifecycle_preserves_fixture_and_user_data(
     assert (data_dir / "installer-persistence.txt").read_text() == "persistent\n"
 
 
+def test_verifier_terminates_a_failed_first_start(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    command = (tmp_path / "stock-desk").resolve()
+    command.touch()
+    runtime = tmp_path / "data" / "runtime" / "runtime.json"
+    process = SimpleNamespace(poll=lambda: None)
+    terminated: list[object] = []
+
+    monkeypatch.setattr(
+        verifier, "_verify_frozen_internal_dispatch", lambda *args: None
+    )
+    monkeypatch.setattr(verifier, "_start", lambda *args, **kwargs: process)
+    monkeypatch.setattr(
+        verifier,
+        "_wait_for_health",
+        lambda _path: (_ for _ in ()).throw(RuntimeError("not healthy")),
+    )
+    monkeypatch.setattr(
+        verifier,
+        "_terminate_failed_start",
+        lambda candidate: terminated.append(candidate),
+    )
+
+    with pytest.raises(RuntimeError, match="not healthy"):
+        verifier.verify_installed_app(command, runtime, sanitized_path="/system")
+
+    assert terminated == [process]
+
+
+def test_windows_failed_start_terminates_the_complete_process_tree(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    process = SimpleNamespace(poll=lambda: None, pid=4321, wait=lambda **_kwargs: 0)
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    monkeypatch.setenv("SystemRoot", str(tmp_path / "Windows"))
+    monkeypatch.setattr(
+        verifier.subprocess,
+        "run",
+        lambda command, **kwargs: (
+            calls.append((command, kwargs)) or SimpleNamespace(returncode=0)
+        ),
+    )
+
+    verifier._terminate_windows_tree(process)
+
+    assert calls[0][0] == [
+        str(tmp_path / "Windows" / "System32" / "taskkill.exe"),
+        "/PID",
+        "4321",
+        "/T",
+        "/F",
+    ]
+    assert calls[0][1]["timeout"] == 15
+
+
+@pytest.mark.parametrize(
+    "cleanup_error",
+    [
+        OSError("taskkill unavailable"),
+        verifier.subprocess.TimeoutExpired("taskkill", 15),
+    ],
+)
+def test_failed_start_cleanup_preserves_original_error_when_taskkill_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    cleanup_error: BaseException,
+) -> None:
+    waits: list[int] = []
+    process = SimpleNamespace(
+        poll=lambda: None,
+        wait=lambda *, timeout: waits.append(timeout) or 0,
+        kill=lambda: None,
+    )
+    monkeypatch.setattr(verifier.os, "name", "nt")
+    monkeypatch.setattr(
+        verifier,
+        "_terminate_windows_tree",
+        lambda _process: (_ for _ in ()).throw(cleanup_error),
+    )
+
+    verifier._terminate_failed_start(process)
+
+    assert waits == [15]
+
+
+def test_failed_start_cleanup_force_kills_after_wait_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    waits: list[int] = []
+    killed: list[bool] = []
+
+    def wait(*, timeout: int) -> int:
+        waits.append(timeout)
+        if timeout == 15:
+            raise verifier.subprocess.TimeoutExpired("stock-desk", timeout)
+        return 0
+
+    process = SimpleNamespace(
+        poll=lambda: None,
+        wait=wait,
+        kill=lambda: killed.append(True),
+    )
+    monkeypatch.setattr(verifier.os, "name", "nt")
+    monkeypatch.setattr(verifier, "_terminate_windows_tree", lambda _process: None)
+
+    verifier._terminate_failed_start(process)
+
+    assert waits == [15, 10]
+    assert killed == [True]
+
+
 def test_authentic_v050_fixture_has_historical_schema_and_representative_data(
     tmp_path: Path,
 ) -> None:

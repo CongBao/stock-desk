@@ -21,7 +21,7 @@ from scripts.verify_docs import (
     _raster_failure,
     verify_repository,
 )
-from scripts.verify_release import PRE_PUBLISH_EVIDENCE_GATE, _candidate_gates
+from scripts.verify_release import _candidate_gates
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -143,9 +143,15 @@ def test_bilingual_readme_baseline_contains_verified_installation_and_use() -> N
     assert jobs["verify-macos-installer"]["needs"] == "build-installers"
     assert "verify-windows-installer" in jobs["attest"]["needs"]
     assert "verify-macos-installer" in jobs["attest"]["needs"]
-    candidate_gates = _candidate_gates(target_performance=False)
-    assert any(gate.command == ("make", "test") for gate in candidate_gates)
-    assert PRE_PUBLISH_EVIDENCE_GATE in candidate_gates
+    verify_steps = jobs["verify"]["steps"]
+    assert any(
+        step.get("name") == "Verify main validation proof identity and inputs"
+        for step in verify_steps
+    )
+    ci = yaml.safe_load(
+        (PROJECT_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    )
+    assert "validation-proof" in ci["jobs"]
     assert (PROJECT_ROOT / "tests/acceptance/test_clean_install.py").is_file()
     assert (PROJECT_ROOT / "tests/acceptance/test_installed_distribution.py").is_file()
 
@@ -159,7 +165,10 @@ def test_readme_commands_map_to_executed_release_evidence() -> None:
     }
     workflow = _workflow()
     jobs = workflow["jobs"]
-    container_steps = str(jobs["container"]["steps"])
+    ci = yaml.safe_load(
+        (PROJECT_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    )
+    container_steps = str(ci["jobs"]["container"]["steps"])
     makefile = (PROJECT_ROOT / "Makefile").read_text(encoding="utf-8")
 
     evidence = {README_COMMAND_EVIDENCE[command] for command in commands}
