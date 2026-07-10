@@ -40,6 +40,7 @@ _RELEASE_DESKTOP_FILES = frozenset(
         "scripts/verify_installed_app.py",
         "src/stock_desk/desktop.py",
         "src/stock_desk/storage/backup.py",
+        "src/stock_desk/storage/lifecycle.py",
         "tests/acceptance/test_installed_distribution.py",
         "tests/acceptance/test_release_acceptance_scope.py",
         "tests/acceptance/test_release_artifacts.py",

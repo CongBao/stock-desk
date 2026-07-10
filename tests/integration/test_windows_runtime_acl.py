@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from stock_desk.desktop import _restrict_owner_access
+from stock_desk.storage.lifecycle import service_lifecycle
 
 
 pytestmark = pytest.mark.skipif(
@@ -33,3 +34,11 @@ def test_windows_runtime_acl_executes_for_untrusted_path_characters(
         target.write_text("private\n", encoding="utf-8")
 
     _restrict_owner_access(target, directory=directory)
+
+
+def test_windows_service_lifecycle_reuses_existing_directory(tmp_path: Path) -> None:
+    with service_lifecycle(tmp_path, role="api"):
+        pass
+
+    with service_lifecycle(tmp_path, role="worker"):
+        pass

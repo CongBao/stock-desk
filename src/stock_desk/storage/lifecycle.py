@@ -15,7 +15,9 @@ from filelock import FileLock, Timeout as FileLockTimeout
 
 _RESTORE_LOCK = ".stock-desk-restore.lock"
 _SERVICE_DIRECTORY = ".stock-desk-services"
+_REPARSE_POINT = 0x400
 _ROLE_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
+_PLATFORM = os.name
 
 
 class LifecycleBusyError(RuntimeError):
@@ -24,6 +26,11 @@ class LifecycleBusyError(RuntimeError):
 
 class LifecycleCorruptionError(RuntimeError):
     """Lifecycle lock state is not safe to trust."""
+
+
+def _is_reparse_point(metadata: os.stat_result) -> bool:
+    attributes = getattr(metadata, "st_file_attributes", 0)
+    return bool(attributes & _REPARSE_POINT)
 
 
 def _safe_lock_file(path: Path) -> None:
@@ -44,13 +51,15 @@ def _service_directory(data_dir: Path) -> Path:
     try:
         directory.mkdir(mode=0o700)
     except FileExistsError:
-        metadata = os.lstat(directory)
-        if (
-            stat.S_ISLNK(metadata.st_mode)
-            or not stat.S_ISDIR(metadata.st_mode)
-            or stat.S_IMODE(metadata.st_mode) != 0o700
-        ):
-            raise LifecycleCorruptionError("service lifecycle directory is unsafe")
+        pass
+    metadata = os.lstat(directory)
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or _is_reparse_point(metadata)
+        or not stat.S_ISDIR(metadata.st_mode)
+        or (_PLATFORM == "posix" and stat.S_IMODE(metadata.st_mode) != 0o700)
+    ):
+        raise LifecycleCorruptionError("service lifecycle directory is unsafe")
     return directory
 
 
