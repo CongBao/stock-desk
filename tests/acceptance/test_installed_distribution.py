@@ -109,6 +109,18 @@ def test_windows_install_and_uninstall_prove_exit_codes_and_postconditions() -> 
         if step.get("name") == "Install and verify without development PATH"
     )
     assert "--diagnostic-dir $evidence" in install_step["run"]
+    capture = next(
+        step
+        for step in steps
+        if step.get("name") == "Capture installed browser smoke with Playwright"
+    )["run"]
+    assert "$shutdownProcess = Start-Process" in capture
+    assert "-ArgumentList '--shutdown'" in capture
+    assert "-Wait -PassThru" in capture
+    assert "$shutdownProcess.ExitCode -ne 0" in capture
+    assert "$appProcess.WaitForExit(30000)" in capture
+    assert "$appProcess.ExitCode -ne 0" in capture
+    assert "& $command --shutdown" not in capture
     stage = next(
         step for step in steps if step.get("name") == "Stage Windows installer evidence"
     )
