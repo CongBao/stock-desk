@@ -6,6 +6,7 @@ import { ApiError } from '../../shared/api/client';
 import { BacktestRunPage } from './BacktestRunPage';
 import { backtestPollDelay } from './backtestPolling';
 import type { BacktestApi, BacktestOverview } from './backtestApi';
+import { coalesceBacktestOverview } from './backtestOverviewState';
 import { RunProgress } from './RunProgress';
 
 const running: BacktestOverview = {
@@ -93,6 +94,26 @@ it('polls overview and append-only logs with bounded backoff, then stops termina
     await new Promise((resolve) => window.setTimeout(resolve, 20));
   });
   expect(getRun).toHaveBeenCalledTimes(runCalls);
+});
+
+it('reuses an overview only when every response field is unchanged', () => {
+  expect(coalesceBacktestOverview(null, running)).toBe(running);
+  expect(coalesceBacktestOverview(running, { ...running })).toBe(running);
+
+  for (const [key, value] of Object.entries(running)) {
+    const replacement = {
+      ...running,
+      [key]:
+        typeof value === 'number'
+          ? value + 1
+          : value === null
+            ? 'changed'
+            : `${value}-changed`,
+    };
+    expect(coalesceBacktestOverview(running, replacement), key).toBe(
+      replacement,
+    );
+  }
 });
 
 it('exposes the exact rendered progress tuple for browser evidence', () => {

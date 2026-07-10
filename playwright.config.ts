@@ -14,9 +14,9 @@ export default defineConfig({
   reporter: process.env.CI ? [["line"], ["html", { open: "never" }]] : "line",
   use: {
     baseURL: externalBaseUrl ?? "http://127.0.0.1:5173",
-    trace: "retain-on-failure",
-    screenshot: "only-on-failure",
-    video: "retain-on-failure",
+    trace: performanceMode ? "off" : "retain-on-failure",
+    screenshot: performanceMode ? "off" : "only-on-failure",
+    video: performanceMode ? "off" : "retain-on-failure",
   },
   projects: [
     {

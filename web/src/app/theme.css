@@ -3452,6 +3452,8 @@ a {
 .run-log li {
   padding: 10px 4px;
   overflow-wrap: anywhere;
+  content-visibility: auto;
+  contain-intrinsic-block-size: 42px;
 }
 .run-log li span {
   color: var(--text-muted);

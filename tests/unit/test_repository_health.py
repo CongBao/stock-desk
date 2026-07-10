@@ -1164,6 +1164,9 @@ def test_e2e_is_a_root_script_without_changing_the_make_contract() -> None:
     assert "scripts/e2e_dev.py" in playwright
     assert 'process.env.STOCK_DESK_PERFORMANCE_MODE === "1"' in playwright
     assert "performanceMode ? 300_000 : 120_000" in playwright
+    assert 'trace: performanceMode ? "off" : "retain-on-failure"' in playwright
+    assert 'screenshot: performanceMode ? "off" : "only-on-failure"' in playwright
+    assert 'video: performanceMode ? "off" : "retain-on-failure"' in playwright
     foundation_e2e = _read("web/e2e/foundation.spec.ts")
     health_probe = "request.get('/api/health')"
     task_creation = "request.post('/api/tasks'"

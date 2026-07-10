@@ -1,3 +1,5 @@
+import { memo } from 'react';
+
 import type { BacktestOverview } from './backtestApi';
 
 const labels: Readonly<Record<string, string>> = {
@@ -16,7 +18,11 @@ const stageLabels: Readonly<Record<string, string>> = {
   cancelled: '已取消',
 };
 
-export function RunProgress({ run }: { readonly run: BacktestOverview }) {
+export const RunProgress = memo(function RunProgress({
+  run,
+}: {
+  readonly run: BacktestOverview;
+}) {
   return (
     <section
       className="run-progress"
@@ -62,4 +68,4 @@ export function RunProgress({ run }: { readonly run: BacktestOverview }) {
       </dl>
     </section>
   );
-}
+});
