@@ -330,10 +330,10 @@ def _sqlite_path(database_url: str) -> Path:
 
 
 def _open_regular(path: Path) -> int:
+    before = os.lstat(path)
     no_follow = getattr(os, "O_NOFOLLOW", 0)
     if no_follow == 0:
         raise BackupValidationError("backup requires no-follow filesystem access")
-    before = os.lstat(path)
     if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
         raise BackupValidationError("backup input must be a regular non-link file")
     descriptor = os.open(path, os.O_RDONLY | no_follow)

@@ -46,6 +46,23 @@ def test_pull_request_allows_explicit_release_desktop_scope_with_docs() -> None:
     assert impact.full is False
 
 
+def test_windows_first_start_fix_uses_targeted_release_desktop_scope() -> None:
+    impact = classify_impact(
+        "pull_request",
+        [
+            ".github/workflows/ci.yml",
+            "scripts/ci_impact.py",
+            "src/stock_desk/storage/backup.py",
+            "tests/integration/storage/test_restore_recovery.py",
+            "tests/unit/storage/test_backup.py",
+            "tests/unit/test_ci_impact.py",
+        ],
+    )
+
+    assert impact.profile == RELEASE_DESKTOP_PROFILE
+    assert impact.full is False
+
+
 def test_current_release_proof_change_set_uses_targeted_profile() -> None:
     impact = classify_impact(
         "pull_request",
