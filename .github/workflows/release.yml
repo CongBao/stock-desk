@@ -424,10 +424,15 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "Playwright screenshot failed: $LASTEXITCODE" }
           } finally {
             $env:PATH = $developerPath
-            & $command --shutdown
+            $shutdownProcess = Start-Process -FilePath $command -ArgumentList '--shutdown' -WorkingDirectory $env:RUNNER_TEMP -Wait -PassThru
             if ($null -ne $appProcess -and -not $appProcess.HasExited) {
-              Stop-Process -Id $appProcess.Id -Force -ErrorAction SilentlyContinue
+              if (-not $appProcess.WaitForExit(30000)) {
+                Stop-Process -Id $appProcess.Id -Force -ErrorAction SilentlyContinue
+                throw 'installed application did not exit after browser smoke'
+              }
             }
+            if ($shutdownProcess.ExitCode -ne 0) { throw "shutdown helper failed with exit code $($shutdownProcess.ExitCode)" }
+            if ($null -ne $appProcess -and $appProcess.ExitCode -ne 0) { throw "installed application exited with code $($appProcess.ExitCode)" }
           }
       - name: Uninstall without deleting user data
         shell: pwsh
