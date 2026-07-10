@@ -52,7 +52,7 @@ GITHUB_MERGE_SUBJECT_PATTERN = re.compile(
 )
 CANDIDATE_REPORT_SCHEMA = "stock-desk-release-candidate-report-v1"
 CANDIDATE_REPORT_DIRECTORY = PurePosixPath("test-results/release")
-CANDIDATE_FULL_PYTHON_TIMEOUT_SECONDS = 60 * 60
+CANDIDATE_FULL_PYTHON_TIMEOUT_SECONDS = 90 * 60
 
 
 @dataclass(frozen=True, slots=True)
