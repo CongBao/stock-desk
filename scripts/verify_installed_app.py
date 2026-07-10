@@ -217,13 +217,17 @@ def _stop_and_wait(
 ) -> None:
     _request_clean_shutdown(command, environment)
     try:
-        process.wait(timeout=30)
+        return_code = process.wait(timeout=30)
     except subprocess.TimeoutExpired:
         process.kill()
         process.wait(timeout=10)
         raise RuntimeError(
             "installed application required forced termination"
         ) from None
+    if return_code != 0:
+        raise RuntimeError(
+            f"installed application exited uncleanly with code {return_code}"
+        )
 
 
 def verify_installed_app(

@@ -23,6 +23,95 @@ def _desktop() -> ModuleType:
         pytest.fail("stock_desk.desktop packaged entrypoint is missing")
 
 
+class _RecordingStopEvent:
+    def __init__(self, name: str, calls: list[tuple[str, str]]) -> None:
+        self.name = name
+        self.calls = calls
+        self.is_set = False
+
+    def set(self) -> None:
+        self.is_set = True
+        self.calls.append(("set", self.name))
+
+
+class _RecordingProcess:
+    def __init__(
+        self,
+        name: str,
+        calls: list[tuple[str, str]],
+        events: tuple[_RecordingStopEvent, ...],
+    ) -> None:
+        self.name = name
+        self.calls = calls
+        self.events = events
+        self.pid = 100
+        self.alive = True
+        self.closed = False
+
+    def is_alive(self) -> bool:
+        return self.alive
+
+    def join(self, timeout: float | None = None) -> None:
+        assert timeout is not None and timeout >= 0
+        assert all(event.is_set for event in self.events)
+        self.calls.append(("join", self.name))
+        self.alive = False
+
+    def terminate(self) -> None:
+        self.calls.append(("terminate", self.name))
+
+    def kill(self) -> None:
+        self.calls.append(("kill", self.name))
+
+    def close(self) -> None:
+        self.closed = True
+        self.calls.append(("close", self.name))
+
+
+class _EscalatingProcess(_RecordingProcess):
+    def join(self, timeout: float | None = None) -> None:
+        assert timeout is not None and timeout >= 0
+        assert all(event.is_set for event in self.events)
+        self.calls.append(("join", self.name))
+
+    def kill(self) -> None:
+        super().kill()
+        self.alive = False
+
+
+def test_desktop_children_receive_shutdown_before_either_join() -> None:
+    desktop = _desktop()
+    calls: list[tuple[str, str]] = []
+    api_event = _RecordingStopEvent("api", calls)
+    worker_event = _RecordingStopEvent("worker", calls)
+    events = (api_event, worker_event)
+    api = _RecordingProcess("api", calls, events)
+    worker = _RecordingProcess("worker", calls, events)
+
+    desktop._stop_processes(((api, api_event), (worker, worker_event)))
+
+    assert calls[:2] == [("set", "api"), ("set", "worker")]
+    assert not api.alive and not worker.alive
+    assert api.closed and worker.closed
+
+
+def test_desktop_children_escalate_together_and_close_after_kill() -> None:
+    desktop = _desktop()
+    calls: list[tuple[str, str]] = []
+    api_event = _RecordingStopEvent("api", calls)
+    worker_event = _RecordingStopEvent("worker", calls)
+    events = (api_event, worker_event)
+    api = _EscalatingProcess("api", calls, events)
+    worker = _EscalatingProcess("worker", calls, events)
+
+    desktop._stop_processes(((api, api_event), (worker, worker_event)))
+
+    assert calls[:2] == [("set", "api"), ("set", "worker")]
+    assert ("terminate", "api") in calls and ("terminate", "worker") in calls
+    assert ("kill", "api") in calls and ("kill", "worker") in calls
+    assert calls[-2:] == [("close", "api"), ("close", "worker")]
+
+
 @pytest.mark.parametrize(
     ("platform_name", "environment", "home", "expected"),
     [

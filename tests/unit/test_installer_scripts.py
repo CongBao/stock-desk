@@ -556,6 +556,17 @@ def test_verifier_reports_process_exit_without_waiting_for_timeout(
         )
 
 
+def test_verifier_rejects_unclean_desktop_exit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(verifier, "_request_clean_shutdown", lambda *_args: None)
+    process = SimpleNamespace(wait=lambda *, timeout: 23)
+
+    with pytest.raises(RuntimeError, match="exited uncleanly with code 23"):
+        verifier._stop_and_wait(tmp_path / "stock-desk", process, {})
+
+
 def test_frozen_dispatch_checks_akshare_and_formula(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
