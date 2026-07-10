@@ -138,6 +138,14 @@ def test_inno_compiler_prefers_explicit_verified_path(
     assert build_installer._find_inno_compiler() == compiler
 
 
+def test_inno_compile_probe_is_initialized_before_script_entrypoint() -> None:
+    source = (build_installer.ROOT / "scripts" / "build_installer.py").read_text()
+
+    assert source.index("INNO_SETUP_VERSION_PROBE: Final") < source.index(
+        'if __name__ == "__main__"'
+    )
+
+
 def test_inno_compiler_requires_exact_package_digest_and_records_identity(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -149,15 +157,17 @@ def test_inno_compiler_requires_exact_package_digest_and_records_identity(
         "STOCK_DESK_INNO_SETUP_PACKAGE_SHA256",
         build_installer.INNO_SETUP_PACKAGE_SHA256,
     )
-    monkeypatch.setattr(
-        build_installer.subprocess,
-        "run",
-        lambda *_args, **_kwargs: SimpleNamespace(
+    calls: list[tuple[list[str], object]] = []
+
+    def run_probe(args: list[str], **kwargs: object) -> SimpleNamespace:
+        calls.append((args, kwargs.get("input")))
+        return SimpleNamespace(
             returncode=0,
-            stdout="Inno Setup 6 Command-Line Compiler\nCompiler version 6.7.3",
+            stdout="Compiler engine version: Inno Setup 6.7.3",
             stderr="",
-        ),
-    )
+        )
+
+    monkeypatch.setattr(build_installer.subprocess, "run", run_probe)
 
     identity = build_installer._verify_inno_compiler(compiler)
 
@@ -166,6 +176,12 @@ def test_inno_compiler_requires_exact_package_digest_and_records_identity(
         "package_sha256": build_installer.INNO_SETUP_PACKAGE_SHA256,
         "version": "6.7.3",
     }
+    assert calls == [
+        (
+            [os.fspath(compiler), "/O-", "-"],
+            build_installer.INNO_SETUP_VERSION_PROBE,
+        )
+    ]
 
 
 def test_inno_compiler_rejects_unverified_package(
@@ -180,7 +196,33 @@ def test_inno_compiler_rejects_unverified_package(
         build_installer._verify_inno_compiler(compiler)
 
 
+@pytest.mark.parametrize("reported_version", ["6.7.2", "6.7.30"])
 def test_inno_compiler_rejects_a_different_version(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    reported_version: str,
+) -> None:
+    compiler = tmp_path / "ISCC.exe"
+    compiler.touch()
+    monkeypatch.setenv(
+        "STOCK_DESK_INNO_SETUP_PACKAGE_SHA256",
+        build_installer.INNO_SETUP_PACKAGE_SHA256,
+    )
+    monkeypatch.setattr(
+        build_installer.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0,
+            stdout=f"Compiler engine version: Inno Setup {reported_version}",
+            stderr="",
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="version 6.7.3"):
+        build_installer._verify_inno_compiler(compiler)
+
+
+def test_inno_compiler_rejects_a_failed_compile_probe(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -194,13 +236,13 @@ def test_inno_compiler_rejects_a_different_version(
         build_installer.subprocess,
         "run",
         lambda *_args, **_kwargs: SimpleNamespace(
-            returncode=0,
-            stdout="Inno Setup 6 Command-Line Compiler\nCompiler version 6.7.2",
-            stderr="",
+            returncode=1,
+            stdout="Compiler engine version: Inno Setup 6.7.3",
+            stderr="probe failed",
         ),
     )
 
-    with pytest.raises(RuntimeError, match="version 6.7.3"):
+    with pytest.raises(RuntimeError, match="compiler probe failed"):
         build_installer._verify_inno_compiler(compiler)
 
 
