@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 import json
 from pathlib import Path
 
@@ -10,13 +10,25 @@ from stock_desk.analysis.data_service import (
     ResearchDataUnavailable,
     compose_research_data_service,
 )
+from stock_desk.analysis.evidence import EvidenceItem
+from stock_desk.analysis.prompt_builder import build_role_request
+from stock_desk.analysis.roles import RoleName
 from stock_desk.analysis.snapshot import (
+    MissingResearchSection,
     ResearchMissingReason,
+    ResearchQualityFlag,
+    ResearchSection,
     ResearchSectionKind,
+    ResearchSnapshot,
     ResearchSnapshotBuilder,
 )
 from stock_desk.analysis.sources.akshare import AkShareResearchSource
-from stock_desk.analysis.sources.market_cache import MarketCacheLoader
+from stock_desk.analysis.sources.market_cache import (
+    MARKET_RESEARCH_PROJECTION_VERSION,
+    MAX_RESEARCH_MARKET_BARS,
+    MAX_RESEARCH_MARKET_SECTION_BYTES,
+    MarketCacheLoader,
+)
 from stock_desk.analysis.sources.tushare import TushareResearchSource
 from stock_desk.api.settings import SourcePriorities
 from stock_desk.market.provenance import RoutedBarSuccess
@@ -85,7 +97,108 @@ def test_market_loader_is_cache_only_and_preserves_manifest_provenance() -> None
     assert section.fetched_at == routed.result.provenance.fetched_at
     assert section.content["period"] == "1d"
     assert section.content["adjustment"] == "qfq"
-    assert len(section.content["bars"]) == 2
+    bars = section.content["bars"]
+    assert isinstance(bars, list)
+    assert len(bars) == 2
+
+
+def test_market_loader_keeps_the_largest_recent_suffix_within_stage_budget() -> None:
+    first_day = date(2022, 1, 1)
+    routed = routed_daily_bars(
+        tuple(first_day + timedelta(days=offset) for offset in range(900)),
+        symbol=SYMBOL,
+        adjustment=Adjustment.QFQ,
+    )
+    loader = MarketCacheLoader(lake=FakeMarketLake(routed))
+
+    first = loader.load(SYMBOL)
+    second = loader.load(SYMBOL)
+
+    encoded = json.dumps(
+        first.model_dump(mode="json", by_alias=True),
+        allow_nan=False,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    content = first.content
+    projection = content["projection"]
+    assert isinstance(projection, dict)
+    selected_count = projection["selected_bar_count"]
+    assert isinstance(selected_count, int)
+    assert 0 < selected_count < MAX_RESEARCH_MARKET_BARS
+    assert len(encoded) <= MAX_RESEARCH_MARKET_SECTION_BYTES
+    assert projection == {
+        "schema_version": MARKET_RESEARCH_PROJECTION_VERSION,
+        "selection": "latest_suffix",
+        "source_bar_count": len(routed.result.bars),
+        "selected_bar_count": selected_count,
+        "maximum_bars": MAX_RESEARCH_MARKET_BARS,
+        "maximum_section_bytes": MAX_RESEARCH_MARKET_SECTION_BYTES,
+    }
+    assert first.quality_flags == (ResearchQualityFlag.PARTIAL,)
+    selected_bars = content["bars"]
+    assert isinstance(selected_bars, list)
+    assert selected_bars == [
+        bar.model_dump(mode="json") for bar in routed.result.bars[-selected_count:]
+    ]
+    assert first == second
+    assert first.section_id == second.section_id
+
+    missing = tuple(
+        MissingResearchSection(
+            kind=kind,
+            reason=ResearchMissingReason.NO_DATA,
+            checked_at=first.fetched_at,
+            attempted_sources=(),
+            recovery_code="refresh_research_data",
+        )
+        for kind in (
+            ResearchSectionKind.FUNDAMENTALS,
+            ResearchSectionKind.ANNOUNCEMENTS,
+            ResearchSectionKind.NEWS,
+        )
+    )
+    snapshot = ResearchSnapshot.create(
+        symbol=SYMBOL,
+        frozen_at=first.fetched_at,
+        sections=(first,),
+        missing_sections=missing,
+    )
+    evidence = EvidenceItem.create(
+        snapshot=snapshot,
+        section_kind=ResearchSectionKind.MARKET,
+        excerpt="Bounded real market projection.",
+    )
+    request = build_role_request(
+        role=RoleName.TECHNICAL,
+        snapshot=snapshot,
+        evidence=(evidence,),
+        dependencies=(),
+    ).request
+    assert len(request.data_blocks) == 2
+
+    one_more_payload = first.model_dump(mode="python", by_alias=True)
+    one_more_content = dict(first.content)
+    one_more_content["bars"] = [
+        routed.result.bars[-selected_count - 1].model_dump(mode="json"),
+        *selected_bars,
+    ]
+    one_more_projection = dict(projection)
+    one_more_projection["selected_bar_count"] = selected_count + 1
+    one_more_content["projection"] = one_more_projection
+    one_more_payload["content"] = one_more_content
+    one_more = ResearchSection.model_validate(one_more_payload)
+    one_more_size = len(
+        json.dumps(
+            one_more.model_dump(mode="json", by_alias=True),
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    )
+    assert one_more_size > MAX_RESEARCH_MARKET_SECTION_BYTES
 
 
 def test_market_loader_returns_typed_missing_when_cache_has_no_series() -> None:

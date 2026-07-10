@@ -36,6 +36,10 @@ Stage 5 integrated v1 release.
   periods, a 366-day/256-item announcement boundary, and at most 100 news
   items, while preserving required identity, date, and URL provenance and
   retaining the existing global payload and table guards.
+- Cache-only market research now applies the versioned
+  `market-research-projection-v1` contract, retaining the largest recent bar
+  suffix within a 60 KiB canonical-section budget and rejecting oversized
+  stage artifacts before SQL persistence.
 - Public documentation, packaging, architecture, support, security, and release
   evidence now describe the complete v1 product instead of an intermediate
   capability stage.

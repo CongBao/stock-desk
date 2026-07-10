@@ -41,6 +41,12 @@ Production updates read a fresh, immutable settings snapshot at task start. The 
 
 The market page explicitly creates `market.catalog.update` and `market.update` tasks. Catalog refresh writes a provenance-backed instrument snapshot and Full-A pool first, then independently refreshes current major-index and provider-discovered industry compositions through AKShare. A partial composition failure is itemized and preserves the last valid preset snapshot. Chart GET requests never invoke providers: they read only the local immutable cache.
 
+## Market research bounds
+
+The cache-only market research loader applies the versioned `market-research-projection-v1` boundary before a series enters a durable research checkpoint or model prompt. It starts with at most the latest 768 validated bars, then keeps the largest deterministic recent suffix whose complete canonical research section is no larger than 60 KiB. A truncated series is explicitly marked `partial`; the content records the source and selected bar counts, selection rule, bar ceiling, byte budget, and projection version while preserving the original source record, cutoff, fetch time, and dataset version.
+
+The projection leaves bounded room for route metadata and the untrusted-data envelope under the existing 64 KiB checkpoint and prompt limits. Repository writes independently reject any oversized stage artifact before SQL execution, so an adapter cannot turn a payload-boundary violation into a database integrity error. The loader never samples, reorders, synthesizes, or silently fetches bars.
+
 ## AKShare research bounds
 
 AKShare research responses cross a separate, versioned `akshare-research-projection-v1` boundary before they enter the shared strict table normalizer. Fundamentals retain the latest 24 report periods, including identity, report/notice/update dates, core earnings, revenue, profit, cash-flow, return, leverage, and applicable bank or insurer indicators. The report date remains the fundamental-data cutoff; notice and update dates are validated provenance fields but do not turn a fundamental section into published news. Announcements are requested with an Asia/Shanghai clock-derived inclusive 366-day window and retain at most the latest 256 items. News retains at most the latest 100 items. Both published-data categories preserve their identity, publication timestamp, and canonicalized source URL.
