@@ -9,7 +9,7 @@ import hashlib
 import json
 import re
 from types import MappingProxyType
-from typing import Any, cast
+from typing import Any, cast, Final
 from uuid import uuid4
 
 from sqlalchemy import Engine, and_, func, insert, or_, select, update
@@ -237,6 +237,7 @@ _TERMINAL_STAGE_STATUSES = frozenset(
     for status in AnalysisStageStatus
     if status not in {AnalysisStageStatus.PENDING, AnalysisStageStatus.RUNNING}
 )
+MAX_ANALYSIS_STAGE_OUTPUT_BYTES: Final = 65_536
 
 
 def _utc(value: object) -> datetime:
@@ -253,6 +254,13 @@ def _canonical_json(value: object) -> str:
         separators=(",", ":"),
         sort_keys=True,
     )
+
+
+def _stage_output_json(value: object) -> str:
+    encoded = _canonical_json(value)
+    if len(encoded.encode("utf-8")) > MAX_ANALYSIS_STAGE_OUTPUT_BYTES:
+        raise AnalysisRepositoryError("analysis stage artifact exceeds the byte limit")
+    return encoded
 
 
 def _content_hash(encoded: str) -> str:
@@ -1333,7 +1341,7 @@ class AnalysisRepository:
                 outcome = section_by_kind.get(role) or missing_by_kind.get(role)
                 if outcome is None:
                     raise AnalysisConflict("analysis data outcome is incomplete")
-                output_json = _canonical_json(
+                output_json = _stage_output_json(
                     outcome.model_dump(mode="json", by_alias=True)
                 )
                 trace_json = _canonical_json(
@@ -1524,7 +1532,7 @@ class AnalysisRepository:
         if missing_section is not None:
             if missing_section.kind.value != role or not exhausted:
                 raise AnalysisConflict("analysis missing data checkpoint is invalid")
-            missing_json = _canonical_json(missing_section.model_dump(mode="json"))
+            missing_json = _stage_output_json(missing_section.model_dump(mode="json"))
             missing_hash = _content_hash(missing_json)
         safe_error = _canonical_json(safe_error_payload)
         with self._engine.begin() as connection:
@@ -1630,7 +1638,7 @@ class AnalysisRepository:
         )
         if canonical_output.role.value != role or canonical_trace.role.value != role:
             raise AnalysisConflict("analysis stage artifact role is inconsistent")
-        output_json = _canonical_json(canonical_output.model_dump(mode="json"))
+        output_json = _stage_output_json(canonical_output.model_dump(mode="json"))
         trace_json = _canonical_json(canonical_trace.model_dump(mode="json"))
         with self._engine.begin() as connection:
             self._guard(connection, claim, now)
@@ -1697,7 +1705,7 @@ class AnalysisRepository:
             "news",
         }:
             raise AnalysisConflict("analysis data stage artifact is inconsistent")
-        output_json = _canonical_json(section.model_dump(mode="json", by_alias=True))
+        output_json = _stage_output_json(section.model_dump(mode="json", by_alias=True))
         trace_json = _canonical_json(
             {
                 "section_kind": role,
@@ -1799,7 +1807,7 @@ class AnalysisRepository:
         if missing_section is not None and missing_section.kind.value != role:
             raise AnalysisConflict("analysis missing data checkpoint is invalid")
         missing_json = (
-            _canonical_json(missing_section.model_dump(mode="json"))
+            _stage_output_json(missing_section.model_dump(mode="json"))
             if missing_section is not None
             else None
         )

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from typing import Final
 from typing import Protocol
 
 from stock_desk.analysis.data_service import (
@@ -18,7 +20,21 @@ from stock_desk.market.provenance import RoutedBarSuccess
 from stock_desk.market.types import Adjustment, CanonicalSymbol, Period
 
 
-MAX_RESEARCH_MARKET_BARS = 768
+MAX_RESEARCH_MARKET_BARS: Final = 768
+MAX_RESEARCH_MARKET_SECTION_BYTES: Final = 61_440
+MARKET_RESEARCH_PROJECTION_VERSION: Final = "market-research-projection-v1"
+
+
+def _canonical_section_size(section: ResearchSection) -> int:
+    return len(
+        json.dumps(
+            section.model_dump(mode="json", by_alias=True),
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    )
 
 
 class MarketSeriesCache(Protocol):
@@ -85,11 +101,13 @@ class MarketCacheLoader:
                 attempted_sources=("market_cache",),
             ) from None
         bars = routed.result.bars
-        selected = bars[-MAX_RESEARCH_MARKET_BARS:]
-        quality_flags = (
-            (ResearchQualityFlag.PARTIAL,) if len(selected) != len(bars) else ()
-        )
-        try:
+        maximum_count = min(len(bars), MAX_RESEARCH_MARKET_BARS)
+
+        def project(selected_count: int) -> ResearchSection:
+            selected = bars[-selected_count:]
+            quality_flags = (
+                (ResearchQualityFlag.PARTIAL,) if selected_count != len(bars) else ()
+            )
             return ResearchSection.model_validate(
                 {
                     "kind": self.kind,
@@ -106,9 +124,40 @@ class MarketCacheLoader:
                         "period": self._period.value,
                         "adjustment": self._adjustment.value,
                         "bars": tuple(bar.model_dump(mode="json") for bar in selected),
+                        "projection": {
+                            "schema_version": MARKET_RESEARCH_PROJECTION_VERSION,
+                            "selection": "latest_suffix",
+                            "source_bar_count": len(bars),
+                            "selected_bar_count": selected_count,
+                            "maximum_bars": MAX_RESEARCH_MARKET_BARS,
+                            "maximum_section_bytes": (
+                                MAX_RESEARCH_MARKET_SECTION_BYTES
+                            ),
+                        },
                     },
                 }
             )
+
+        try:
+            lower = 1
+            upper = maximum_count
+            selected_count = 0
+            selected_section: ResearchSection | None = None
+            while lower <= upper:
+                candidate_count = (lower + upper) // 2
+                candidate = project(candidate_count)
+                if (
+                    _canonical_section_size(candidate)
+                    <= MAX_RESEARCH_MARKET_SECTION_BYTES
+                ):
+                    selected_count = candidate_count
+                    selected_section = candidate
+                    lower = candidate_count + 1
+                else:
+                    upper = candidate_count - 1
+            if selected_section is None or selected_count <= 0:
+                raise ValueError
+            return selected_section
         except Exception:
             pass
         raise ResearchDataUnavailable(
@@ -172,7 +221,9 @@ class MarketCacheLoader:
 
 
 __all__ = [
+    "MARKET_RESEARCH_PROJECTION_VERSION",
     "MAX_RESEARCH_MARKET_BARS",
+    "MAX_RESEARCH_MARKET_SECTION_BYTES",
     "MarketCacheLoader",
     "MarketSeriesCache",
 ]

@@ -13,12 +13,14 @@ from stock_desk.analysis.repository import (
     AnalysisConflict,
     AnalysisHistoryKey,
     AnalysisRepository,
+    AnalysisRepositoryError,
     AnalysisRunStatus,
     AnalysisStageStatus,
     AnalysisAttemptStatus,
 )
 from stock_desk.analysis.report import ReportStatus, ResearchReport
 from stock_desk.analysis.retry import RetryDecision, RetryPolicy
+from stock_desk.analysis.snapshot import ResearchSection, ResearchSectionKind
 from stock_desk.storage.database import create_engine_for_url, migrate
 from stock_desk.tasks.models import TaskClaim
 from stock_desk.tasks.repository import TaskRepository
@@ -250,6 +252,76 @@ def test_enqueue_run_atomically_creates_matching_task_run_and_stages(
     assert enqueued.run.model_provider == "openai_compatible"
     assert enqueued.run.current_stage == "market"
     assert len(repository.list_stages(enqueued.run.id)) == 9
+
+
+def test_oversized_data_stage_artifact_is_rejected_before_sql_write(
+    tmp_path: Path,
+) -> None:
+    url = f"sqlite:///{tmp_path / 'analysis-stage-output-budget.db'}"
+    migrate(url)
+    engine = create_engine_for_url(url)
+    tasks = TaskRepository(engine)
+    repository = AnalysisRepository(engine)
+    enqueued = repository.enqueue_run(
+        symbol="600000.SH",
+        retry_policy=RetryPolicy(max_retries=0),
+        now=NOW,
+    )
+    claim = tasks.claim_next(
+        "stage-budget-worker",
+        now=NOW,
+        lease_duration=timedelta(minutes=1),
+    )
+    assert isinstance(claim, TaskClaim)
+    repository.start_run(claim, enqueued.run.id, now=NOW)
+    attempt = repository.start_attempt(
+        claim,
+        enqueued.run.id,
+        "market",
+        provider=None,
+        model=None,
+        request_hash=None,
+        now=NOW,
+    )
+    oversized = ResearchSection.model_validate(
+        {
+            "kind": ResearchSectionKind.MARKET,
+            "canonical_source": "tushare",
+            "source_record": DIGEST,
+            "source_url": None,
+            "published_at": None,
+            "data_cutoff": NOW,
+            "fetched_at": NOW,
+            "dataset_version": DIGEST,
+            "content": {"payload": "x" * 70_000},
+        }
+    )
+
+    with pytest.raises(AnalysisRepositoryError, match="byte limit"):
+        repository.finish_data_attempt_success(
+            claim,
+            enqueued.run.id,
+            "market",
+            attempt.attempt_no,
+            oversized,
+            now=NOW,
+        )
+
+    assert repository.get_stage(enqueued.run.id, "market").status is (
+        AnalysisStageStatus.RUNNING
+    )
+    assert repository.list_attempts(enqueued.run.id, "market")[0].status is (
+        AnalysisAttemptStatus.RUNNING
+    )
+    with engine.connect() as connection:
+        row = connection.execute(
+            text(
+                "SELECT output_json, output_hash FROM analysis_stage "
+                "WHERE run_id=:run_id AND role='market'"
+            ),
+            {"run_id": enqueued.run.id},
+        ).one()
+    assert row == (None, None)
 
 
 def test_enqueue_run_rolls_back_task_and_run_when_stage_insert_fails(

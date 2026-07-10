@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 from contextlib import redirect_stderr, redirect_stdout
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
 import sys
 
-from stock_desk.analysis.sources.base import normalize_research_table
+from stock_desk.analysis.sources._akshare_projection import (
+    akshare_expected_identity,
+    project_akshare_research_table,
+)
 from stock_desk.market.providers.base import ProviderNoData, ProviderUnavailable
 from stock_desk.market.providers.sdk import (
     import_optional_sdk,
@@ -63,7 +67,12 @@ def main(argv: list[str] | None = None) -> int:
                 module = import_optional_sdk("akshare")
                 operation = required_sdk_callable(module, args[0])
                 table = operation(**kwargs)
-                rows = normalize_research_table(table)
+                rows = project_akshare_research_table(
+                    args[0],
+                    table,
+                    expected_identity=akshare_expected_identity(args[0], kwargs),
+                    fetched_at=datetime.now(timezone.utc),
+                )
     except ProviderNoData:
         _emit({"status": "no_data"}, result_path=result_path)
         return 1

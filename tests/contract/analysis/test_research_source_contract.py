@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -15,6 +16,10 @@ from scripts.research_source_probe import main as live_probe_main
 import stock_desk.analysis.sources.akshare as akshare_source_module
 import stock_desk.analysis.sources.tushare as tushare_source_module
 from stock_desk.analysis.sources import _akshare_worker
+from stock_desk.analysis.sources._akshare_projection import (
+    akshare_projection_contract,
+    akshare_projection_fields,
+)
 from stock_desk.analysis.data_service import ResearchDataUnavailable
 from stock_desk.analysis.snapshot import (
     ResearchMissingReason,
@@ -23,6 +28,8 @@ from stock_desk.analysis.snapshot import (
     ResearchSectionKind,
 )
 from stock_desk.analysis.sources.akshare import (
+    AKSHARE_ANNOUNCEMENT_WINDOW_DAYS,
+    AKSHARE_RESEARCH_PROJECTION_VERSION,
     AkShareIsolatedSdkFacade,
     AkShareResearchSdkFacade,
     AkShareResearchSource,
@@ -53,6 +60,7 @@ from stock_desk.market.providers.base import (
     ProviderTimeout,
     ProviderUnavailable,
 )
+from stock_desk.market.providers.normalization import MAX_COLUMNS
 from stock_desk.market.types import FailureReason, ProviderId
 
 
@@ -401,6 +409,791 @@ def test_akshare_fundamentals_passes_the_canonical_exchange_to_the_sdk(
     assert result.source_url == (
         "https://emweb.securities.eastmoney.com/pc_hsf10/pages/index.html"
     )
+
+
+def test_akshare_projects_real_141_column_fundamentals_before_global_guard() -> None:
+    main_fields = {
+        "SECUCODE",
+        "SECURITY_CODE",
+        "SECURITY_NAME_ABBR",
+        "REPORT_DATE",
+        "NOTICE_DATE",
+        "EPSJB",
+        "BPS",
+        "TOTALOPERATEREVE",
+        "PARENTNETPROFIT",
+        "KCFJCXSYJLR",
+        "ROEJQ",
+        "ZCFZL",
+        "TOTALDEPOSITS",
+        "GROSSLOANS",
+        "NET_INTEREST_MARGIN",
+    }
+    filler_count = 141 - len(main_fields)
+    rows = []
+    for index in range(101):
+        report_date = NOW - timedelta(days=90 * index)
+        row: dict[str, object] = {
+            "SECUCODE": SYMBOL,
+            "SECURITY_CODE": SYMBOL[:6],
+            "SECURITY_NAME_ABBR": "浦发银行",
+            "REPORT_DATE": report_date.strftime("%Y-%m-%d 00:00:00"),
+            "NOTICE_DATE": report_date.strftime("%Y-%m-%d 00:00:00"),
+            "EPSJB": 1.2,
+            "BPS": 12.3,
+            "TOTALOPERATEREVE": 1000 + index,
+            "PARENTNETPROFIT": 100 + index,
+            "KCFJCXSYJLR": 90 + index,
+            "ROEJQ": 10.1,
+            "ZCFZL": 91.0,
+            "TOTALDEPOSITS": 5000 + index,
+            "GROSSLOANS": 4000 + index,
+            "NET_INTEREST_MARGIN": 1.8,
+        }
+        row.update(
+            {
+                f"UNSELECTED_{column:03d}": ("TOP-SECRET" if column == 0 else column)
+                for column in range(filler_count)
+            }
+        )
+        rows.append(row)
+
+    class WideClient:
+        def stock_financial_analysis_indicator_em(self, **_kwargs: object) -> object:
+            return list(reversed(rows))
+
+        def stock_individual_notice_report(self, **_kwargs: object) -> object:
+            return []
+
+        def stock_news_em(self, **_kwargs: object) -> object:
+            return []
+
+    section = AkShareResearchSource(client=WideClient(), clock=lambda: NOW).fetch(
+        SYMBOL, ResearchSectionKind.FUNDAMENTALS
+    )
+
+    items = cast(list[dict[str, object]], section.content["items"])
+    assert MAX_COLUMNS == 128
+    assert len(rows[0]) == 141
+    assert len(items) == 24
+    assert [item["REPORT_DATE"] for item in items] == sorted(
+        (cast(str, item["REPORT_DATE"]) for item in items), reverse=True
+    )
+    assert main_fields.issuperset(items[0])
+    assert {
+        "SECUCODE",
+        "REPORT_DATE",
+        "EPSJB",
+        "TOTALOPERATEREVE",
+        "PARENTNETPROFIT",
+        "KCFJCXSYJLR",
+        "NET_INTEREST_MARGIN",
+    }.issubset(items[0])
+    assert section.content["adapter_contract"] == {
+        "fields_sha256": section.content["adapter_contract"]["fields_sha256"],
+        "maximum_items": 24,
+        "projection_version": AKSHARE_RESEARCH_PROJECTION_VERSION,
+    }
+    assert "TOP-SECRET" not in section.model_dump_json()
+    assert len(section.content_json) <= MAX_RESEARCH_TOTAL_BYTES
+
+
+def test_akshare_announcements_use_clock_bounded_window_and_preserve_provenance() -> (
+    None
+):
+    class HistoricalClient:
+        historical_total = 1950
+
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+            self.returned_shapes: list[tuple[int, int]] = []
+
+        def stock_financial_analysis_indicator_em(self, **_kwargs: object) -> object:
+            return []
+
+        def stock_individual_notice_report(self, **kwargs: object) -> object:
+            self.calls.append(kwargs)
+            assert self.historical_total == 1950
+            rows = [
+                {
+                    "代码": SYMBOL[:6],
+                    "名称": "浦发银行",
+                    "公告标题": f"公告-{index:03d}",
+                    "公告类型": "重大事项",
+                    "公告日期": (NOW - timedelta(days=index % 300)).strftime(
+                        "%Y-%m-%d"
+                    ),
+                    "网址": f"https://example.com/notices/{index}",
+                }
+                for index in range(self.historical_total)
+            ]
+            self.returned_shapes.append((len(rows), len(rows[0])))
+            return rows
+
+        def stock_news_em(self, **_kwargs: object) -> object:
+            return []
+
+    client = HistoricalClient()
+    section = AkShareResearchSource(client=client, clock=lambda: NOW).fetch(
+        SYMBOL, ResearchSectionKind.ANNOUNCEMENTS
+    )
+
+    assert client.calls == [
+        {
+            "security": SYMBOL[:6],
+            "symbol": "全部",
+            "begin_date": "20240706",
+            "end_date": "20250706",
+        }
+    ]
+    assert AKSHARE_ANNOUNCEMENT_WINDOW_DAYS == 366
+    assert client.returned_shapes == [(1_950, 6)]
+    items = cast(list[dict[str, object]], section.content["items"])
+    assert len(items) == 256
+    assert [cast(str, item["公告日期"]) for item in items] == sorted(
+        (cast(str, item["公告日期"]) for item in items), reverse=True
+    )
+    assert all(
+        {"代码", "公告日期", "网址"}.issubset(item) and len(item) <= 6 for item in items
+    )
+    assert section.source_url == "https://example.com/notices/0"
+    assert section.content["adapter_contract"] == {
+        "fields_sha256": section.content["adapter_contract"]["fields_sha256"],
+        "maximum_items": 256,
+        "projection_version": AKSHARE_RESEARCH_PROJECTION_VERSION,
+        "window_days": 366,
+    }
+    fields_digest = cast(str, section.content["adapter_contract"]["fields_sha256"])
+    assert fields_digest.startswith("sha256:")
+    assert len(fields_digest) == 71
+
+    class HistoricalModule:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def stock_individual_notice_report(self, **kwargs: object) -> object:
+            self.calls.append(kwargs)
+            return client.stock_individual_notice_report(**kwargs)
+
+    module = HistoricalModule()
+    direct_rows = AkShareResearchSdkFacade(
+        module=module,
+        clock=lambda: NOW,
+    ).stock_individual_notice_report(
+        security=SYMBOL[:6],
+        symbol="全部",
+        begin_date="20240706",
+        end_date="20250706",
+    )
+    assert len(cast(list[object], direct_rows)) == 256
+    assert module.calls == [client.calls[-1]]
+    assert client.returned_shapes == [(1_950, 6), (1_950, 6)]
+
+
+def test_akshare_rejects_naive_clock_before_requesting_a_bounded_window() -> None:
+    class NeverCalledClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def stock_financial_analysis_indicator_em(self, **_kwargs: object) -> object:
+            raise AssertionError("not used")
+
+        def stock_individual_notice_report(self, **_kwargs: object) -> object:
+            self.calls += 1
+            raise AssertionError("invalid clock must fail before SDK call")
+
+        def stock_news_em(self, **_kwargs: object) -> object:
+            raise AssertionError("not used")
+
+    client = NeverCalledClient()
+
+    with pytest.raises(ProviderInvalidResponse):
+        AkShareResearchSource(
+            client=client,
+            clock=lambda: datetime(2025, 7, 6, 9),
+        ).fetch(SYMBOL, ResearchSectionKind.ANNOUNCEMENTS)
+
+    assert client.calls == 0
+
+
+@pytest.mark.parametrize(
+    ("kind", "row"),
+    [
+        (
+            ResearchSectionKind.FUNDAMENTALS,
+            {"REPORT_DATE": "2025-03-31", "EPSJB": 1.0},
+        ),
+        (
+            ResearchSectionKind.ANNOUNCEMENTS,
+            {"代码": "600000", "公告日期": "2025-07-04"},
+        ),
+        (
+            ResearchSectionKind.NEWS,
+            {
+                "关键词": "600000",
+                "发布时间": "2025-07-04 10:00:00",
+            },
+        ),
+    ],
+)
+def test_akshare_projection_fails_closed_when_identity_date_or_url_is_missing(
+    kind: ResearchSectionKind,
+    row: dict[str, object],
+) -> None:
+    class MissingFieldClient:
+        def stock_financial_analysis_indicator_em(self, **_kwargs: object) -> object:
+            return [row]
+
+        def stock_individual_notice_report(self, **_kwargs: object) -> object:
+            return [row]
+
+        def stock_news_em(self, **_kwargs: object) -> object:
+            return [row]
+
+    with pytest.raises(ProviderInvalidResponse) as captured:
+        AkShareResearchSource(client=MissingFieldClient(), clock=lambda: NOW).fetch(
+            SYMBOL, kind
+        )
+
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+
+
+def test_akshare_projection_checks_identity_before_dropping_older_rows() -> None:
+    rows = [
+        {
+            "SECUCODE": SYMBOL,
+            "REPORT_DATE": (NOW - timedelta(days=index)).strftime("%Y-%m-%d 00:00:00"),
+            "EPSJB": 1.0,
+        }
+        for index in range(24)
+    ]
+    rows.append(
+        {
+            "SECUCODE": "000001.SZ",
+            "REPORT_DATE": "2000-01-01 00:00:00",
+            "EPSJB": 2.0,
+        }
+    )
+
+    class ConflictingOldRowClient:
+        def stock_financial_analysis_indicator_em(self, **_kwargs: object) -> object:
+            return rows
+
+        def stock_individual_notice_report(self, **_kwargs: object) -> object:
+            return []
+
+        def stock_news_em(self, **_kwargs: object) -> object:
+            return []
+
+    with pytest.raises(ProviderInvalidResponse):
+        AkShareResearchSource(
+            client=ConflictingOldRowClient(), clock=lambda: NOW
+        ).fetch(SYMBOL, ResearchSectionKind.FUNDAMENTALS)
+
+
+@pytest.mark.parametrize(
+    "report_date",
+    [
+        date(2025, 3, 31),
+        datetime(2025, 3, 31, tzinfo=timezone.utc),
+        "20250331",
+        "2025-03-31",
+        "2025-03-31 00:00:00",
+        "2025/03/31 00:00:00",
+        "2025-03-31T00:00:00+08:00",
+    ],
+)
+def test_akshare_projection_accepts_every_supported_research_date_format(
+    report_date: object,
+) -> None:
+    class DateClient:
+        def stock_financial_analysis_indicator_em(self, **_kwargs: object) -> object:
+            return [
+                {
+                    "SECUCODE": SYMBOL,
+                    "REPORT_DATE": report_date,
+                    "NOTICE_DATE": None,
+                    "UPDATE_DATE": "",
+                    "EPSJB": 1.0,
+                }
+            ]
+
+        def stock_individual_notice_report(self, **_kwargs: object) -> object:
+            return []
+
+        def stock_news_em(self, **_kwargs: object) -> object:
+            return []
+
+    section = AkShareResearchSource(client=DateClient(), clock=lambda: NOW).fetch(
+        SYMBOL, ResearchSectionKind.FUNDAMENTALS
+    )
+    assert len(cast(list[object], section.content["items"])) == 1
+
+
+def test_akshare_projection_validates_dates_before_row_truncation() -> None:
+    rows = [
+        {
+            "SECUCODE": SYMBOL,
+            "REPORT_DATE": (NOW - timedelta(days=index)).strftime("%Y-%m-%d 00:00:00"),
+            "NOTICE_DATE": (NOW - timedelta(days=index)).strftime("%Y-%m-%d 00:00:00"),
+            "UPDATE_DATE": (NOW - timedelta(days=index)).strftime("%Y-%m-%d 00:00:00"),
+            "EPSJB": 1.0,
+        }
+        for index in range(24)
+    ]
+
+    class DateClient:
+        def __init__(self, extra: dict[str, object]) -> None:
+            self.extra = extra
+
+        def stock_financial_analysis_indicator_em(self, **_kwargs: object) -> object:
+            return [*rows, self.extra]
+
+        def stock_individual_notice_report(self, **_kwargs: object) -> object:
+            return []
+
+        def stock_news_em(self, **_kwargs: object) -> object:
+            return []
+
+    malformed_old_row = {
+        "SECUCODE": SYMBOL,
+        "REPORT_DATE": "0000-not-a-date",
+        "EPSJB": 2.0,
+    }
+    future_optional_date = {
+        "SECUCODE": SYMBOL,
+        "REPORT_DATE": "2000-01-01 00:00:00",
+        "NOTICE_DATE": None,
+        "UPDATE_DATE": (NOW + timedelta(days=1)).strftime("%Y-%m-%d 00:00:00"),
+        "EPSJB": 2.0,
+    }
+    for extra in (malformed_old_row, future_optional_date):
+        with pytest.raises(ProviderInvalidResponse):
+            AkShareResearchSource(client=DateClient(extra), clock=lambda: NOW).fetch(
+                SYMBOL, ResearchSectionKind.FUNDAMENTALS
+            )
+
+
+def test_akshare_direct_projection_rejects_dates_after_its_completion_clock() -> None:
+    class FutureModule:
+        def stock_financial_analysis_indicator_em(self, **_kwargs: object) -> object:
+            return [
+                {
+                    "SECUCODE": SYMBOL,
+                    "REPORT_DATE": "2025-07-07 00:00:00",
+                    "EPSJB": 1.0,
+                }
+            ]
+
+    with pytest.raises(ProviderInvalidResponse):
+        AkShareResearchSdkFacade(
+            module=FutureModule(),
+            clock=lambda: NOW,
+        ).stock_financial_analysis_indicator_em(
+            symbol=SYMBOL,
+            indicator="按报告期",
+        )
+
+
+def test_akshare_dataframe_projects_columns_before_materializing_values() -> None:
+    selected_rows = [
+        {
+            "SECUCODE": SYMBOL,
+            "REPORT_DATE": "2025-03-31 00:00:00",
+            "EPSJB": 1.0,
+        }
+    ]
+    frame_columns = (
+        "SECUCODE",
+        "REPORT_DATE",
+        "EPSJB",
+        *tuple(f"UNSELECTED_{index:03d}" for index in range(138)),
+    )
+
+    class SelectedFrame:
+        shape = (1, 3)
+        columns = ("SECUCODE", "REPORT_DATE", "EPSJB")
+
+        def to_dict(self, **_kwargs: object) -> object:
+            return selected_rows
+
+    class Locator:
+        def __getitem__(self, key: object) -> object:
+            rows, requested_columns = cast(tuple[object, list[str]], key)
+            assert rows == slice(None)
+            assert requested_columns == ["SECUCODE", "REPORT_DATE", "EPSJB"]
+            return SelectedFrame()
+
+    class WideFrame:
+        shape = (1, 141)
+        loc = Locator()
+        columns = frame_columns
+
+        def to_dict(self, **_kwargs: object) -> object:
+            pytest.fail("unprojected DataFrame values must not be materialized")
+
+    class FrameModule:
+        def stock_financial_analysis_indicator_em(self, **_kwargs: object) -> object:
+            return WideFrame()
+
+    rows = AkShareResearchSdkFacade(
+        module=FrameModule(),
+        clock=lambda: NOW,
+    ).stock_financial_analysis_indicator_em(
+        symbol=SYMBOL,
+        indicator="按报告期",
+    )
+    assert rows == selected_rows
+
+
+def test_akshare_projection_rejects_long_selected_text_before_utf8_allocation() -> None:
+    class EncodeSpy(str):
+        encoded = False
+
+        def encode(self, *_args: object, **_kwargs: object) -> bytes:
+            self.encoded = True
+            raise AssertionError("overlong text must be rejected before encode")
+
+    oversized = EncodeSpy("x" * 65_537)
+
+    class OversizedCellClient:
+        def stock_financial_analysis_indicator_em(self, **_kwargs: object) -> object:
+            return [
+                {
+                    "SECUCODE": SYMBOL,
+                    "REPORT_DATE": "2025-03-31 00:00:00",
+                    "EPSJB": oversized,
+                }
+            ]
+
+        def stock_individual_notice_report(self, **_kwargs: object) -> object:
+            return []
+
+        def stock_news_em(self, **_kwargs: object) -> object:
+            return []
+
+    with pytest.raises(ProviderInvalidResponse):
+        AkShareResearchSource(client=OversizedCellClient(), clock=lambda: NOW).fetch(
+            SYMBOL, ResearchSectionKind.FUNDAMENTALS
+        )
+    assert oversized.encoded is False
+
+
+def test_akshare_projection_keeps_exact_multibyte_cell_limit() -> None:
+    class OversizedCellClient:
+        def stock_financial_analysis_indicator_em(self, **_kwargs: object) -> object:
+            return [
+                {
+                    "SECUCODE": SYMBOL,
+                    "REPORT_DATE": "2025-03-31 00:00:00",
+                    "EPSJB": "股" * 21_846,
+                }
+            ]
+
+        def stock_individual_notice_report(self, **_kwargs: object) -> object:
+            return []
+
+        def stock_news_em(self, **_kwargs: object) -> object:
+            return []
+
+    with pytest.raises(ProviderInvalidResponse):
+        AkShareResearchSource(client=OversizedCellClient(), clock=lambda: NOW).fetch(
+            SYMBOL, ResearchSectionKind.FUNDAMENTALS
+        )
+
+
+def test_akshare_projection_bounds_dataframe_column_iteration_from_shape() -> None:
+    class Columns:
+        def __init__(self) -> None:
+            self.read_count = 0
+
+        def __iter__(self) -> object:
+            values = ("SECUCODE", "REPORT_DATE", "EPSJB")
+            for value in values:
+                self.read_count += 1
+                yield value
+            while True:
+                self.read_count += 1
+                if self.read_count > 5:
+                    raise AssertionError(
+                        "columns iterator was consumed without a bound"
+                    )
+                yield f"UNDECLARED_{self.read_count}"
+
+    columns_iter = Columns()
+
+    class UnboundedColumnsFrame:
+        shape = (1, 3)
+        columns = columns_iter
+
+        def to_dict(self, **_kwargs: object) -> object:
+            pytest.fail("invalid columns must fail before materialization")
+
+    class FrameModule:
+        def stock_financial_analysis_indicator_em(self, **_kwargs: object) -> object:
+            return UnboundedColumnsFrame()
+
+    with pytest.raises(ProviderInvalidResponse):
+        AkShareResearchSdkFacade(
+            module=FrameModule(), clock=lambda: NOW
+        ).stock_financial_analysis_indicator_em(
+            symbol=SYMBOL,
+            indicator="按报告期",
+        )
+    assert columns_iter.read_count == 4
+
+
+@pytest.mark.parametrize("kind", ["column", "mapping_key"])
+def test_akshare_projection_rejects_overlong_column_and_mapping_key(kind: str) -> None:
+    overlong = "X" * 257
+
+    class LongColumnFrame:
+        shape = (1, 4)
+        columns = ("SECUCODE", "REPORT_DATE", "EPSJB", overlong)
+
+        def to_dict(self, **_kwargs: object) -> object:
+            pytest.fail("overlong column must fail before materialization")
+
+    table: object
+    if kind == "column":
+        table = LongColumnFrame()
+    else:
+        table = {
+            "SECUCODE": SYMBOL,
+            "REPORT_DATE": "2025-03-31 00:00:00",
+            "EPSJB": 1.0,
+            overlong: "unselected",
+        }
+
+    class Module:
+        def stock_financial_analysis_indicator_em(self, **_kwargs: object) -> object:
+            return table
+
+    with pytest.raises(ProviderInvalidResponse):
+        AkShareResearchSdkFacade(
+            module=Module(), clock=lambda: NOW
+        ).stock_financial_analysis_indicator_em(
+            symbol=SYMBOL,
+            indicator="按报告期",
+        )
+
+
+@pytest.mark.parametrize(
+    ("kind", "row"),
+    [
+        (
+            ResearchSectionKind.FUNDAMENTALS,
+            {"SECUCODE": SYMBOL, "REPORT_DATE": "2025-03-31 00:00:00"},
+        ),
+        (
+            ResearchSectionKind.ANNOUNCEMENTS,
+            {
+                "代码": SYMBOL[:6],
+                "公告日期": "2025-03-31",
+                "网址": "https://example.com/notice/1",
+            },
+        ),
+        (
+            ResearchSectionKind.NEWS,
+            {
+                "关键词": SYMBOL[:6],
+                "发布时间": "2025-03-31 10:00:00",
+                "新闻链接": "https://example.com/news/1",
+            },
+        ),
+    ],
+)
+def test_akshare_projection_requires_analyzable_content(
+    kind: ResearchSectionKind,
+    row: dict[str, object],
+) -> None:
+    class ContentlessClient:
+        def stock_financial_analysis_indicator_em(self, **_kwargs: object) -> object:
+            return [row]
+
+        def stock_individual_notice_report(self, **_kwargs: object) -> object:
+            return [row]
+
+        def stock_news_em(self, **_kwargs: object) -> object:
+            return [row]
+
+    with pytest.raises(ProviderInvalidResponse):
+        AkShareResearchSource(client=ContentlessClient(), clock=lambda: NOW).fetch(
+            SYMBOL, kind
+        )
+
+
+@pytest.mark.parametrize(
+    ("kind", "row"),
+    [
+        (
+            ResearchSectionKind.ANNOUNCEMENTS,
+            {
+                "代码": SYMBOL[:6],
+                "公告标题": 1,
+                "公告日期": "2025-03-31",
+                "网址": "https://example.com/notice/1",
+            },
+        ),
+        (
+            ResearchSectionKind.NEWS,
+            {
+                "关键词": SYMBOL[:6],
+                "新闻标题": "   ",
+                "新闻内容": 1,
+                "发布时间": "2025-03-31 10:00:00",
+                "新闻链接": "https://example.com/news/1",
+            },
+        ),
+    ],
+)
+def test_akshare_text_categories_require_nonempty_text(
+    kind: ResearchSectionKind,
+    row: dict[str, object],
+) -> None:
+    class InvalidTextClient:
+        def stock_financial_analysis_indicator_em(self, **_kwargs: object) -> object:
+            return []
+
+        def stock_individual_notice_report(self, **_kwargs: object) -> object:
+            return [row]
+
+        def stock_news_em(self, **_kwargs: object) -> object:
+            return [row]
+
+    with pytest.raises(ProviderInvalidResponse):
+        AkShareResearchSource(client=InvalidTextClient(), clock=lambda: NOW).fetch(
+            SYMBOL, kind
+        )
+
+
+def test_akshare_projection_validates_every_url_before_truncation() -> None:
+    rows = [
+        {
+            "代码": SYMBOL[:6],
+            "公告标题": f"公告-{index}",
+            "公告日期": (NOW - timedelta(days=index)).strftime("%Y-%m-%d"),
+            "网址": f"https://example.com/notices/{index}",
+        }
+        for index in range(256)
+    ]
+    rows.append(
+        {
+            "代码": SYMBOL[:6],
+            "公告标题": "畸形旧公告",
+            "公告日期": "2000-01-01",
+            "网址": "javascript:alert(1)?token=TOP-SECRET",
+        }
+    )
+
+    class InvalidOldUrlClient:
+        def stock_financial_analysis_indicator_em(self, **_kwargs: object) -> object:
+            return []
+
+        def stock_individual_notice_report(self, **_kwargs: object) -> object:
+            return rows
+
+        def stock_news_em(self, **_kwargs: object) -> object:
+            return []
+
+    with pytest.raises(ProviderInvalidResponse) as captured:
+        AkShareResearchSource(client=InvalidOldUrlClient(), clock=lambda: NOW).fetch(
+            SYMBOL, ResearchSectionKind.ANNOUNCEMENTS
+        )
+    assert "TOP-SECRET" not in exception_chain_text(captured.value)
+
+
+def test_akshare_direct_and_worker_facades_apply_identical_projection(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    wide_row = {
+        "SECUCODE": SYMBOL,
+        "REPORT_DATE": "2025-03-31 00:00:00",
+        "EPSJB": 1.23,
+        **{f"UNSELECTED_{index:03d}": index for index in range(138)},
+    }
+
+    class WideModule:
+        def stock_financial_analysis_indicator_em(self, **_kwargs: object) -> object:
+            return [wide_row]
+
+    module = WideModule()
+    direct = AkShareResearchSdkFacade(module=module)
+    direct_rows = direct.stock_financial_analysis_indicator_em(
+        symbol=SYMBOL, indicator="按报告期"
+    )
+    monkeypatch.setattr(_akshare_worker, "import_optional_sdk", lambda _name: module)
+    result_path = tmp_path / "projected-worker.json"
+
+    return_code = _akshare_worker.main(
+        [
+            "stock_financial_analysis_indicator_em",
+            json.dumps({"indicator": "按报告期", "symbol": SYMBOL}),
+            str(result_path),
+        ]
+    )
+    worker_payload = json.loads(result_path.read_text(encoding="utf-8"))
+
+    assert len(wide_row) == 141
+    assert return_code == 0
+    assert worker_payload == {"status": "ok", "rows": direct_rows}
+    assert direct_rows == [
+        {
+            "EPSJB": 1.23,
+            "REPORT_DATE": "2025-03-31 00:00:00",
+            "SECUCODE": SYMBOL,
+        }
+    ]
+    worker_bytes = result_path.read_bytes()
+    assert len(worker_bytes) <= 262_144
+    assert worker_bytes == json.dumps(
+        {"status": "ok", "rows": direct_rows},
+        allow_nan=False,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    assert hashlib.sha256(worker_bytes).hexdigest()
+
+
+def test_akshare_projection_contract_hashes_the_exact_v1_field_sets() -> None:
+    required_fields = {
+        "stock_financial_analysis_indicator_em": {
+            "SECUCODE",
+            "REPORT_DATE",
+            "EPSJB",
+            "NEWCAPITALADER",
+            "HXYJBCZL",
+            "BLDKBBL",
+            "FIRST_ADEQUACY_RATIO",
+            "LOAN_ADVANCES",
+            "NON_PERFORMING_LOAN",
+            "SURRENDER_RATE_LIFE",
+            "NBV_RATE",
+        },
+        "stock_individual_notice_report": {"代码", "公告标题", "公告日期", "网址"},
+        "stock_news_em": {"关键词", "新闻标题", "新闻内容", "发布时间", "新闻链接"},
+    }
+    digests: set[str] = set()
+    for operation, required in required_fields.items():
+        fields = akshare_projection_fields(operation)
+        expected = (
+            "sha256:"
+            + hashlib.sha256(
+                json.dumps(
+                    fields,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+        )
+        contract = akshare_projection_contract(operation)
+        assert required.issubset(fields)
+        assert contract["fields_sha256"] == expected
+        digests.add(expected)
+    assert len(digests) == 3
 
 
 def test_router_skips_unsupported_sources_and_never_calls_them() -> None:
@@ -784,7 +1577,7 @@ def test_akshare_facade_source_and_normalizer_remove_secret_contexts() -> None:
     assert "TOP-SECRET" not in exception_chain_text(normalization_error.value)
 
 
-def test_source_normalization_enforces_item_count_and_item_byte_budgets() -> None:
+def test_akshare_projection_enforces_raw_row_and_normalized_item_byte_budgets() -> None:
     class OversizedClient:
         def __init__(self) -> None:
             self.fundamentals_calls = 0
@@ -792,11 +1585,25 @@ def test_source_normalization_enforces_item_count_and_item_byte_budgets() -> Non
 
         def stock_financial_analysis_indicator_em(self, **_kwargs: object) -> object:
             self.fundamentals_calls += 1
-            return [{"value": index} for index in range(MAX_RESEARCH_ITEMS + 1)]
+            return [
+                {
+                    "SECUCODE": SYMBOL,
+                    "REPORT_DATE": "2025-03-31 00:00:00",
+                    "EPSJB": index,
+                }
+                for index in range(2_049)
+            ]
 
         def stock_individual_notice_report(self, **_kwargs: object) -> object:
             self.announcement_calls += 1
-            return [{"value": "x" * MAX_RESEARCH_ITEM_BYTES}]
+            return [
+                {
+                    "代码": SYMBOL[:6],
+                    "公告标题": "x" * MAX_RESEARCH_ITEM_BYTES,
+                    "公告日期": "2025-03-31",
+                    "网址": "https://example.com/notices/oversized",
+                }
+            ]
 
         def stock_news_em(self, **_kwargs: object) -> object:
             return []
