@@ -376,6 +376,9 @@ def test_windows_acl_command_replaces_and_validates_the_complete_dacl(
     script = command[-1]
     assert str(target) not in script
     assert "STOCK_DESK_ACL_TARGET" in script
+    assert "Import-Module $securityModule -ErrorAction Stop" in script
+    assert "Microsoft.PowerShell.Security\\Set-Acl" in script
+    assert "Microsoft.PowerShell.Security\\Get-Acl" in script
     assert "SetAccessRuleProtection($true, $false)" in script
     assert "S-1-5-18" in script
     assert "S-1-5-32-544" in script

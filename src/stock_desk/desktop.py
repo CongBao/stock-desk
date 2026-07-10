@@ -89,6 +89,8 @@ def _windows_acl_command(path: Path, *, directory: bool) -> tuple[str, ...]:
     security_type = "DirectorySecurity" if directory else "FileSecurity"
     script = f"""
 $ErrorActionPreference = 'Stop'
+$securityModule = Join-Path $PSHOME 'Modules\\Microsoft.PowerShell.Security\\Microsoft.PowerShell.Security.psd1'
+Import-Module $securityModule -ErrorAction Stop
 $target = [Environment]::GetEnvironmentVariable('STOCK_DESK_ACL_TARGET', 'Process')
 if ([string]::IsNullOrWhiteSpace($target)) {{ throw 'ACL target is unavailable' }}
 $current = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
@@ -110,8 +112,8 @@ foreach ($sid in $required) {{
     )
     [void]$acl.AddAccessRule($rule)
 }}
-Set-Acl -LiteralPath $target -AclObject $acl
-$actual = Get-Acl -LiteralPath $target
+Microsoft.PowerShell.Security\\Set-Acl -LiteralPath $target -AclObject $acl
+$actual = Microsoft.PowerShell.Security\\Get-Acl -LiteralPath $target
 if (-not $actual.AreAccessRulesProtected) {{ throw 'ACL inheritance remains enabled' }}
 $allowed = @{{}}
 foreach ($sid in $required) {{ $allowed[$sid.Value] = $false }}
