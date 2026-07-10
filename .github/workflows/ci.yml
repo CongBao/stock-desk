@@ -71,7 +71,7 @@ jobs:
     name: Public tree and repository health
     needs: impact
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 12
     steps:
       - name: Check out source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -195,6 +195,7 @@ jobs:
           tests/unit/test_desktop_launcher.py
           tests/unit/test_installer_scripts.py
           tests/unit/test_repository_health.py
+          tests/unit/test_requirement_coverage.py
           tests/unit/storage/test_backup.py
           tests/integration/storage/test_restore_recovery.py
           tests/acceptance/test_installed_distribution.py

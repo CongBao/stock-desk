@@ -121,14 +121,14 @@ class ReleaseEvidenceTimeoutBudget:
             raise ValueError("evidence collection and cleanup must fit the outer gate")
 
 
-# The previous 120s collection limit was exhausted on a loaded GitHub runner. The
-# inner budget doubles that observed boundary, while the outer gate reserves a
-# separate minute for subprocess teardown, reporting, and source-integrity checks.
+# A loaded GitHub runner exhausted the previous 240s collection limit. The inner
+# budget doubles that observed boundary, while the outer gate reserves a separate
+# minute for subprocess teardown, reporting, and source-integrity checks.
 RELEASE_EVIDENCE_TIMEOUT_BUDGET: Final = ReleaseEvidenceTimeoutBudget(
-    reference_slow_run_seconds=120,
-    collection_timeout_seconds=240,
+    reference_slow_run_seconds=240,
+    collection_timeout_seconds=480,
     cleanup_margin_seconds=60,
-    outer_gate_timeout_seconds=300,
+    outer_gate_timeout_seconds=540,
 )
 
 

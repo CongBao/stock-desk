@@ -35,6 +35,7 @@ _RELEASE_DESKTOP_FILES = frozenset(
         "packaging/windows/stock-desk.iss",
         "scripts/build_installer.py",
         "scripts/ci_impact.py",
+        "scripts/check_requirement_coverage.py",
         "scripts/main_validation_proof.py",
         "scripts/verify_installed_app.py",
         "src/stock_desk/desktop.py",
@@ -50,6 +51,7 @@ _RELEASE_DESKTOP_FILES = frozenset(
         "tests/unit/test_installer_scripts.py",
         "tests/unit/test_main_validation_proof.py",
         "tests/unit/test_repository_health.py",
+        "tests/unit/test_requirement_coverage.py",
         "tests/unit/storage/test_backup.py",
     }
 )

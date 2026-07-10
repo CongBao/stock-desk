@@ -1020,9 +1020,9 @@ def test_release_evidence_timeout_budget_covers_slow_runner_and_cleanup(
 ) -> None:
     budget = checker.RELEASE_EVIDENCE_TIMEOUT_BUDGET
 
-    assert budget.reference_slow_run_seconds == 120
-    assert budget.collection_timeout_seconds == 240
-    assert budget.outer_gate_timeout_seconds == 300
+    assert budget.reference_slow_run_seconds == 240
+    assert budget.collection_timeout_seconds == 480
+    assert budget.outer_gate_timeout_seconds == 540
     assert budget.collection_timeout_seconds >= 2 * budget.reference_slow_run_seconds
     assert budget.cleanup_margin_seconds >= 60
     assert budget.collection_timeout_seconds < budget.outer_gate_timeout_seconds
@@ -1073,12 +1073,12 @@ def test_selector_collection_timeout_is_bounded_and_deterministic(
         checker.ValidationError,
         match=(
             rf"{runner} selector collection timed out after \d+\.\d{{3}}s "
-            r"\(configured 240s\)"
+            r"\(configured 480s\)"
         ),
     ):
         checker._collect_existing_selectors([item], ROOT)
 
-    assert observed_timeouts == [240]
+    assert observed_timeouts == [480]
 
 
 def test_non_goal_inventory_catches_normalized_synonyms() -> None:
