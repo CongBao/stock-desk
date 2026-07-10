@@ -123,7 +123,28 @@ EXPECTED_WIKI_FEATURE_BINDINGS = {
         "Project-Governance-and-Release-Evidence-en#release-verification",
         "发布验证 / Release verification",
         "cross-platform-release-assets",
-        "github-release:latest",
+        "github-actions:release-run-29114342142",
+    ),
+    "R-080": (
+        "Project-Governance-and-Release-Evidence#发布验证",
+        "Project-Governance-and-Release-Evidence-en#release-verification",
+        "发布验证 / Release verification",
+        "cross-platform-release-assets",
+        "github-actions:release-run-29114342142",
+    ),
+    "R-081": (
+        "Project-Governance-and-Release-Evidence#发布验证",
+        "Project-Governance-and-Release-Evidence-en#release-verification",
+        "发布验证 / Release verification",
+        "cross-platform-release-assets",
+        "github-actions:release-run-29114342142",
+    ),
+    "R-082": (
+        "Project-Governance-and-Release-Evidence#发布验证",
+        "Project-Governance-and-Release-Evidence-en#release-verification",
+        "发布验证 / Release verification",
+        "cross-platform-release-assets",
+        "github-actions:release-run-29114342142",
     ),
 }
 
@@ -994,9 +1015,10 @@ EXPECTED_WIKI_WORKFLOW_CONTENT = {
             "sha256:7e7fbcce7ee0c7a0bd58b9ebd7d7e06c0755b4195ee3a32c49dfab269147f2fe",
             "sha256:47d4a02851407ae0d2730497f7b93bd2b249f02c3f03a84b8e42a1e20c2530a0",
             "2026-07-08",
-            "公式版本 ID 待最终截图固化",
-            "待截图元数据",
-            "不是已捕获声明",
+            "公式版本 `627365c8-8ac3-4fc4-adb6-4c1e05a055b5`",
+            "价格与信号来自真实 BaoStock 数据",
+            "执行状态明确使用 `stock_desk_demo`",
+            "不是含权威停牌/涨跌停证据的生产回测",
             "不公开原始行情行",
             "五步向导",
             "公式版本",
@@ -1014,7 +1036,8 @@ EXPECTED_WIKI_WORKFLOW_CONTENT = {
             "任务中心",
             "回测结果",
             "任何配置修改都会使服务端预检失效",
-            "不填写或承诺尚未计算的胜率、收益率和交易笔数",
+            "38 笔已实现交易",
+            "胜率 36.84%",
         ),
         (
             "预检会创建任务",
@@ -1031,9 +1054,10 @@ EXPECTED_WIKI_WORKFLOW_CONTENT = {
             "sha256:7e7fbcce7ee0c7a0bd58b9ebd7d7e06c0755b4195ee3a32c49dfab269147f2fe",
             "sha256:47d4a02851407ae0d2730497f7b93bd2b249f02c3f03a84b8e42a1e20c2530a0",
             "2026-07-08",
-            "formula-version ID remains pending until final capture",
-            "future-screenshot metadata",
-            "not a capture-complete claim",
+            "formula version `627365c8-8ac3-4fc4-adb6-4c1e05a055b5`",
+            "Prices and signals in this documentation run are real BaoStock data",
+            "execution status explicitly uses the `stock_desk_demo` assumption",
+            "not a production run with authoritative suspension and price-limit evidence",
             "No raw market rows",
             "five-step wizard",
             "Formula version（公式版本）",
@@ -1051,7 +1075,8 @@ EXPECTED_WIKI_WORKFLOW_CONTENT = {
             "Task Center（任务中心）",
             "Backtest results（回测结果）",
             "Any configuration change invalidates the server preflight",
-            "does not fill in or promise an uncomputed win rate, return, or trade count",
+            "38 realized trades",
+            "36.84% win rate",
         ),
         (
             "preflight creates a task",
@@ -2688,7 +2713,7 @@ def _write_wiki(root: Path) -> None:
         for requirement_id in requirement_ids
     }
     rows: list[str] = []
-    for number in range(1, 80):
+    for number in range(1, 83):
         requirement_id = f"R-{number:03d}"
         if requirement_id in EXPECTED_WIKI_FEATURE_BINDINGS:
             (
@@ -2730,7 +2755,9 @@ def _write_wiki(root: Path) -> None:
     semantic_evidence_by_stem: dict[str, list[str]] = {}
     for binding in EXPECTED_WIKI_FEATURE_BINDINGS.values():
         stem = binding[0].partition("#")[0]
-        semantic_evidence_by_stem.setdefault(stem, []).append(binding[3])
+        evidence = semantic_evidence_by_stem.setdefault(stem, [])
+        if binding[3] not in evidence:
+            evidence.append(binding[3])
     for stem in EXPECTED_WIKI_PAGE_STEMS:
         if stem == "Home":
             chinese = """# Stock Desk 使用手册
@@ -3018,8 +3045,18 @@ Return to the task center and retry.
     redaction: pending
     disclaimer: \u4ec5\u4f5c\u529f\u80fd\u6f14\u793a\uff0c\u4e0d\u6784\u6210\u6295\u8d44\u5efa\u8bae"""
         )
+    grouped_bindings: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {}
     for requirement_id, binding in EXPECTED_WIKI_FEATURE_BINDINGS.items():
-        chinese_target, english_target, _section, screenshot_id, surface = binding
+        screenshot_id = binding[3]
+        previous = grouped_bindings.get(screenshot_id)
+        if previous is None:
+            grouped_bindings[screenshot_id] = ((requirement_id,), binding)
+        else:
+            features, existing = previous
+            assert existing == binding
+            grouped_bindings[screenshot_id] = ((*features, requirement_id), existing)
+    for screenshot_id, (features, binding) in grouped_bindings.items():
+        chinese_target, english_target, _section, _screenshot_id, surface = binding
         chinese_page = chinese_target.partition("#")[0]
         english_page = english_target.partition("#")[0]
         surface_type, separator, locator = surface.partition(":")
@@ -3034,7 +3071,7 @@ Return to the task center and retry.
     path: images/{screenshot_id}.png
     page_pairs: [{chinese_page}.md, {english_page}.md]
     caption_locales: {{zh-CN: \u8bed\u4e49\u8bc1\u636e, en: Semantic evidence}}
-    features: [{requirement_id}]
+    features: [{", ".join(features)}]
     surface: {{type: {surface_type}, locator: {locator}}}
     contains_market_data: {str(contains_market_data).lower()}
     state: pending

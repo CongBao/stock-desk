@@ -589,7 +589,28 @@ REQUIRED_WIKI_FEATURE_BINDINGS = {
         "Project-Governance-and-Release-Evidence-en#release-verification",
         "发布验证 / Release verification",
         "cross-platform-release-assets",
-        "github-release:latest",
+        "github-actions:release-run-29114342142",
+    ),
+    "R-080": (
+        "Project-Governance-and-Release-Evidence#发布验证",
+        "Project-Governance-and-Release-Evidence-en#release-verification",
+        "发布验证 / Release verification",
+        "cross-platform-release-assets",
+        "github-actions:release-run-29114342142",
+    ),
+    "R-081": (
+        "Project-Governance-and-Release-Evidence#发布验证",
+        "Project-Governance-and-Release-Evidence-en#release-verification",
+        "发布验证 / Release verification",
+        "cross-platform-release-assets",
+        "github-actions:release-run-29114342142",
+    ),
+    "R-082": (
+        "Project-Governance-and-Release-Evidence#发布验证",
+        "Project-Governance-and-Release-Evidence-en#release-verification",
+        "发布验证 / Release verification",
+        "cross-platform-release-assets",
+        "github-actions:release-run-29114342142",
     ),
 }
 
@@ -1055,9 +1076,10 @@ REQUIRED_WIKI_WORKFLOW_CONTENT = {
             "sha256:7e7fbcce7ee0c7a0bd58b9ebd7d7e06c0755b4195ee3a32c49dfab269147f2fe",
             "sha256:47d4a02851407ae0d2730497f7b93bd2b249f02c3f03a84b8e42a1e20c2530a0",
             "2026-07-08",
-            "公式版本 ID 待最终截图固化",
-            "待截图元数据",
-            "不是已捕获声明",
+            "公式版本 `627365c8-8ac3-4fc4-adb6-4c1e05a055b5`",
+            "价格与信号来自真实 BaoStock 数据",
+            "执行状态明确使用 `stock_desk_demo`",
+            "不是含权威停牌/涨跌停证据的生产回测",
             "不公开原始行情行",
             "五步向导",
             "公式版本",
@@ -1075,7 +1097,8 @@ REQUIRED_WIKI_WORKFLOW_CONTENT = {
             "任务中心",
             "回测结果",
             "任何配置修改都会使服务端预检失效",
-            "不填写或承诺尚未计算的胜率、收益率和交易笔数",
+            "38 笔已实现交易",
+            "胜率 36.84%",
         ),
         (
             "预检会创建任务",
@@ -1092,9 +1115,10 @@ REQUIRED_WIKI_WORKFLOW_CONTENT = {
             "sha256:7e7fbcce7ee0c7a0bd58b9ebd7d7e06c0755b4195ee3a32c49dfab269147f2fe",
             "sha256:47d4a02851407ae0d2730497f7b93bd2b249f02c3f03a84b8e42a1e20c2530a0",
             "2026-07-08",
-            "formula-version ID remains pending until final capture",
-            "future-screenshot metadata",
-            "not a capture-complete claim",
+            "formula version `627365c8-8ac3-4fc4-adb6-4c1e05a055b5`",
+            "Prices and signals in this documentation run are real BaoStock data",
+            "execution status explicitly uses the `stock_desk_demo` assumption",
+            "not a production run with authoritative suspension and price-limit evidence",
             "No raw market rows",
             "five-step wizard",
             "Formula version（公式版本）",
@@ -1112,7 +1136,8 @@ REQUIRED_WIKI_WORKFLOW_CONTENT = {
             "Task Center（任务中心）",
             "Backtest results（回测结果）",
             "Any configuration change invalidates the server preflight",
-            "does not fill in or promise an uncomputed win rate, return, or trade count",
+            "38 realized trades",
+            "36.84% win rate",
         ),
         (
             "preflight creates a task",
@@ -2777,7 +2802,6 @@ ACTIVE_REQUIREMENT_IDS = frozenset(f"R-{number:03d}" for number in range(1, 83))
 MARKET_SCREENSHOT_PAGE_PREFIXES = (
     "Market-",
     "Data-",
-    "Local-TDX-",
     "Stock-Pools",
     "Formula-",
     "MACD-",
@@ -2791,6 +2815,7 @@ EVIDENCE_SURFACE_TYPES = frozenset(
         "windows-installer",
         "macos-installer",
         "github-release",
+        "github-actions",
         "repository-audit",
     }
 )
@@ -4789,6 +4814,9 @@ def _surface_failure(
     elif surface_type == "github-release":
         if locator != "latest":
             return f"has an invalid GitHub Release surface: {locator}"
+    elif surface_type == "github-actions":
+        if re.fullmatch(r"release-run-[1-9][0-9]*", locator) is None:
+            return f"has an invalid GitHub Actions surface: {locator}"
     elif locator not in REPOSITORY_AUDIT_LOCATORS:
         return f"has an invalid repository audit surface: {locator}"
     return None
