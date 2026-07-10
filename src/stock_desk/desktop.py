@@ -658,9 +658,10 @@ def run_akshare_worker(arguments: Sequence[str]) -> int:
 
 
 def run_formula_smoke() -> int:
-    """Exercise the real isolated Formula worker in a frozen distribution."""
+    """Exercise frozen market storage and the real isolated Formula worker."""
     from datetime import date, datetime, time as datetime_time, timedelta
     from decimal import Decimal
+    import tempfile
     from zoneinfo import ZoneInfo
 
     from stock_desk.formula.compiler import formula_source_checksum
@@ -672,6 +673,7 @@ def run_formula_smoke() -> int:
         make_routing_manifest,
     )
     from stock_desk.market.providers.normalization import dataset_version
+    from stock_desk.market.lake import create_market_lake
     from stock_desk.market.types import (
         Adjustment,
         Bar,
@@ -683,6 +685,7 @@ def run_formula_smoke() -> int:
         ProviderId,
         TradingStatus,
     )
+    from stock_desk.storage.database import create_engine_for_url, migrate
 
     timezone = ZoneInfo("Asia/Shanghai")
     days = tuple(date(2024, 1, 2) + timedelta(days=index) for index in range(4))
@@ -745,6 +748,22 @@ def run_formula_smoke() -> int:
         upstream_data_cutoff=data_cutoff,
         upstream_adjustment=query.adjustment,
     )
+    routed = RoutedBarSuccess(result=result, manifest=manifest)
+    with tempfile.TemporaryDirectory(prefix="stock-desk-market-smoke-") as directory:
+        root = Path(directory).resolve()
+        database_url = f"sqlite:///{root / 'catalog.db'}"
+        migrate(database_url)
+        engine = create_engine_for_url(database_url)
+        try:
+            lake = create_market_lake(engine=engine, root=root / "market")
+            stored = lake.write(routed)
+            if (
+                lake.read(stored.manifest_record_id) != routed
+                or lake.read_latest_exact(query) != routed
+            ):
+                return 1
+        finally:
+            engine.dispose()
     source = "X:C;"
     request = json.dumps(
         {
@@ -755,9 +774,7 @@ def run_formula_smoke() -> int:
                 "checksum": formula_source_checksum(source),
             },
             "parameters": [],
-            "routed": RoutedBarSuccess(result=result, manifest=manifest).model_dump(
-                mode="json"
-            ),
+            "routed": routed.model_dump(mode="json"),
             "source": source,
         },
         ensure_ascii=True,

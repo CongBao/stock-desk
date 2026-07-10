@@ -38,7 +38,7 @@ RELEASE_EXPORT_DIGESTS = {
     "v0.4.0": "sha256:3bd848d8d59cece6a16c0876e80c33a1d7ba692bdb301334076bd8707ae8fe47",
     "v0.5.0": "sha256:965249b81002b0fbab4e7fbd98a7f31130176579522cebf4d52e589f5eeb12ba",
 }
-HEAD_REVISION = "0011_worker_heartbeat"
+HEAD_REVISION = "0012_windows_market_payload"
 
 
 def _sha256(path: Path) -> str:

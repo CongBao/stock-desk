@@ -17,7 +17,7 @@ from urllib.request import urlopen
 
 STARTUP_TIMEOUT_SECONDS: Final = 90.0
 V050_SCHEMA_REVISION: Final = "0009_analysis_model_configs"
-CURRENT_SCHEMA_REVISION: Final = "0011_worker_heartbeat"
+CURRENT_SCHEMA_REVISION: Final = "0012_windows_market_payload"
 DISTRIBUTION_TASK_ID: Final = "00000000-0000-4000-8000-000000000500"
 _EXPECTED_DISTRIBUTION_TASK: Final = (
     "distribution.fixture",
@@ -34,9 +34,18 @@ def _read_json(path: Path) -> dict[str, Any]:
     return value
 
 
-def _wait_for_health(runtime_record: Path) -> dict[str, Any]:
+def _wait_for_health(
+    runtime_record: Path,
+    process: subprocess.Popen[bytes],
+) -> dict[str, Any]:
     deadline = time.monotonic() + STARTUP_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
+        return_code = process.poll()
+        if return_code is not None:
+            raise RuntimeError(
+                "installed Stock Desk exited before becoming healthy "
+                f"with code {return_code}"
+            )
         if runtime_record.is_file():
             record = _read_json(runtime_record)
             if record.get("host") != "127.0.0.1" or type(record.get("port")) is not int:
@@ -139,7 +148,7 @@ def _verify_frozen_internal_dispatch(
         timeout=30,
     )
     if formula.returncode != 0:
-        raise RuntimeError("frozen Formula multiprocessing smoke failed")
+        raise RuntimeError("frozen market storage and Formula smoke failed")
 
 
 def _start(
@@ -253,7 +262,7 @@ def verify_installed_app(
             ),
         )
         try:
-            first_record = _wait_for_health(runtime_record)
+            first_record = _wait_for_health(runtime_record, first)
             _assert_browser_document(first_record)
             data_dir = Path(str(first_record["data_dir"]))
             if fixture_sql is not None:
@@ -276,7 +285,7 @@ def verify_installed_app(
             ),
         )
         try:
-            second_record = _wait_for_health(runtime_record)
+            second_record = _wait_for_health(runtime_record, second)
             if (
                 Path(str(second_record["data_dir"])) != data_dir
                 or not sentinel.is_file()

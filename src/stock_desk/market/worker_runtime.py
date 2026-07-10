@@ -38,7 +38,7 @@ from stock_desk.market.compositions import (
     CompositionProvider,
 )
 from stock_desk.market.instruments import InstrumentNotFound, InstrumentRepository
-from stock_desk.market.lake import MarketLake
+from stock_desk.market.lake import MarketLake, create_market_lake
 from stock_desk.market.execution_status_lake import ExecutionStatusLake
 from stock_desk.market.pools import PoolCategory, PoolRepository, PoolRepositoryError
 from stock_desk.market.provenance import (
@@ -330,7 +330,10 @@ class ProductionMarketWorker:
         try:
             tasks = TaskRepository(engine)
             source_settings = SourceSettingsServices(engine=engine, settings=settings)
-            lake = MarketLake(engine=engine, root=data_dir / "market")
+            lake: MarketLake = create_market_lake(
+                engine=engine,
+                root=data_dir / "market",
+            )
             execution_status_lake = ExecutionStatusLake(engine)
             instruments = InstrumentRepository(engine)
             pools = PoolRepository(engine)

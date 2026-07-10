@@ -36,6 +36,15 @@ development `.env` contract. The native packaged runtime does not self-mutate,
 but its user-writable install location can be replaced or altered by the
 operating user; it is not a read-only container filesystem.
 
+Market payload storage follows the host's verified filesystem capabilities.
+POSIX deployments use immutable, content-addressed Parquet partitions plus the
+SQLite catalog. Native Windows stores the same canonical OHLCV rows inside the
+per-user SQLite catalog because its filesystem does not provide the POSIX
+descriptor and directory durability primitives required by that Parquet
+publication protocol. The Windows rows are immutable, transactionally committed,
+and revalidated against the dataset version, timestamp seal, and routing manifest
+when read. Both backends expose the same market, formula, and backtest contract.
+
 ### Source development topology
 
 `make dev` runs a source supervisor that starts FastAPI on port 8000, the durable

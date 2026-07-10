@@ -526,7 +526,10 @@ def test_verifier_reads_health_and_browser_document(
     )
     monkeypatch.setattr(verifier, "urlopen", lambda *_args, **_kwargs: next(responses))
 
-    record = verifier._wait_for_health(runtime)
+    record = verifier._wait_for_health(
+        runtime,
+        SimpleNamespace(poll=lambda: None),
+    )
     verifier._assert_browser_document(record)
 
     assert record["port"] == 43210
@@ -537,7 +540,20 @@ def test_verifier_rejects_non_loopback_runtime_record(tmp_path: Path) -> None:
     runtime.write_text('{"host":"0.0.0.0","port":80}', encoding="utf-8")
 
     with pytest.raises(RuntimeError, match="not private loopback"):
-        verifier._wait_for_health(runtime)
+        verifier._wait_for_health(
+            runtime,
+            SimpleNamespace(poll=lambda: None),
+        )
+
+
+def test_verifier_reports_process_exit_without_waiting_for_timeout(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(RuntimeError, match="exited.*code 23"):
+        verifier._wait_for_health(
+            tmp_path / "runtime.json",
+            SimpleNamespace(poll=lambda: 23),
+        )
 
 
 def test_frozen_dispatch_checks_akshare_and_formula(
@@ -597,7 +613,7 @@ def test_verifier_lifecycle_preserves_fixture_and_user_data(
     monkeypatch.setattr(verifier, "_start", lambda *args, **kwargs: processes.pop(0))
     wait_calls = 0
 
-    def wait_for_health(_path: Path) -> dict[str, object]:
+    def wait_for_health(_path: Path, _process: object) -> dict[str, object]:
         nonlocal wait_calls
         if wait_calls == 0:
             with sqlite3.connect(data_dir / "stock-desk.db") as connection:
@@ -640,7 +656,7 @@ def test_verifier_terminates_a_failed_first_start(
     monkeypatch.setattr(
         verifier,
         "_wait_for_health",
-        lambda _path: (_ for _ in ()).throw(RuntimeError("not healthy")),
+        lambda _path, _process: (_ for _ in ()).throw(RuntimeError("not healthy")),
     )
     monkeypatch.setattr(
         verifier,
