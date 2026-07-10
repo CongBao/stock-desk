@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
 
 import { ApiError } from '../../shared/api/client';
@@ -10,6 +10,7 @@ import {
   type BacktestOverview,
   type BacktestReportApi,
 } from './backtestApi';
+import { coalesceBacktestOverview } from './backtestOverviewState';
 import { BacktestReportPage } from './BacktestReportPage';
 import { backtestPollDelay, backtestPollDelays } from './backtestPolling';
 import { RunProgress } from './RunProgress';
@@ -34,6 +35,46 @@ function supportsReports(
     typeof candidate.getReplay === 'function'
   );
 }
+
+const RunLog = memo(function RunLog({
+  logs,
+  logError,
+  onRetry,
+}: {
+  readonly logs: readonly BacktestLog[];
+  readonly logError: string | null;
+  readonly onRetry: () => void;
+}) {
+  const items = useMemo(
+    () =>
+      logs.map((log) => (
+        <li key={log.ordinal}>
+          <span>{log.level}</span> {log.message}
+        </li>
+      )),
+    [logs],
+  );
+
+  return (
+    <section
+      className="run-log"
+      aria-labelledby="run-log-heading"
+      aria-live="polite"
+    >
+      <h3 id="run-log-heading">运行日志</h3>
+      {logError !== null ? (
+        <div role="alert">
+          <p>{logError}</p>
+          <button type="button" className="secondary-action" onClick={onRetry}>
+            重试读取日志
+          </button>
+        </div>
+      ) : null}
+      {logs.length === 0 ? <p>暂无日志</p> : <ol>{items}</ol>}
+    </section>
+  );
+});
+
 export function BacktestRunPage({
   api = backtestApi,
   pollDelays = backtestPollDelays,
@@ -66,6 +107,10 @@ export function BacktestRunPage({
   const [cancelRequested, setCancelRequested] = useState(false);
   const cancelLock = useRef(false);
   const cancelController = useRef<AbortController | null>(null);
+  const retryLogs = useCallback(
+    () => setLogRetryGeneration((value) => value + 1),
+    [],
+  );
 
   useEffect(() => {
     let active = true;
@@ -104,7 +149,7 @@ export function BacktestRunPage({
       try {
         const result = await api.getRun(runId, { signal: controller.signal });
         if (!active || controller.signal.aborted) return;
-        setRun(result);
+        setRun((current) => coalesceBacktestOverview(current, result));
         setError(null);
         setPermanentError(false);
         if (terminalStatuses.has(result.status)) {
@@ -155,9 +200,11 @@ export function BacktestRunPage({
         finalLogFailures = 0;
         setLogError(null);
         afterCursor = page.afterCursor ?? afterCursor;
+        const cursorAdvanced = afterCursor !== priorCursor;
         moreLogs =
           final && page.nextCursor !== null && afterCursor !== priorCursor;
         setLogs((current) => {
+          if (page.items.length === 0 && !cursorAdvanced) return current;
           const byOrdinal = new Map(
             current.map((item) => [item.ordinal, item]),
           );
@@ -310,36 +357,7 @@ export function BacktestRunPage({
           ) : null}
         </>
       ) : null}
-      <section
-        className="run-log"
-        aria-labelledby="run-log-heading"
-        aria-live="polite"
-      >
-        <h3 id="run-log-heading">运行日志</h3>
-        {logError !== null ? (
-          <div role="alert">
-            <p>{logError}</p>
-            <button
-              type="button"
-              className="secondary-action"
-              onClick={() => setLogRetryGeneration((value) => value + 1)}
-            >
-              重试读取日志
-            </button>
-          </div>
-        ) : null}
-        {logs.length === 0 ? (
-          <p>暂无日志</p>
-        ) : (
-          <ol>
-            {logs.map((log) => (
-              <li key={log.ordinal}>
-                <span>{log.level}</span> {log.message}
-              </li>
-            ))}
-          </ol>
-        )}
-      </section>
+      <RunLog logs={logs} logError={logError} onRetry={retryLogs} />
     </article>
   );
 }
