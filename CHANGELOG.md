@@ -31,6 +31,11 @@ Stage 5 integrated v1 release.
   tablet portrait/landscape, short landscape, and 200% effective zoom. Narrow
   layouts automatically collapse to accessible icons and remain manually
   expandable without component overlap.
+- AKShare research now applies the auditable
+  `akshare-research-projection-v1` contract: the latest 24 fundamental report
+  periods, a 366-day/256-item announcement boundary, and at most 100 news
+  items, while preserving required identity, date, and URL provenance and
+  retaining the existing global payload and table guards.
 - Public documentation, packaging, architecture, support, security, and release
   evidence now describe the complete v1 product instead of an intermediate
   capability stage.

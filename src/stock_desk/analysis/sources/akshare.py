@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import datetime, timedelta, timezone
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -9,6 +11,13 @@ import tempfile
 from typing import Protocol, Self
 
 from stock_desk.analysis.snapshot import ResearchSection, ResearchSectionKind
+from stock_desk.analysis.sources._akshare_projection import (
+    AKSHARE_ANNOUNCEMENT_WINDOW_DAYS,
+    AKSHARE_RESEARCH_PROJECTION_VERSION,
+    akshare_expected_identity,
+    akshare_projection_contract,
+    project_akshare_research_table,
+)
 from stock_desk.analysis.sources.base import (
     clean_provider_error,
     Clock,
@@ -27,6 +36,7 @@ from stock_desk.market.providers.sdk import (
     is_sdk_timeout,
     required_sdk_callable,
 )
+from stock_desk.market.providers.normalization import MARKET_TIMEZONE
 from stock_desk.market.types import CanonicalSymbol, ProviderId
 
 
@@ -292,18 +302,29 @@ class AkShareIsolatedSdkFacade:
         return self._call("stock_news_em", **kwargs)
 
 
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 class AkShareResearchSdkFacade:
     """Minimal facade over the three symbol-scoped AKShare research APIs."""
 
-    def __init__(self, *, module: object) -> None:
+    def __init__(self, *, module: object, clock: Clock = _utc_now) -> None:
         self._module = module
+        self._clock = clock
 
     def _call(self, operation: str, **kwargs: object) -> object:
         safe_error: ProviderClientError | None = None
         try:
-            return call_sdk(
+            table = call_sdk(
                 required_sdk_callable(self._module, operation),
                 **kwargs,
+            )
+            return project_akshare_research_table(
+                operation,
+                table,
+                expected_identity=akshare_expected_identity(operation, kwargs),
+                fetched_at=_validated_fetched_at(self._clock()),
             )
         except ProviderClientError as error:
             safe_error = clean_provider_error(error)
@@ -346,17 +367,34 @@ class AkShareResearchSource:
         code = symbol[:6]
         safe_error: ProviderClientError | None = None
         try:
+            if kind not in {
+                ResearchSectionKind.FUNDAMENTALS,
+                ResearchSectionKind.ANNOUNCEMENTS,
+                ResearchSectionKind.NEWS,
+            }:
+                raise ProviderUnsupported()
+            request_started_at = _validated_fetched_at(self._clock())
             if kind is ResearchSectionKind.FUNDAMENTALS:
-                table = self._client.stock_financial_analysis_indicator_em(
+                operation = "stock_financial_analysis_indicator_em"
+                raw_table = self._client.stock_financial_analysis_indicator_em(
                     symbol=symbol,
                     indicator="按报告期",
                 )
-                return research_section_from_table(
+                fetched_at = _validated_completion(
+                    self._clock(), started_at=request_started_at
+                )
+                table = project_akshare_research_table(
+                    operation,
+                    raw_table,
+                    expected_identity=symbol,
+                    fetched_at=fetched_at,
+                )
+                section = research_section_from_table(
                     source=self.name,
                     kind=kind,
                     symbol=symbol,
                     table=table,
-                    fetched_at=self._clock(),
+                    fetched_at=fetched_at,
                     identity_fields=("SECUCODE",),
                     expected_identity=symbol,
                     cutoff_fields=("REPORT_DATE",),
@@ -365,17 +403,34 @@ class AkShareResearchSource:
                         f"pages/index.html?type=web&code={symbol[-2:]}{code}#/cwfx"
                     ),
                 )
+                return _with_projection_contract(section, operation=operation)
             if kind is ResearchSectionKind.ANNOUNCEMENTS:
-                table = self._client.stock_individual_notice_report(
+                operation = "stock_individual_notice_report"
+                local_date = request_started_at.astimezone(MARKET_TIMEZONE).date()
+                window_start = local_date - timedelta(
+                    days=AKSHARE_ANNOUNCEMENT_WINDOW_DAYS - 1
+                )
+                raw_table = self._client.stock_individual_notice_report(
                     security=code,
                     symbol="全部",
+                    begin_date=window_start.strftime("%Y%m%d"),
+                    end_date=local_date.strftime("%Y%m%d"),
                 )
-                return research_section_from_table(
+                fetched_at = _validated_completion(
+                    self._clock(), started_at=request_started_at
+                )
+                table = project_akshare_research_table(
+                    operation,
+                    raw_table,
+                    expected_identity=code,
+                    fetched_at=fetched_at,
+                )
+                section = research_section_from_table(
                     source=self.name,
                     kind=kind,
                     symbol=symbol,
                     table=table,
-                    fetched_at=self._clock(),
+                    fetched_at=fetched_at,
                     identity_fields=("代码",),
                     expected_identity=code,
                     cutoff_fields=("公告日期",),
@@ -383,14 +438,25 @@ class AkShareResearchSource:
                     url_fields=("网址", "公告链接"),
                     default_source_url=f"https://data.eastmoney.com/notices/stock/{code}.html",
                 )
+                return _with_projection_contract(section, operation=operation)
             if kind is ResearchSectionKind.NEWS:
-                table = self._client.stock_news_em(symbol=code)
-                return research_section_from_table(
+                operation = "stock_news_em"
+                raw_table = self._client.stock_news_em(symbol=code)
+                fetched_at = _validated_completion(
+                    self._clock(), started_at=request_started_at
+                )
+                table = project_akshare_research_table(
+                    operation,
+                    raw_table,
+                    expected_identity=code,
+                    fetched_at=fetched_at,
+                )
+                section = research_section_from_table(
                     source=self.name,
                     kind=kind,
                     symbol=symbol,
                     table=table,
-                    fetched_at=self._clock(),
+                    fetched_at=fetched_at,
                     identity_fields=("关键词",),
                     expected_identity=code,
                     cutoff_fields=("发布时间",),
@@ -398,7 +464,8 @@ class AkShareResearchSource:
                     url_fields=("新闻链接",),
                     default_source_url="https://so.eastmoney.com/news/s",
                 )
-            raise ProviderUnsupported()
+                return _with_projection_contract(section, operation=operation)
+            raise ProviderInvalidResponse()
         except ProviderClientError as error:
             safe_error = clean_provider_error(error)
         except Exception as error:
@@ -410,8 +477,66 @@ class AkShareResearchSource:
         raise safe_error
 
 
+def _with_projection_contract(
+    section: ResearchSection,
+    *,
+    operation: str,
+) -> ResearchSection:
+    content: dict[str, object] = dict(section.content)
+    content["adapter_contract"] = akshare_projection_contract(operation)
+    encoded = json.dumps(
+        {
+            "kind": section.kind.value,
+            "source": ProviderId.AKSHARE.value,
+            "content": content,
+        },
+        allow_nan=False,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    digest = f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+    try:
+        return ResearchSection.model_validate(
+            {
+                "kind": section.kind,
+                "canonical_source": section.canonical_source,
+                "source_record": f"akshare:{section.kind.value}:{digest}",
+                "source_url": section.source_url,
+                "published_at": section.published_at,
+                "data_cutoff": section.data_cutoff,
+                "fetched_at": section.fetched_at,
+                "dataset_version": digest,
+                "quality_flags": section.quality_flags,
+                "route": section.route,
+                "content": content,
+            }
+        )
+    except Exception:
+        raise ProviderInvalidResponse() from None
+
+
+def _validated_fetched_at(value: object) -> datetime:
+    if (
+        not isinstance(value, datetime)
+        or value.tzinfo is None
+        or value.utcoffset() is None
+    ):
+        raise ProviderInvalidResponse()
+    return value.astimezone(timezone.utc)
+
+
+def _validated_completion(value: object, *, started_at: datetime) -> datetime:
+    completed_at = _validated_fetched_at(value)
+    if completed_at < started_at:
+        raise ProviderInvalidResponse()
+    return completed_at
+
+
 __all__ = [
     "AKSHARE_HARD_TIMEOUT_SECONDS",
+    "AKSHARE_ANNOUNCEMENT_WINDOW_DAYS",
+    "AKSHARE_RESEARCH_PROJECTION_VERSION",
     "AkShareIsolatedSdkFacade",
     "AkShareResearchClient",
     "AkShareResearchSdkFacade",
