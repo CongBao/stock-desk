@@ -478,10 +478,16 @@ def test_tag_release_generates_and_attests_sbom_and_artifacts() -> None:
     ]
     sbom_attestation = attest_steps[attest_names.index("Attest release SBOM")]
     assert str(sbom_attestation["uses"]).startswith("actions/attest@")
-    assert sbom_attestation["with"] == {
-        "subject-path": "release-assets/*.{whl,tar.gz}",
-        "sbom-path": "release-assets/stock-desk.spdx.json",
-    }
+    sbom_subject_path = sbom_attestation["with"]["subject-path"]
+    assert sbom_subject_path.splitlines() == [
+        "release-assets/*.whl",
+        "release-assets/*.tar.gz",
+    ]
+    assert "{" not in sbom_subject_path
+    assert "}" not in sbom_subject_path
+    assert (
+        sbom_attestation["with"]["sbom-path"] == "release-assets/stock-desk.spdx.json"
+    )
     for platform, suffix in (
         ("Windows", "windows-x86_64.exe"),
         ("macOS x86_64", "macos-x86_64.dmg"),
