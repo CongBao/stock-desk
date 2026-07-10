@@ -89,7 +89,10 @@ def _windows_acl_command(path: Path, *, directory: bool) -> tuple[str, ...]:
     security_type = "DirectorySecurity" if directory else "FileSecurity"
     script = f"""
 $ErrorActionPreference = 'Stop'
-$target = $args[0]
+$securityModule = Join-Path $PSHOME 'Modules\\Microsoft.PowerShell.Security\\Microsoft.PowerShell.Security.psd1'
+Import-Module $securityModule -ErrorAction Stop
+$target = [Environment]::GetEnvironmentVariable('STOCK_DESK_ACL_TARGET', 'Process')
+if ([string]::IsNullOrWhiteSpace($target)) {{ throw 'ACL target is unavailable' }}
 $current = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
 $system = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-18')
 $administrators = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
@@ -109,8 +112,8 @@ foreach ($sid in $required) {{
     )
     [void]$acl.AddAccessRule($rule)
 }}
-Set-Acl -LiteralPath $target -AclObject $acl
-$actual = Get-Acl -LiteralPath $target
+Microsoft.PowerShell.Security\\Set-Acl -LiteralPath $target -AclObject $acl
+$actual = Microsoft.PowerShell.Security\\Get-Acl -LiteralPath $target
 if (-not $actual.AreAccessRulesProtected) {{ throw 'ACL inheritance remains enabled' }}
 $allowed = @{{}}
 foreach ($sid in $required) {{ $allowed[$sid.Value] = $false }}
@@ -140,22 +143,33 @@ foreach ($sid in $required) {{
         "Bypass",
         "-Command",
         script,
-        os.fspath(path),
     )
+
+
+def _run_windows_acl(path: Path, *, directory: bool) -> None:
+    environment = os.environ.copy()
+    environment["STOCK_DESK_ACL_TARGET"] = os.fspath(path)
+    completed = subprocess.run(  # noqa: S603 -- fixed system tool and validated args
+        _windows_acl_command(path, directory=directory),
+        check=False,
+        capture_output=True,
+        env=environment,
+        text=True,
+        timeout=30,
+    )
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout).strip()
+        if detail:
+            detail = detail[-2000:].replace(os.fspath(path), "<private-runtime-path>")
+            raise RuntimeError(f"could not restrict private runtime path: {detail}")
+        raise RuntimeError("could not restrict private runtime path")
 
 
 def _restrict_owner_access(path: Path, *, directory: bool) -> None:
     os.chmod(path, 0o700 if directory else 0o600)
     if os.name != "nt":
         return
-    completed = subprocess.run(  # noqa: S603 -- fixed system tool and validated args
-        _windows_acl_command(path, directory=directory),
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if completed.returncode != 0:
-        raise RuntimeError(f"could not restrict private runtime path: {path}")
+    _run_windows_acl(path, directory=directory)
 
 
 def _create_private_directory(path: Path) -> None:

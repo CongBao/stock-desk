@@ -368,11 +368,17 @@ def test_windows_acl_command_replaces_and_validates_the_complete_dacl(
     monkeypatch.setenv("USERDOMAIN", "DESKTOP")
     monkeypatch.setenv("USERNAME", "owner")
 
-    command = desktop._windows_acl_command(tmp_path / "runtime", directory=True)
+    target = tmp_path / "runtime user's 数据"
+    command = desktop._windows_acl_command(target, directory=True)
 
     assert command[0].endswith("System32/WindowsPowerShell/v1.0/powershell.exe")
-    assert command[-1] == str(tmp_path / "runtime")
-    script = command[-2]
+    assert command[-2] == "-Command"
+    script = command[-1]
+    assert str(target) not in script
+    assert "STOCK_DESK_ACL_TARGET" in script
+    assert "Import-Module $securityModule -ErrorAction Stop" in script
+    assert "Microsoft.PowerShell.Security\\Set-Acl" in script
+    assert "Microsoft.PowerShell.Security\\Get-Acl" in script
     assert "SetAccessRuleProtection($true, $false)" in script
     assert "S-1-5-18" in script
     assert "S-1-5-32-544" in script
@@ -380,6 +386,29 @@ def test_windows_acl_command_replaces_and_validates_the_complete_dacl(
     assert "GetAccessRules($true, $true" in script
     assert "Unexpected ACL principal" in script
     assert "Required ACL principal is missing" in script
+
+
+def test_windows_acl_target_is_passed_only_in_the_child_environment(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    desktop = _desktop()
+    target = tmp_path / "runtime user's 数据"
+    target.mkdir()
+    calls: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        desktop.subprocess,
+        "run",
+        lambda *_args, **kwargs: (
+            calls.append(kwargs) or type("Completed", (), {"returncode": 0})()
+        ),
+    )
+
+    desktop._run_windows_acl(target, directory=True)
+
+    assert calls[0]["env"]["STOCK_DESK_ACL_TARGET"] == str(target)
+    assert calls[0]["timeout"] == 30
 
 
 def test_internal_akshare_mode_rejects_an_unknown_operation(tmp_path: Path) -> None:
