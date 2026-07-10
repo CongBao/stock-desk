@@ -48,8 +48,10 @@ def test_checksum_manifest_is_flat_and_reproducible(tmp_path: Path) -> None:
 
     checksum = build_installer._write_checksum(artifact)
 
-    assert build_installer._sha256(artifact) in checksum.read_text(encoding="ascii")
-    assert checksum.read_text(encoding="ascii").endswith("  artifact.dmg\n")
+    assert checksum.read_bytes() == (
+        f"{build_installer._sha256(artifact)}  artifact.dmg\n".encode("ascii")
+    )
+    assert b"\r" not in checksum.read_bytes()
 
 
 def test_installer_manifest_writer_binds_artifact_and_source_identity(
