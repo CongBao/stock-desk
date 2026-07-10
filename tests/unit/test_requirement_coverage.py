@@ -64,7 +64,7 @@ def test_mapping_cli_collects_every_existing_selector() -> None:
     )
 
     assert result.returncode == 0, result.stderr
-    assert "77/77 requirements mapped" in result.stdout
+    assert "82/82 requirements mapped" in result.stdout
     assert "10/10 non-goals mapped to absence checks" in result.stdout
     assert "planned/manual evidence explicitly enumerated" in result.stdout
 
@@ -115,13 +115,13 @@ def test_manifest_has_exact_ids_and_unique_semantics(matrix: dict[str, object]) 
     assert isinstance(requirements, list)
     assert isinstance(non_goals, list)
     assert [item["id"] for item in requirements] == [
-        f"R-{number:03d}" for number in range(1, 78)
+        f"R-{number:03d}" for number in range(1, 83)
     ]
     assert [item["id"] for item in non_goals] == [
         f"N-{number:03d}" for number in range(1, 11)
     ]
     behavior_keys = [item["behavior_key"] for item in requirements + non_goals]
-    assert len(behavior_keys) == len(set(behavior_keys)) == 87
+    assert len(behavior_keys) == len(set(behavior_keys)) == 92
     assert all(item["acceptance"].strip() for item in requirements + non_goals)
     assert all(item["source_refs"] for item in requirements + non_goals)
     assert all(
@@ -188,7 +188,7 @@ def test_release_documentation_contract_is_chinese_first_and_uses_real_market_da
         for evidence in by_id["R-074"]["evidence"]
         if evidence.get("procedure_id") == "wiki-screenshot-review"
     )
-    assert screenshot_review["completed"] is False
+    assert screenshot_review["completed"] is True
     assert screenshot_review["final_artifact_contract"] == (
         "The matrix maps every shipped feature to a public page and validated "
         "release-candidate screenshot, records symbol, source, cutoff date, "
@@ -206,12 +206,62 @@ def test_release_documentation_contract_is_chinese_first_and_uses_real_market_da
     )
 
 
+def test_late_confirmed_requirements_preserve_scope_and_deadline_semantics(
+    matrix: dict[str, object],
+) -> None:
+    by_id = {item["id"]: item for item in matrix["requirements"]}
+
+    assert by_id["R-078"]["acceptance"] == (
+        "Public README.md and GitHub Wiki use Simplified Chinese as their default "
+        "entry and provide a clear switch to English."
+    )
+    assert by_id["R-079"]["acceptance"] == (
+        "Market-quote and candlestick screenshots in public README.md and GitHub "
+        "Wiki use real stock data rather than obviously fabricated synthetic market "
+        "data; different feature pages may use different real stocks best suited to "
+        "each explanation."
+    )
+    assert by_id["R-080"]["acceptance"] == (
+        "From the user request on 2026-07-10, the target is to publish the formal "
+        "v1.0.0 GitHub Release within 20 hours; completing the release has highest "
+        "priority without weakening main CI, release-candidate validation, installer "
+        "verification, security scanning, checksums, SBOM, or signing and attestation "
+        "gates, while non-blocking Wiki screenshots and final archival may run in "
+        "parallel or after publication."
+    )
+    assert by_id["R-081"]["acceptance"] == (
+        "The v1.0.0 GitHub Release should make a best effort to publish by "
+        "2026-07-10 16:00 CST and must publish no later than 2026-07-11 07:00 CST; "
+        "schedule pressure cannot skip or weaken any R-080 release gate."
+    )
+    assert by_id["R-082"]["acceptance"] == (
+        "If the next v1.0.0 Release still fails, duplicate full-suite testing of the "
+        "same commit across pull requests, main CI, and Release is eliminated first: "
+        "pull requests run change-impact tests and fixed critical gates; main runs "
+        "full CI, E2E, performance, and security checks for the final merge commit "
+        "and emits immutable validation proof; Release reuses that proof only when "
+        "tag, commit SHA, source and lock files, workflows, and build inputs match "
+        "exactly; Release-specific Windows and macOS native builds, clean installs, "
+        "checksums, SBOM, attestation, and signing-status verification remain "
+        "mandatory, and any fingerprint mismatch rejects reuse."
+    )
+
+    for requirement_id in ("R-078", "R-079", "R-080", "R-081", "R-082"):
+        manual = [
+            evidence
+            for evidence in by_id[requirement_id]["evidence"]
+            if evidence["state"] == "manual"
+        ]
+        assert manual
+        assert all(evidence["completed"] is True for evidence in manual)
+
+
 def test_manifest_matches_the_frozen_authoritative_registry(
     checker: ModuleType,
     matrix: dict[str, object],
 ) -> None:
     registry = checker.CANONICAL_REQUIREMENTS
-    assert list(registry) == [f"R-{number:03d}" for number in range(1, 78)]
+    assert list(registry) == [f"R-{number:03d}" for number in range(1, 83)]
     assert list(checker.AUTHORITATIVE_BEHAVIOR_KEYS) == list(registry)
     assert list(checker.AUTHORITATIVE_ACCEPTANCE_SHA256) == list(registry)
 
@@ -480,7 +530,7 @@ def test_no_planned_evidence_remains_before_release(
     assert planned == {}
 
 
-def test_release_acceptance_manual_review_is_complete_but_final_audit_is_deferred(
+def test_release_acceptance_and_final_audit_manual_reviews_are_complete(
     matrix: dict[str, object],
 ) -> None:
     by_id = {item["id"]: item for item in matrix["requirements"]}
@@ -505,7 +555,7 @@ def test_release_acceptance_manual_review_is_complete_but_final_audit_is_deferre
         "R-065": True,
     }
     assert final_audit
-    assert not any(final_audit.values())
+    assert all(final_audit.values())
 
     reviewed_release_evidence = {
         "R-066": (
@@ -554,7 +604,7 @@ def test_release_acceptance_manual_review_is_complete_but_final_audit_is_deferre
     )
 
 
-def test_release_mode_rejects_planned_and_incomplete_manual_evidence() -> None:
+def test_release_mode_accepts_completed_post_release_evidence() -> None:
     result = subprocess.run(
         [sys.executable, str(SCRIPT), "--mode", "release"],
         cwd=ROOT,
@@ -563,9 +613,9 @@ def test_release_mode_rejects_planned_and_incomplete_manual_evidence() -> None:
         check=False,
     )
 
-    assert result.returncode == 1
-    assert "planned evidence" not in result.stderr
-    assert "incomplete manual evidence" in result.stderr
+    assert result.returncode == 0, result.stderr
+    assert "82/82 requirements mapped" in result.stdout
+    assert "0 planned" in result.stdout
 
 
 def test_duplicate_yaml_keys_are_rejected(checker: ModuleType, tmp_path: Path) -> None:
@@ -689,19 +739,19 @@ def test_exact_schema_and_status_strength_are_enforced(
     message: str,
 ) -> None:
     changed = copy.deepcopy(matrix)
-    item = (
-        next(
+    item = changed["requirements"][0]
+    if message == "verified item":
+        item = next(
             requirement
             for requirement in changed["requirements"]
             if requirement["status"] == "mapped"
             and any(
-                evidence["state"] == "manual" and not evidence["completed"]
-                for evidence in requirement["evidence"]
+                evidence["state"] == "manual" for evidence in requirement["evidence"]
             )
         )
-        if message == "verified item"
-        else changed["requirements"][0]
-    )
+        next(
+            evidence for evidence in item["evidence"] if evidence["state"] == "manual"
+        )["completed"] = False
     mutation(item)
 
     with pytest.raises(checker.ValidationError, match=message):

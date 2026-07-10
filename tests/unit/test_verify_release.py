@@ -1286,6 +1286,14 @@ def test_candidate_and_final_release_require_complete_requirement_evidence(
     assert evidence_gate in runner.calls
 
 
+def test_candidate_full_python_gate_uses_measured_suite_timeout() -> None:
+    gates = verify_release_module._candidate_gates(target_performance=False)
+    python_gate = next(gate for gate in gates if gate.command == ("make", "test"))
+
+    assert python_gate.timeout_seconds == 60 * 60
+    assert python_gate.timeout_seconds > 30 * 60
+
+
 @pytest.mark.parametrize(
     "payload",
     [

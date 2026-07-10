@@ -28,7 +28,7 @@ def test_stable_ids_are_bound_to_the_authoritative_acceptance_meaning() -> None:
     requirements = matrix["requirements"]
 
     assert [item["id"] for item in requirements] == [
-        f"R-{number:03d}" for number in range(1, 78)
+        f"R-{number:03d}" for number in range(1, 83)
     ]
     assert {item["id"]: item["behavior_key"] for item in requirements} == (
         checker.AUTHORITATIVE_BEHAVIOR_KEYS
@@ -46,6 +46,10 @@ def test_stable_ids_are_bound_to_the_authoritative_acceptance_meaning() -> None:
     assert (
         checker.AUTHORITATIVE_BEHAVIOR_KEYS["R-077"]
         == "responsive_ui_across_screen_ratios"
+    )
+    assert (
+        checker.AUTHORITATIVE_BEHAVIOR_KEYS["R-082"]
+        == "exact_main_proof_reuse_without_release_gate_loss"
     )
 
 

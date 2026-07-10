@@ -216,7 +216,7 @@ CANONICAL_REQUIREMENTS: dict[str, dict[str, Any]] = {
     'R-059': _authority('analysis', 'user_visible', 'side_by_side_analysis_and_evidence', 4, '462f8a83ac2e56f11507b1838117d0cb264419ab22fdd1b55d847592a9a1af49', ('multi-agent-analysis', 'side-by-side-conclusion-and-evidence', 'open-completed-report')),
     'R-060': _authority('platform', 'user_visible', 'stock_desk_name_and_repository_identity', 0, '07db35ef7975db0e31c12922d09fed927bca75ca9357531c80c8d6075f22993f', ('market-data-charting', 'product-identity', 'open-product')),
     'R-061': _authority('operations', 'operational', 'canonical_github_remote', 5, 'f83e8239ca6f171258f5ec341bb73e9f776a058bb76b12cf4000786c4ee1b96d', ('delivery-governance', 'public-repository-and-remote-identity', 'verify-stock-desk-repository-and-remote')),
-    'R-062': _authority('operations', 'operational', 'congbao_commit_identity', 5, '4ef2172bc02ef3c27dd979b585d89913ae74701d241a70783dff23686cd1952a', ('delivery-governance', 'git-object-identity', 'verify-commits-and-tag')),
+    'R-062': _authority('operations', 'operational', 'congbao_commit_identity', 5, '869555b05458fd99ee1cae355ab010b118b245e8eaf431794fea18324f77ff21', ('delivery-governance', 'git-object-identity', 'verify-commits-and-tag')),
     'R-063': _authority('operations', 'operational', 'dedicated_github_ssh_identity', 5, '42d23044b02be4ea9a68c7b774265ca9787e9e72e4c74ac430c4904366208e94', ('delivery-governance', 'github-ssh-and-tag-signing', 'verify-remote-key-and-signed-tag')),
     'R-064': _authority('operations', 'operational', 'canonical_workspace_checkout', 5, 'b6bb0eb0840ffa5a84e76a63ce97882d9c59f69fd3ed9e556485c6a2773e5c65', ('delivery-governance', 'canonical-delivery-checkout', 'verify-session-checkout')),
     'R-065': _authority('operations', 'operational', 'main_is_default_and_published_upstream', 5, '1c688c93bc05d8995d0d8a12a63fe715d862800796cd57254a8efb0d34d54570', ('delivery-governance', 'main-is-default-and-published-upstream', 'verify-authoritative-requirement')),
@@ -232,6 +232,11 @@ CANONICAL_REQUIREMENTS: dict[str, dict[str, Any]] = {
     'R-075': _authority('publication', 'publication', 'wiki_is_complete_and_bilingual', 5, 'b652e52ccc0a8977baa38f7dca45ea40cb8042118600c0e5bebfade70abb9633', ('release-publication', 'reciprocal-bilingual-wiki', 'navigate-language-pair')),
     'R-076': _authority('publication', 'publication', 'source_free_windows_and_macos_installers', 5, '5f9e292b05b9eb53306b6d59941c94e79d952ed65f5c25f8936349a78fee7d0f', ('release-packaging', 'source-checkout-free-installation', 'install-and-first-launch-windows'), ('release-packaging', 'source-checkout-free-installation', 'install-and-first-launch-macos')),
     'R-077': _authority('platform', 'user_visible', 'responsive_ui_across_screen_ratios', 5, 'fe7d96bc05f113cb91a0aa3773a229f729aec23218eedc0e0c50fd2e6d15a753', ('market-data-charting', 'responsive-navigation-and-nonoverlap', 'narrow-screen-auto-collapse'), ('market-data-charting', 'responsive-navigation-and-nonoverlap', 'manual-navigation-toggle'), ('market-data-charting', 'responsive-navigation-and-nonoverlap', 'preserve-layout-at-supported-ratios'), ('release-quality', 'strengthened-all-route-responsive-ui', 'verify-all-routes-ratios-icons-and-nonoverlap')),
+    'R-078': _authority('publication', 'publication', 'chinese_default_readme_and_wiki', 5, '6607c75bac97ae00a7f19adb87510f1ac16c4125ca16198e2afa0888eb39d754', ('release-publication', 'verified-reciprocal-readme', 'verify-readme-pair'), ('release-publication', 'reciprocal-bilingual-wiki', 'navigate-language-pair')),
+    'R-079': _authority('publication', 'publication', 'real_stock_data_in_public_screenshots', 5, '27c8065004c7e434674b0c21b2e0e35df31f14443918ce464d3b6c1a0187cedf', ('release-publication', 'feature-wiki-screenshots-and-steps', 'validate-feature-page-image-and-steps')),
+    'R-080': _authority('operations', 'operational', 'twenty_hour_release_priority_without_gate_weakening', 5, '032d47d73c6187570b7e03ffc17cd96a8ee7d0b8d09abc155c2fc33a702736ac', ('delivery-governance', 'time-bounded-v1-release-priority', 'review-twenty-hour-target-and-preserved-gates')),
+    'R-081': _authority('operations', 'operational', 'preferred_and_hard_v1_release_deadlines', 5, 'fbd32a5fc83610021312a7000e6e07121fd78995f0457b8a2844f0cb3577b184', ('delivery-governance', 'time-bounded-v1-release-priority', 'review-preferred-and-hard-deadlines')),
+    'R-082': _authority('operations', 'operational', 'exact_main_proof_reuse_without_release_gate_loss', 5, '8771c9c3772ad765381985803f0cb43f2783e56a110248af239224dcc99453e1', ('delivery-governance', 'exact-main-validation-proof-reuse', 'select-pr-and-main-test-scope'), ('delivery-governance', 'exact-main-validation-proof-reuse', 'reuse-exact-main-proof-for-release'), ('delivery-governance', 'exact-main-validation-proof-reuse', 'reject-mismatched-proof-or-release-input')),
 }
 
 CANONICAL_NON_GOALS: dict[str, dict[str, Any]] = {
@@ -1006,15 +1011,15 @@ def validate_manifest(
         raise ValidationError("schema_version must be integer 1")
     requirements = _expect_list(matrix["requirements"], "requirements")
     non_goals = _expect_list(matrix["non_goals"], "non_goals")
-    expected_requirements = [f"R-{number:03d}" for number in range(1, 78)]
+    expected_requirements = [f"R-{number:03d}" for number in range(1, 83)]
     expected_non_goals = [f"N-{number:03d}" for number in range(1, 11)]
     if len(requirements) != len(expected_requirements):
-        raise ValidationError("requirements must contain exactly R-001 through R-077")
+        raise ValidationError("requirements must contain exactly R-001 through R-082")
     if len(non_goals) != len(expected_non_goals):
         raise ValidationError("non_goals must contain exactly N-001 through N-010")
     if list(CANONICAL_REQUIREMENTS) != expected_requirements:
         raise ValidationError(
-            "canonical requirement registry must contain exactly R-001 through R-077"
+            "canonical requirement registry must contain exactly R-001 through R-082"
         )
     if list(CANONICAL_NON_GOALS) != expected_non_goals:
         raise ValidationError(
@@ -1025,7 +1030,7 @@ def validate_manifest(
         or list(AUTHORITATIVE_ACCEPTANCE_SHA256) != expected_requirements
     ):
         raise ValidationError(
-            "authoritative requirement contract must contain exactly R-001 through R-077"
+            "authoritative requirement contract must contain exactly R-001 through R-082"
         )
     if list(AUTHORITATIVE_NON_GOAL_BEHAVIOR_KEYS) != expected_non_goals:
         raise ValidationError(
@@ -1121,7 +1126,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"requirement coverage error: {exc}", file=sys.stderr)
         return 1
     print(
-        f"{counts['requirements']}/77 requirements mapped; "
+        f"{counts['requirements']}/{len(CANONICAL_REQUIREMENTS)} requirements mapped; "
         f"{counts['non_goals']}/10 non-goals mapped to absence checks; "
         "existing selectors collect successfully; "
         "planned/manual evidence explicitly enumerated "

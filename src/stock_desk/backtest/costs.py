@@ -132,7 +132,7 @@ def price_order(
     if not isinstance(model, CostModel):
         raise TypeError("model must be a CostModel")
 
-    reference = _quantize(reference_open, PRICE_QUANTUM)
+    reference = normalize_reference_price(reference_open)
     direction = Decimal("1") if side == "buy" else Decimal("-1")
     with localcontext() as context:
         context.prec = _calculation_precision(reference, model.slippage_bps)
@@ -176,6 +176,13 @@ def price_order(
         commission=commission,
         sell_tax=sell_tax,
     )
+
+
+def normalize_reference_price(value: Decimal) -> Decimal:
+    """Normalize a market reference price to the frozen cost-contract precision."""
+
+    _validate_positive_decimal(value, field_name="reference_open")
+    return _quantize(value, PRICE_QUANTUM)
 
 
 def round_money(value: Decimal) -> Decimal:

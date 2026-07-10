@@ -52,6 +52,7 @@ GITHUB_MERGE_SUBJECT_PATTERN = re.compile(
 )
 CANDIDATE_REPORT_SCHEMA = "stock-desk-release-candidate-report-v1"
 CANDIDATE_REPORT_DIRECTORY = PurePosixPath("test-results/release")
+CANDIDATE_FULL_PYTHON_TIMEOUT_SECONDS = 60 * 60
 
 
 @dataclass(frozen=True, slots=True)
@@ -224,7 +225,12 @@ def _candidate_gates(*, target_performance: bool) -> tuple[GateCommand, ...]:
     return (
         (PRE_PUBLISH_EVIDENCE_GATE,)
         + tuple(
-            GateCommand(("make", target), timeout_seconds=1800)
+            GateCommand(
+                ("make", target),
+                timeout_seconds=(
+                    CANDIDATE_FULL_PYTHON_TIMEOUT_SECONDS if target == "test" else 1800
+                ),
+            )
             for target in (
                 "test",
                 "acceptance",

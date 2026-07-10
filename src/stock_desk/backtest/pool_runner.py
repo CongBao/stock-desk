@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass, is_dataclass
+from dataclasses import asdict, dataclass, is_dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from enum import Enum
@@ -12,7 +12,7 @@ from typing import Any
 
 from sqlalchemy import Engine
 
-from stock_desk.backtest.costs import CostModel
+from stock_desk.backtest.costs import CostModel, normalize_reference_price
 from stock_desk.backtest.events import (
     CancellationReason,
     IgnoredSignal,
@@ -120,6 +120,29 @@ def _payload(value: object) -> dict[str, object]:
     if not isinstance(converted, dict):
         raise TypeError("backtest payload must be an object")
     return converted
+
+
+def _canonical_order_events(events: tuple[OrderEvent, ...]) -> tuple[OrderEvent, ...]:
+    canonical: list[OrderEvent] = []
+    for event in events:
+        if isinstance(event, OrderFilled):
+            canonical.append(
+                replace(event, price=normalize_reference_price(event.price))
+            )
+        elif isinstance(event, OpenTradeMarked):
+            entry = normalize_reference_price(event.entry_price)
+            mark = normalize_reference_price(event.mark_price)
+            canonical.append(
+                replace(
+                    event,
+                    entry_price=entry,
+                    mark_price=mark,
+                    floating_pnl=(mark - entry) * event.quantity,
+                )
+            )
+        else:
+            canonical.append(event)
+    return tuple(canonical)
 
 
 def _trade_payload(sample: TradeSample) -> dict[str, object]:
@@ -628,7 +651,7 @@ class PoolBacktestRunner:
             sell_tax_bps=snapshot.sell_tax_bps,
             slippage_bps=snapshot.slippage_bps,
         )
-        events = execution.order_events
+        events = _canonical_order_events(execution.order_events)
         samples: list[TradeSample] = []
         search_start = 0
         for trade in execution.trades:
