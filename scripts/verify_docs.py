@@ -2773,7 +2773,7 @@ README_SCREENSHOT_CONTRADICTORY_MARKERS = {
     },
 }
 FORBIDDEN_MARKET_PROVENANCE_MARKERS = ("synthetic", "fixture", "demo", "cc0")
-ACTIVE_REQUIREMENT_IDS = frozenset(f"R-{number:03d}" for number in range(1, 80))
+ACTIVE_REQUIREMENT_IDS = frozenset(f"R-{number:03d}" for number in range(1, 83))
 MARKET_SCREENSHOT_PAGE_PREFIXES = (
     "Market-",
     "Data-",

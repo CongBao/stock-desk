@@ -973,6 +973,64 @@ requirements:
       - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: navigation auto-collapses only when crossing the narrow breakpoint, assertion: The shell automatically collapses on breakpoint entry while preserving a manual expansion choice until the breakpoint is crossed again.}
       - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: collapsed navigation renders icons without textual abbreviations, assertion: 'Every collapsed navigation entry renders an SVG icon, hides its text label, and retains a non-empty accessible name.'}
       - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/accessibility.spec.ts, selector: skip link and collapsed icon navigation remain keyboard operable, assertion: Keyboard users can skip to main content and expand the icon navigation through the labelled control with accurate expanded state.}
+  - id: R-078
+    category: publication
+    kind: publication
+    behavior_key: chinese_default_readme_and_wiki
+    acceptance: "Public README.md and GitHub Wiki use Simplified Chinese as their default entry and provide a clear switch to English."
+    source_refs: [{capability: release-publication, requirement: verified-reciprocal-readme, scenario: verify-readme-pair}, {capability: release-publication, requirement: reciprocal-bilingual-wiki, scenario: navigate-language-pair}]
+    owning_stage: 5
+    status: mapped
+    evidence:
+      - {state: existing, runner: pytest, kind: integration, path: tests/acceptance/test_release_docs.py, selector: 'tests/acceptance/test_release_docs.py::test_bilingual_readme_baseline_contains_verified_installation_and_use', assertion: The documentation gate verifies Simplified-Chinese README.md as the default and reciprocal first-line language switching.}
+      - {state: existing, runner: pytest, kind: contract, path: tests/acceptance/test_release_docs.py, selector: 'tests/acceptance/test_release_docs.py::test_wiki_publication_contract_uses_chinese_default_paths', assertion: The Wiki publication contract fixes Simplified-Chinese Home and feature pages as the default paths and requires English page pairs.}
+      - {state: manual, runner: manual, kind: manual, procedure_id: chinese-default-publication-review, artifact_kind: readme-wiki-language-entry-report, required_by_gate: final-release-audit, final_artifact_contract: The report opens the public repository and Wiki from a fresh browser session and records the Simplified-Chinese default entries plus reciprocal English switches without relying on local paths., completed: false, assertion: A reviewer confirms both public documentation surfaces open in Simplified Chinese by default and expose a clear reciprocal English switch.}
+  - id: R-079
+    category: publication
+    kind: publication
+    behavior_key: real_stock_data_in_public_screenshots
+    acceptance: "Market-quote and candlestick screenshots in public README.md and GitHub Wiki use real stock data rather than obviously fabricated synthetic market data; different feature pages may use different real stocks best suited to each explanation."
+    source_refs: [{capability: release-publication, requirement: feature-wiki-screenshots-and-steps, scenario: validate-feature-page-image-and-steps}]
+    owning_stage: 5
+    status: mapped
+    evidence:
+      - {state: existing, runner: pytest, kind: acceptance, path: tests/acceptance/test_release_docs.py, selector: 'tests/acceptance/test_release_docs.py::test_readme_screenshot_manifest_is_valid_and_binds_each_image_once', assertion: 'The README screenshot manifest binds each displayed image once and identifies real market-chart, real formula-preview, and honestly blocked real-backtest states.'}
+      - {state: existing, runner: pytest, kind: security, path: tests/unit/test_verify_docs.py, selector: 'tests/unit/test_verify_docs.py::test_repository_readme_manifest_enforces_truthful_market_provenance', assertion: The documentation verifier rejects false real-market claims and requires traceable product-supported provenance for stock-specific README screenshots.}
+      - {state: manual, runner: manual, kind: manual, procedure_id: real-stock-public-screenshot-review, artifact_kind: readme-wiki-real-market-screenshot-report, required_by_gate: final-release-audit, final_artifact_contract: 'The report enumerates each public README and Wiki market or candlestick screenshot, records its real symbol and source, and confirms that different selected stocks remain traceable real A-share instruments.', completed: false, assertion: A reviewer confirms that no public market or candlestick screenshot uses obviously fabricated synthetic data and that every selected stock is real and traceable.}
+  - id: R-080
+    category: operations
+    kind: operational
+    behavior_key: twenty_hour_release_priority_without_gate_weakening
+    acceptance: "From the user request on 2026-07-10, the target is to publish the formal v1.0.0 GitHub Release within 20 hours; completing the release has highest priority without weakening main CI, release-candidate validation, installer verification, security scanning, checksums, SBOM, or signing and attestation gates, while non-blocking Wiki screenshots and final archival may run in parallel or after publication."
+    source_refs: [{capability: delivery-governance, requirement: time-bounded-v1-release-priority, scenario: review-twenty-hour-target-and-preserved-gates}]
+    owning_stage: 5
+    status: mapped
+    evidence:
+      - {state: manual, runner: manual, kind: manual, procedure_id: twenty-hour-release-priority-review, artifact_kind: release-timing-and-gate-preservation-report, required_by_gate: final-release-audit, final_artifact_contract: 'The report records the request timestamp, actual publication timestamp, elapsed time, every preserved release gate, and any non-blocking Wiki or archival work intentionally run in parallel or after publication.', completed: false, assertion: A reviewer evaluates the 20-hour target against actual timestamps and confirms that prioritization did not weaken any required release gate.}
+  - id: R-081
+    category: operations
+    kind: operational
+    behavior_key: preferred_and_hard_v1_release_deadlines
+    acceptance: "The v1.0.0 GitHub Release should make a best effort to publish by 2026-07-10 16:00 CST and must publish no later than 2026-07-11 07:00 CST; schedule pressure cannot skip or weaken any R-080 release gate."
+    source_refs: [{capability: delivery-governance, requirement: time-bounded-v1-release-priority, scenario: review-preferred-and-hard-deadlines}]
+    owning_stage: 5
+    status: mapped
+    evidence:
+      - {state: manual, runner: manual, kind: manual, procedure_id: preferred-and-hard-release-deadline-review, artifact_kind: release-deadline-outcome-report, required_by_gate: final-release-audit, final_artifact_contract: 'The report compares the public release timestamp separately with the best-effort 2026-07-10 16:00 CST target and the mandatory 2026-07-11 07:00 CST deadline, records the actual outcome for each, and links preserved R-080 gate evidence.', completed: false, assertion: A reviewer records whether each distinct deadline outcome was met without treating the best-effort 16:00 target as a hard gate or using either deadline to weaken release verification.}
+  - id: R-082
+    category: operations
+    kind: operational
+    behavior_key: exact_main_proof_reuse_without_release_gate_loss
+    acceptance: "If the next v1.0.0 Release still fails, duplicate full-suite testing of the same commit across pull requests, main CI, and Release is eliminated first: pull requests run change-impact tests and fixed critical gates; main runs full CI, E2E, performance, and security checks for the final merge commit and emits immutable validation proof; Release reuses that proof only when tag, commit SHA, source and lock files, workflows, and build inputs match exactly; Release-specific Windows and macOS native builds, clean installs, checksums, SBOM, attestation, and signing-status verification remain mandatory, and any fingerprint mismatch rejects reuse."
+    source_refs: [{capability: delivery-governance, requirement: exact-main-validation-proof-reuse, scenario: select-pr-and-main-test-scope}, {capability: delivery-governance, requirement: exact-main-validation-proof-reuse, scenario: reuse-exact-main-proof-for-release}, {capability: delivery-governance, requirement: exact-main-validation-proof-reuse, scenario: reject-mismatched-proof-or-release-input}]
+    owning_stage: 5
+    status: mapped
+    evidence:
+      - {state: existing, runner: pytest, kind: contract, path: tests/unit/test_ci_impact.py, selector: 'tests/unit/test_ci_impact.py::test_every_push_is_full', assertion: The CI impact contract keeps every main push on the full validation profile while permitting separately tested pull-request impact profiles.}
+      - {state: existing, runner: pytest, kind: security, path: tests/unit/test_main_validation_proof.py, selector: 'tests/unit/test_main_validation_proof.py::test_verification_rejects_changed_critical_input', assertion: 'Immutable main-proof verification rejects any changed critical workflow, source, lock, or build input before reuse.'}
+      - {state: existing, runner: pytest, kind: integration, path: tests/unit/test_repository_health.py, selector: 'tests/unit/test_repository_health.py::test_release_workflow_reuses_only_the_attested_exact_main_proof', assertion: The release workflow locates and verifies only the attested proof for the exact main commit and binds native installer builds to the same source revision and fingerprint.}
+      - {state: existing, runner: pytest, kind: integration, path: tests/unit/test_repository_health.py, selector: 'tests/unit/test_repository_health.py::test_release_workflow_delegates_source_gates_to_attested_main_proof', assertion: Release omits duplicate source-suite execution only after exact proof verification while retaining release-specific build and publication work.}
+      - {state: manual, runner: manual, kind: manual, procedure_id: exact-main-proof-release-review, artifact_kind: main-proof-and-release-reuse-report, required_by_gate: final-release-audit, final_artifact_contract: 'The report links the final merge commit, full main CI run, immutable attested proof, exact release tag and commit, proof-verification result, native builds, clean installs, checksums, SBOM, attestations, and signing-status checks.', completed: false, assertion: 'A reviewer confirms the published release reused only the exact successful main proof, retained every release-specific gate, and would reject any identity or fingerprint mismatch.'}
 non_goals:
   - id: N-001
     category: backtest

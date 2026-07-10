@@ -1,10 +1,10 @@
 # v1 acceptance coverage
 
-<!-- requirements-yaml-sha256: 28918c1b803414419f551a474e92aee5144c441cda64feef523e59733068d136 -->
+<!-- requirements-yaml-sha256: f27320f5cba018901a3918e85751ea130a4380ab9fa9c2e8627bfe9ee2d37baa -->
 
 The machine-readable acceptance authority is `tests/acceptance/requirements.yml`. The digest above is checked by `scripts/check_requirement_coverage.py` so this public summary cannot silently drift from the matrix.
 
-The matrix maps the 77 authoritative requirements in their original stable-ID order and the 10 explicit non-goals in their original exclusion order. A public-safe frozen registry binds every ID to its behavior key, acceptance-text digest, metadata, and exact semantic reference set. Each entry also has an owning stage, mapping status, and assertion-level evidence.
+The matrix maps the 82 authoritative requirements in their original stable-ID order and the 10 explicit non-goals in their original exclusion order. A public-safe frozen registry binds every ID to its behavior key, acceptance-text digest, metadata, and exact semantic reference set. Each entry also has an owning stage, mapping status, and assertion-level evidence.
 
 Evidence state and requirement status are intentionally separate:
 

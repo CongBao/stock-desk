@@ -196,3 +196,73 @@ def test_trade_holding_bars_are_counted_per_position_timeline() -> None:
 
     assert tuple(sample.holding_bars for sample in samples) == (2, 4)
     assert summarize(samples).average_holding_bars == Decimal("3.000000")
+
+
+def test_trade_events_normalize_real_adjusted_prices_to_cost_contract() -> None:
+    start = datetime(2024, 1, 1, 15, tzinfo=timezone.utc)
+    entry_at = start + timedelta(days=1)
+    exit_at = start + timedelta(days=3)
+    events = (
+        OrderPending(side="buy", signal_at=start, eligible_at=entry_at),
+        OrderFilled(
+            side="buy",
+            signal_at=start,
+            filled_at=entry_at,
+            price=Decimal("256.12345678"),
+            quantity=100,
+        ),
+        OrderPending(
+            side="sell",
+            signal_at=start + timedelta(days=2),
+            eligible_at=exit_at,
+        ),
+        OrderFilled(
+            side="sell",
+            signal_at=start + timedelta(days=2),
+            filled_at=exit_at,
+            price=Decimal("271.98765432"),
+            quantity=100,
+        ),
+    )
+    execution = ExecutionResult(
+        trades=(
+            ExecutionTrade(
+                entry=ExecutionFill(entry_at, Decimal("256.12345678")),
+                exit=ExecutionFill(exit_at, Decimal("271.98765432")),
+            ),
+        ),
+        order_events=events,
+        blocked_events=(),
+        failure=None,
+    )
+    snapshot = SimpleNamespace(
+        commission_bps=Decimal("0"),
+        minimum_commission=Decimal("0"),
+        sell_tax_bps=Decimal("0"),
+        slippage_bps=Decimal("0"),
+        quantity_shares=100,
+        formula_version_id="formula-v1",
+    )
+    reference = SimpleNamespace(
+        symbol="300750.SZ",
+        signal_manifest_record_id="signal-manifest",
+        execution_manifest_record_id="execution-manifest",
+        execution_status_manifest_record_id="status-manifest",
+    )
+
+    samples = PoolBacktestRunner._trade_samples(
+        snapshot=snapshot,
+        reference=reference,
+        signal_series_id="series-v1",
+        execution=execution,
+        signal_timestamps=(start, start + timedelta(days=2)),
+    )
+
+    assert samples[0].entry_reference_open == Decimal("256.1235")
+    assert samples[0].exit_reference_open == Decimal("271.9877")
+    fill_prices = tuple(
+        event.price
+        for event in samples[0].order_events
+        if isinstance(event, OrderFilled)
+    )
+    assert fill_prices == (Decimal("256.1235"), Decimal("271.9877"))
