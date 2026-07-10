@@ -13,7 +13,7 @@ from stock_desk.storage.database import (
 )
 
 
-HEAD_REVISION = "0011_worker_heartbeat"
+HEAD_REVISION = "0012_windows_market_payload"
 CORE_TABLES = {
     "app_setting",
     "formula",

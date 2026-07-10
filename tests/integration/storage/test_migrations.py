@@ -19,7 +19,7 @@ from stock_desk.storage.metadata import Base
 from stock_desk.tasks.repository import TaskRepository
 
 
-HEAD_REVISION = "0011_worker_heartbeat"
+HEAD_REVISION = "0012_windows_market_payload"
 INSTRUMENT_TABLES = {
     "instrument_dataset",
     "instrument_dataset_item",
@@ -273,6 +273,12 @@ MARKET_TABLE_COLUMNS = {
         "dataset_version",
         "ordinal",
         "timestamp",
+        "status",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
     },
     "market_dataset_timestamp_seal": {
         "dataset_version",
@@ -711,7 +717,10 @@ def test_market_catalog_has_exact_keys_constraints_and_indexes(tmp_path: Path) -
             "ck_market_dataset_partition_year",
         }
         assert _check_names(engine, "market_dataset_timestamp") == {
-            "ck_market_dataset_timestamp_ordinal"
+            "ck_market_dataset_timestamp_ordinal",
+            "ck_market_dataset_timestamp_payload_shape",
+            "ck_market_dataset_timestamp_status",
+            "ck_market_dataset_timestamp_volume",
         }
         assert _check_names(engine, "market_dataset_timestamp_seal") == {
             "ck_market_dataset_timestamp_seal_row_count"

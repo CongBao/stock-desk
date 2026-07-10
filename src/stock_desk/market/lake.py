@@ -13,6 +13,7 @@ from pathlib import Path, PurePosixPath
 import re
 import stat
 import tempfile
+import time
 from typing import Annotated, Final, cast
 from uuid import uuid4
 
@@ -27,6 +28,7 @@ from pydantic import (
 )
 from sqlalchemy import Engine, and_, case, func, insert, select
 from sqlalchemy.engine import Connection, RowMapping
+from sqlalchemy.exc import IntegrityError, OperationalError
 
 from stock_desk.market.calendar import MARKET_TIMEZONE
 from stock_desk.market.partitions import (
@@ -87,6 +89,7 @@ _PARQUET_SCHEMA: Final[tuple[tuple[str, str], ...]] = (
     ("volume", "BIGINT"),
 )
 _TIMESTAMP_INDEX_VERSION: Final = "market-timestamps-v1"
+_PLATFORM: Final = os.name
 _CREATE_BAR_TABLE: Final[str] = """
 CREATE TABLE market_bars (
     symbol VARCHAR NOT NULL,
@@ -2973,6 +2976,27 @@ class MarketLake:
             except FileNotFoundError:
                 pass
 
+    def _timestamp_catalog_rows(
+        self,
+        routed: RoutedBarSuccess,
+    ) -> list[dict[str, object]]:
+        version = routed.result.provenance.dataset_version
+        return [
+            {
+                "dataset_version": version,
+                "ordinal": ordinal,
+                "timestamp": bar.timestamp,
+            }
+            for ordinal, bar in enumerate(routed.result.bars)
+        ]
+
+    def _validate_timestamp_catalog_payload(
+        self,
+        connection: Connection,
+        routed: RoutedBarSuccess,
+    ) -> None:
+        del connection, routed
+
     def _commit_catalog(
         self,
         routed: RoutedBarSuccess,
@@ -3025,14 +3049,7 @@ class MarketLake:
             if not stored_timestamps:
                 connection.execute(
                     insert(MarketDatasetTimestamp),
-                    [
-                        {
-                            "dataset_version": version,
-                            "ordinal": ordinal,
-                            "timestamp": timestamp,
-                        }
-                        for ordinal, timestamp in enumerate(expected_timestamps)
-                    ],
+                    self._timestamp_catalog_rows(routed),
                 )
             elif len(stored_timestamps) != len(expected_timestamps) or any(
                 ordinal != expected_ordinal
@@ -3048,6 +3065,7 @@ class MarketLake:
                 )
             ):
                 raise ValueError("dataset_version collides with timestamp evidence")
+            self._validate_timestamp_catalog_payload(connection, routed)
 
             expected_timestamp_digest = timestamp_digest(expected_timestamps)
             timestamp_seal = (
@@ -3171,3 +3189,295 @@ class MarketLake:
             and stored["byte_size"] == expected.byte_size
             and stored["physical_sha256"] == expected.physical_sha256
         )
+
+
+class SqliteMarketLake(MarketLake):
+    """Windows market storage backed by the private transactional SQLite catalog."""
+
+    _WRITE_RETRY_SECONDS: Final = 2.0
+
+    def __init__(self, *, engine: Engine, root: Path) -> None:
+        resolved_root = Path(root)
+        if not resolved_root.is_absolute():
+            raise ValueError("market lake root must be absolute")
+        self._root = Path(os.path.abspath(os.fspath(resolved_root)))
+        self._engine = engine
+        try:
+            with engine.connect() as connection:
+                self._database_identity = connection_database_identity(connection)
+        except DatabaseIdentityError as error:
+            raise MarketLakeCorruptionError(
+                "market lake database identity could not be determined"
+            ) from error
+
+    def _timestamp_catalog_rows(
+        self,
+        routed: RoutedBarSuccess,
+    ) -> list[dict[str, object]]:
+        version = routed.result.provenance.dataset_version
+        return [
+            {
+                "dataset_version": version,
+                "ordinal": ordinal,
+                "timestamp": bar.timestamp,
+                "status": bar.status.value,
+                "open": bar.open,
+                "high": bar.high,
+                "low": bar.low,
+                "close": bar.close,
+                "volume": bar.volume,
+            }
+            for ordinal, bar in enumerate(routed.result.bars)
+        ]
+
+    def _payload_rows(
+        self,
+        connection: Connection,
+        dataset_version: str,
+    ) -> tuple[RowMapping, ...]:
+        try:
+            return tuple(
+                connection.execute(
+                    select(
+                        MarketDatasetTimestamp.ordinal,
+                        MarketDatasetTimestamp.timestamp,
+                        MarketDatasetTimestamp.status,
+                        MarketDatasetTimestamp.open,
+                        MarketDatasetTimestamp.high,
+                        MarketDatasetTimestamp.low,
+                        MarketDatasetTimestamp.close,
+                        MarketDatasetTimestamp.volume,
+                    )
+                    .where(MarketDatasetTimestamp.dataset_version == dataset_version)
+                    .order_by(MarketDatasetTimestamp.ordinal)
+                ).mappings()
+            )
+        except (TypeError, ValueError) as error:
+            raise _IntegrityValidationError(
+                "market payload rows could not be decoded"
+            ) from error
+
+    def _validate_timestamp_catalog_payload(
+        self,
+        connection: Connection,
+        routed: RoutedBarSuccess,
+    ) -> None:
+        rows = self._payload_rows(
+            connection,
+            routed.result.provenance.dataset_version,
+        )
+        if len(rows) != len(routed.result.bars):
+            raise ValueError("dataset_version collides with market payload")
+        for expected_ordinal, (stored, bar) in enumerate(
+            zip(rows, routed.result.bars, strict=True)
+        ):
+            if (
+                stored["ordinal"] != expected_ordinal
+                or not _same_instant(stored["timestamp"], bar.timestamp)
+                or stored["status"] != bar.status.value
+                or stored["open"] != bar.open
+                or stored["high"] != bar.high
+                or stored["low"] != bar.low
+                or stored["close"] != bar.close
+                or stored["volume"] != bar.volume
+            ):
+                raise ValueError("dataset_version collides with market payload")
+
+    def write(self, routed: RoutedBarSuccess) -> StoredRoutingManifest:
+        canonical = self._validate_routed(routed)
+        record_id = manifest_record_id(canonical.manifest)
+        deadline = time.monotonic() + self._WRITE_RETRY_SECONDS
+        while True:
+            try:
+                self._commit_catalog(canonical, record_id, ())
+                break
+            except (IntegrityError, OperationalError):
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.01)
+        return StoredRoutingManifest(
+            manifest_record_id=record_id,
+            dataset_version=canonical.result.provenance.dataset_version,
+            route_version=canonical.manifest.route_version,
+            fetched_at=canonical.manifest.upstream_fetched_at,
+            partitions=(),
+        )
+
+    def _read_validated_record(
+        self,
+        record_id: str,
+    ) -> tuple[RoutedBarSuccess, StoredRoutingManifest]:
+        dataset_version = self._resolve_dataset_version(record_id)
+        try:
+            _dataset_lock_name(dataset_version)
+        except _IntegrityValidationError as error:
+            raise MarketLakeCorruptionError(
+                "market lake catalog dataset version is invalid"
+            ) from error
+        with self._checked_connection() as connection:
+            try:
+                manifest = (
+                    connection.execute(
+                        select(MarketRoutingManifest).where(
+                            MarketRoutingManifest.manifest_record_id == record_id
+                        )
+                    )
+                    .mappings()
+                    .one_or_none()
+                )
+                dataset = (
+                    connection.execute(
+                        select(MarketDataset).where(
+                            MarketDataset.dataset_version == dataset_version
+                        )
+                    )
+                    .mappings()
+                    .one_or_none()
+                )
+                partition_count = connection.execute(
+                    select(func.count())
+                    .select_from(MarketDatasetPartition)
+                    .where(MarketDatasetPartition.dataset_version == dataset_version)
+                ).scalar_one()
+                timestamp_seal = (
+                    connection.execute(
+                        select(MarketDatasetTimestampSeal).where(
+                            MarketDatasetTimestampSeal.dataset_version
+                            == dataset_version
+                        )
+                    )
+                    .mappings()
+                    .one_or_none()
+                )
+                payload_rows = self._payload_rows(
+                    connection, cast(str, dataset_version)
+                )
+            except (TypeError, ValueError) as error:
+                raise MarketLakeCorruptionError(
+                    "market lake catalog rows could not be decoded"
+                ) from error
+        if manifest is None or dataset is None:
+            raise MarketLakeCorruptionError("routing manifest dataset is missing")
+        if partition_count != 0:
+            raise MarketLakeCorruptionError(
+                "SQLite market dataset unexpectedly references object partitions"
+            )
+        try:
+            source = ProviderId(dataset["source"])
+            query = BarQuery(
+                symbol=dataset["symbol"],
+                period=Period(dataset["period"]),
+                adjustment=Adjustment(dataset["adjustment"]),
+                start=_catalog_datetime(dataset["query_start"]),
+                end=_catalog_datetime(dataset["query_end"]),
+            )
+        except (ValidationError, ValueError) as error:
+            raise MarketLakeCorruptionError(
+                "market dataset query metadata is invalid"
+            ) from error
+        row_count = dataset["row_count"]
+        if (
+            type(row_count) is not int
+            or not 1 <= row_count <= MAX_BAR_SERIES_ROWS
+            or len(payload_rows) != row_count
+        ):
+            raise MarketLakeCorruptionError("market dataset row count is invalid")
+        bars: list[Bar] = []
+        try:
+            for expected_ordinal, row in enumerate(payload_rows):
+                if row["ordinal"] != expected_ordinal:
+                    raise _IntegrityValidationError(
+                        "market payload ordinals are not contiguous"
+                    )
+                bars.append(
+                    Bar(
+                        symbol=query.symbol,
+                        timestamp=_catalog_datetime(row["timestamp"]),
+                        period=query.period,
+                        adjustment=query.adjustment,
+                        status=TradingStatus(row["status"]),
+                        open=cast(Decimal, row["open"]),
+                        high=cast(Decimal, row["high"]),
+                        low=cast(Decimal, row["low"]),
+                        close=cast(Decimal, row["close"]),
+                        volume=cast(int, row["volume"]),
+                    )
+                )
+        except (TypeError, ValidationError, ValueError) as error:
+            raise MarketLakeCorruptionError(
+                "market payload failed integrity validation"
+            ) from error
+        timestamps = tuple(bar.timestamp for bar in bars)
+        if timestamp_seal is None or (
+            timestamp_seal["index_version"] != _TIMESTAMP_INDEX_VERSION
+            or timestamp_seal["row_count"] != len(bars)
+            or timestamp_seal["timestamp_digest"] != timestamp_digest(timestamps)
+        ):
+            raise MarketLakeCorruptionError(
+                "market timestamp evidence does not match dataset rows"
+            )
+        try:
+            manifest_json = json.dumps(
+                manifest["manifest_json"],
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            routing_manifest = RoutingManifest.model_validate_json(manifest_json)
+        except (TypeError, ValidationError, ValueError) as error:
+            raise MarketLakeCorruptionError(
+                "routing manifest JSON is invalid"
+            ) from error
+        if not isinstance(routing_manifest.request, BarRoutingRequest):
+            raise MarketLakeCorruptionError(
+                "routing manifest does not contain a bar query"
+            )
+        try:
+            catalog_fetched_at = _catalog_datetime(manifest["fetched_at"])
+            if (
+                manifest["dataset_version"] != dataset_version
+                or manifest["symbol"] != query.symbol
+                or manifest["route_version"] != routing_manifest.route_version
+                or catalog_fetched_at != routing_manifest.upstream_fetched_at
+                or routing_manifest.request.query != query
+                or manifest["manifest_record_id"]
+                != manifest_record_id(routing_manifest)
+            ):
+                raise _IntegrityValidationError(
+                    "routing manifest does not match dataset metadata"
+                )
+            result = BarResult(
+                query=query,
+                bars=tuple(bars),
+                coverage_start=query.start,
+                coverage_end=query.end,
+                provenance=Provenance(
+                    source=source,
+                    fetched_at=routing_manifest.upstream_fetched_at,
+                    data_cutoff=_catalog_datetime(dataset["data_cutoff"]),
+                    adjustment=query.adjustment,
+                    dataset_version=cast(str, dataset_version),
+                ),
+            )
+            routed = self._validate_read_routed(
+                RoutedBarSuccess(result=result, manifest=routing_manifest)
+            )
+            stored = StoredRoutingManifest(
+                manifest_record_id=manifest["manifest_record_id"],
+                dataset_version=cast(str, dataset_version),
+                route_version=routing_manifest.route_version,
+                fetched_at=routing_manifest.upstream_fetched_at,
+                partitions=(),
+            )
+        except (TypeError, ValidationError, ValueError) as error:
+            raise MarketLakeCorruptionError(
+                "market dataset content is inconsistent"
+            ) from error
+        return routed, stored
+
+
+def create_market_lake(*, engine: Engine, root: Path) -> MarketLake:
+    """Select the storage backend with equivalent canonical data validation."""
+    if _PLATFORM == "nt":
+        return SqliteMarketLake(engine=engine, root=root)
+    return MarketLake(engine=engine, root=root)

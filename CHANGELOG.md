@@ -27,6 +27,9 @@ Stage 5 integrated v1 release.
 
 ### Changed
 
+- Native Windows now stores canonical OHLCV payloads transactionally in the
+  private SQLite catalog and revalidates dataset and routing identities on
+  every read; POSIX deployments retain the immutable Parquet market lake.
 - The responsive application shell now covers wide desktop, narrow desktop,
   tablet portrait/landscape, short landscape, and 200% effective zoom. Narrow
   layouts automatically collapse to accessible icons and remain manually

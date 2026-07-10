@@ -1,4 +1,5 @@
 from datetime import date, datetime, time, timezone
+from decimal import Decimal
 from typing import Any
 from uuid import uuid4
 
@@ -14,6 +15,7 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     Index,
     Integer,
+    Numeric,
     String,
     Text,
     Time,
@@ -416,6 +418,22 @@ class MarketDatasetTimestamp(Base):
     __tablename__ = "market_dataset_timestamp"
     __table_args__ = (
         CheckConstraint("ordinal >= 0", name="ck_market_dataset_timestamp_ordinal"),
+        CheckConstraint(
+            "(status IS NULL AND open IS NULL AND high IS NULL AND low IS NULL "
+            "AND close IS NULL AND volume IS NULL) OR "
+            "(status IS NOT NULL AND open IS NOT NULL AND high IS NOT NULL "
+            "AND low IS NOT NULL AND close IS NOT NULL AND volume IS NOT NULL)",
+            name="ck_market_dataset_timestamp_payload_shape",
+        ),
+        CheckConstraint(
+            "status IS NULL OR status IN "
+            "('unknown','normal','suspended','limit_up','limit_down')",
+            name="ck_market_dataset_timestamp_status",
+        ),
+        CheckConstraint(
+            "volume IS NULL OR volume >= 0",
+            name="ck_market_dataset_timestamp_volume",
+        ),
         UniqueConstraint(
             "dataset_version",
             "timestamp",
@@ -436,6 +454,12 @@ class MarketDatasetTimestamp(Base):
     )
     ordinal: Mapped[int] = mapped_column(Integer, primary_key=True)
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    status: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    open: Mapped[Decimal | None] = mapped_column(Numeric(24, 8), nullable=True)
+    high: Mapped[Decimal | None] = mapped_column(Numeric(24, 8), nullable=True)
+    low: Mapped[Decimal | None] = mapped_column(Numeric(24, 8), nullable=True)
+    close: Mapped[Decimal | None] = mapped_column(Numeric(24, 8), nullable=True)
+    volume: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
 
 class MarketDatasetTimestampSeal(Base):

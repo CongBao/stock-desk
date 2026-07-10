@@ -48,7 +48,7 @@ jobs:
     needs: impact
     if: needs.impact.outputs.full == 'true' || needs.impact.outputs.profile == 'release-infra-desktop'
     runs-on: windows-2025
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: Check out source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -58,14 +58,41 @@ jobs:
           python-version: "3.12"
       - name: Set up uv
         uses: astral-sh/setup-uv@d31148d669074a8d0a63714ba94f3201e7020bc3 # v8.3.0
+      - name: Set up pnpm for frozen Windows smoke
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 11.7.0
+          run_install: false
+      - name: Set up Node.js for frozen Windows smoke
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
       - name: Install locked Python dependencies
-        run: uv sync --frozen --all-groups --extra providers
+        run: |
+          uv sync --frozen --all-groups --extra providers
+          pnpm install --frozen-lockfile
       - name: Execute Windows ACL contract
         run: uv run --frozen pytest -W error tests/integration/test_windows_runtime_acl.py
       - name: Execute Windows first-start journal contract
         run: >-
           uv run --frozen pytest -W error tests/unit/storage/test_backup.py
           -k restore_journal
+      - name: Execute frozen Windows market and Formula smoke
+        shell: pwsh
+        run: |
+          $dist = 'dist\pr-windows-smoke'
+          $work = 'build\pr-windows-smoke'
+          try {
+            pnpm build
+            $env:STOCK_DESK_BUILD_VERSION = '1.0.0'
+            uv run --frozen python -m PyInstaller --noconfirm --clean --distpath $dist --workpath $work packaging\stock-desk.spec
+            & "$dist\stock-desk\stock-desk.exe" --internal-formula-smoke
+            if ($LASTEXITCODE -ne 0) { throw "frozen market and Formula smoke failed: $LASTEXITCODE" }
+          } finally {
+            Remove-Item -Recurse -Force $dist, $work -ErrorAction SilentlyContinue
+          }
 
   public-tree:
     name: Public tree and repository health
@@ -197,7 +224,29 @@ jobs:
           tests/unit/test_repository_health.py
           tests/unit/test_requirement_coverage.py
           tests/unit/storage/test_backup.py
+          tests/integration/market/test_lake_descriptor_security.py
+          tests/integration/market/test_lake_latest.py
+          tests/integration/market/test_lake_lock_cleanup.py
+          tests/integration/market/test_lake_lock_namespace.py
+          tests/integration/market/test_lake_ownership.py
+          tests/integration/market/test_lake_publish_crash_recovery.py
+          tests/integration/market/test_lake_read.py
+          tests/integration/market/test_lake_read_catalog_corruption.py
+          tests/integration/market/test_lake_read_corruption.py
+          tests/integration/market/test_lake_read_inode_binding.py
+          tests/integration/market/test_lake_root_identity.py
+          tests/integration/market/test_lake_snapshot_cleanup.py
+          tests/integration/market/test_lake_write.py
+          tests/integration/market/test_lake_write_faults.py
+          tests/integration/market/test_lake_write_final_binding.py
+          tests/integration/market/test_lake_write_security.py
+          tests/integration/market/test_sqlite_market_lake.py
+          tests/integration/storage/test_migration_locking.py
+          tests/integration/storage/test_migrations.py
+          tests/integration/storage/test_package_migrations.py
           tests/integration/storage/test_restore_recovery.py
+          tests/integration/storage/test_windows_market_payload_migration.py
+          tests/acceptance/test_upgrade_path.py
           tests/acceptance/test_installed_distribution.py
           tests/acceptance/test_release_acceptance_scope.py
           tests/acceptance/test_release_docs.py

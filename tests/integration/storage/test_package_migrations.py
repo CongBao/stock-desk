@@ -148,3 +148,7 @@ finally:
         "stock_desk/migrations/versions/0010_parent_active_retry.py" in packaged_files
     )
     assert "stock_desk/migrations/versions/0011_worker_heartbeat.py" in packaged_files
+    assert (
+        "stock_desk/migrations/versions/0012_windows_market_payload.py"
+        in packaged_files
+    )

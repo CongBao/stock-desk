@@ -50,6 +50,7 @@ from stock_desk.market.instruments import (
 from stock_desk.market.lake import (
     MarketLake,
     MarketLakeCorruptionError,
+    create_market_lake,
     manifest_record_id,
 )
 from stock_desk.market.provenance import RoutingManifest, Sha256Digest
@@ -118,7 +119,7 @@ class MarketServices:
         self.lake_root = root
         self.instruments = InstrumentRepository(engine)
         self.pools = PoolRepository(engine)
-        self.lake = MarketLake(engine=engine, root=root)
+        self.lake: MarketLake = create_market_lake(engine=engine, root=root)
         self.update_items = MarketUpdateItemRepository(engine)
         self.schedules = MarketUpdateScheduleRepository(engine)
         identities = (
