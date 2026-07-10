@@ -101,7 +101,8 @@ def _source_identity() -> dict[str, str]:
 
 def _write_checksum(artifact: Path) -> Path:
     checksum = artifact.with_name(f"{artifact.name}.sha256")
-    checksum.write_text(f"{_sha256(artifact)}  {artifact.name}\n", encoding="ascii")
+    payload = f"{_sha256(artifact)}  {artifact.name}\n".encode("ascii")
+    checksum.write_bytes(payload)
     return checksum
 
 
