@@ -156,7 +156,11 @@ def _run_windows_acl(path: Path, *, directory: bool) -> None:
         timeout=30,
     )
     if completed.returncode != 0:
-        raise RuntimeError(f"could not restrict private runtime path: {path}")
+        detail = (completed.stderr or completed.stdout).strip()
+        if detail:
+            detail = detail[-2000:].replace(os.fspath(path), "<private-runtime-path>")
+            raise RuntimeError(f"could not restrict private runtime path: {detail}")
+        raise RuntimeError("could not restrict private runtime path")
 
 
 def _restrict_owner_access(path: Path, *, directory: bool) -> None:
