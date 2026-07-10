@@ -36,6 +36,8 @@ APP_NAME: Final = "stock-desk"
 _LOOPBACK_HOST: Final = "127.0.0.1"
 _DEFAULT_STARTUP_TIMEOUT_SECONDS: Final = 45.0
 _PROCESS_STOP_TIMEOUT_SECONDS: Final = 10.0
+_PROCESS_TERMINATE_TIMEOUT_SECONDS: Final = 5.0
+_PROCESS_KILL_TIMEOUT_SECONDS: Final = 5.0
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -447,6 +449,41 @@ def _stop_process(process: BaseProcess, stop_event: Any) -> None:
         process.join(timeout=_PROCESS_STOP_TIMEOUT_SECONDS)
 
 
+def _stop_processes(processes: Sequence[tuple[BaseProcess, Any]]) -> None:
+    """Stop desktop children concurrently within a bounded shared deadline."""
+    active = tuple(
+        (process, stop_event)
+        for process, stop_event in processes
+        if process.pid is not None
+    )
+    for _process, stop_event in active:
+        stop_event.set()
+
+    for action, timeout_seconds in (
+        (None, _PROCESS_STOP_TIMEOUT_SECONDS),
+        ("terminate", _PROCESS_TERMINATE_TIMEOUT_SECONDS),
+        ("kill", _PROCESS_KILL_TIMEOUT_SECONDS),
+    ):
+        remaining = tuple(
+            process for process, _stop_event in active if process.is_alive()
+        )
+        if not remaining:
+            break
+        if action is not None:
+            for process in remaining:
+                getattr(process, action)()
+        deadline = time.monotonic() + timeout_seconds
+        for process in remaining:
+            if process.is_alive():
+                process.join(timeout=max(0.0, deadline - time.monotonic()))
+
+    remaining = tuple(process for process, _stop_event in active if process.is_alive())
+    if remaining:
+        raise RuntimeError("desktop child processes did not stop")
+    for process, _stop_event in active:
+        process.close()
+
+
 class RunningDesktop:
     def __init__(
         self,
@@ -477,10 +514,14 @@ class RunningDesktop:
 
     @property
     def api_alive(self) -> bool:
+        if self._stopped:
+            return False
         return self._api_process.is_alive()
 
     @property
     def worker_alive(self) -> bool:
+        if self._stopped:
+            return False
         return self._worker_process.is_alive()
 
     def health(self) -> HealthStatus:
@@ -492,8 +533,12 @@ class RunningDesktop:
                 return
             self._stopped = True
             try:
-                _stop_process(self._api_process, self._api_stop_event)
-                _stop_process(self._worker_process, self._worker_stop_event)
+                _stop_processes(
+                    (
+                        (self._api_process, self._api_stop_event),
+                        (self._worker_process, self._worker_stop_event),
+                    )
+                )
             finally:
                 self._paths.runtime_record.unlink(missing_ok=True)
                 self._instance_lock.release()
