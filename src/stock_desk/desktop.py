@@ -189,6 +189,25 @@ def _create_private_file(path: Path) -> None:
     _restrict_owner_access(path, directory=False)
 
 
+def _create_inherited_private_file(path: Path) -> None:
+    """Create a marker inside an already-protected runtime directory.
+
+    The desktop startup path applies and verifies the directory ACL. A shutdown
+    helper must not repeat that expensive PowerShell operation after publishing
+    its marker because the running desktop can remove the marker immediately.
+    """
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        if path.is_symlink() or not path.is_file():
+            raise RuntimeError(f"private runtime file is invalid: {path}") from None
+        return
+    try:
+        os.chmod(path, 0o600)
+    finally:
+        os.close(descriptor)
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeRecord:
     pid: int
@@ -226,19 +245,12 @@ class RuntimePaths:
     master_key_file: Path
 
     @classmethod
-    def create(cls, data_dir: Path) -> RuntimePaths:
+    def resolve(cls, data_dir: Path) -> RuntimePaths:
         resolved_data_dir = data_dir.expanduser().resolve()
         runtime_dir = resolved_data_dir / "runtime"
         logs_dir = resolved_data_dir / "logs"
         config_dir = resolved_data_dir / "config"
-        for private_directory in (
-            resolved_data_dir,
-            runtime_dir,
-            logs_dir,
-            config_dir,
-        ):
-            _create_private_directory(private_directory)
-        paths = cls(
+        return cls(
             data_dir=resolved_data_dir,
             runtime_dir=runtime_dir,
             logs_dir=logs_dir,
@@ -249,6 +261,17 @@ class RuntimePaths:
             log_file=logs_dir / "stock-desk.log",
             master_key_file=config_dir / "master.key",
         )
+
+    @classmethod
+    def create(cls, data_dir: Path) -> RuntimePaths:
+        paths = cls.resolve(data_dir)
+        for private_directory in (
+            paths.data_dir,
+            paths.runtime_dir,
+            paths.logs_dir,
+            paths.config_dir,
+        ):
+            _create_private_directory(private_directory)
         _create_private_file(paths.lock_file)
         _create_private_file(paths.log_file)
         return paths
@@ -458,6 +481,10 @@ def _stop_processes(processes: Sequence[tuple[BaseProcess, Any]]) -> None:
     )
     for _process, stop_event in active:
         stop_event.set()
+    _LOGGER.info(
+        "Desktop shutdown signaled child processes: %s",
+        tuple((process.name, process.pid) for process, _event in active),
+    )
 
     for action, timeout_seconds in (
         (None, _PROCESS_STOP_TIMEOUT_SECONDS),
@@ -472,16 +499,31 @@ def _stop_processes(processes: Sequence[tuple[BaseProcess, Any]]) -> None:
         if action is not None:
             for process in remaining:
                 getattr(process, action)()
+        _LOGGER.info(
+            "Desktop shutdown phase %s started for: %s",
+            action or "join",
+            tuple((process.name, process.pid) for process in remaining),
+        )
         deadline = time.monotonic() + timeout_seconds
         for process in remaining:
             if process.is_alive():
                 process.join(timeout=max(0.0, deadline - time.monotonic()))
+        _LOGGER.info(
+            "Desktop shutdown phase %s completed; alive: %s",
+            action or "join",
+            tuple(
+                (process.name, process.pid)
+                for process, _event in active
+                if process.is_alive()
+            ),
+        )
 
     remaining = tuple(process for process, _stop_event in active if process.is_alive())
     if remaining:
         raise RuntimeError("desktop child processes did not stop")
     for process, _stop_event in active:
         process.close()
+    _LOGGER.info("Desktop child processes stopped and handles closed")
 
 
 class RunningDesktop:
@@ -540,8 +582,11 @@ class RunningDesktop:
                     )
                 )
             finally:
+                _LOGGER.info("Removing desktop runtime record")
                 self._paths.runtime_record.unlink(missing_ok=True)
+                _LOGGER.info("Releasing desktop instance lock")
                 self._instance_lock.release()
+                _LOGGER.info("Desktop instance lock release completed")
 
 
 class DesktopLauncher:
@@ -853,23 +898,37 @@ def run_desktop(*, open_browser: bool = True) -> int:
                     f"a desktop child process exited; see log: {running.log_file}"
                 )
     finally:
-        running.stop()
+        try:
+            running.stop()
+        except BaseException:
+            _LOGGER.exception("Stock Desk desktop shutdown failed")
+            raise
         for signum, handler in old_handlers.items():
             signal.signal(signum, handler)
     return 0
 
 
 def shutdown_desktop(*, timeout_seconds: float = 30.0) -> int:
-    paths = RuntimePaths.create(expected_platform_data_dir(APP_NAME))
+    paths = RuntimePaths.resolve(expected_platform_data_dir(APP_NAME))
     if not paths.runtime_record.is_file():
         return 0
-    _create_private_file(paths.shutdown_request)
+    _configure_file_logging(os.fspath(paths.log_file))
+    _LOGGER.info("Shutdown helper watching runtime record: %s", paths.runtime_record)
+    _create_inherited_private_file(paths.shutdown_request)
+    _LOGGER.info("Shutdown helper created shutdown request")
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
         if not paths.runtime_record.exists():
+            _LOGGER.info("Shutdown helper observed runtime record removal")
             return 0
         time.sleep(0.1)
     raise RuntimeError(f"Stock Desk did not stop; see log: {paths.log_file}")
+
+
+def _complete_frozen_windows_exit(result: int) -> int:
+    if os.name == "nt" and getattr(sys, "frozen", False):
+        os._exit(result)
+    return result
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -880,11 +939,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     if arguments == ["--internal-formula-smoke"]:
         return run_formula_smoke()
     if not arguments:
-        return run_desktop()
+        return _complete_frozen_windows_exit(run_desktop())
     if arguments == ["--no-browser"]:
-        return run_desktop(open_browser=False)
+        return _complete_frozen_windows_exit(run_desktop(open_browser=False))
     if arguments == ["--shutdown"]:
-        return shutdown_desktop()
+        return _complete_frozen_windows_exit(shutdown_desktop())
     print("usage: stock-desk [--no-browser | --shutdown]", file=sys.stderr)
     return 2
 
