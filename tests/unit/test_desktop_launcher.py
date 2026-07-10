@@ -7,6 +7,8 @@ from pathlib import Path
 import socket
 import stat
 import sys
+import threading
+import time
 from types import ModuleType
 from typing import Any
 from urllib.request import urlopen
@@ -283,6 +285,112 @@ def test_entrypoint_calls_freeze_support_before_desktop_dispatch(
 
     assert result == 0
     assert calls == [("freeze_support", None), ("desktop", None)]
+
+
+def test_frozen_windows_shutdown_bypasses_interpreter_finalizers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    desktop = _desktop()
+    calls: list[tuple[str, object]] = []
+    monkeypatch.setattr(desktop.os, "name", "nt")
+    monkeypatch.setattr(desktop.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(
+        desktop.multiprocessing,
+        "freeze_support",
+        lambda: calls.append(("freeze_support", None)),
+    )
+    monkeypatch.setattr(
+        desktop,
+        "shutdown_desktop",
+        lambda: calls.append(("shutdown", None)) or 0,
+    )
+
+    def exit_process(result: int) -> None:
+        calls.append(("exit", result))
+        raise SystemExit(result)
+
+    monkeypatch.setattr(desktop.os, "_exit", exit_process)
+
+    with pytest.raises(SystemExit, match="0"):
+        desktop.main(["--shutdown"])
+
+    assert calls == [
+        ("freeze_support", None),
+        ("shutdown", None),
+        ("exit", 0),
+    ]
+
+
+def test_frozen_windows_desktop_bypasses_interpreter_finalizers_after_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    desktop = _desktop()
+    calls: list[tuple[str, object]] = []
+    monkeypatch.setattr(desktop.os, "name", "nt")
+    monkeypatch.setattr(desktop.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(desktop.multiprocessing, "freeze_support", lambda: None)
+    monkeypatch.setattr(
+        desktop,
+        "run_desktop",
+        lambda *, open_browser=True: calls.append(("desktop", open_browser)) or 0,
+    )
+
+    def exit_process(result: int) -> None:
+        calls.append(("exit", result))
+        raise SystemExit(result)
+
+    monkeypatch.setattr(desktop.os, "_exit", exit_process)
+
+    with pytest.raises(SystemExit, match="0"):
+        desktop.main(["--no-browser"])
+
+    assert calls == [("desktop", False), ("exit", 0)]
+
+
+def test_shutdown_helper_reuses_protected_runtime_without_acl_subprocess(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    desktop = _desktop()
+    paths = desktop.RuntimePaths.create(tmp_path / "data")
+    paths.write_runtime_record(
+        desktop.RuntimeRecord(
+            pid=1234,
+            host="127.0.0.1",
+            port=43210,
+            data_dir=paths.data_dir,
+            log_file=paths.log_file,
+        )
+    )
+    monkeypatch.setattr(
+        desktop,
+        "expected_platform_data_dir",
+        lambda _app_name: paths.data_dir,
+    )
+
+    def reject_acl(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("shutdown helper must reuse the protected runtime ACL")
+
+    monkeypatch.setattr(desktop, "_run_windows_acl", reject_acl)
+
+    def acknowledge_shutdown() -> None:
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            if paths.shutdown_request.is_file():
+                paths.shutdown_request.unlink()
+                paths.runtime_record.unlink()
+                return
+            time.sleep(0.01)
+        pytest.fail("shutdown helper did not publish its request")
+
+    acknowledgement = threading.Thread(target=acknowledge_shutdown)
+    acknowledgement.start()
+    try:
+        assert desktop.shutdown_desktop(timeout_seconds=2) == 0
+    finally:
+        acknowledgement.join(timeout=3)
+
+    assert not acknowledgement.is_alive()
 
 
 def test_entrypoint_calls_freeze_support_before_validated_internal_worker(

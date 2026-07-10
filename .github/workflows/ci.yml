@@ -79,45 +79,33 @@ jobs:
         run: >-
           uv run --frozen pytest -W error tests/unit/storage/test_backup.py
           -k restore_journal
-      - name: Execute frozen Windows market and Formula smoke
+      - name: Execute frozen Windows distribution lifecycle smoke
         shell: pwsh
         run: |
           $dist = 'dist\pr-windows-smoke'
           $work = 'build\pr-windows-smoke'
+          $diagnostics = Join-Path $env:RUNNER_TEMP 'pr-windows-diagnostics'
           try {
             pnpm build
             $env:STOCK_DESK_BUILD_VERSION = '1.0.0'
             uv run --frozen python -m PyInstaller --noconfirm --clean --distpath $dist --workpath $work packaging\stock-desk.spec
             $command = (Resolve-Path "$dist\stock-desk\stock-desk.exe").Path
-            & $command --internal-formula-smoke
-            if ($LASTEXITCODE -ne 0) { throw "frozen market and Formula smoke failed: $LASTEXITCODE" }
             $runtime = Join-Path $env:LOCALAPPDATA 'stock-desk\runtime\runtime.json'
-            $appProcess = $null
-            $developerPath = $env:PATH
-            try {
-              $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
-              $appProcess = Start-Process -FilePath $command -ArgumentList '--no-browser' -WorkingDirectory $env:RUNNER_TEMP -PassThru
-              for ($attempt = 0; $attempt -lt 300 -and -not (Test-Path -LiteralPath $runtime); $attempt++) {
-                if ($appProcess.HasExited) { throw "frozen desktop exited during startup: $($appProcess.ExitCode)" }
-                Start-Sleep -Milliseconds 100
-              }
-              if (-not (Test-Path -LiteralPath $runtime)) { throw 'frozen desktop runtime record is missing' }
-              $record = Get-Content -LiteralPath $runtime | ConvertFrom-Json
-              $health = Invoke-RestMethod -Uri "http://127.0.0.1:$($record.port)/api/health" -TimeoutSec 5
-              if ($health.status -ne 'ok') { throw "frozen desktop health failed: $($health.status)" }
-              & $command --shutdown
-              if ($LASTEXITCODE -ne 0) { throw "frozen desktop shutdown request failed: $LASTEXITCODE" }
-              if (-not $appProcess.WaitForExit(30000)) { throw 'frozen desktop required forced termination' }
-              if ($appProcess.ExitCode -ne 0) { throw "frozen desktop exited uncleanly: $($appProcess.ExitCode)" }
-              if (Test-Path -LiteralPath $runtime) { throw 'frozen desktop left a stale runtime record' }
-            } finally {
-              $env:PATH = $developerPath
-              if ($null -ne $appProcess -and -not $appProcess.HasExited) {
-                & "$env:SystemRoot\System32\taskkill.exe" /PID $appProcess.Id /T /F | Out-Null
-              }
-              Remove-Item -Recurse -Force (Join-Path $env:LOCALAPPDATA 'stock-desk') -ErrorAction SilentlyContinue
-            }
+            $systemPath = "$env:SystemRoot\System32;$env:SystemRoot"
+            uv run --frozen python scripts\verify_installed_app.py `
+              --command $command `
+              --runtime-record $runtime `
+              --sanitized-path $systemPath `
+              --fixture-sql tests\fixtures\distribution\v0.5.0.sql `
+              --diagnostic-dir $diagnostics
           } finally {
+            $appLog = Join-Path $env:LOCALAPPDATA 'stock-desk\logs\stock-desk.log'
+            if (Test-Path -LiteralPath $appLog) {
+              Write-Host '--- Stock Desk shutdown diagnostics ---'
+              Get-Content -LiteralPath $appLog
+            }
+            Remove-Item -Recurse -Force (Join-Path $env:LOCALAPPDATA 'stock-desk') -ErrorAction SilentlyContinue
+            Remove-Item -Recurse -Force $diagnostics -ErrorAction SilentlyContinue
             Remove-Item -Recurse -Force $dist, $work -ErrorAction SilentlyContinue
           }
 
