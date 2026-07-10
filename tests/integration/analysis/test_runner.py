@@ -1655,6 +1655,11 @@ def test_worker_data_deadline_does_not_fake_retry_or_starve_other_loaders(
 
 
 def test_abandoned_data_workers_are_process_bounded(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        runner_module,
+        "_DATA_WORKER_CAPACITY",
+        runner_module._DataWorkerCapacity(_MAX_DATA_WORKER_THREADS),
+    )
     snapshot = frozen_snapshot()
     releases: list[threading.Event] = []
     started: list[threading.Event] = []
