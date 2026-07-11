@@ -601,6 +601,22 @@ def test_reviewed_non_release_evidence_is_existing_and_precisely_scoped(
         for evidence in container_evidence
     )
 
+    installed_evidence = by_id["R-076"]["evidence"]
+    assert not any(
+        evidence.get("runner") == "pytest"
+        and evidence.get("selector", "").endswith(
+            "::test_distribution_runs_without_source_or_development_tools"
+        )
+        for evidence in installed_evidence
+    )
+    assert any(
+        evidence.get("runner") == "github-actions"
+        and evidence.get("path") == ".github/workflows/release.yml"
+        and evidence.get("selector")
+        == "Verify clean Windows and macOS installers / Install and verify without development PATH"
+        for evidence in installed_evidence
+    )
+
     tdx_selectors = {
         evidence.get("selector"): evidence["state"]
         for evidence in by_id["R-031"]["evidence"]
