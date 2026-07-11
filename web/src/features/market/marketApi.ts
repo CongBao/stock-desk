@@ -17,7 +17,7 @@ const MAX_POOL_MEMBERS = 10_000;
 const MAX_BARS = 100_000;
 const MAX_ROUTING_SOURCES = 32;
 const MAX_TEXT = 512;
-const SYMBOL_PATTERN = /^[0-9]{6}\.(?:SH|SZ|BJ)$/u;
+const SYMBOL_PATTERN = /^[0-9]{6}\.(?:SS|SH|SZ|BJ)$/u;
 const DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/u;
 const DECIMAL_PATTERN = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/u;
 

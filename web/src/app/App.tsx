@@ -22,6 +22,9 @@ import { DataSourcesPage } from '../features/settings/DataSourcesPage';
 import { TaskCenterPage } from '../features/tasks/TaskCenterPage';
 import { DesktopStartup } from '../features/desktop/DesktopStartup';
 import { DesktopExitGuard } from '../features/desktop/DesktopExitGuard';
+import { OnboardingGate } from '../features/onboarding/OnboardingGate';
+import { useOnboardingDemoMode } from '../features/onboarding/demoMode';
+import type { OnboardingApi } from '../features/onboarding/onboardingApi';
 import { useSystemStatus } from '../shared/api/useSystemStatus';
 import type { WorkerState } from '../shared/api/useSystemStatus';
 import { ContextPanel } from './ContextPanel';
@@ -74,9 +77,14 @@ const productIdentity = {
 type NavigationRailProps = {
   readonly collapsed: boolean;
   readonly onToggle: () => void;
+  readonly readonlyDemo: boolean;
 };
 
-function NavigationRail({ collapsed, onToggle }: NavigationRailProps) {
+function NavigationRail({
+  collapsed,
+  onToggle,
+  readonlyDemo,
+}: NavigationRailProps) {
   return (
     <div className="navigation-rail">
       <div className="brand-lockup">
@@ -121,16 +129,22 @@ function NavigationRail({ collapsed, onToggle }: NavigationRailProps) {
       >
         <p className="nav-section-label">工作区</p>
         <ul>
-          {appRoutes.map((route) => (
-            <li key={route.path}>
-              <NavLink className="nav-link" to={route.path} title={route.label}>
-                <span className="nav-icon" aria-hidden="true">
-                  <AppIcon name={route.icon} />
-                </span>
-                <span className="nav-label">{route.label}</span>
-              </NavLink>
-            </li>
-          ))}
+          {appRoutes
+            .filter((route) => !readonlyDemo || route.path === '/market')
+            .map((route) => (
+              <li key={route.path}>
+                <NavLink
+                  className="nav-link"
+                  to={route.path}
+                  title={route.label}
+                >
+                  <span className="nav-icon" aria-hidden="true">
+                    <AppIcon name={route.icon} />
+                  </span>
+                  <span className="nav-label">{route.label}</span>
+                </NavLink>
+              </li>
+            ))}
         </ul>
       </nav>
 
@@ -282,6 +296,7 @@ const WorkspaceRoutes = memo(function WorkspaceRoutes() {
 
 function WorkspaceShell() {
   const location = useLocation();
+  const readonlyDemo = useOnboardingDemoMode();
   const isContextOpen = useWorkspaceStore((state) => state.isContextOpen);
   const openContext = useWorkspaceStore((state) => state.openContext);
   const closeContext = useWorkspaceStore((state) => state.closeContext);
@@ -343,6 +358,7 @@ function WorkspaceShell() {
         <NavigationRail
           collapsed={isNavigationCollapsed}
           onToggle={() => setIsNavigationCollapsed((collapsed) => !collapsed)}
+          readonlyDemo={readonlyDemo}
         />
 
         <main id="main-content" className="workspace" tabIndex={-1}>
@@ -409,15 +425,29 @@ function WorkspaceShell() {
 
 export function App({
   desktopBridge = defaultDesktopBridge,
+  onboardingApi,
 }: {
   readonly desktopBridge?: DesktopBridge;
+  readonly onboardingApi?: OnboardingApi | null;
 }) {
+  const workspace = (
+    <WorkspaceStoreProvider>
+      <WorkspaceShell />
+    </WorkspaceStoreProvider>
+  );
   return (
     <DesktopExitGuard bridge={desktopBridge}>
       <DesktopStartup bridge={desktopBridge}>
-        <WorkspaceStoreProvider>
-          <WorkspaceShell />
-        </WorkspaceStoreProvider>
+        {onboardingApi === null ? (
+          workspace
+        ) : (
+          <OnboardingGate
+            api={onboardingApi}
+            onDiagnostics={() => void desktopBridge.openDiagnostics()}
+          >
+            {workspace}
+          </OnboardingGate>
+        )}
       </DesktopStartup>
     </DesktopExitGuard>
   );

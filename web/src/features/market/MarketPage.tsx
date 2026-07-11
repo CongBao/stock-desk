@@ -19,6 +19,7 @@ import {
 import { ProvenancePanel } from './ProvenancePanel';
 import { StockPoolPanel } from './StockPoolPanel';
 import { StockSearch } from './StockSearch';
+import { useOnboardingDemoMode } from '../onboarding/demoMode';
 
 type MarketPageProps = {
   readonly api?: MarketApi;
@@ -37,6 +38,7 @@ export function MarketPage({
   searchDebounceMs,
   workflowApi = marketWorkflowApi,
 }: MarketPageProps) {
+  const readonlyDemo = useOnboardingDemoMode();
   const [selectedPool, setSelectedPool] = useState<MarketPoolDetail | null>(
     null,
   );
@@ -177,42 +179,57 @@ export function MarketPage({
           aria-label="数据证据与快捷操作"
         >
           <ProvenancePanel data={bars.data} />
-          <MarketOperationsPanel
-            api={workflowApi}
-            marketApiClient={api}
-            onPoolDeleted={() => {
-              setSelectedPool(null);
-              selectPool(null);
-            }}
-            selectedInstrument={selectedInstrument}
-            selectedPool={
-              selectedPool === null
-                ? null
-                : {
-                    id: selectedPool.poolId,
-                    name: selectedPool.name,
-                    symbols: selectedPool.members.map(
-                      (member) => member.symbol,
-                    ),
-                    kind: selectedPool.kind,
-                    revision: selectedPool.revision,
-                  }
-            }
-            period={period}
-            adjustment={adjustment}
-          />
-          <section
-            className="market-quick-actions"
-            aria-labelledby="quick-actions-title"
-          >
-            <span className="panel-kicker">ACTIONS</span>
-            <h3 id="quick-actions-title">快捷操作</h3>
-            <Link to="/settings">数据源与设置</Link>
-            <Link to="/tasks">查看更新任务</Link>
-            <p>
-              可在本页明确启动目录或行情更新；浏览图表不会静默访问外部数据源。
-            </p>
-          </section>
+          {readonlyDemo ? (
+            <section
+              className="market-quick-actions"
+              aria-labelledby="readonly-demo-title"
+            >
+              <span className="panel-kicker">READ ONLY</span>
+              <h3 id="readonly-demo-title">只读演示</h3>
+              <p>
+                演示模式只允许浏览行情，不会更新数据、保存股票池或完成首次设置。
+              </p>
+            </section>
+          ) : (
+            <>
+              <MarketOperationsPanel
+                api={workflowApi}
+                marketApiClient={api}
+                onPoolDeleted={() => {
+                  setSelectedPool(null);
+                  selectPool(null);
+                }}
+                selectedInstrument={selectedInstrument}
+                selectedPool={
+                  selectedPool === null
+                    ? null
+                    : {
+                        id: selectedPool.poolId,
+                        name: selectedPool.name,
+                        symbols: selectedPool.members.map(
+                          (member) => member.symbol,
+                        ),
+                        kind: selectedPool.kind,
+                        revision: selectedPool.revision,
+                      }
+                }
+                period={period}
+                adjustment={adjustment}
+              />
+              <section
+                className="market-quick-actions"
+                aria-labelledby="quick-actions-title"
+              >
+                <span className="panel-kicker">ACTIONS</span>
+                <h3 id="quick-actions-title">快捷操作</h3>
+                <Link to="/settings">数据源与设置</Link>
+                <Link to="/tasks">查看更新任务</Link>
+                <p>
+                  可在本页明确启动目录或行情更新；浏览图表不会静默访问外部数据源。
+                </p>
+              </section>
+            </>
+          )}
         </aside>
       </div>
     </article>

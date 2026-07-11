@@ -190,7 +190,7 @@ function renderApp(
       <QueryClientProvider client={queryClient}>
         <MemoryRouter initialEntries={initialEntries}>
           {withBackControl ? <HistoryBackControl /> : null}
-          <App desktopBridge={desktopBridge} />
+          <App desktopBridge={desktopBridge} onboardingApi={null} />
         </MemoryRouter>
       </QueryClientProvider>,
     ),
