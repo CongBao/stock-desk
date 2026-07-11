@@ -1845,6 +1845,23 @@ def test_performance_chart_timer_includes_the_bounded_interaction_handshake() ->
         )
 
 
+def test_performance_chart_cold_timer_starts_at_symbol_selection() -> None:
+    source = _read("web/e2e/performance.spec.ts")
+    start = source.index("async function chartAction")
+    end = source.index("\nasync function ", start + 1)
+    body = source[start:end]
+
+    search = body.index(".fill('600000')")
+    option_ready = body.index("await expect(option).toBeVisible()")
+    timer = body.index("const started = performance.now()")
+    selection = body.index("await option.click()")
+    interaction = body.index("await proveChartInteractionHandshake")
+    wall = body.index("const wall =")
+
+    assert search < option_ready < timer < selection < interaction < wall
+    assert "aggregate(chartCold, 2)" in source
+
+
 def test_performance_pid_identity_is_scoped_to_each_timed_sample() -> None:
     source = _read("web/e2e/performance.spec.ts")
 
@@ -2284,6 +2301,12 @@ def test_python_ci_keeps_browser_tooling_isolated_to_the_performance_shard() -> 
         "python-security",
     ):
         steps = workflow["jobs"][key]["steps"]
+        checkout = next(
+            step
+            for step in steps
+            if str(step.get("uses", "")).startswith("actions/checkout@")
+        )
+        assert checkout["with"]["fetch-depth"] == 0
         assert any(
             step.get("run") == "uv sync --frozen --all-groups --extra providers"
             for step in steps

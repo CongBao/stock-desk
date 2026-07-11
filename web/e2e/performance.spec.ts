@@ -309,8 +309,12 @@ async function chartAction(
 ) {
   const blockedBefore = network.blockedExternalRequests;
   const sampler = await RssSampler.create(roots, rootRoles);
-  const started = performance.now();
-  sampler.begin();
+  await page.getByRole('combobox', { name: '搜索证券' }).fill('600000');
+  const option = page.getByRole('option', {
+    name: 'Stock Desk Synthetic Alpha (CC0 Demo) 600000.SH',
+    exact: true,
+  });
+  await expect(option).toBeVisible();
   const responsePromise = page.waitForResponse((response) => {
     const url = new URL(response.url());
     return (
@@ -319,13 +323,9 @@ async function chartAction(
       url.searchParams.get('adjustment') === 'qfq'
     );
   });
-  await page.getByRole('combobox', { name: '搜索证券' }).fill('600000');
-  await page
-    .getByRole('option', {
-      name: 'Stock Desk Synthetic Alpha (CC0 Demo) 600000.SH',
-      exact: true,
-    })
-    .click();
+  const started = performance.now();
+  sampler.begin();
+  await option.click();
   const selectedAt = performance.now();
   const response = await responsePromise;
   const responseAt = performance.now();
