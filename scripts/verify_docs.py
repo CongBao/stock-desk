@@ -4780,17 +4780,24 @@ def _repository_commit_is_reachable(repo_root: Path, commit: str) -> bool:
 @lru_cache(maxsize=128)
 def _repository_commit_is_reachable_cached(root_key: str, commit: str) -> bool:
     try:
-        subprocess.run(
-            ("git", "merge-base", "--is-ancestor", commit, "HEAD"),
+        completed = subprocess.run(
+            (
+                "git",
+                "rev-list",
+                "--max-count=1",
+                f"{commit}^{{commit}}",
+                "--not",
+                "HEAD",
+            ),
             cwd=root_key,
             check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
             timeout=30,
         )
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         return False
-    return True
+    return completed.stdout.strip() == ""
 
 
 def _surface_tuple(value: object) -> tuple[str, str] | None:
