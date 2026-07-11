@@ -122,7 +122,7 @@ def test_comparison_promotes_only_a_and_main_proof_attests_both_identities() -> 
     proof = jobs["validation-proof"]
     assert isinstance(compare, dict) and isinstance(proof, dict)
     commands = _commands(compare)
-    assert "scripts/compare_windows_payloads.py" in commands
+    assert "python -m scripts.compare_windows_payloads" in commands
     assert "a\\stock-desk-unsigned-nsis.exe" in commands
     assert "b\\stock-desk-unsigned-nsis.exe" in commands
     assert "Copy-Item (Join-Path $root 'a\\stock-desk-unsigned-nsis.exe')" in commands
