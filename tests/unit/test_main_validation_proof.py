@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 
 import scripts.main_validation_proof as proof_module
-from scripts.artifact_manifest import create_attestation_binding
+from scripts.artifact_manifest import create_attestation_binding, manifest_digest
 from scripts.main_validation_proof import MainValidationProofError
 from scripts.source_fingerprint import ROOT_FILES, TREE_ROOTS
 
@@ -160,7 +160,14 @@ def _validation_evidence(
             if policy.artifact_name == "web-build-manifest"
             else "oci"
             if policy.artifact_name == "oci-image-manifest"
+            else "tauri-unsigned"
+            if policy.artifact_name == "windows-desktop-alpha-candidate-manifest"
             else "provenance"
+        )
+        payload_name = (
+            "stock-desk-1.1.0-alpha.2-unsigned-x64-setup.exe"
+            if payload_kind == "tauri-unsigned"
+            else f"{policy.artifact_name}.json"
         )
         manifests[policy.artifact_name] = {
             "schema_version": 2,
@@ -178,13 +185,18 @@ def _validation_evidence(
             "lockfiles": {"fixture.lock": "2" * 64},
             "payloads": [
                 {
-                    "path": f"{policy.artifact_name}.json",
+                    "path": payload_name,
                     "kind": payload_kind,
                     "size": 1,
                     "sha256": hashlib.sha256(b"x").hexdigest(),
                 }
             ],
             **({"image_digest": "sha256:" + "4" * 64} if payload_kind == "oci" else {}),
+            **(
+                {"tauri": {"cargo_lock_sha256": "5" * 64}}
+                if payload_kind == "tauri-unsigned"
+                else {}
+            ),
         }
     return manifests
 
@@ -436,6 +448,34 @@ def test_generation_rejects_manifest_from_another_job_or_tree(tmp_path: Path) ->
             validation_evidence=manifests,
         )
 
+
+def test_generation_requires_publishable_windows_candidate_installer(
+    tmp_path: Path,
+) -> None:
+    repo = _repository(tmp_path)
+    api_evidence = _api_evidence(repo)
+    manifests = _validation_evidence(repo, api_evidence)
+    candidate = manifests["windows-desktop-alpha-candidate-manifest"]
+    assert isinstance(candidate, dict)
+    payloads = candidate["payloads"]
+    assert isinstance(payloads, list) and isinstance(payloads[0], dict)
+    payloads[0]["kind"] = "provenance"
+    candidate.pop("tauri")
+    candidate["manifest_sha256"] = manifest_digest(candidate)
+
+    with pytest.raises(MainValidationProofError, match="Tauri unsigned installer"):
+        proof_module.generate_proof(
+            repo_root=repo,
+            repository=REPOSITORY,
+            ref=REF,
+            api_evidence=api_evidence,
+            validation_evidence=manifests,
+        )
+
+
+def test_generation_rejects_manifest_from_another_job(tmp_path: Path) -> None:
+    repo = _repository(tmp_path)
+    api_evidence = _api_evidence(repo)
     manifests = _validation_evidence(repo, api_evidence)
     manifest = manifests["python-evidence-unit"]
     assert isinstance(manifest, dict)

@@ -329,7 +329,7 @@ def test_stop_terminates_heartbeat_blocked_after_readiness_before_engine_close(
         heartbeat_stop_timeout=0.3,
         heartbeat_io_timeout=5.0,
     )
-    monkeypatch.setattr(worker, "run_once", lambda: None)
+    monkeypatch.setattr(worker, "run_once", lambda *, stop_event=None: None)
     stop_event = threading.Event()
     runner = threading.Thread(target=worker.run_forever, args=(stop_event,))
     blocker = sqlite3.connect(database_path, isolation_level=None)
@@ -385,7 +385,7 @@ def test_transient_sqlite_heartbeat_lock_recovers_without_stopping_worker(
         heartbeat_stop_timeout=0.3,
         heartbeat_io_timeout=0.05,
     )
-    monkeypatch.setattr(worker, "run_once", lambda: None)
+    monkeypatch.setattr(worker, "run_once", lambda *, stop_event=None: None)
     stop_event = threading.Event()
     errors: list[BaseException] = []
 
@@ -441,7 +441,7 @@ def test_persistent_sqlite_heartbeat_lock_fails_bounded_with_diagnostics(
         heartbeat_stop_timeout=0.3,
         heartbeat_io_timeout=0.05,
     )
-    monkeypatch.setattr(worker, "run_once", lambda: None)
+    monkeypatch.setattr(worker, "run_once", lambda *, stop_event=None: None)
     stop_event = threading.Event()
     errors: list[BaseException] = []
 
@@ -497,7 +497,7 @@ def test_heartbeat_storage_failure_after_readiness_propagates_and_stops(
         heartbeat_interval=0.05,
         heartbeat_stop_timeout=0.3,
     )
-    monkeypatch.setattr(worker, "run_once", lambda: None)
+    monkeypatch.setattr(worker, "run_once", lambda *, stop_event=None: None)
     stop_event = threading.Event()
     errors: list[BaseException] = []
 

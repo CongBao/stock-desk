@@ -81,7 +81,7 @@ def test_production_worker_polls_tasks_quickly_without_locking_schedules_each_ti
         "Worker",
         (),
         {
-            "run_once": lambda _self: None,
+            "run_once": lambda _self, *, stop_event=None: None,
             "heartbeat_lifecycle": lambda _self, _stop: nullcontext(Heartbeat()),
         },
     )()

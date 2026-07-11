@@ -13,6 +13,7 @@ env:
   NODE_VERSION: "24"
   PNPM_VERSION: "11.7.0"
   PLAYWRIGHT_VERSION: "1.61.1"
+  RUST_VERSION: "1.88.0"
   SOURCE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
 concurrency:
@@ -86,13 +87,19 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  windows-runtime-acl:
-    name: Windows runtime ACL execution
+  windows-desktop-builder-a:
+    name: Build and verify Windows desktop candidate A
     needs: impact
     if: contains(fromJSON(needs.impact.outputs.required_jobs), 'artifact-proof')
     runs-on: windows-2025
-    timeout-minutes: 20
+    timeout-minutes: 45
     steps:
+      - name: Initialize candidate A diagnostics
+        shell: pwsh
+        run: |
+          $diagnostics = Join-Path $env:RUNNER_TEMP 'windows-desktop-a\diagnostics'
+          New-Item -ItemType Directory -Force $diagnostics | Out-Null
+          "job=$env:GITHUB_JOB run=$env:GITHUB_RUN_ID attempt=$env:GITHUB_RUN_ATTEMPT" | Set-Content -Encoding utf8NoBOM (Join-Path $diagnostics 'job-started.txt')
       - name: Check out exact source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -113,28 +120,356 @@ jobs:
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: ${{ env.NODE_VERSION }}
+      - name: Set up Rust target
+        shell: pwsh
+        run: |
+          rustup toolchain install $env:RUST_VERSION --profile minimal
+          rustup default $env:RUST_VERSION
+          rustup target add x86_64-pc-windows-msvc --toolchain $env:RUST_VERSION
+      - name: Restore exact-lock uv downloads
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ~/.cache/uv
+          key: desktop-a-uv-${{ runner.os }}-${{ runner.arch }}-${{ env.PYTHON_VERSION }}-${{ hashFiles('uv.lock') }}
+      - name: Restore exact-lock pnpm downloads
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ~/.pnpm-store
+          key: desktop-a-pnpm-${{ runner.os }}-${{ runner.arch }}-${{ env.NODE_VERSION }}-pnpm-${{ env.PNPM_VERSION }}-${{ hashFiles('pnpm-lock.yaml') }}
+      - name: Restore exact-lock Cargo downloads
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: desktop-a-cargo-${{ runner.os }}-${{ runner.arch }}-${{ env.RUST_VERSION }}-${{ hashFiles('src-tauri/Cargo.lock') }}
       - name: Install locked dependencies
+        shell: pwsh
         run: |
           uv sync --frozen --all-groups --extra providers
+          pnpm config set store-dir "$HOME/.pnpm-store"
           pnpm install --frozen-lockfile
-      - name: Execute Windows standard-user contracts
+      - name: Execute Windows standard-user data contracts
         run: |
           uv run --frozen pytest -W error tests/integration/test_windows_runtime_acl.py
           uv run --frozen pytest -W error tests/unit/storage/test_backup.py -k restore_journal
-      - name: Execute frozen Windows distribution lifecycle smoke
+      - name: Build exact-SHA Windows desktop once
         shell: pwsh
         run: |
-          $dist = 'dist\pr-windows-smoke'
-          $work = 'build\pr-windows-smoke'
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $diagnostics = Join-Path $env:RUNNER_TEMP 'windows-desktop-a\diagnostics'
+          New-Item -ItemType Directory -Force $diagnostics | Out-Null
+          trap { $_ | Out-String | Set-Content -Encoding utf8NoBOM (Join-Path $diagnostics 'build-failure.txt'); throw $_ }
+          @((git rev-parse HEAD), (git rev-parse 'HEAD^{tree}')) | Set-Content -Encoding utf8NoBOM (Join-Path $diagnostics 'source-identity.txt')
+          if ((git rev-parse HEAD) -ne $env:SOURCE_SHA) { throw 'checkout is not SOURCE_SHA' }
+          uv run --frozen python scripts/build_windows_desktop.py 2>&1 | Tee-Object (Join-Path $diagnostics 'build.log')
+          if ($LASTEXITCODE -ne 0) { throw 'Windows desktop build failed' }
+      - name: Safely unpack and verify candidate A
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP 'windows-desktop-a'
+          $outer = Join-Path $root 'outer'
+          $payload = Join-Path $root 'payload'
+          $out = Join-Path $root 'artifact'
+          New-Item -ItemType Directory -Force $outer, $payload, $out | Out-Null
+          $diagnostics = Join-Path $root 'diagnostics'
+          New-Item -ItemType Directory -Force $diagnostics | Out-Null
+          trap { $_ | Out-String | Set-Content -Encoding utf8NoBOM (Join-Path $diagnostics 'verification-failure.txt'); Get-ChildItem $root -Recurse -Force -ErrorAction SilentlyContinue | Select-Object FullName,Length | Out-File -Encoding utf8 (Join-Path $diagnostics 'artifact-inventory.txt'); throw $_ }
+          function Assert-SafeArchive([string]$archive) {
+            $listing = @(& 7z l -slt -ba $archive)
+            if ($LASTEXITCODE -ne 0) { throw 'archive listing failed' }
+            foreach ($line in $listing) {
+              if ($line -match '^Path = (.+)$') {
+                $entry = $Matches[1]
+                if ([IO.Path]::IsPathRooted($entry) -or $entry.Contains(':') -or (($entry -split '[\\/]') -contains '..')) { throw "unsafe archive path: $entry" }
+              }
+              if ($line -match '^(Symbolic Link|Hard Link|Reparse) = ') { throw 'linked archive entries are forbidden' }
+            }
+          }
+          $installers = @(Get-ChildItem 'src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis\*.exe')
+          if ($installers.Count -ne 1) { throw 'expected exactly one NSIS installer' }
+          Assert-SafeArchive $installers[0].FullName
+          & 7z x $installers[0].FullName "-o$outer" -y | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'NSIS extraction failed' }
+          $desktopHost = @(Get-ChildItem $outer -Recurse -File -Filter 'stock-desk-desktop.exe')
+          $installedSidecar = @(Get-ChildItem $outer -Recurse -File -Filter 'stock-desk-sidecar.exe')
+          if ($desktopHost.Count -ne 1 -or $installedSidecar.Count -ne 1 -or $desktopHost[0].DirectoryName -ne $installedSidecar[0].DirectoryName) { throw 'direct NSIS application payload identity is invalid' }
+          $appRoot = $desktopHost[0].Directory
+          foreach ($file in Get-ChildItem $appRoot -Recurse -Force -File) {
+            $relative = [IO.Path]::GetRelativePath($appRoot.FullName, $file.FullName)
+            $first = ($relative -split '[\\/]')[0]
+            $folded = $file.Name.ToLowerInvariant()
+            if ($first.StartsWith('$') -or $first.StartsWith('[')) { continue }
+            if ($folded -in @('microsoftedgewebview2runtimeinstaller.exe','microsoftedgewebview2runtimeinstallerx64.exe','microsoftedgewebview2setup.exe')) { continue }
+            if ($file.Extension.ToLowerInvariant() -in @('.exe','.com','.bat','.cmd','.ps1','.msi','.scr','.cpl') -and $folded -notin @('stock-desk-desktop.exe','stock-desk-sidecar.exe','uninstall.exe')) { throw "unexpected direct NSIS application executable: $relative" }
+            $destination = Join-Path $payload $relative
+            New-Item -ItemType Directory -Force (Split-Path $destination -Parent) | Out-Null
+            Copy-Item $file.FullName $destination
+          }
+          $webview = @(Get-ChildItem $outer -Recurse -File | Where-Object { $_.Name.ToLowerInvariant() -in @('microsoftedgewebview2runtimeinstaller.exe','microsoftedgewebview2runtimeinstallerx64.exe','microsoftedgewebview2setup.exe') })
+          if ($webview.Count -ne 1) { throw 'expected exactly one WebView2 offline installer' }
+          Copy-Item $webview[0].FullName (Join-Path $payload $webview[0].Name)
+          Copy-Item $installers[0].FullName (Join-Path $payload 'stock-desk-unsigned-nsis.exe')
+          $sidecar = @(Get-ChildItem $payload -Recurse -File -Filter 'stock-desk-sidecar.exe')
+          if ($sidecar.Count -ne 1) { throw 'expected exactly one packaged sidecar' }
+          $uvLock = (Get-FileHash uv.lock -Algorithm SHA256).Hash.ToLowerInvariant()
+          $pnpmLock = (Get-FileHash pnpm-lock.yaml -Algorithm SHA256).Hash.ToLowerInvariant()
+          $cargoLock = (Get-FileHash src-tauri\Cargo.lock -Algorithm SHA256).Hash.ToLowerInvariant()
+          uv run --frozen python scripts/verify_windows_desktop_bundle.py $payload `
+            --version 1.1.0-alpha.2 --source-sha $env:SOURCE_SHA `
+            --toolchain "python=$env:PYTHON_VERSION" --toolchain "node=$env:NODE_VERSION" `
+            --toolchain "pnpm=$env:PNPM_VERSION" --toolchain "rust=$env:RUST_VERSION" `
+            --lock "uv.lock=$uvLock" --lock "pnpm-lock.yaml=$pnpmLock" --lock "src-tauri/Cargo.lock=$cargoLock" `
+            --installer (Join-Path $payload 'stock-desk-unsigned-nsis.exe') --sidecar $sidecar[0].FullName `
+            --output (Join-Path $out 'windows-desktop-bundle.json')
+          Copy-Item $installers[0].FullName (Join-Path $out 'stock-desk-unsigned-nsis.exe')
+          [ordered]@{schema_version=1;builder='A';source_sha=$env:SOURCE_SHA;source_tree=(git rev-parse 'HEAD^{tree}');runner_os=$env:RUNNER_OS;runner_arch=$env:RUNNER_ARCH;run_id=$env:GITHUB_RUN_ID;run_attempt=$env:GITHUB_RUN_ATTEMPT;job_id=$env:GITHUB_JOB} | ConvertTo-Json -Compress | Set-Content -Encoding utf8NoBOM (Join-Path $out 'provenance.json')
+      - name: Upload source-free candidate A
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-desktop-candidate-a-${{ env.SOURCE_SHA }}
+          path: ${{ runner.temp }}/windows-desktop-a/artifact/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload candidate A diagnostics before cleanup
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-desktop-candidate-a-diagnostics-${{ env.SOURCE_SHA }}
+          path: ${{ runner.temp }}/windows-desktop-a/diagnostics/
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Clean candidate A build and test state
+        if: always()
+        shell: pwsh
+        run: |
           try {
-            pnpm build
-            $env:STOCK_DESK_BUILD_VERSION = '1.0.0'
-            uv run --frozen python -m PyInstaller --noconfirm --clean --distpath $dist --workpath $work packaging\stock-desk.spec
-            $command = (Resolve-Path "$dist\stock-desk\stock-desk.exe").Path
-            $runtime = Join-Path $env:LOCALAPPDATA 'stock-desk\runtime\runtime.json'
-            uv run --frozen python scripts\verify_installed_app.py --command $command --runtime-record $runtime --sanitized-path "$env:SystemRoot\System32;$env:SystemRoot" --fixture-sql tests\fixtures\distribution\v0.5.0.sql --diagnostic-dir (Join-Path $env:RUNNER_TEMP diagnostics)
+            if (Get-Command uv -ErrorAction SilentlyContinue) { uv run --frozen python scripts/clean_build_artifacts.py }
           } finally {
-            Remove-Item -Recurse -Force (Join-Path $env:LOCALAPPDATA 'stock-desk'), $dist, $work -ErrorAction SilentlyContinue
+            Remove-Item -Recurse -Force (Join-Path $env:RUNNER_TEMP 'windows-desktop-a') -ErrorAction SilentlyContinue
+            Remove-Item -Recurse -Force (Join-Path $env:LOCALAPPDATA 'Stock Desk\v1.1') -ErrorAction SilentlyContinue
+          }
+
+  windows-desktop-builder-b:
+    name: Build and verify Windows desktop candidate B
+    needs: impact
+    if: github.event_name == 'push' && contains(fromJSON(needs.impact.outputs.required_jobs), 'artifact-proof')
+    runs-on: windows-2025
+    timeout-minutes: 45
+    steps:
+      - name: Initialize candidate B diagnostics
+        shell: pwsh
+        run: |
+          $diagnostics = Join-Path $env:RUNNER_TEMP 'windows-desktop-b\diagnostics'
+          New-Item -ItemType Directory -Force $diagnostics | Out-Null
+          "job=$env:GITHUB_JOB run=$env:GITHUB_RUN_ID attempt=$env:GITHUB_RUN_ATTEMPT" | Set-Content -Encoding utf8NoBOM (Join-Path $diagnostics 'job-started.txt')
+      - name: Check out exact source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ env.SOURCE_SHA }}
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Set up uv
+        uses: astral-sh/setup-uv@d31148d669074a8d0a63714ba94f3201e7020bc3 # v8.3.0
+      - name: Set up pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: ${{ env.PNPM_VERSION }}
+          run_install: false
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Set up Rust target
+        shell: pwsh
+        run: |
+          rustup toolchain install $env:RUST_VERSION --profile minimal
+          rustup default $env:RUST_VERSION
+          rustup target add x86_64-pc-windows-msvc --toolchain $env:RUST_VERSION
+      - name: Restore exact-lock uv downloads
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ~/.cache/uv
+          key: desktop-b-uv-${{ runner.os }}-${{ runner.arch }}-${{ env.PYTHON_VERSION }}-${{ hashFiles('uv.lock') }}
+      - name: Restore exact-lock pnpm downloads
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ~/.pnpm-store
+          key: desktop-b-pnpm-${{ runner.os }}-${{ runner.arch }}-${{ env.NODE_VERSION }}-pnpm-${{ env.PNPM_VERSION }}-${{ hashFiles('pnpm-lock.yaml') }}
+      - name: Restore exact-lock Cargo downloads
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: desktop-b-cargo-${{ runner.os }}-${{ runner.arch }}-${{ env.RUST_VERSION }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+      - name: Install locked dependencies
+        shell: pwsh
+        run: |
+          uv sync --frozen --all-groups --extra providers
+          pnpm config set store-dir "$HOME/.pnpm-store"
+          pnpm install --frozen-lockfile
+      - name: Build exact-SHA Windows desktop once
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $diagnostics = Join-Path $env:RUNNER_TEMP 'windows-desktop-b\diagnostics'
+          New-Item -ItemType Directory -Force $diagnostics | Out-Null
+          trap { $_ | Out-String | Set-Content -Encoding utf8NoBOM (Join-Path $diagnostics 'build-failure.txt'); throw $_ }
+          @((git rev-parse HEAD), (git rev-parse 'HEAD^{tree}')) | Set-Content -Encoding utf8NoBOM (Join-Path $diagnostics 'source-identity.txt')
+          if ((git rev-parse HEAD) -ne $env:SOURCE_SHA) { throw 'checkout is not SOURCE_SHA' }
+          uv run --frozen python scripts/build_windows_desktop.py 2>&1 | Tee-Object (Join-Path $diagnostics 'build.log')
+          if ($LASTEXITCODE -ne 0) { throw 'Windows desktop build failed' }
+      - name: Safely unpack and verify candidate B
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP 'windows-desktop-b'; $outer = Join-Path $root 'outer'; $payload = Join-Path $root 'payload'; $out = Join-Path $root 'artifact'
+          New-Item -ItemType Directory -Force $outer, $payload, $out | Out-Null
+          $diagnostics = Join-Path $root 'diagnostics'; New-Item -ItemType Directory -Force $diagnostics | Out-Null
+          trap { $_ | Out-String | Set-Content -Encoding utf8NoBOM (Join-Path $diagnostics 'verification-failure.txt'); Get-ChildItem $root -Recurse -Force -ErrorAction SilentlyContinue | Select-Object FullName,Length | Out-File -Encoding utf8 (Join-Path $diagnostics 'artifact-inventory.txt'); throw $_ }
+          function Assert-SafeArchive([string]$archive) {
+            $listing = @(& 7z l -slt -ba $archive); if ($LASTEXITCODE -ne 0) { throw 'archive listing failed' }
+            foreach ($line in $listing) {
+              if ($line -match '^Path = (.+)$') { $entry=$Matches[1]; if ([IO.Path]::IsPathRooted($entry) -or $entry.Contains(':') -or (($entry -split '[\\/]') -contains '..')) { throw "unsafe archive path: $entry" } }
+              if ($line -match '^(Symbolic Link|Hard Link|Reparse) = ') { throw 'linked archive entries are forbidden' }
+            }
+          }
+          $installers = @(Get-ChildItem 'src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis\*.exe'); if ($installers.Count -ne 1) { throw 'expected exactly one NSIS installer' }
+          Assert-SafeArchive $installers[0].FullName
+          & 7z x $installers[0].FullName "-o$outer" -y | Out-Null; if ($LASTEXITCODE -ne 0) { throw 'NSIS extraction failed' }
+          $desktopHost = @(Get-ChildItem $outer -Recurse -File -Filter 'stock-desk-desktop.exe'); $installedSidecar = @(Get-ChildItem $outer -Recurse -File -Filter 'stock-desk-sidecar.exe')
+          if ($desktopHost.Count -ne 1 -or $installedSidecar.Count -ne 1 -or $desktopHost[0].DirectoryName -ne $installedSidecar[0].DirectoryName) { throw 'direct NSIS application payload identity is invalid' }
+          $appRoot = $desktopHost[0].Directory
+          foreach ($file in Get-ChildItem $appRoot -Recurse -Force -File) {
+            $relative=[IO.Path]::GetRelativePath($appRoot.FullName,$file.FullName); $first=($relative -split '[\\/]')[0]; $folded=$file.Name.ToLowerInvariant()
+            if ($first.StartsWith('$') -or $first.StartsWith('[')) { continue }
+            if ($folded -in @('microsoftedgewebview2runtimeinstaller.exe','microsoftedgewebview2runtimeinstallerx64.exe','microsoftedgewebview2setup.exe')) { continue }
+            if ($file.Extension.ToLowerInvariant() -in @('.exe','.com','.bat','.cmd','.ps1','.msi','.scr','.cpl') -and $folded -notin @('stock-desk-desktop.exe','stock-desk-sidecar.exe','uninstall.exe')) { throw "unexpected direct NSIS application executable: $relative" }
+            $destination=Join-Path $payload $relative; New-Item -ItemType Directory -Force (Split-Path $destination -Parent) | Out-Null; Copy-Item $file.FullName $destination
+          }
+          $webview = @(Get-ChildItem $outer -Recurse -File | Where-Object { $_.Name.ToLowerInvariant() -in @('microsoftedgewebview2runtimeinstaller.exe','microsoftedgewebview2runtimeinstallerx64.exe','microsoftedgewebview2setup.exe') }); if ($webview.Count -ne 1) { throw 'expected exactly one WebView2 offline installer' }
+          Copy-Item $webview[0].FullName (Join-Path $payload $webview[0].Name); Copy-Item $installers[0].FullName (Join-Path $payload 'stock-desk-unsigned-nsis.exe')
+          $sidecar = @(Get-ChildItem $payload -Recurse -File -Filter 'stock-desk-sidecar.exe'); if ($sidecar.Count -ne 1) { throw 'expected exactly one packaged sidecar' }
+          $uvLock=(Get-FileHash uv.lock -Algorithm SHA256).Hash.ToLowerInvariant(); $pnpmLock=(Get-FileHash pnpm-lock.yaml -Algorithm SHA256).Hash.ToLowerInvariant(); $cargoLock=(Get-FileHash src-tauri\Cargo.lock -Algorithm SHA256).Hash.ToLowerInvariant()
+          uv run --frozen python scripts/verify_windows_desktop_bundle.py $payload --version 1.1.0-alpha.2 --source-sha $env:SOURCE_SHA --toolchain "python=$env:PYTHON_VERSION" --toolchain "node=$env:NODE_VERSION" --toolchain "pnpm=$env:PNPM_VERSION" --toolchain "rust=$env:RUST_VERSION" --lock "uv.lock=$uvLock" --lock "pnpm-lock.yaml=$pnpmLock" --lock "src-tauri/Cargo.lock=$cargoLock" --installer (Join-Path $payload 'stock-desk-unsigned-nsis.exe') --sidecar $sidecar[0].FullName --output (Join-Path $out 'windows-desktop-bundle.json')
+          Copy-Item $installers[0].FullName (Join-Path $out 'stock-desk-unsigned-nsis.exe')
+          [ordered]@{schema_version=1;builder='B';source_sha=$env:SOURCE_SHA;source_tree=(git rev-parse 'HEAD^{tree}');runner_os=$env:RUNNER_OS;runner_arch=$env:RUNNER_ARCH;run_id=$env:GITHUB_RUN_ID;run_attempt=$env:GITHUB_RUN_ATTEMPT;job_id=$env:GITHUB_JOB} | ConvertTo-Json -Compress | Set-Content -Encoding utf8NoBOM (Join-Path $out 'provenance.json')
+      - name: Upload source-free candidate B
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-desktop-candidate-b-${{ env.SOURCE_SHA }}
+          path: ${{ runner.temp }}/windows-desktop-b/artifact/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload candidate B diagnostics before cleanup
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-desktop-candidate-b-diagnostics-${{ env.SOURCE_SHA }}
+          path: ${{ runner.temp }}/windows-desktop-b/diagnostics/
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Clean candidate B build and test state
+        if: always()
+        shell: pwsh
+        run: |
+          try {
+            if (Get-Command uv -ErrorAction SilentlyContinue) { uv run --frozen python scripts/clean_build_artifacts.py }
+          } finally {
+            Remove-Item -Recurse -Force (Join-Path $env:RUNNER_TEMP 'windows-desktop-b') -ErrorAction SilentlyContinue
+            Remove-Item -Recurse -Force (Join-Path $env:LOCALAPPDATA 'Stock Desk\v1.1') -ErrorAction SilentlyContinue
+          }
+
+  windows-desktop-compare:
+    name: Compare independent Windows desktop candidates
+    needs: [impact, windows-desktop-builder-a, windows-desktop-builder-b]
+    if: github.event_name == 'push' && needs.windows-desktop-builder-a.result == 'success' && needs.windows-desktop-builder-b.result == 'success'
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - name: Initialize comparison diagnostics
+        shell: pwsh
+        run: |
+          $diagnostics = Join-Path $env:RUNNER_TEMP 'windows-compare\diagnostics'
+          New-Item -ItemType Directory -Force $diagnostics | Out-Null
+          "job=$env:GITHUB_JOB run=$env:GITHUB_RUN_ID attempt=$env:GITHUB_RUN_ATTEMPT" | Set-Content -Encoding utf8NoBOM (Join-Path $diagnostics 'job-started.txt')
+      - name: Check out exact source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ env.SOURCE_SHA }}
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Set up uv
+        uses: astral-sh/setup-uv@d31148d669074a8d0a63714ba94f3201e7020bc3 # v8.3.0
+      - name: Download candidate A
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: windows-desktop-candidate-a-${{ env.SOURCE_SHA }}
+          path: ${{ runner.temp }}/windows-compare/a
+      - name: Download candidate B
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: windows-desktop-candidate-b-${{ env.SOURCE_SHA }}
+          path: ${{ runner.temp }}/windows-compare/b
+      - name: Install locked comparison environment
+        run: uv sync --frozen --all-groups --extra providers
+      - name: Compare verified payloads and promote only candidate A
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP 'windows-compare'; $evidence = Join-Path $root 'evidence'; $promoted = Join-Path $root 'promoted'
+          $diagnostics = Join-Path $root 'diagnostics'; New-Item -ItemType Directory -Force $evidence, $promoted, $diagnostics | Out-Null
+          trap { $_ | Out-String | Set-Content -Encoding utf8NoBOM (Join-Path $diagnostics 'comparison-failure.txt'); Get-ChildItem $root -Recurse -Force -ErrorAction SilentlyContinue | Select-Object FullName,Length | Out-File -Encoding utf8 (Join-Path $diagnostics 'artifact-inventory.txt'); throw $_ }
+          uv run --frozen python scripts/compare_windows_payloads.py (Join-Path $root 'a\windows-desktop-bundle.json') (Join-Path $root 'b\windows-desktop-bundle.json') --left-installer (Join-Path $root 'a\stock-desk-unsigned-nsis.exe') --right-installer (Join-Path $root 'b\stock-desk-unsigned-nsis.exe') --output (Join-Path $evidence 'windows-payload-comparison.json')
+          Copy-Item (Join-Path $root 'a\stock-desk-unsigned-nsis.exe') (Join-Path $promoted 'stock-desk-1.1.0-alpha.2-unsigned-x64-setup.exe')
+          Copy-Item (Join-Path $root 'a\windows-desktop-bundle.json') (Join-Path $promoted 'windows-desktop-bundle.json')
+          Copy-Item (Join-Path $root 'a\provenance.json') (Join-Path $promoted 'builder-a-provenance.json')
+          Copy-Item (Join-Path $evidence 'windows-payload-comparison.json') (Join-Path $promoted 'windows-payload-comparison.json')
+          $tree = git rev-parse 'HEAD^{tree}'; $cargoLock=(Get-FileHash src-tauri\Cargo.lock -Algorithm SHA256).Hash.ToLowerInvariant(); $cargoToml=(Get-FileHash src-tauri\Cargo.toml -Algorithm SHA256).Hash.ToLowerInvariant(); $ciHash=(Get-FileHash .github\workflows\ci.yml -Algorithm SHA256).Hash.ToLowerInvariant(); $buildHash=(Get-FileHash scripts\build_windows_desktop.py -Algorithm SHA256).Hash.ToLowerInvariant(); $verifyHash=(Get-FileHash scripts\verify_windows_desktop_bundle.py -Algorithm SHA256).Hash.ToLowerInvariant(); $compareHash=(Get-FileHash scripts\compare_windows_payloads.py -Algorithm SHA256).Hash.ToLowerInvariant(); $tauriHash=(Get-FileHash src-tauri\tauri.conf.json -Algorithm SHA256).Hash.ToLowerInvariant(); $tauriWindowsHash=(Get-FileHash src-tauri\tauri.windows.conf.json -Algorithm SHA256).Hash.ToLowerInvariant(); $sidecarSpecHash=(Get-FileHash packaging\stock-desk-sidecar.spec -Algorithm SHA256).Hash.ToLowerInvariant(); $nsisHash=(Get-FileHash packaging\nsis\installer.nsi -Algorithm SHA256).Hash.ToLowerInvariant()
+          $critical = @('--critical-input', ".github/workflows/ci.yml=$ciHash", '--critical-input', "scripts/build_windows_desktop.py=$buildHash", '--critical-input', "scripts/verify_windows_desktop_bundle.py=$verifyHash", '--critical-input', "scripts/compare_windows_payloads.py=$compareHash", '--critical-input', "src-tauri/tauri.conf.json=$tauriHash", '--critical-input', "src-tauri/tauri.windows.conf.json=$tauriWindowsHash", '--critical-input', "src-tauri/Cargo.toml=$cargoToml", '--critical-input', "packaging/stock-desk-sidecar.spec=$sidecarSpecHash", '--critical-input', "packaging/nsis/installer.nsi=$nsisHash")
+          uv run --frozen python scripts/artifact_manifest.py create --root $evidence --output (Join-Path $evidence 'windows-payload-comparison-manifest.json') --source-sha $env:SOURCE_SHA --source-tree $tree --workflow CI --run-id $env:GITHUB_RUN_ID --run-attempt $env:GITHUB_RUN_ATTEMPT --job-id windows-desktop-compare --job-name 'Compare independent Windows desktop candidates' --payload 'windows-payload-comparison.json:provenance' @critical --toolchain "python=$env:PYTHON_VERSION" --lockfile "src-tauri/Cargo.lock=$cargoLock"
+          uv run --frozen python scripts/artifact_manifest.py create --root $promoted --output (Join-Path $promoted 'windows-desktop-alpha-candidate-manifest.json') --source-sha $env:SOURCE_SHA --source-tree $tree --workflow CI --run-id $env:GITHUB_RUN_ID --run-attempt $env:GITHUB_RUN_ATTEMPT --job-id windows-desktop-compare --job-name 'Compare independent Windows desktop candidates' --payload 'stock-desk-1.1.0-alpha.2-unsigned-x64-setup.exe:tauri-unsigned' --payload 'windows-desktop-bundle.json:provenance' --payload 'builder-a-provenance.json:provenance' --payload 'windows-payload-comparison.json:provenance' @critical --toolchain "python=$env:PYTHON_VERSION" --lockfile "src-tauri/Cargo.lock=$cargoLock" --cargo-lock-sha256 $cargoLock
+      - name: Upload exact-SHA comparison evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-payload-comparison-manifest
+          path: ${{ runner.temp }}/windows-compare/evidence/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Promote exact-SHA alpha candidate A
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-desktop-alpha-candidate-${{ env.SOURCE_SHA }}
+          path: ${{ runner.temp }}/windows-compare/promoted/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload comparison diagnostics before cleanup
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-desktop-comparison-diagnostics-${{ env.SOURCE_SHA }}
+          path: ${{ runner.temp }}/windows-compare/diagnostics/
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Clean comparison state
+        if: always()
+        shell: pwsh
+        run: |
+          try {
+            if (Get-Command uv -ErrorAction SilentlyContinue) { uv run --frozen python scripts/clean_build_artifacts.py }
+          } finally {
+            Remove-Item -Recurse -Force (Join-Path $env:RUNNER_TEMP 'windows-compare') -ErrorAction SilentlyContinue
+            Remove-Item -Recurse -Force (Join-Path $env:LOCALAPPDATA 'Stock Desk\v1.1') -ErrorAction SilentlyContinue
           }
 
   public-tree:
@@ -949,7 +1284,9 @@ jobs:
     name: Publish immutable main validation proof
     if: github.event_name == 'push'
     needs:
-      - windows-runtime-acl
+      - windows-desktop-builder-a
+      - windows-desktop-builder-b
+      - windows-desktop-compare
       - public-tree
       - dependency-audit
       - python-unit
@@ -985,17 +1322,32 @@ jobs:
         with:
           pattern: python-evidence-*
           path: ${{ runner.temp }}/validation-evidence
-      - name: Download web and OCI manifests outside the worktree
+      - name: Download web manifest outside the worktree
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          pattern: "*-manifest"
-          path: ${{ runner.temp }}/validation-evidence
+          name: web-build-manifest
+          path: ${{ runner.temp }}/validation-evidence/web-build-manifest
+      - name: Download OCI manifest outside the worktree
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: oci-image-manifest
+          path: ${{ runner.temp }}/validation-evidence/oci-image-manifest
       - name: Download E2E and OCI security evidence outside the worktree
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: "*-evidence"
           path: ${{ runner.temp }}/validation-evidence
-      - name: Attest all nine exact-SHA evidence manifests
+      - name: Download exact-SHA promoted Windows candidate outside the worktree
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: windows-desktop-alpha-candidate-${{ env.SOURCE_SHA }}
+          path: ${{ runner.temp }}/validation-evidence/windows-desktop-alpha-candidate-manifest
+      - name: Download Windows payload comparison manifest outside the worktree
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: windows-payload-comparison-manifest
+          path: ${{ runner.temp }}/validation-evidence/windows-payload-comparison-manifest
+      - name: Attest all eleven exact-SHA evidence manifests
         id: attest-evidence
         uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
         with:
@@ -1009,6 +1361,8 @@ jobs:
             ${{ runner.temp }}/validation-evidence/e2e-evidence/e2e-evidence.json
             ${{ runner.temp }}/validation-evidence/oci-image-manifest/oci-image-manifest.json
             ${{ runner.temp }}/validation-evidence/oci-security-evidence/oci-security-evidence.json
+            ${{ runner.temp }}/validation-evidence/windows-payload-comparison-manifest/windows-payload-comparison-manifest.json
+            ${{ runner.temp }}/validation-evidence/windows-desktop-alpha-candidate-manifest/windows-desktop-alpha-candidate-manifest.json
       - name: Verify and preserve signed evidence attestation bundle
         env:
           BUNDLE_PATH: ${{ steps.attest-evidence.outputs.bundle-path }}
@@ -1023,7 +1377,9 @@ jobs:
             python-evidence-unit python-evidence-integration \
             python-evidence-acceptance-performance python-evidence-security \
             python-evidence-aggregate web-build-manifest e2e-evidence \
-            oci-image-manifest oci-security-evidence
+            oci-image-manifest oci-security-evidence \
+            windows-payload-comparison-manifest \
+            windows-desktop-alpha-candidate-manifest
           do
             gh attestation verify "$EVIDENCE_ROOT/$artifact/$artifact.json" \
               --bundle "$BUNDLE_PATH" --repo "$GITHUB_REPOSITORY" \
@@ -1077,6 +1433,8 @@ jobs:
             --evidence "e2e-evidence=$EVIDENCE_ROOT/e2e-evidence/e2e-evidence.json" \
             --evidence "oci-image-manifest=$EVIDENCE_ROOT/oci-image-manifest/oci-image-manifest.json" \
             --evidence "oci-security-evidence=$EVIDENCE_ROOT/oci-security-evidence/oci-security-evidence.json" \
+            --evidence "windows-payload-comparison-manifest=$EVIDENCE_ROOT/windows-payload-comparison-manifest/windows-payload-comparison-manifest.json" \
+            --evidence "windows-desktop-alpha-candidate-manifest=$EVIDENCE_ROOT/windows-desktop-alpha-candidate-manifest/windows-desktop-alpha-candidate-manifest.json" \
             --output "$RUNNER_TEMP/main-validation/proof.json"
       - name: Attest main validation proof
         id: attest

@@ -57,6 +57,12 @@ from stock_desk.api.settings import (
 )
 from stock_desk.api.tasks import router as tasks_router
 from stock_desk.config import Settings, get_settings
+from stock_desk.desktop_session import (
+    DesktopHandshake,
+    DesktopLifecycleController,
+    DesktopSession,
+    DesktopSessionMiddleware,
+)
 from stock_desk.formula.repository import FormulaRepository
 from stock_desk.formula.service import FormulaService, FormulaServiceDatabaseMismatch
 from stock_desk.security.secrets import (
@@ -131,6 +137,8 @@ def create_app(
     model_settings_service: ModelSettingsService | None = None,
     analysis_service: AnalysisService | None = None,
     analysis_preflight_service: AnalysisPreflightService | None = None,
+    desktop_session: DesktopSession | None = None,
+    desktop_lifecycle: DesktopLifecycleController | None = None,
 ) -> FastAPI:
     resolved_settings = settings if settings is not None else get_settings()
     database_identity = _ApplicationDatabaseIdentity(
@@ -510,6 +518,11 @@ def create_app(
         version="1.1.0",
         lifespan=lifespan,
     )
+    if desktop_session is not None:
+        application.add_middleware(
+            DesktopSessionMiddleware,
+            session=desktop_session,
+        )
     application.state.task_repository_provider = provide_task_repository
     application.state.market_services_provider = provide_market_services
     application.state.source_settings_services_provider = (
@@ -589,6 +602,66 @@ def create_app(
     application.include_router(analysis_router, prefix="/api")
     application.include_router(formulas_router, prefix="/api")
     application.include_router(backtests_router, prefix="/api")
+    if desktop_session is not None:
+        resolved_desktop_lifecycle = (
+            desktop_lifecycle
+            if desktop_lifecycle is not None
+            else DesktopLifecycleController()
+        )
+
+        @application.get(
+            "/api/desktop/handshake",
+            response_model=DesktopHandshake,
+            tags=["desktop"],
+        )
+        def desktop_handshake() -> DesktopHandshake:
+            provide_task_repository()
+            return desktop_session.handshake()
+
+        @application.get("/api/desktop/activity", tags=["desktop"])
+        def desktop_activity() -> Response:
+            try:
+                metrics = provide_task_repository().metrics()
+            except Exception:
+                return JSONResponse(
+                    status_code=503,
+                    content={"code": "storage_unavailable"},
+                )
+            return JSONResponse(
+                content={
+                    "queued": metrics.by_status["queued"],
+                    "running": metrics.by_status["running"],
+                }
+            )
+
+        @application.post("/api/desktop/shutdown", tags=["desktop"])
+        def desktop_shutdown() -> Response:
+            repository = provide_task_repository()
+            try:
+                with repository.hold_claim_gate():
+                    metrics = repository.metrics()
+                    queued = metrics.by_status["queued"]
+                    running = metrics.by_status["running"]
+                    if queued + running > 0:
+                        return JSONResponse(
+                            status_code=409,
+                            content={
+                                "code": "desktop_tasks_active",
+                                "queued": queued,
+                                "running": running,
+                            },
+                        )
+                    resolved_desktop_lifecycle.request_shutdown()
+            except Exception:
+                return JSONResponse(
+                    status_code=503,
+                    content={"code": "storage_unavailable"},
+                )
+            return JSONResponse(
+                status_code=202,
+                content={"status": "shutdown_requested"},
+            )
+
     if resolved_settings.web_dist_dir is not None:
         install_web_routes(application, resolved_settings.web_dist_dir)
     return application

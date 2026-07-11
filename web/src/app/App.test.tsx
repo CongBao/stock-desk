@@ -8,6 +8,11 @@ import {
 } from 'react-router-dom';
 
 import { App } from './App';
+import {
+  createDesktopBridge,
+  type DesktopAdapter,
+  type DesktopBridge,
+} from './desktopBridge';
 import { settingsResponse } from '../features/settings/testFixtures';
 
 vi.mock('../features/formulas/FormulaStudioPage', () => ({
@@ -168,6 +173,7 @@ function HistoryBackControl() {
 function renderApp(
   initialEntries: MemoryRouterProps['initialEntries'] = ['/market'],
   withBackControl = false,
+  desktopBridge?: DesktopBridge,
 ) {
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -184,7 +190,7 @@ function renderApp(
       <QueryClientProvider client={queryClient}>
         <MemoryRouter initialEntries={initialEntries}>
           {withBackControl ? <HistoryBackControl /> : null}
-          <App />
+          <App desktopBridge={desktopBridge} />
         </MemoryRouter>
       </QueryClientProvider>,
     ),
@@ -217,6 +223,29 @@ it('shows the product identity and all primary navigation items', () => {
   ]) {
     expect(screen.getByRole('link', { name: label })).toBeInTheDocument();
   }
+});
+
+it('does not mount the workspace or request business APIs while desktop startup is pending', async () => {
+  const fetchMock = vi.fn();
+  vi.stubGlobal('fetch', fetchMock);
+  const adapter: DesktopAdapter = {
+    cancelExit: vi.fn(() => Promise.resolve()),
+    confirmExit: vi.fn(() => Promise.resolve()),
+    getRuntimeState: vi.fn(() => Promise.resolve({ state: 'starting' })),
+    openDiagnostics: vi.fn(() => Promise.resolve()),
+    requestExit: vi.fn(() => Promise.resolve()),
+    restartService: vi.fn(() => Promise.resolve()),
+    subscribe: vi.fn(() => Promise.resolve(() => undefined)),
+    subscribeExit: vi.fn(() => Promise.resolve(() => undefined)),
+  };
+
+  renderApp(['/market'], false, createDesktopBridge(adapter));
+
+  expect(screen.getByRole('status')).toHaveTextContent('正在启动桌面服务');
+  expect(screen.queryByRole('main', { name: '行情图表工作区' })).toBeNull();
+  await waitFor(() => expect(adapter.getRuntimeState).toHaveBeenCalledOnce());
+  await waitFor(() => expect(adapter.subscribeExit).toHaveBeenCalledOnce());
+  expect(fetchMock).not.toHaveBeenCalled();
 });
 
 it('collapses and expands the primary navigation without abbreviating link names', async () => {

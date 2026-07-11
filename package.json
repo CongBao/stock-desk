@@ -4,6 +4,8 @@
   "packageManager": "pnpm@11.7.0",
   "scripts": {
     "build": "pnpm --dir web build",
+    "desktop:build": "tauri build --config src-tauri/tauri.conf.json",
+    "desktop:dev": "tauri dev --config src-tauri/tauri.conf.json",
     "e2e": "playwright test",
     "format:check": "pnpm --dir web format:check",
     "lint": "pnpm --dir web lint",
@@ -11,6 +13,7 @@
     "typecheck": "pnpm --dir web typecheck"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "2.11.4",
     "@axe-core/playwright": "4.12.1",
     "@playwright/test": ">=1.55.0 <2"
   }

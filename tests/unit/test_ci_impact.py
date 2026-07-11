@@ -33,6 +33,18 @@ from scripts.ci_impact import (
             "installer",
             "artifact-proof",
         ),
+        (
+            "scripts/build_windows_desktop.py",
+            RELEASE_DESKTOP_PROFILE,
+            "installer",
+            "artifact-proof",
+        ),
+        (
+            "tests/unit/test_verify_windows_desktop_bundle.py",
+            RELEASE_DESKTOP_PROFILE,
+            "installer",
+            "artifact-proof",
+        ),
         ("README.md", DOCS_PROFILE, "documentation", "docs"),
     ],
 )
@@ -86,6 +98,9 @@ def test_cross_domain_changes_fail_closed_to_full(paths: list[str]) -> None:
         "uv.lock",
         "pnpm-lock.yaml",
         "pyproject.toml",
+        "rust-toolchain.toml",
+        "src-tauri/Cargo.lock",
+        "src-tauri/Cargo.toml",
         "package.json",
         "Makefile",
         "Dockerfile",

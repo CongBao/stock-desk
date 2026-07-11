@@ -95,6 +95,9 @@ _DEPENDENCY_FILES = frozenset(
         "pnpm-lock.yaml",
         "pnpm-workspace.yaml",
         "pyproject.toml",
+        "rust-toolchain.toml",
+        "src-tauri/Cargo.lock",
+        "src-tauri/Cargo.toml",
         "uv.lock",
     }
 )
@@ -116,7 +119,24 @@ _HIGH_RISK_SCRIPT_NAMES = frozenset(
         "verify_release.py",
     }
 )
-_INSTALLER_SCRIPT_NAMES = frozenset({"build_installer.py"})
+_INSTALLER_SCRIPT_NAMES = frozenset(
+    {
+        "build_installer.py",
+        "build_windows_desktop.py",
+        "compare_windows_payloads.py",
+        "verify_windows_desktop_bundle.py",
+    }
+)
+_INSTALLER_TEST_NAMES = frozenset(
+    {
+        "test_build_windows_desktop.py",
+        "test_compare_windows_payloads.py",
+        "test_sidecar_spec_contract.py",
+        "test_verify_windows_desktop_bundle.py",
+        "test_windows_bundle_verifier.py",
+        "test_windows_desktop_packaging.py",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -214,7 +234,9 @@ def _path_domain(path: str) -> str | None:
             return "delivery"
         if path.startswith(("tests/e2e/", "tests/web/")):
             return "web"
-        if any(token in path for token in ("installer", "installed_distribution")):
+        if name in _INSTALLER_TEST_NAMES or any(
+            token in path for token in ("installer", "installed_distribution")
+        ):
             return "installer"
         return "backend"
     return None

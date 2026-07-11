@@ -41,6 +41,11 @@ dist/
 coverage/
 *.tsbuildinfo
 
+# Rust and generated Tauri schemas
+src-tauri/target/
+src-tauri/gen/
+src-tauri/binaries/*.exe
+
 # Editors
 .idea/
 .vscode/

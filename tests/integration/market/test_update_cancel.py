@@ -50,8 +50,10 @@ def test_cancel_before_first_boundary_records_all_remaining_items(
         )
         original_claim = harness.tasks.claim_next
 
-        def claim_then_cancel(worker_id: str) -> object:
-            claimed = original_claim(worker_id)
+        def claim_then_cancel(
+            worker_id: str, *, stop_event: threading.Event | None = None
+        ) -> object:
+            claimed = original_claim(worker_id, stop_event=stop_event)
             assert claimed is not None
             harness.tasks.request_cancel(claimed.id)
             return claimed
