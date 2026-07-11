@@ -2120,24 +2120,33 @@ def test_performance_target_ci_is_explicit_and_requirement_is_verified() -> None
     acceptance = workflow["jobs"]["python-acceptance-performance"]
     assert acceptance["runs-on"] == "ubuntu-24.04"
     steps = {step["name"]: step for step in acceptance["steps"]}
+    selector_tooling = {
+        "Set up pnpm for selector-bearing shards",
+        "Set up Node.js for selector-bearing shards",
+        "Restore exact-lock pnpm downloads for selector-bearing shards",
+        "Install locked selector toolchain",
+    }
     performance_only = {
-        "Set up pnpm for the performance shard",
-        "Set up Node.js for the performance shard",
-        "Restore exact-lock pnpm downloads for the performance shard",
         "Restore exact-lock browser binaries for the performance shard",
-        "Install locked browser toolchain for the performance shard",
+        "Install Chromium for the performance shard",
         "Prepare deterministic performance evidence once",
     }
-    assert performance_only <= set(steps)
+    assert selector_tooling | performance_only <= set(steps)
+    assert all(
+        steps[name]["if"]
+        == "env.PYTHON_SHARD == 'unit' || env.PYTHON_SHARD == 'acceptance-performance'"
+        for name in selector_tooling
+    )
     assert all(
         steps[name]["if"] == "env.PYTHON_SHARD == 'acceptance-performance'"
         for name in performance_only
     )
-    browser_install = steps[
-        "Install locked browser toolchain for the performance shard"
-    ]
-    assert "pnpm install --frozen-lockfile" in browser_install["run"]
-    assert "pnpm exec playwright install --with-deps chromium" in browser_install["run"]
+    assert steps["Install locked selector toolchain"]["run"] == (
+        "pnpm install --frozen-lockfile"
+    )
+    assert steps["Install Chromium for the performance shard"]["run"] == (
+        "pnpm exec playwright install --with-deps chromium"
+    )
     command = "\n".join(str(step.get("run", "")) for step in acceptance["steps"])
     assert acceptance["env"]["PYTHON_ROOTS"] == "tests/acceptance tests/performance"
     assert "--context=" in command
@@ -2292,7 +2301,7 @@ def test_python_ci_publishes_bounded_junit_failure_diagnostics() -> None:
         assert required in command
 
 
-def test_python_ci_keeps_browser_tooling_isolated_to_the_performance_shard() -> None:
+def test_python_ci_provisions_selector_tools_only_where_they_are_consumed() -> None:
     workflow = _load_github_actions_yaml(_read(".github/workflows/ci.yml"))
     for key in (
         "python-unit",
@@ -2320,7 +2329,8 @@ def test_python_ci_keeps_browser_tooling_isolated_to_the_performance_shard() -> 
         ]
         assert len(browser_setup) == 2
         assert all(
-            step["if"] == "env.PYTHON_SHARD == 'acceptance-performance'"
+            step["if"]
+            == "env.PYTHON_SHARD == 'unit' || env.PYTHON_SHARD == 'acceptance-performance'"
             for step in browser_setup
         )
         if key == "python-acceptance-performance":
