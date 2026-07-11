@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- `v1.1.0-alpha.2` adds the standalone Tauri Windows shell, current-user NSIS
+  installer, controlled Python sidecar, startup recovery, and exact-SHA Windows
+  candidate reuse without rebuilding or rerunning source tests during release.
 - `v1.1.0-alpha.1` establishes a conservative PR risk graph, exact-SHA Python
   test shards with combined branch coverage, deterministic browser evidence,
   content-addressed build manifests, and reusable immutable main proofs.

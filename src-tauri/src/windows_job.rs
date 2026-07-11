@@ -10,6 +10,9 @@ use std::fmt;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[cfg_attr(not(windows), allow(dead_code))]
 pub enum WindowsJobError {
+    // This stable cross-platform error code is only emitted by the non-Windows
+    // stub, but remains part of the shared diagnostic contract on Windows.
+    #[cfg_attr(windows, allow(dead_code))]
     UnsupportedPlatform,
     InvalidProcessId,
     CreateFailed,

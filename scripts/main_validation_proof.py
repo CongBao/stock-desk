@@ -99,6 +99,7 @@ WORKFLOW_POLICIES: Final = {
                 "Build and verify Windows desktop candidate A",
                 "Build and verify Windows desktop candidate B",
                 "Compare independent Windows desktop candidates",
+                "Rust desktop quality and tests",
                 "Public tree and repository health",
                 "Locked production dependency audit",
                 "Python unit shard",

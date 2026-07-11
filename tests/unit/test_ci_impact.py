@@ -26,7 +26,7 @@ from scripts.ci_impact import (
     [
         ("src/stock_desk/api/main.py", BACKEND_PROFILE, "backend", "python-unit"),
         ("web/src/App.tsx", WEB_PROFILE, "web", "e2e"),
-        ("src-tauri/src/main.rs", RELEASE_DESKTOP_PROFILE, "tauri", "artifact-proof"),
+        ("src-tauri/src/main.rs", RELEASE_DESKTOP_PROFILE, "tauri", "rust"),
         (
             "packaging/windows/stock-desk.iss",
             RELEASE_DESKTOP_PROFILE,
