@@ -743,17 +743,40 @@ def build_requirement_evidence(
                 continue
             key = (runner, evidence["path"], evidence["selector"])
             match = report_records.get(key)
-            if match is None:
+            matches = [match] if match is not None else []
+            terminal_selector = evidence["selector"].rsplit("::", maxsplit=1)[-1]
+            if not matches and runner == "pytest" and "[" not in terminal_selector:
+                parameter_prefix = f"{evidence['selector']}["
+                matches = [
+                    record
+                    for (record_runner, record_path, record_selector), record in sorted(
+                        report_records.items()
+                    )
+                    if record_runner == runner
+                    and record_path == evidence["path"]
+                    and record_selector.startswith(parameter_prefix)
+                ]
+            if not matches:
                 raise EvidenceError(
                     f"{item['id']} selector has no exact-SHA report evidence: "
                     f"{runner}:{evidence['selector']}"
                 )
-            status, digest = match
-            if status != "passed":
+            failed_statuses = sorted(
+                {status for status, _digest in matches if status != "passed"}
+            )
+            if failed_statuses:
                 raise EvidenceError(
-                    f"{item['id']} selector is {status}, not a successful non-xfail test: "
+                    f"{item['id']} selector is {', '.join(failed_statuses)}, "
+                    "not a successful non-xfail test: "
                     f"{evidence['selector']}"
                 )
+            digests = {digest for _status, digest in matches}
+            if len(digests) != 1:
+                raise EvidenceError(
+                    f"{item['id']} parameterized selector spans multiple reports: "
+                    f"{evidence['selector']}"
+                )
+            digest = next(iter(digests))
             bindings.append(
                 {
                     "requirement_id": item["id"],

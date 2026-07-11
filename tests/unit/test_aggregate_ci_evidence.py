@@ -27,45 +27,53 @@ def _inventory() -> dict[str, object]:
 
 
 def _write_junit(
-    path: Path, nodeid: str, *, shard: str = "unit", status: str = "passed"
+    path: Path,
+    nodeid: str | tuple[str, ...],
+    *,
+    shard: str = "unit",
+    status: str = "passed",
 ) -> None:
+    nodeids = (nodeid,) if isinstance(nodeid, str) else nodeid
     suites = ET.Element("testsuites")
-    suite = ET.SubElement(suites, "testsuite", tests="1")
-    case = ET.SubElement(suite, "testcase", classname="ignored", name="ignored")
-    properties = ET.SubElement(case, "properties")
-    ET.SubElement(
-        properties,
-        "property",
-        name="stock_desk_nodeid",
-        value=nodeid,
-    )
-    for name, value in (
-        ("stock_desk_source_sha", SHA),
-        ("stock_desk_source_tree", TREE),
-        ("stock_desk_shard", shard),
-    ):
-        ET.SubElement(properties, "property", name=name, value=value)
-    if status == "failed":
-        ET.SubElement(case, "failure", message="boom")
-    elif status == "error":
-        ET.SubElement(case, "error", message="boom")
-    elif status == "xfail":
-        ET.SubElement(case, "skipped", type="pytest.xfail", message="expected")
-    elif status == "skipped":
-        ET.SubElement(case, "skipped", type="pytest.skip", message="optional")
+    suite = ET.SubElement(suites, "testsuite", tests=str(len(nodeids)))
+    for item in nodeids:
+        case = ET.SubElement(suite, "testcase", classname="ignored", name="ignored")
+        properties = ET.SubElement(case, "properties")
+        ET.SubElement(
+            properties,
+            "property",
+            name="stock_desk_nodeid",
+            value=item,
+        )
+        for name, value in (
+            ("stock_desk_source_sha", SHA),
+            ("stock_desk_source_tree", TREE),
+            ("stock_desk_shard", shard),
+        ):
+            ET.SubElement(properties, "property", name=name, value=value)
+        if status == "failed":
+            ET.SubElement(case, "failure", message="boom")
+        elif status == "error":
+            ET.SubElement(case, "error", message="boom")
+        elif status == "xfail":
+            ET.SubElement(case, "skipped", type="pytest.xfail", message="expected")
+        elif status == "skipped":
+            ET.SubElement(case, "skipped", type="pytest.skip", message="optional")
     ET.ElementTree(suites).write(path, encoding="utf-8", xml_declaration=True)
 
 
-def _shard_evidence(tmp_path: Path) -> list[dict[str, object]]:
-    canonical = _inventory()
+def _shard_evidence(
+    tmp_path: Path, canonical: dict[str, object] | None = None
+) -> list[dict[str, object]]:
+    canonical = _inventory() if canonical is None else canonical
     evidence: list[dict[str, object]] = []
     for shard in inventory.SHARDS:
-        nodeid = canonical["shards"][shard]["nodeids"][0]
+        nodeids = tuple(canonical["shards"][shard]["nodeids"])
         directory = tmp_path / shard
         directory.mkdir(parents=True)
         junit = directory / "junit.xml"
         coverage = directory / f".coverage.{shard}"
-        _write_junit(junit, nodeid, shard=shard)
+        _write_junit(junit, nodeids, shard=shard)
         data = CoverageData(basename=str(coverage))
         data.set_context(f"stock-desk:{SHA}:{TREE}:{shard}")
         data.add_arcs({"example.py": {(1, 2)}})
@@ -469,6 +477,143 @@ def test_requirement_selectors_bind_to_unique_same_sha_success_reports(
     assert payload["required_runners"] == ["pytest", "vitest", "playwright"]
     assert payload["schema_authority_collect"] == "passed"
     assert payload["status"] == "passed"
+
+
+def test_pytest_parameterized_parent_binds_every_exact_report_case(
+    tmp_path: Path,
+) -> None:
+    parent = "tests/acceptance/test_matrix.py::test_every_period_and_scope"
+    parameterized = (
+        f"{parent}[day-single]",
+        f"{parent}[day-pool]",
+        f"{parent}[week-single]",
+        f"{parent}[week-pool]",
+        f"{parent}[min60-single]",
+        f"{parent}[min60-pool]",
+    )
+    canonical = inventory.build_inventory(
+        (NODEIDS[0], NODEIDS[1], *parameterized, NODEIDS[3]),
+        source_sha=SHA,
+        source_tree=TREE,
+    )
+    manifest = {
+        "requirements": [
+            {
+                "id": "R-014",
+                "evidence": [
+                    {
+                        "state": "existing",
+                        "runner": "pytest",
+                        "path": "tests/acceptance/test_matrix.py",
+                        "selector": parent,
+                    }
+                ],
+            }
+        ],
+        "non_goals": [],
+    }
+
+    payload = aggregate.build_requirement_evidence(
+        manifest=manifest,
+        reports=_shard_evidence(tmp_path, canonical),
+        source_sha=SHA,
+        source_tree=TREE,
+        manifest_sha256="f" * 64,
+        inventory=canonical,
+        required_runners=["pytest"],
+    )
+
+    assert payload["binding_count"] == 1
+    assert payload["bindings"][0]["selector"] == parent
+
+
+def test_pytest_parameterized_parent_does_not_bind_a_sibling_prefix(
+    tmp_path: Path,
+) -> None:
+    parent = "tests/acceptance/test_matrix.py::test_every_period_and_scope"
+    sibling = f"{parent}_extended[day-single]"
+    canonical = inventory.build_inventory(
+        (NODEIDS[0], NODEIDS[1], sibling, NODEIDS[3]),
+        source_sha=SHA,
+        source_tree=TREE,
+    )
+    manifest = {
+        "requirements": [
+            {
+                "id": "R-014",
+                "evidence": [
+                    {
+                        "state": "existing",
+                        "runner": "pytest",
+                        "path": "tests/acceptance/test_matrix.py",
+                        "selector": parent,
+                    }
+                ],
+            }
+        ],
+        "non_goals": [],
+    }
+
+    with pytest.raises(aggregate.EvidenceError, match="no exact-SHA"):
+        aggregate.build_requirement_evidence(
+            manifest=manifest,
+            reports=_shard_evidence(tmp_path, canonical),
+            source_sha=SHA,
+            source_tree=TREE,
+            manifest_sha256="f" * 64,
+            inventory=canonical,
+            required_runners=["pytest"],
+        )
+
+
+def test_pytest_parameterized_parent_rejects_a_skipped_child(
+    tmp_path: Path,
+) -> None:
+    parent = "tests/acceptance/test_matrix.py::test_every_period_and_scope"
+    parameterized = (f"{parent}[day-single]", f"{parent}[day-pool]")
+    canonical = inventory.build_inventory(
+        (NODEIDS[0], NODEIDS[1], *parameterized, NODEIDS[3]),
+        source_sha=SHA,
+        source_tree=TREE,
+    )
+    reports = _shard_evidence(tmp_path, canonical)
+    acceptance = next(
+        item for item in reports if item["shard"] == "acceptance-performance"
+    )
+    acceptance["junit"]["records"][0]["status"] = "skipped"
+    acceptance["junit"]["counts"] = aggregate._status_counts(
+        acceptance["junit"]["records"]
+    )
+    acceptance["evidence_sha256"] = inventory.sha256_json(
+        {key: value for key, value in acceptance.items() if key != "evidence_sha256"}
+    )
+    manifest = {
+        "requirements": [
+            {
+                "id": "R-014",
+                "evidence": [
+                    {
+                        "state": "existing",
+                        "runner": "pytest",
+                        "path": "tests/acceptance/test_matrix.py",
+                        "selector": parent,
+                    }
+                ],
+            }
+        ],
+        "non_goals": [],
+    }
+
+    with pytest.raises(aggregate.EvidenceError, match="skipped"):
+        aggregate.build_requirement_evidence(
+            manifest=manifest,
+            reports=reports,
+            source_sha=SHA,
+            source_tree=TREE,
+            manifest_sha256="f" * 64,
+            inventory=canonical,
+            required_runners=["pytest"],
+        )
 
 
 def test_requirement_selector_missing_xfail_duplicate_and_stale_reports_fail(
