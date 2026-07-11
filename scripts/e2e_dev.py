@@ -109,7 +109,11 @@ def _demo_provider(execution: AnalysisExecutionConfig) -> ModelProvider:
     return cast(ModelProvider, _DeterministicDemoProvider(execution))
 
 
-def _seed(data_dir: Path) -> None:
+def _seed(
+    data_dir: Path,
+    *,
+    performance_runnable_symbol_limit: int | None = None,
+) -> None:
     seed_demo_data(data_dir)
     database_url = f"sqlite:///{data_dir / 'stock-desk.db'}"
     engine = create_engine_for_url(database_url)
@@ -122,6 +126,16 @@ def _seed(data_dir: Path) -> None:
         status_lake = ExecutionStatusLake(engine)
         if os.environ.get("STOCK_DESK_PERFORMANCE_MODE") == "1":
             performance_metadata = load_fixture_metadata()
+            runnable_symbol_count: int = performance_metadata.runnable_symbol_count
+            if performance_runnable_symbol_limit is not None:
+                if (
+                    type(performance_runnable_symbol_limit) is not int
+                    or not 1
+                    <= performance_runnable_symbol_limit
+                    <= runnable_symbol_count
+                ):
+                    raise ValueError("performance runnable symbol limit is invalid")
+                runnable_symbol_count = performance_runnable_symbol_limit
             performance_fixture = generate_fixture_bars(performance_metadata)
             lake.write(performance_fixture.routed)
             status_lake.write(_routed_status(performance_fixture.routed))
@@ -143,9 +157,7 @@ def _seed(data_dir: Path) -> None:
                 preset_key="performance-all-a",
                 display_name="Perf Full-A Scope: 5000 metadata / 40 runnable (CC0)",
             )
-            runnable_extras = scope_symbols[
-                : performance_metadata.runnable_symbol_count - 1
-            ]
+            runnable_extras = scope_symbols[: runnable_symbol_count - 1]
             for item in runnable_extras:
                 generated = generate_fixture_bars(
                     performance_metadata.model_copy(update={"symbol": item.symbol})
