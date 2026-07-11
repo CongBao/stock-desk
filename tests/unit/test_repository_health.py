@@ -2159,6 +2159,18 @@ def test_performance_target_ci_is_explicit_and_requirement_is_verified() -> None
     assert steps["Install Chromium for the performance shard"]["run"] == (
         "pnpm exec playwright install --with-deps chromium"
     )
+    provenance = steps["Verify documentation provenance after performance"]
+    assert provenance["if"] == "env.PYTHON_SHARD == 'acceptance-performance'"
+    assert "git cat-file -t" in provenance["run"]
+    assert "git rev-list --max-count=1" in provenance["run"]
+    assert "documentation-provenance head=%s commit=%s" in provenance["run"]
+    assert "scripts/verify_docs.py --repo-root ." in provenance["run"]
+    assert acceptance["steps"].index(provenance) > acceptance["steps"].index(
+        steps["Prepare deterministic performance evidence once"]
+    )
+    assert acceptance["steps"].index(provenance) < acceptance["steps"].index(
+        steps["Run authoritative shard exactly once"]
+    )
     command = "\n".join(str(step.get("run", "")) for step in acceptance["steps"])
     assert acceptance["env"]["PYTHON_ROOTS"] == "tests/acceptance tests/performance"
     assert "--context=" in command

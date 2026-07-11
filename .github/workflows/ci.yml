@@ -291,6 +291,30 @@ jobs:
           --evidence-kind target_baseline
           --output test-results/performance/current.json
           --compare tests/performance/baseline.json
+      - name: Verify documentation provenance after performance
+        if: env.PYTHON_SHARD == 'acceptance-performance'
+        shell: bash
+        run: |
+          set -euo pipefail
+          commits=$(uv run --frozen python - <<'PY'
+          import yaml
+          from pathlib import Path
+
+          manifest = yaml.safe_load(Path("docs/images/manifest.yml").read_text(encoding="utf-8"))
+          print("\n".join(sorted({entry["product"]["git_commit"] for entry in manifest["screenshots"]})))
+          PY
+          )
+          test -n "$commits"
+          head=$(git rev-parse HEAD)
+          while IFS= read -r commit; do
+            object_type=$(git cat-file -t "$commit")
+            outside_head=$(git rev-list --max-count=1 "$commit^{commit}" --not HEAD)
+            printf 'documentation-provenance head=%s commit=%s type=%s outside_head=%s\n' \
+              "$head" "$commit" "$object_type" "${outside_head:-none}"
+            test "$object_type" = commit
+            test -z "$outside_head"
+          done <<< "$commits"
+          uv run --frozen python scripts/verify_docs.py --repo-root .
       - name: Run authoritative shard exactly once
         shell: bash
         run: |
