@@ -1,0 +1,38 @@
+schema_version: 1
+requirements:
+  - id: V11-R-001
+    category: market
+    kind: architecture
+    behavior_key: index_and_equity_identity_are_distinct
+    acceptance: "The instrument identity model distinguishes indices from listed equities across search, routing, persistence, and display; the Shanghai Composite is canonicalized as 000001.SS and is the safe default when no stock has been selected."
+    source_refs:
+      - {capability: desktop-onboarding, requirement: canonical-instrument-identity, scenario: distinguish-index-from-equity}
+      - {capability: desktop-onboarding, requirement: safe-default-instrument, scenario: open-without-a-selection}
+    owning_stage: 1
+    status: mapped
+    evidence:
+      - state: planned
+        runner: pytest
+        kind: acceptance
+        path: tests/acceptance/test_v11_onboarding.py
+        selector: tests/acceptance/test_v11_onboarding.py::test_index_identity_is_distinct_and_default_symbol_is_sse_composite
+        assertion: The accepted desktop contract proves that the index cannot alias an equity and that a missing selection resolves to the canonical Shanghai Composite identity.
+  - id: V11-R-002
+    category: platform
+    kind: user_visible
+    behavior_key: first_run_data_setup_wizard
+    acceptance: "On first launch, a guided setup explains and validates the minimum market-data configuration, permits an explicit supported offline or deferred choice, saves the completed state, and opens a usable market workspace with the Shanghai Composite selected immediately after completion."
+    source_refs:
+      - {capability: desktop-onboarding, requirement: guided-first-run-setup, scenario: complete-minimum-data-configuration}
+      - {capability: desktop-onboarding, requirement: guided-first-run-setup, scenario: continue-with-supported-deferred-choice}
+      - {capability: desktop-onboarding, requirement: ready-after-onboarding, scenario: open-default-market-workspace}
+    owning_stage: 1
+    status: mapped
+    evidence:
+      - state: planned
+        runner: playwright
+        kind: acceptance
+        path: web/e2e/onboarding.spec.ts
+        selector: first run wizard configures data and opens a usable default market
+        assertion: The desktop browser flow completes the minimum setup without code entry and immediately reaches an interactive market chart for the Shanghai Composite.
+non_goals: []

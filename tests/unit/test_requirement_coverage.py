@@ -745,7 +745,7 @@ def test_release_acceptance_and_final_audit_manual_reviews_are_complete(
     )
 
 
-def test_release_mode_accepts_completed_post_release_evidence() -> None:
+def test_release_mode_rejects_the_undelivered_v11_increment() -> None:
     result = subprocess.run(
         [sys.executable, str(SCRIPT), "--mode", "release"],
         cwd=ROOT,
@@ -754,9 +754,8 @@ def test_release_mode_accepts_completed_post_release_evidence() -> None:
         check=False,
     )
 
-    assert result.returncode == 0, result.stderr
-    assert "82/82 requirements mapped" in result.stdout
-    assert "0 planned" in result.stdout
+    assert result.returncode == 1
+    assert "planned evidence: V11-R-001, V11-R-002" in result.stderr
 
 
 def test_duplicate_yaml_keys_are_rejected(checker: ModuleType, tmp_path: Path) -> None:

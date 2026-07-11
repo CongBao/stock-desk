@@ -253,6 +253,48 @@ CANONICAL_NON_GOALS: dict[str, dict[str, Any]] = {
 }
 # fmt: on
 
+V11_CANONICAL_REQUIREMENTS: dict[str, dict[str, Any]] = {
+    "V11-R-001": _authority(
+        "market",
+        "architecture",
+        "index_and_equity_identity_are_distinct",
+        1,
+        "a02b472acd9f4db5b667ca96a62e57891634142cfe9c307802bcd4e129bc0878",
+        (
+            "desktop-onboarding",
+            "canonical-instrument-identity",
+            "distinguish-index-from-equity",
+        ),
+        (
+            "desktop-onboarding",
+            "safe-default-instrument",
+            "open-without-a-selection",
+        ),
+    ),
+    "V11-R-002": _authority(
+        "platform",
+        "user_visible",
+        "first_run_data_setup_wizard",
+        1,
+        "6c78f78a0b3c1489a2df1dfa709f01f487d1f7e3cb1444a5efd191bf8910f008",
+        (
+            "desktop-onboarding",
+            "guided-first-run-setup",
+            "complete-minimum-data-configuration",
+        ),
+        (
+            "desktop-onboarding",
+            "guided-first-run-setup",
+            "continue-with-supported-deferred-choice",
+        ),
+        (
+            "desktop-onboarding",
+            "ready-after-onboarding",
+            "open-default-market-workspace",
+        ),
+    ),
+}
+
 AUTHORITATIVE_BEHAVIOR_KEYS: dict[str, str] = {
     item_id: entry["behavior_key"] for item_id, entry in CANONICAL_REQUIREMENTS.items()
 }
@@ -262,6 +304,14 @@ AUTHORITATIVE_ACCEPTANCE_SHA256: dict[str, str] = {
 }
 AUTHORITATIVE_NON_GOAL_BEHAVIOR_KEYS: dict[str, str] = {
     item_id: entry["behavior_key"] for item_id, entry in CANONICAL_NON_GOALS.items()
+}
+V11_AUTHORITATIVE_BEHAVIOR_KEYS: dict[str, str] = {
+    item_id: entry["behavior_key"]
+    for item_id, entry in V11_CANONICAL_REQUIREMENTS.items()
+}
+V11_AUTHORITATIVE_ACCEPTANCE_SHA256: dict[str, str] = {
+    item_id: entry["acceptance_sha256"]
+    for item_id, entry in V11_CANONICAL_REQUIREMENTS.items()
 }
 
 
@@ -587,8 +637,12 @@ def _validate_source_refs(value: object, item_id: str) -> None:
                 )
 
 
-def _validate_canonical_requirement(item: Mapping[str, Any], item_id: str) -> None:
-    canonical = CANONICAL_REQUIREMENTS[item_id]
+def _validate_canonical_requirement(
+    item: Mapping[str, Any],
+    item_id: str,
+    canonical_requirements: Mapping[str, Mapping[str, Any]],
+) -> None:
+    canonical = canonical_requirements[item_id]
     for field in ("category", "kind", "behavior_key", "owning_stage"):
         if item[field] != canonical[field]:
             raise ValidationError(
@@ -802,10 +856,18 @@ def _validate_item(
     mode: str,
     behavior_keys: set[str],
     tracked_paths: frozenset[str],
+    *,
+    canonical_requirements: Mapping[str, Mapping[str, Any]] = CANONICAL_REQUIREMENTS,
+    canonical_non_goals: Mapping[str, Mapping[str, Any]] = CANONICAL_NON_GOALS,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     item = _expect_mapping(raw, expected_id)
     _expect_exact_fields(item, ITEM_FIELDS, expected_id)
-    item_id = _expect_text(item["id"], f"{expected_id}.id", minimum=5, maximum=5)
+    item_id = _expect_text(
+        item["id"],
+        f"{expected_id}.id",
+        minimum=len(expected_id),
+        maximum=len(expected_id),
+    )
     if item_id != expected_id:
         raise ValidationError(f"{expected_id}.id must equal {expected_id}")
     _expect_enum(item["category"], CATEGORIES, f"{expected_id}.category")
@@ -831,9 +893,11 @@ def _validate_item(
             f"{expected_id}.owning_stage must be an integer from 0 through 5"
         )
     _expect_enum(item["status"], STATUSES, f"{expected_id}.status")
-    if expected_id.startswith("R-"):
-        _validate_canonical_requirement(item, expected_id)
+    if expected_id in canonical_requirements:
+        _validate_canonical_requirement(item, expected_id, canonical_requirements)
     else:
+        if expected_id not in canonical_non_goals:
+            raise ValidationError(f"{expected_id} is outside the frozen authority")
         _validate_canonical_non_goal(item, expected_id)
     evidence = _validate_evidence(
         item["evidence"],
@@ -1100,6 +1164,199 @@ def validate_manifest(
     }
 
 
+def validate_v11_manifest(
+    matrix: dict[str, Any],
+    *,
+    repo_root: Path,
+    mode: str,
+    verify_selectors: bool = True,
+    selector_runners: frozenset[str] | None = None,
+) -> dict[str, int]:
+    if not isinstance(mode, str) or mode not in {
+        "mapping",
+        "pre-publish",
+        "release",
+    }:
+        raise ValidationError("mode must be mapping, pre-publish, or release")
+    if selector_runners is not None and (
+        not selector_runners
+        or not selector_runners <= {"pytest", "vitest", "playwright"}
+    ):
+        raise ValidationError(
+            "selector_runners must be a non-empty subset of pytest, vitest, playwright"
+        )
+    _reject_publication_boundary(matrix)
+    _expect_exact_fields(matrix, ROOT_FIELDS, "v1.1 manifest")
+    if type(matrix["schema_version"]) is not int or matrix["schema_version"] != 1:
+        raise ValidationError("v1.1 schema_version must be integer 1")
+    requirements = _expect_list(matrix["requirements"], "v1.1 requirements")
+    non_goals = _expect_list(matrix["non_goals"], "v1.1 non_goals")
+    expected = ["V11-R-001", "V11-R-002"]
+    if [
+        item.get("id") if isinstance(item, dict) else None for item in requirements
+    ] != expected:
+        raise ValidationError(
+            "v1.1 requirements must contain exactly V11-R-001 through V11-R-002"
+        )
+    if non_goals:
+        raise ValidationError("v1.1 non_goals must be empty for the frozen increment")
+    if list(V11_CANONICAL_REQUIREMENTS) != expected:
+        raise ValidationError(
+            "v1.1 canonical registry must contain exactly V11-R-001 through V11-R-002"
+        )
+    if (
+        list(V11_AUTHORITATIVE_BEHAVIOR_KEYS) != expected
+        or list(V11_AUTHORITATIVE_ACCEPTANCE_SHA256) != expected
+    ):
+        raise ValidationError(
+            "v1.1 authoritative contract must contain exactly V11-R-001 through V11-R-002"
+        )
+    tracked_paths = _tracked_paths(repo_root)
+    behavior_keys: set[str] = set()
+    validated: list[dict[str, Any]] = []
+    for raw, expected_id in zip(requirements, expected, strict=True):
+        item, _ = _validate_item(
+            raw,
+            expected_id,
+            repo_root,
+            mode,
+            behavior_keys,
+            tracked_paths,
+            canonical_requirements=V11_CANONICAL_REQUIREMENTS,
+            canonical_non_goals={},
+        )
+        if item["kind"] == "non_goal":
+            raise ValidationError(f"{expected_id} cannot use non_goal kind")
+        validated.append(item)
+    release_errors = _evidence_gate_errors(validated, mode=mode)
+    if release_errors:
+        raise ValidationError("; ".join(release_errors))
+    if verify_selectors:
+        _collect_existing_selectors(
+            validated,
+            repo_root,
+            tracked_paths,
+            selector_runners=selector_runners,
+        )
+    return {
+        "requirements": len(requirements),
+        "non_goals": 0,
+        "planned": sum(
+            evidence["state"] == "planned"
+            for item in validated
+            for evidence in item["evidence"]
+        ),
+        "manual": sum(
+            evidence["state"] == "manual"
+            for item in validated
+            for evidence in item["evidence"]
+        ),
+    }
+
+
+def validate_authority_manifest(
+    matrix: dict[str, Any],
+    *,
+    manifest_path: Path,
+    repo_root: Path,
+    mode: str,
+    verify_selectors: bool = True,
+    selector_runners: frozenset[str] | None = None,
+) -> dict[str, int]:
+    if manifest_path.name == "requirements.yml":
+        return validate_manifest(
+            matrix,
+            repo_root=repo_root,
+            mode=mode,
+            verify_selectors=verify_selectors,
+            selector_runners=selector_runners,
+        )
+    if manifest_path.name == "v1_1_requirements.yml":
+        return validate_v11_manifest(
+            matrix,
+            repo_root=repo_root,
+            mode=mode,
+            verify_selectors=verify_selectors,
+            selector_runners=selector_runners,
+        )
+    raise ValidationError(f"unsupported requirement authority: {manifest_path.name}")
+
+
+def _validate_cross_authority_uniqueness(
+    manifests: Mapping[str, Mapping[str, Any]],
+) -> None:
+    ids: set[str] = set()
+    behaviors: set[str] = set()
+    for namespace, manifest in manifests.items():
+        for item in [*manifest["requirements"], *manifest["non_goals"]]:
+            item_id = str(item["id"])
+            behavior = str(item["behavior_key"])
+            if item_id in ids:
+                raise ValidationError(
+                    f"authorities contain a duplicate requirement id: {item_id}"
+                )
+            if behavior in behaviors:
+                raise ValidationError(
+                    f"authorities contain a duplicate behavior_key: {behavior}"
+                )
+            ids.add(item_id)
+            behaviors.add(behavior)
+
+
+def validate_all_manifests(
+    *,
+    repo_root: Path,
+    mode: str,
+    verify_selectors: bool = True,
+    selector_runners: frozenset[str] | None = None,
+    manifests: Mapping[str, dict[str, Any]] | None = None,
+) -> dict[str, int]:
+    authorities = (
+        dict(manifests)
+        if manifests is not None
+        else {
+            "v1": load_manifest(repo_root / "tests/acceptance/requirements.yml"),
+            "v1.1": load_manifest(repo_root / "tests/acceptance/v1_1_requirements.yml"),
+        }
+    )
+    if set(authorities) != {"v1", "v1.1"}:
+        raise ValidationError("both v1 and v1.1 authorities are required")
+    v1_counts = validate_manifest(
+        authorities["v1"],
+        repo_root=repo_root,
+        mode=mode,
+        verify_selectors=False,
+        selector_runners=selector_runners,
+    )
+    v11_counts = validate_v11_manifest(
+        authorities["v1.1"],
+        repo_root=repo_root,
+        mode=mode,
+        verify_selectors=False,
+        selector_runners=selector_runners,
+    )
+    _validate_cross_authority_uniqueness(authorities)
+    if verify_selectors:
+        items = [
+            *authorities["v1"]["requirements"],
+            *authorities["v1"]["non_goals"],
+            *authorities["v1.1"]["requirements"],
+        ]
+        _collect_existing_selectors(
+            items,
+            repo_root,
+            _tracked_paths(repo_root),
+            selector_runners=selector_runners,
+        )
+    return {
+        "v1_requirements": v1_counts["requirements"],
+        "v1_non_goals": v1_counts["non_goals"],
+        "v11_requirements": v11_counts["requirements"],
+        "planned": v1_counts["planned"] + v11_counts["planned"],
+        "manual": v1_counts["manual"] + v11_counts["manual"],
+    }
+
+
 def verify_document_digest(manifest_path: Path, document_path: Path) -> None:
     expected = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
     try:
@@ -1129,15 +1386,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     manifest_path = repo_root / "tests" / "acceptance" / "requirements.yml"
     document_path = repo_root / "docs" / "acceptance.md"
     try:
-        matrix = load_manifest(manifest_path)
-        counts = validate_manifest(matrix, repo_root=repo_root, mode=args.mode)
+        counts = validate_all_manifests(repo_root=repo_root, mode=args.mode)
         verify_document_digest(manifest_path, document_path)
     except (OSError, ValidationError) as exc:
         print(f"requirement coverage error: {exc}", file=sys.stderr)
         return 1
     print(
-        f"{counts['requirements']}/{len(CANONICAL_REQUIREMENTS)} requirements mapped; "
-        f"{counts['non_goals']}/10 non-goals mapped to absence checks; "
+        f"{counts['v1_requirements']}/{len(CANONICAL_REQUIREMENTS)} requirements mapped; "
+        f"{counts['v11_requirements']}/{len(V11_CANONICAL_REQUIREMENTS)} v1.1 requirements mapped; "
+        f"{counts['v1_non_goals']}/10 non-goals mapped to absence checks; "
         "existing selectors collect successfully; "
         "planned/manual evidence explicitly enumerated "
         f"({counts['planned']} planned, {counts['manual']} manual)"
