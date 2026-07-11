@@ -1,6 +1,6 @@
 [project]
 name = "stock-desk"
-version = "1.0.0"
+version = "1.1.0"
 description = "Local-first foundation for a personal A-share research workspace"
 readme = "README.md"
 license = "Apache-2.0"
@@ -70,6 +70,7 @@ packages = ["src/stock_desk"]
 [dependency-groups]
 dev = [
     "bandit>=1.8,<2",
+    "defusedxml>=0.7.1,<1",
     "hatchling>=1.27,<2",
     "hypothesis>=6.140,<7",
     "markdown-it-py[linkify]>=4.2,<5",
@@ -101,6 +102,7 @@ omit = ["scripts/e2e_dev.py"]
 [tool.coverage.report]
 fail_under = 85
 show_missing = true
+precision = 2
 
 [tool.coverage.xml]
 output = "coverage.xml"

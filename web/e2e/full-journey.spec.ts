@@ -295,8 +295,12 @@ test('complete public demo journey uses real API worker and frozen provenance', 
   await page.getByRole('button', { name: '打开上下文面板' }).click();
   const recent = page.locator('#context-panel');
   await expect(recent.getByRole('heading', { name: '近期任务' })).toBeVisible();
-  await expect(recent).toContainText('backtest.run');
-  await expect(recent).toContainText('analysis.run');
+  await expect(
+    recent.getByRole('listitem', { name: /^backtest\.run /u }).first(),
+  ).toBeVisible();
+  await expect(
+    recent.getByRole('listitem', { name: /^analysis\.run /u }).first(),
+  ).toBeVisible();
   expect(await page.locator('body').innerText()).not.toMatch(
     /api[_-]?key|secret|token/iu,
   );

@@ -20,9 +20,16 @@ if __package__ in {None, ""}:
     sys.path.insert(0, os.fspath(Path(__file__).resolve().parent.parent))
 
 from scripts.source_fingerprint import compute_source_fingerprint
+from scripts.artifact_manifest import (
+    ManifestError,
+    validate_manifest,
+    verify_for_consumption,
+)
 
 
-SCHEMA: Final = "stock-desk-main-validation-proof-v1"
+LEGACY_SCHEMA: Final = "stock-desk-main-validation-proof-v1"
+SCHEMA: Final = "stock-desk-main-validation-proof-v2"
+POST_GH_VERIFY_BINDING_SCHEMA: Final = "stock-desk-main-proof-post-gh-verify-binding-v1"
 SHA256_PATTERN: Final = re.compile(r"^[0-9a-f]{64}$")
 GIT_SHA_PATTERN: Final = re.compile(r"^[0-9a-f]{40}$")
 REPOSITORY_PATTERN: Final = re.compile(
@@ -31,7 +38,7 @@ REPOSITORY_PATTERN: Final = re.compile(
 )
 REF_PATTERN: Final = re.compile(r"^refs/heads/[A-Za-z0-9][A-Za-z0-9._/-]*$")
 
-CRITICAL_INPUTS: Final = (
+LEGACY_CRITICAL_INPUTS: Final = (
     ".github/workflows/ci.yml",
     ".github/workflows/codeql.yml",
     ".github/workflows/release.yml",
@@ -48,6 +55,19 @@ CRITICAL_INPUTS: Final = (
     "scripts/source_fingerprint.py",
     "scripts/verify_release.py",
     "uv.lock",
+)
+CRITICAL_INPUTS: Final = LEGACY_CRITICAL_INPUTS + (
+    "playwright.config.ts",
+    "schemas/artifact-manifest-v2.schema.json",
+    "scripts/aggregate_ci_evidence.py",
+    "scripts/artifact_manifest.py",
+    "scripts/check_requirement_coverage.py",
+    "scripts/ci_impact.py",
+    "scripts/ci_test_inventory.py",
+    "scripts/e2e_snapshot.py",
+    "scripts/verify_ci_cache_policy.py",
+    "tests/acceptance/requirements.yml",
+    "web/vite.config.ts",
 )
 
 
@@ -68,10 +88,16 @@ WORKFLOW_POLICIES: Final = {
                 "Windows runtime ACL execution",
                 "Public tree and repository health",
                 "Locked production dependency audit",
-                "Python quality, tests, and package",
-                "Web quality, tests, and build",
-                "Chromium E2E and Ubuntu x64 4-core/16GB target evidence",
-                "Clean Compose build and smoke test",
+                "Python unit shard",
+                "Python integration shard",
+                "Python acceptance and performance shard",
+                "Python security shard",
+                "Aggregate Python evidence and coverage",
+                "Web quality tests and immutable build",
+                "Chromium E2E immutable snapshot",
+                "Build immutable OCI image",
+                "Verify OCI Compose smoke",
+                "Verify OCI SBOM and vulnerabilities",
             }
         ),
         generation_job="Publish immutable main validation proof",
@@ -90,10 +116,93 @@ WORKFLOW_POLICIES: Final = {
         required_jobs=frozenset(
             {
                 "Audit locked production dependencies and application boundaries",
+            }
+        ),
+        allowed_skipped_jobs=frozenset({"Review dependency changes"}),
+    ),
+}
+
+LEGACY_WORKFLOW_POLICIES: Final = {
+    "CI": WorkflowPolicy(
+        path=".github/workflows/ci.yml",
+        required_jobs=frozenset(
+            {
+                "Select required test scope",
+                "Windows runtime ACL execution",
+                "Public tree and repository health",
+                "Locked production dependency audit",
+                "Python quality, tests, and package",
+                "Web quality, tests, and build",
+                "Chromium E2E and Ubuntu x64 4-core/16GB target evidence",
+                "Clean Compose build and smoke test",
+            }
+        ),
+        generation_job="Publish immutable main validation proof",
+    ),
+    "CodeQL": WorkflowPolicy(
+        path=".github/workflows/codeql.yml",
+        required_jobs=frozenset({"Analyze python", "Analyze javascript-typescript"}),
+    ),
+    "Security": WorkflowPolicy(
+        path=".github/workflows/security.yml",
+        required_jobs=frozenset(
+            {
+                "Audit locked production dependencies and application boundaries",
                 "Generate image SBOM, report CVEs, and reject fixable findings",
             }
         ),
         allowed_skipped_jobs=frozenset({"Review dependency changes"}),
+    ),
+}
+
+
+@dataclass(frozen=True, slots=True)
+class EvidencePolicy:
+    workflow: str
+    job_id: str
+    job_name: str
+    artifact_name: str
+
+
+EVIDENCE_POLICIES: Final = {
+    "python-unit": EvidencePolicy(
+        "CI", "python-unit", "Python unit shard", "python-evidence-unit"
+    ),
+    "python-integration": EvidencePolicy(
+        "CI",
+        "python-integration",
+        "Python integration shard",
+        "python-evidence-integration",
+    ),
+    "python-acceptance-performance": EvidencePolicy(
+        "CI",
+        "python-acceptance-performance",
+        "Python acceptance and performance shard",
+        "python-evidence-acceptance-performance",
+    ),
+    "python-security": EvidencePolicy(
+        "CI", "python-security", "Python security shard", "python-evidence-security"
+    ),
+    "python-aggregate": EvidencePolicy(
+        "CI",
+        "python-evidence",
+        "Aggregate Python evidence and coverage",
+        "python-evidence-aggregate",
+    ),
+    "web-build": EvidencePolicy(
+        "CI", "web", "Web quality tests and immutable build", "web-build-manifest"
+    ),
+    "e2e": EvidencePolicy(
+        "CI", "e2e", "Chromium E2E immutable snapshot", "e2e-evidence"
+    ),
+    "oci-image": EvidencePolicy(
+        "CI", "container-build", "Build immutable OCI image", "oci-image-manifest"
+    ),
+    "oci-security": EvidencePolicy(
+        "CI",
+        "container-security",
+        "Verify OCI SBOM and vulnerabilities",
+        "oci-security-evidence",
     ),
 }
 
@@ -289,9 +398,39 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def critical_input_hashes(repo_root: Path) -> dict[str, str]:
+def critical_input_hashes(
+    repo_root: Path, paths: Sequence[str] = CRITICAL_INPUTS
+) -> dict[str, str]:
     root = repo_root.resolve(strict=True)
-    return {relative: _file_sha256(root / relative) for relative in CRITICAL_INPUTS}
+    return {relative: _file_sha256(root / relative) for relative in paths}
+
+
+def fixture_hashes(repo_root: Path) -> dict[str, str]:
+    root = repo_root.resolve(strict=True)
+    try:
+        result = subprocess.run(  # noqa: S603
+            (
+                "git",
+                "-C",
+                os.fspath(root),
+                "ls-files",
+                "-z",
+                "--",
+                "tests/fixtures",
+                "tests/acceptance/requirements.yml",
+            ),
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+        raise MainValidationProofError(
+            "unable to enumerate release fixtures"
+        ) from error
+    paths = sorted(os.fsdecode(value) for value in result.stdout.split(b"\0") if value)
+    if not paths:
+        raise MainValidationProofError("release fixtures are missing")
+    return {relative: _file_sha256(root / relative) for relative in paths}
 
 
 def _git(repo_root: Path, *arguments: str) -> str:
@@ -498,12 +637,91 @@ def _workflow_proof(
     }
 
 
+def _required_job(
+    workflows: Mapping[str, object], *, workflow: str, job_name: str
+) -> dict[str, object]:
+    workflow_value = _object(workflows.get(workflow), f"stored {workflow} workflow")
+    jobs = workflow_value.get("required_jobs")
+    if not isinstance(jobs, list):
+        raise MainValidationProofError(f"stored {workflow} required jobs are invalid")
+    matches = [
+        _object(job, f"stored {workflow} required job")
+        for job in jobs
+        if isinstance(job, dict) and job.get("name") == job_name
+    ]
+    if len(matches) != 1:
+        raise MainValidationProofError(
+            f"stored {workflow} does not contain exactly one {job_name} job"
+        )
+    return matches[0]
+
+
+def _validation_evidence(
+    values: Mapping[str, object],
+    *,
+    workflows: Mapping[str, object],
+    commit_sha: str,
+    tree_sha: str,
+) -> dict[str, object]:
+    expected_artifacts = {policy.artifact_name for policy in EVIDENCE_POLICIES.values()}
+    if set(values) != expected_artifacts:
+        raise MainValidationProofError(
+            "validation evidence set is invalid; "
+            f"missing={sorted(expected_artifacts - set(values))}, "
+            f"unknown={sorted(set(values) - expected_artifacts)}"
+        )
+    policies_by_artifact = {
+        policy.artifact_name: policy for policy in EVIDENCE_POLICIES.values()
+    }
+    normalized: dict[str, object] = {}
+    seen_payloads: set[tuple[str, str]] = set()
+    for artifact_name in sorted(expected_artifacts):
+        policy = policies_by_artifact[artifact_name]
+        try:
+            manifest = validate_manifest(values[artifact_name])
+        except ManifestError as error:
+            raise MainValidationProofError(
+                f"{artifact_name} manifest is invalid: {error}"
+            ) from error
+        if manifest["source_sha"] != commit_sha or manifest["source_tree"] != tree_sha:
+            raise MainValidationProofError(
+                f"{artifact_name} belongs to another source revision"
+            )
+        producer = _object(manifest["producer"], f"{artifact_name} producer")
+        workflow = _object(
+            workflows.get(policy.workflow), f"stored {policy.workflow} workflow"
+        )
+        _required_job(workflows, workflow=policy.workflow, job_name=policy.job_name)
+        expected_producer = {
+            "workflow": policy.workflow,
+            "run_id": workflow["run_id"],
+            "run_attempt": workflow["run_attempt"],
+            "job_id": policy.job_id,
+            "job_name": policy.job_name,
+        }
+        if producer != expected_producer:
+            raise MainValidationProofError(
+                f"{artifact_name} producer does not match its GitHub job identity"
+            )
+        for payload_value in manifest["payloads"]:
+            payload = _object(payload_value, f"{artifact_name} payload")
+            identity = (artifact_name, _string(payload.get("path"), "payload path"))
+            if identity in seen_payloads:
+                raise MainValidationProofError(
+                    "validation evidence payload is duplicated"
+                )
+            seen_payloads.add(identity)
+        normalized[artifact_name] = manifest
+    return normalized
+
+
 def generate_proof(
     *,
     repo_root: Path,
     repository: str,
     ref: str,
     api_evidence: Mapping[str, object],
+    validation_evidence: Mapping[str, object],
 ) -> dict[str, object]:
     repository, branch = _validate_repository_and_ref(repository, ref)
     root = repo_root.resolve(strict=True)
@@ -518,6 +736,17 @@ def generate_proof(
         raise MainValidationProofError(
             "unable to compute source fingerprint"
         ) from error
+    workflows = {
+        workflow: _workflow_proof(
+            workflow=workflow,
+            evidence_value=api_evidence[workflow],
+            repository=repository,
+            branch=branch,
+            commit_sha=commit_sha,
+            tree_sha=tree_sha,
+        )
+        for workflow in sorted(WORKFLOW_POLICIES)
+    }
     proof: dict[str, object] = {
         "schema": SCHEMA,
         "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
@@ -527,17 +756,14 @@ def generate_proof(
         "tree_sha": tree_sha,
         "source_fingerprint": _sha(source_fingerprint, "source_fingerprint"),
         "critical_inputs": critical_input_hashes(root),
-        "workflows": {
-            workflow: _workflow_proof(
-                workflow=workflow,
-                evidence_value=api_evidence[workflow],
-                repository=repository,
-                branch=branch,
-                commit_sha=commit_sha,
-                tree_sha=tree_sha,
-            )
-            for workflow in sorted(WORKFLOW_POLICIES)
-        },
+        "fixture_hashes": fixture_hashes(root),
+        "workflows": workflows,
+        "validation_evidence": _validation_evidence(
+            validation_evidence,
+            workflows=workflows,
+            commit_sha=commit_sha,
+            tree_sha=tree_sha,
+        ),
     }
     proof["proof_sha256"] = _proof_digest(proof)
     return proof
@@ -586,6 +812,7 @@ def _validate_stored_workflow(
     *,
     workflow: str,
     commit_sha: str,
+    policies: Mapping[str, WorkflowPolicy] = WORKFLOW_POLICIES,
 ) -> None:
     stored = _object(value, f"stored {workflow} workflow")
     _exact_keys(
@@ -608,7 +835,7 @@ def _validate_stored_workflow(
         },
         f"stored {workflow} workflow",
     )
-    policy = WORKFLOW_POLICIES[workflow]
+    policy = policies[workflow]
     expected_scalars: dict[str, object] = {
         "name": workflow,
         "path": policy.path,
@@ -680,11 +907,16 @@ def verify_proof(
     repo_root: Path,
     expected_repository: str,
     expected_ref: str,
+    allow_legacy_v1: bool = False,
 ) -> None:
     proof = _object(proof_value, "proof")
-    _exact_keys(
-        proof,
-        {
+    schema = proof.get("schema")
+    if schema == LEGACY_SCHEMA:
+        if not allow_legacy_v1:
+            raise MainValidationProofError(
+                "legacy proof schema requires explicit rollback mode"
+            )
+        expected_fields = {
             "schema",
             "generated_at",
             "repository",
@@ -695,11 +927,29 @@ def verify_proof(
             "critical_inputs",
             "workflows",
             "proof_sha256",
-        },
+        }
+    elif schema == SCHEMA:
+        expected_fields = {
+            "schema",
+            "generated_at",
+            "repository",
+            "ref",
+            "commit_sha",
+            "tree_sha",
+            "source_fingerprint",
+            "critical_inputs",
+            "fixture_hashes",
+            "workflows",
+            "validation_evidence",
+            "proof_sha256",
+        }
+    else:
+        raise MainValidationProofError("proof schema is unsupported")
+    _exact_keys(
+        proof,
+        expected_fields,
         "proof",
     )
-    if proof["schema"] != SCHEMA:
-        raise MainValidationProofError("proof schema is unsupported")
     _timestamp(proof["generated_at"], "generated_at")
     repository, _ = _validate_repository_and_ref(expected_repository, expected_ref)
     if proof["repository"] != repository or proof["ref"] != expected_ref:
@@ -714,26 +964,57 @@ def verify_proof(
         raise MainValidationProofError("proof digest does not match its contents")
 
     critical_inputs = _object(proof["critical_inputs"], "critical_inputs")
-    if set(critical_inputs) != set(CRITICAL_INPUTS):
+    critical_input_policy = (
+        CRITICAL_INPUTS if schema == SCHEMA else LEGACY_CRITICAL_INPUTS
+    )
+    if set(critical_inputs) != set(critical_input_policy):
         raise MainValidationProofError("proof critical input set is incomplete")
     for relative, digest in critical_inputs.items():
         _sha(digest, f"critical input {relative}")
+    stored_fixture_hashes: dict[str, object] | None = None
+    if schema == SCHEMA:
+        stored_fixture_hashes = _object(proof["fixture_hashes"], "fixture_hashes")
+        if not stored_fixture_hashes:
+            raise MainValidationProofError("proof fixture hash set is empty")
+        for relative, digest in stored_fixture_hashes.items():
+            _sha(digest, f"fixture {relative}")
     workflows = _object(proof["workflows"], "workflows")
-    if set(workflows) != set(WORKFLOW_POLICIES):
+    policies = WORKFLOW_POLICIES if schema == SCHEMA else LEGACY_WORKFLOW_POLICIES
+    if set(workflows) != set(policies):
         raise MainValidationProofError("proof workflow set is incomplete")
-    for workflow in sorted(WORKFLOW_POLICIES):
+    for workflow in sorted(policies):
         _validate_stored_workflow(
             workflows[workflow],
             workflow=workflow,
             commit_sha=commit_sha,
+            policies=policies,
         )
+    if schema == SCHEMA:
+        validation_evidence = _object(
+            proof["validation_evidence"], "validation_evidence"
+        )
+        normalized_evidence = _validation_evidence(
+            validation_evidence,
+            workflows=workflows,
+            commit_sha=commit_sha,
+            tree_sha=tree_sha,
+        )
+        if normalized_evidence != validation_evidence:
+            raise MainValidationProofError(
+                "validation evidence is not in canonical strict form"
+            )
 
     root = repo_root.resolve(strict=True)
     local_commit, local_tree = local_git_state(root)
     if local_commit != commit_sha or local_tree != tree_sha:
         raise MainValidationProofError("local commit or tree does not match proof")
-    if critical_input_hashes(root) != critical_inputs:
+    if critical_input_hashes(root, critical_input_policy) != critical_inputs:
         raise MainValidationProofError("local critical inputs do not match proof")
+    if (
+        stored_fixture_hashes is not None
+        and fixture_hashes(root) != stored_fixture_hashes
+    ):
+        raise MainValidationProofError("local fixture hashes do not match proof")
     try:
         local_fingerprint = compute_source_fingerprint(root)
     except (OSError, RuntimeError) as error:
@@ -742,6 +1023,115 @@ def verify_proof(
         ) from error
     if local_fingerprint != proof["source_fingerprint"]:
         raise MainValidationProofError("local source fingerprint does not match proof")
+
+
+def verify_post_gh_attestation_binding(
+    proof_value: object,
+    *,
+    proof_bytes: bytes,
+    binding_value: object,
+    expected_repository: str,
+) -> None:
+    proof = _object(proof_value, "proof")
+    if proof.get("schema") != SCHEMA:
+        raise MainValidationProofError(
+            "artifact attestation is only accepted for the current proof schema"
+        )
+    binding = _object(binding_value, "post-gh-verify proof binding")
+    _exact_keys(
+        binding,
+        {
+            "schema",
+            "repository",
+            "commit_sha",
+            "tree_sha",
+            "proof_file_sha256",
+            "attestation_id",
+            "verified_at",
+            "verification_gate",
+            "producer",
+        },
+        "post-gh-verify proof binding",
+    )
+    if binding["schema"] != POST_GH_VERIFY_BINDING_SCHEMA:
+        raise MainValidationProofError(
+            "post-gh-verify proof binding schema is unsupported"
+        )
+    if (
+        binding["repository"] != expected_repository
+        or binding["commit_sha"] != proof.get("commit_sha")
+        or binding["tree_sha"] != proof.get("tree_sha")
+    ):
+        raise MainValidationProofError(
+            "post-gh-verify proof binding belongs to another source revision"
+        )
+    actual_file_digest = hashlib.sha256(proof_bytes).hexdigest()
+    if _sha(binding["proof_file_sha256"], "proof_file_sha256") != actual_file_digest:
+        raise MainValidationProofError(
+            "proof attestation subject digest does not match"
+        )
+    _string(binding["attestation_id"], "attestation_id")
+    _timestamp(binding["verified_at"], "attestation verified_at")
+    if binding["verification_gate"] != "gh-attestation-verify":
+        raise MainValidationProofError("proof verification gate is not trusted")
+    producer = _object(binding["producer"], "proof attestation producer")
+    _exact_keys(
+        producer,
+        {"workflow", "run_id", "run_attempt", "job_id", "job_name"},
+        "proof attestation producer",
+    )
+    workflows = _object(proof.get("workflows"), "workflows")
+    ci = _object(workflows.get("CI"), "CI workflow")
+    generation_job = _object(ci.get("generation_job"), "CI generation job")
+    expected_producer = {
+        "workflow": "CI",
+        "run_id": ci.get("run_id"),
+        "run_attempt": ci.get("run_attempt"),
+        "job_id": str(generation_job.get("id")),
+        "job_name": WORKFLOW_POLICIES["CI"].generation_job,
+    }
+    if producer != expected_producer:
+        raise MainValidationProofError(
+            "proof attestation producer does not match the proof generation job"
+        )
+
+
+def verify_proved_artifacts(
+    proof_value: object,
+    *,
+    artifact_roots: Mapping[str, Path],
+    artifact_attestations: Mapping[str, object],
+) -> None:
+    proof = _object(proof_value, "proof")
+    if proof.get("schema") != SCHEMA:
+        raise MainValidationProofError(
+            "release artifact reuse requires the current proof schema"
+        )
+    evidence = _object(proof.get("validation_evidence"), "validation_evidence")
+    expected = set(evidence)
+    if set(artifact_roots) != expected or set(artifact_attestations) != expected:
+        raise MainValidationProofError(
+            "release artifact inputs do not exactly match the proof evidence set"
+        )
+    commit_sha = _sha(proof.get("commit_sha"), "commit_sha", git=True)
+    tree_sha = _sha(proof.get("tree_sha"), "tree_sha", git=True)
+    for artifact_name in sorted(expected):
+        manifest = _object(evidence[artifact_name], f"{artifact_name} manifest")
+        try:
+            verify_for_consumption(
+                manifest,
+                root=artifact_roots[artifact_name],
+                expected_source_sha=commit_sha,
+                expected_source_tree=tree_sha,
+                attestation=_object(
+                    artifact_attestations[artifact_name],
+                    f"{artifact_name} attestation",
+                ),
+            )
+        except (ManifestError, OSError) as error:
+            raise MainValidationProofError(
+                f"{artifact_name} artifact verification failed: {error}"
+            ) from error
 
 
 def _load_json(path: Path, label: str) -> object:
@@ -771,6 +1161,26 @@ def _parse_runs(values: Sequence[str]) -> dict[str, int]:
     if set(runs) != set(WORKFLOW_POLICIES):
         raise MainValidationProofError("all three main workflow run IDs are required")
     return runs
+
+
+def _parse_evidence_paths(values: Sequence[str]) -> dict[str, Path]:
+    expected = {policy.artifact_name for policy in EVIDENCE_POLICIES.values()}
+    paths: dict[str, Path] = {}
+    for value in values:
+        artifact_name, separator, raw_path = value.partition("=")
+        if (
+            not separator
+            or artifact_name not in expected
+            or artifact_name in paths
+            or not raw_path
+        ):
+            raise MainValidationProofError(
+                "--evidence must uniquely use a required ARTIFACT=PATH value"
+            )
+        paths[artifact_name] = Path(raw_path)
+    if set(paths) != expected:
+        raise MainValidationProofError("all required validation evidence is required")
+    return paths
 
 
 def _write_proof(path: Path, proof: Mapping[str, object]) -> None:
@@ -811,12 +1221,24 @@ def _parser() -> argparse.ArgumentParser:
     )
     generate.add_argument("--api-url", default="https://api.github.com")
     generate.add_argument("--token-env", default="GITHUB_TOKEN")
+    generate.add_argument(
+        "--evidence",
+        action="append",
+        default=[],
+        metavar="ARTIFACT=PATH",
+        help="Bind a required exact-SHA artifact manifest; repeat for every policy artifact.",
+    )
 
     verify = subparsers.add_parser("verify")
     verify.add_argument("--repo-root", type=Path, default=Path.cwd())
     verify.add_argument("--repository", required=True)
     verify.add_argument("--ref", default="refs/heads/main")
     verify.add_argument("--proof", type=Path, required=True)
+    verify.add_argument(
+        "--allow-legacy-v1",
+        action="store_true",
+        help="Explicit rollback-only acceptance of the v1 proof schema.",
+    )
     return parser
 
 
@@ -846,6 +1268,10 @@ def main(arguments: Sequence[str] | None = None) -> int:
                 repository=options.repository,
                 ref=options.ref,
                 api_evidence=api_evidence,
+                validation_evidence={
+                    name: _load_json(path, f"{name} evidence")
+                    for name, path in _parse_evidence_paths(options.evidence).items()
+                },
             )
             _write_proof(options.output, proof)
         else:
@@ -855,6 +1281,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
                 repo_root=options.repo_root,
                 expected_repository=options.repository,
                 expected_ref=options.ref,
+                allow_legacy_v1=options.allow_legacy_v1,
             )
     except MainValidationProofError as error:
         print(f"main validation proof rejected: {error}", file=sys.stderr)

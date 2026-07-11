@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -9,6 +10,7 @@ from typing import Any
 import pytest
 
 import scripts.main_validation_proof as proof_module
+from scripts.artifact_manifest import create_attestation_binding
 from scripts.main_validation_proof import MainValidationProofError
 from scripts.source_fingerprint import ROOT_FILES, TREE_ROOTS
 
@@ -45,6 +47,10 @@ def _repository(tmp_path: Path) -> Path:
     )
     (tmp_path / "web" / "src").mkdir(parents=True, exist_ok=True)
     (tmp_path / "web" / "src" / "main.tsx").write_text("export {};\n", encoding="utf-8")
+    (tmp_path / "tests" / "acceptance").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "tests" / "acceptance" / "requirements.yml").write_text(
+        "requirements: []\n", encoding="utf-8"
+    )
     _git(tmp_path, "init", "-b", "main")
     _git(tmp_path, "config", "user.name", "CongBao")
     _git(tmp_path, "config", "user.email", "bao_cong@outlook.com")
@@ -75,12 +81,15 @@ def _job(
     }
 
 
-def _api_evidence(repo: Path) -> dict[str, object]:
+def _api_evidence(
+    repo: Path,
+    policies: dict[str, proof_module.WorkflowPolicy] | None = None,
+) -> dict[str, object]:
     commit_sha = _git(repo, "rev-parse", "HEAD")
     tree_sha = _git(repo, "rev-parse", "HEAD^{tree}")
     evidence: dict[str, object] = {}
     for workflow_number, (workflow, policy) in enumerate(
-        proof_module.WORKFLOW_POLICIES.items(), start=1
+        (policies or proof_module.WORKFLOW_POLICIES).items(), start=1
     ):
         run_id = 1000 + workflow_number
         jobs = [
@@ -135,12 +144,59 @@ def _api_evidence(repo: Path) -> dict[str, object]:
     return evidence
 
 
+def _validation_evidence(
+    repo: Path, api_evidence: dict[str, object]
+) -> dict[str, object]:
+    commit_sha = _git(repo, "rev-parse", "HEAD")
+    tree_sha = _git(repo, "rev-parse", "HEAD^{tree}")
+    manifests: dict[str, object] = {}
+    for policy in proof_module.EVIDENCE_POLICIES.values():
+        workflow = api_evidence[policy.workflow]
+        assert isinstance(workflow, dict)
+        run = workflow["run"]
+        assert isinstance(run, dict)
+        payload_kind = (
+            "web"
+            if policy.artifact_name == "web-build-manifest"
+            else "oci"
+            if policy.artifact_name == "oci-image-manifest"
+            else "provenance"
+        )
+        manifests[policy.artifact_name] = {
+            "schema_version": 2,
+            "source_sha": commit_sha,
+            "source_tree": tree_sha,
+            "producer": {
+                "workflow": policy.workflow,
+                "run_id": run["id"],
+                "run_attempt": run["run_attempt"],
+                "job_id": policy.job_id,
+                "job_name": policy.job_name,
+            },
+            "critical_inputs": {"fixture": "1" * 64},
+            "toolchain": {"fixture": "1.0"},
+            "lockfiles": {"fixture.lock": "2" * 64},
+            "payloads": [
+                {
+                    "path": f"{policy.artifact_name}.json",
+                    "kind": payload_kind,
+                    "size": 1,
+                    "sha256": hashlib.sha256(b"x").hexdigest(),
+                }
+            ],
+            **({"image_digest": "sha256:" + "4" * 64} if payload_kind == "oci" else {}),
+        }
+    return manifests
+
+
 def _proof(repo: Path, evidence: dict[str, object] | None = None) -> dict[str, object]:
+    api_evidence = evidence if evidence is not None else _api_evidence(repo)
     return proof_module.generate_proof(
         repo_root=repo,
         repository=REPOSITORY,
         ref=REF,
-        api_evidence=evidence if evidence is not None else _api_evidence(repo),
+        api_evidence=api_evidence,
+        validation_evidence=_validation_evidence(repo, api_evidence),
     )
 
 
@@ -191,6 +247,32 @@ def test_generation_rejects_missing_or_duplicate_jobs(tmp_path: Path) -> None:
     jobs_response["total_count"] += 1  # type: ignore[operator]
     with pytest.raises(MainValidationProofError, match="duplicate job"):
         _proof(repo, duplicate)
+
+
+def test_generation_rejects_unknown_or_skipped_required_job(tmp_path: Path) -> None:
+    repo = _repository(tmp_path)
+    unknown = _api_evidence(repo)
+    jobs_response = unknown["CI"]["jobs"]  # type: ignore[index]
+    jobs = jobs_response["jobs"]  # type: ignore[index]
+    run_id = unknown["CI"]["run"]["id"]  # type: ignore[index]
+    commit_sha = _git(repo, "rev-parse", "HEAD")
+    jobs.append(  # type: ignore[union-attr]
+        _job(
+            name="Unreviewed extra validation",
+            run_id=run_id,
+            commit_sha=commit_sha,
+            job_id=999999,
+        )
+    )
+    jobs_response["total_count"] += 1  # type: ignore[operator]
+    with pytest.raises(MainValidationProofError, match="job set is invalid"):
+        _proof(repo, unknown)
+
+    skipped = _api_evidence(repo)
+    required = skipped["CI"]["jobs"]["jobs"][0]  # type: ignore[index]
+    required["conclusion"] = "skipped"
+    with pytest.raises(MainValidationProofError, match="did not succeed"):
+        _proof(repo, skipped)
 
 
 @pytest.mark.parametrize(
@@ -287,7 +369,13 @@ def test_offline_cli_generates_and_verifies_proof(tmp_path: Path) -> None:
     repo = _repository(tmp_path / "repo")
     api_data = tmp_path / "api-data.json"
     output = tmp_path / "proof.json"
-    api_data.write_text(json.dumps(_api_evidence(repo)), encoding="utf-8")
+    evidence = _api_evidence(repo)
+    api_data.write_text(json.dumps(evidence), encoding="utf-8")
+    evidence_arguments: list[str] = []
+    for artifact_name, manifest in _validation_evidence(repo, evidence).items():
+        path = tmp_path / f"{artifact_name}.json"
+        path.write_text(json.dumps(manifest), encoding="utf-8")
+        evidence_arguments.extend(("--evidence", f"{artifact_name}={path}"))
 
     assert (
         proof_module.main(
@@ -301,6 +389,7 @@ def test_offline_cli_generates_and_verifies_proof(tmp_path: Path) -> None:
                 str(api_data),
                 "--output",
                 str(output),
+                *evidence_arguments,
             ]
         )
         == 0
@@ -328,3 +417,180 @@ def test_cli_fails_closed_for_incomplete_run_selection(tmp_path: Path) -> None:
         proof_module._parse_runs(["CI=1", "CodeQL=2"])
 
     assert not (repo / "proof.json").exists()
+
+
+def test_generation_rejects_manifest_from_another_job_or_tree(tmp_path: Path) -> None:
+    repo = _repository(tmp_path)
+    api_evidence = _api_evidence(repo)
+    manifests = _validation_evidence(repo, api_evidence)
+    manifest = manifests["python-evidence-unit"]
+    assert isinstance(manifest, dict)
+    manifest["source_tree"] = "f" * 40
+
+    with pytest.raises(MainValidationProofError, match="another source revision"):
+        proof_module.generate_proof(
+            repo_root=repo,
+            repository=REPOSITORY,
+            ref=REF,
+            api_evidence=api_evidence,
+            validation_evidence=manifests,
+        )
+
+    manifests = _validation_evidence(repo, api_evidence)
+    manifest = manifests["python-evidence-unit"]
+    assert isinstance(manifest, dict)
+    producer = manifest["producer"]
+    assert isinstance(producer, dict)
+    producer["job_id"] = "999999"
+    with pytest.raises(MainValidationProofError, match="GitHub job identity"):
+        proof_module.generate_proof(
+            repo_root=repo,
+            repository=REPOSITORY,
+            ref=REF,
+            api_evidence=api_evidence,
+            validation_evidence=manifests,
+        )
+
+
+def test_verification_rejects_resigned_artifact_substitution(tmp_path: Path) -> None:
+    repo = _repository(tmp_path)
+    proof = _proof(repo)
+    evidence = proof["validation_evidence"]
+    assert isinstance(evidence, dict)
+    manifest = evidence["web-build-manifest"]
+    assert isinstance(manifest, dict)
+    payloads = manifest["payloads"]
+    assert isinstance(payloads, list)
+    payloads[0]["sha256"] = "9" * 64
+    _resign(proof)
+
+    with pytest.raises(MainValidationProofError, match="manifest is invalid"):
+        proof_module.verify_proof(
+            proof,
+            repo_root=repo,
+            expected_repository=REPOSITORY,
+            expected_ref=REF,
+        )
+
+
+def test_artifact_consumption_rejects_payload_substitution(tmp_path: Path) -> None:
+    repo = _repository(tmp_path / "repo")
+    proof = _proof(repo)
+    evidence = proof["validation_evidence"]
+    assert isinstance(evidence, dict)
+    roots: dict[str, Path] = {}
+    attestations: dict[str, object] = {}
+    for artifact_name, manifest_value in evidence.items():
+        assert isinstance(manifest_value, dict)
+        root = tmp_path / "artifacts" / artifact_name
+        root.mkdir(parents=True)
+        payloads = manifest_value["payloads"]
+        assert isinstance(payloads, list)
+        for payload in payloads:
+            path = root / payload["path"]
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"x")
+        roots[artifact_name] = root
+        attestations[artifact_name] = create_attestation_binding(manifest_value)
+
+    proof_module.verify_proved_artifacts(
+        proof,
+        artifact_roots=roots,
+        artifact_attestations=attestations,
+    )
+    substituted = roots["web-build-manifest"] / "web-build-manifest.json"
+    substituted.write_bytes(b"y")
+
+    with pytest.raises(MainValidationProofError, match="payload SHA-256 mismatch"):
+        proof_module.verify_proved_artifacts(
+            proof,
+            artifact_roots=roots,
+            artifact_attestations=attestations,
+        )
+
+
+def test_post_gh_verify_binding_is_bound_to_exact_file_and_job(
+    tmp_path: Path,
+) -> None:
+    repo = _repository(tmp_path)
+    proof = _proof(repo)
+    proof_bytes = (json.dumps(proof, sort_keys=True) + "\n").encode()
+    workflows = proof["workflows"]
+    assert isinstance(workflows, dict)
+    ci = workflows["CI"]
+    assert isinstance(ci, dict)
+    generation_job = ci["generation_job"]
+    assert isinstance(generation_job, dict)
+    binding: dict[str, object] = {
+        "schema": proof_module.POST_GH_VERIFY_BINDING_SCHEMA,
+        "repository": REPOSITORY,
+        "commit_sha": proof["commit_sha"],
+        "tree_sha": proof["tree_sha"],
+        "proof_file_sha256": proof_module.hashlib.sha256(proof_bytes).hexdigest(),
+        "attestation_id": "attestation-123",
+        "verified_at": TIMESTAMP,
+        "verification_gate": "gh-attestation-verify",
+        "producer": {
+            "workflow": "CI",
+            "run_id": ci["run_id"],
+            "run_attempt": ci["run_attempt"],
+            "job_id": str(generation_job["id"]),
+            "job_name": "Publish immutable main validation proof",
+        },
+    }
+    proof_module.verify_post_gh_attestation_binding(
+        proof,
+        proof_bytes=proof_bytes,
+        binding_value=binding,
+        expected_repository=REPOSITORY,
+    )
+
+    binding["proof_file_sha256"] = "0" * 64
+    with pytest.raises(MainValidationProofError, match="subject digest"):
+        proof_module.verify_post_gh_attestation_binding(
+            proof,
+            proof_bytes=proof_bytes,
+            binding_value=binding,
+            expected_repository=REPOSITORY,
+        )
+
+
+def test_legacy_schema_requires_explicit_rollback_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _repository(tmp_path)
+    legacy_api = _api_evidence(repo, proof_module.LEGACY_WORKFLOW_POLICIES)
+    monkeypatch.setattr(
+        proof_module, "WORKFLOW_POLICIES", proof_module.LEGACY_WORKFLOW_POLICIES
+    )
+    monkeypatch.setattr(proof_module, "EVIDENCE_POLICIES", {})
+    legacy = proof_module.generate_proof(
+        repo_root=repo,
+        repository=REPOSITORY,
+        ref=REF,
+        api_evidence=legacy_api,
+        validation_evidence={},
+    )
+    legacy["schema"] = proof_module.LEGACY_SCHEMA
+    del legacy["validation_evidence"]
+    del legacy["fixture_hashes"]
+    legacy["critical_inputs"] = {
+        path: legacy["critical_inputs"][path]
+        for path in proof_module.LEGACY_CRITICAL_INPUTS
+    }
+    _resign(legacy)
+
+    with pytest.raises(MainValidationProofError, match="explicit rollback mode"):
+        proof_module.verify_proof(
+            legacy,
+            repo_root=repo,
+            expected_repository=REPOSITORY,
+            expected_ref=REF,
+        )
+    proof_module.verify_proof(
+        legacy,
+        repo_root=repo,
+        expected_repository=REPOSITORY,
+        expected_ref=REF,
+        allow_legacy_v1=True,
+    )

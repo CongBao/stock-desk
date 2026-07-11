@@ -2,6 +2,8 @@
 
 # Stock Desk
 
+> The current stable release is `v1.0.0`. `v1.1.0-alpha.1` improves delivery foundations only; any test assets are unsigned prereleases, not a new stable desktop installer. See the [v1.1 alpha.1 notes](docs/releases/v1.1.0-alpha.1.md).
+
 ## Product positioning
 
 Stock Desk v1.0.0 is a local-first personal A-share research desk for traceable
@@ -64,3 +66,4 @@ Report security issues privately through
 See the bilingual [Code signing policy](docs/code-signing-policy.md) for signing status,
 manual approval, and trusted-build boundaries, and the [privacy policy](docs/privacy.md)
 for local data and network behavior.
+See the [CI guide](docs/ci.md) for immutable build and proof contracts.

@@ -59,6 +59,11 @@ from scripts.seed_demo_data import (
     load_demo_fixture,
     seed_demo_data,
 )
+from scripts.e2e_snapshot import (
+    build_snapshot_manifest,
+    verify_snapshot,
+    write_snapshot_manifest,
+)
 from tests.performance.ten_year_a_share import (
     generate_fixture_bars,
     load_fixture_metadata,
@@ -270,6 +275,30 @@ def _worker_main() -> int:
         runtime.close()
 
 
+def _record_snapshot(data_dir: Path) -> None:
+    source_commit = (
+        os.environ.get("STOCK_DESK_SOURCE_REVISION")
+        or subprocess.check_output(
+            ("git", "rev-parse", "HEAD"), cwd=ROOT, text=True
+        ).strip()
+    )
+    source_tree = subprocess.check_output(
+        ("git", "rev-parse", f"{source_commit}^{{tree}}"), cwd=ROOT, text=True
+    ).strip()
+    snapshot_manifest = build_snapshot_manifest(
+        data_dir,
+        source_commit=source_commit,
+        source_tree=source_tree,
+    )
+    manifest_path = write_snapshot_manifest(data_dir, snapshot_manifest)
+    verify_snapshot(data_dir, snapshot_manifest)
+    manifest_output = os.environ.get("STOCK_DESK_E2E_MANIFEST_OUT")
+    if manifest_output is not None:
+        output_path = Path(manifest_output).resolve()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(manifest_path, output_path)
+
+
 def main() -> int:
     if sys.argv[1:] == ["--worker"]:
         return _worker_main()
@@ -288,6 +317,7 @@ def main() -> int:
     }
     try:
         _seed(data_dir)
+        _record_snapshot(data_dir)
         os.environ["STOCK_DESK_DATA_DIR"] = str(data_dir)
         os.environ["STOCK_DESK_DATABASE_URL"] = (
             f"sqlite:///{data_dir / 'stock-desk.db'}"

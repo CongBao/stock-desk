@@ -14,6 +14,7 @@ _FALLBACK_UID = 10001
 _FALLBACK_GID = 10001
 _MAX_ID = 2**31 - 1
 _RUNTIME_DATA_DIR = Path("/app/data")
+_RESTORE_STARTUP_TIMEOUT_SECONDS = 30.0
 
 
 def _explicit_id(environment: Mapping[str, str], name: str) -> int | None:
@@ -107,6 +108,14 @@ def _validate_command(arguments: Sequence[str]) -> tuple[str, ...]:
     return command
 
 
+def _recover_runtime_data(data_dir: Path) -> None:
+    """Serialize peer container recovery without relying on a restart race."""
+    recover_interrupted_restore(
+        data_dir=data_dir,
+        lifecycle_timeout_seconds=_RESTORE_STARTUP_TIMEOUT_SECONDS,
+    )
+
+
 def main() -> NoReturn:
     command = _validate_command(sys.argv[1:])
     configured_data_dir = Path(
@@ -134,7 +143,7 @@ def main() -> NoReturn:
         current_gid=os.getegid(),
         environment=os.environ,
     )
-    recover_interrupted_restore(data_dir=configured_data_dir)
+    _recover_runtime_data(configured_data_dir)
     # The validated command is the explicit container entrypoint contract.
     os.execvp(command[0], command)  # nosec B606
 

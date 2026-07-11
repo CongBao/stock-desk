@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/CongBao/stock-desk/schemas/artifact-manifest-v2.schema.json",
+  "title": "Stock Desk exact-SHA artifact manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "manifest_sha256",
+    "source_sha",
+    "source_tree",
+    "producer",
+    "critical_inputs",
+    "toolchain",
+    "lockfiles",
+    "payloads"
+  ],
+  "properties": {
+    "schema_version": { "const": 2 },
+    "manifest_sha256": { "$ref": "#/$defs/sha256" },
+    "source_sha": { "$ref": "#/$defs/gitObject" },
+    "source_tree": { "$ref": "#/$defs/gitObject" },
+    "producer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["workflow", "run_id", "run_attempt", "job_id", "job_name"],
+      "properties": {
+        "workflow": { "type": "string", "minLength": 1 },
+        "run_id": { "type": "integer", "minimum": 1 },
+        "run_attempt": { "type": "integer", "minimum": 1 },
+        "job_id": { "type": "string", "minLength": 1 },
+        "job_name": { "type": "string", "minLength": 1 }
+      }
+    },
+    "critical_inputs": { "$ref": "#/$defs/digestMap" },
+    "toolchain": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "type": "string", "minLength": 1 }
+    },
+    "lockfiles": { "$ref": "#/$defs/digestMap" },
+    "payloads": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "kind", "size", "sha256"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1 },
+          "kind": {
+            "enum": ["web", "python", "sidecar", "oci", "sbom", "provenance", "tauri-unsigned"]
+          },
+          "size": { "type": "integer", "minimum": 0 },
+          "sha256": { "$ref": "#/$defs/sha256" }
+        }
+      }
+    },
+    "image_digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "tauri": {
+      "description": "Stage 1 extension. It is forbidden unless a real tauri-unsigned payload exists.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cargo_lock_sha256"],
+      "properties": { "cargo_lock_sha256": { "$ref": "#/$defs/sha256" } }
+    }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "gitObject": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "digestMap": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "$ref": "#/$defs/sha256" }
+    }
+  }
+}

@@ -170,7 +170,7 @@ def test_readme_commands_map_to_executed_release_evidence() -> None:
     ci = yaml.safe_load(
         (PROJECT_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     )
-    container_steps = str(ci["jobs"]["container"]["steps"])
+    container_steps = str(ci["jobs"]["container-compose"]["steps"])
     makefile = (PROJECT_ROOT / "Makefile").read_text(encoding="utf-8")
 
     evidence = {README_COMMAND_EVIDENCE[command] for command in commands}

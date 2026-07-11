@@ -2,6 +2,8 @@
 
 # Stock Desk
 
+> 当前稳定版为 `v1.0.0`。`v1.1.0-alpha.1` 仅改进交付基础；若提供测试资产，它们是未签名 prerelease，不是新的稳定桌面安装包。详情见 [v1.1 alpha.1 说明](docs/releases/v1.1.0-alpha.1.md)。
+
 ## 产品定位
 
 Stock Desk v1.0.0 是一个本地优先的个人 A 股研究工作台，覆盖可追溯行情图、
@@ -57,3 +59,4 @@ Stock Desk 是研究软件，不构成投资建议。数据可能延迟、不完
 并参阅 [SECURITY.md](SECURITY.md)。
 
 代码签名的当前状态、人工批准和可信构建边界见[代码签名政策](docs/code-signing-policy.md)，本地数据和网络行为见[隐私政策](docs/privacy.md)。
+构建与不可变证明契约见 [CI 文档](docs/ci.md)。

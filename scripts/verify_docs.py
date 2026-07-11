@@ -4005,6 +4005,34 @@ def _tracked_boundary_failures(repo_root: Path) -> list[str]:
     ]
 
 
+def _public_markdown_paths(repo_root: Path) -> list[Path]:
+    """Return tracked or publishable Markdown while excluding ignored private work."""
+    candidates = sorted(repo_root.glob("*.md")) + sorted(
+        (repo_root / "docs").rglob("*.md")
+    )
+    if not (repo_root / ".git").exists() or not candidates:
+        return candidates
+    relative = [path.relative_to(repo_root).as_posix() for path in candidates]
+    try:
+        result = subprocess.run(
+            ["git", "-C", os.fspath(repo_root), "check-ignore", "-z", "--stdin"],
+            input="\0".join(relative).encode() + b"\0",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    except OSError:
+        return candidates
+    if result.returncode not in {0, 1}:
+        return candidates
+    ignored = {os.fsdecode(value) for value in result.stdout.split(b"\0") if value}
+    return [
+        path
+        for path, relative_path in zip(candidates, relative, strict=True)
+        if relative_path not in ignored
+    ]
+
+
 def _required_settings(repo_root: Path) -> set[str]:
     settings = {"STOCK_DESK_WEB_DIST_DIR"}
     environment = repo_root / ".env.example"
@@ -4157,7 +4185,7 @@ def verify_repository(repo_root: Path) -> list[str]:
                     f"{relative_path}: missing required guidance: {snippet}"
                 )
 
-    public_paths = sorted(root.glob("*.md")) + sorted((root / "docs").rglob("*.md"))
+    public_paths = _public_markdown_paths(root)
     for path in public_paths:
         relative_path = path.relative_to(root).as_posix()
         document = documents.get(relative_path, _read(path))
@@ -4742,35 +4770,41 @@ def _real_market_source_ids() -> frozenset[str]:
 
 
 def _repository_commit_is_reachable(repo_root: Path, commit: str) -> bool:
+    audit_root = os.environ.get("STOCK_DESK_DOC_PROVENANCE_GIT_DIR")
+    audit_tip = os.environ.get("STOCK_DESK_DOC_PROVENANCE_TIP")
+    if bool(audit_root) != bool(audit_tip):
+        return False
     try:
-        root_key = os.fspath(repo_root.resolve())
+        root_key = os.fspath(
+            Path(audit_root).resolve() if audit_root else repo_root.resolve()
+        )
     except (OSError, ValueError, RuntimeError):
         return False
-    return _repository_commit_is_reachable_cached(root_key, commit)
+    return _repository_commit_is_reachable_cached(root_key, commit, audit_tip or "HEAD")
 
 
 @lru_cache(maxsize=128)
-def _repository_commit_is_reachable_cached(root_key: str, commit: str) -> bool:
+def _repository_commit_is_reachable_cached(
+    root_key: str, commit: str, audit_tip: str
+) -> bool:
     try:
-        subprocess.run(
-            ("git", "cat-file", "-e", f"{commit}^{{commit}}"),
+        completed = subprocess.run(
+            (
+                "git",
+                "merge-base",
+                "--is-ancestor",
+                f"{commit}^{{commit}}",
+                f"{audit_tip}^{{commit}}",
+            ),
             cwd=root_key,
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=5,
-        )
-        subprocess.run(
-            ("git", "merge-base", "--is-ancestor", commit, "HEAD"),
-            cwd=root_key,
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=5,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         return False
-    return True
+    return completed.returncode == 0
 
 
 def _surface_tuple(value: object) -> tuple[str, str] | None:

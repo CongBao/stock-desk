@@ -6,7 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
-Nothing yet.
+### Changed
+
+- `v1.1.0-alpha.1` establishes a conservative PR risk graph, exact-SHA Python
+  test shards with combined branch coverage, deterministic browser evidence,
+  content-addressed build manifests, and reusable immutable main proofs.
+- CI now separates build and verification responsibilities so candidate and
+  release workflows can reuse proved artifacts without repeating unit or E2E
+  tests.
+
+### Security
+
+- Cache and artifact consumers fail closed on stale source identities,
+  incomplete lock/toolchain keys, forbidden cached conclusions, substituted
+  payloads, or missing attestations.
+- The SignPath Foundation application is submitted and pending. Alpha assets
+  remain explicitly unsigned prereleases until trusted signing is integrated.
 
 ## [1.0.0] - 2026-07-08
 

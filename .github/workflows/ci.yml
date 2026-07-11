@@ -2,12 +2,18 @@ name: CI
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   pull_request:
 
 permissions:
   contents: read
+
+env:
+  PYTHON_VERSION: "3.12"
+  NODE_VERSION: "24"
+  PNPM_VERSION: "11.7.0"
+  PLAYWRIGHT_VERSION: "1.61.1"
+  SOURCE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -17,141 +23,161 @@ jobs:
   impact:
     name: Select required test scope
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
     outputs:
       profile: ${{ steps.scope.outputs.profile }}
       full: ${{ steps.scope.outputs.full }}
+      reason: ${{ steps.scope.outputs.reason }}
+      domains: ${{ steps.scope.outputs.domains }}
+      required_jobs: ${{ steps.scope.outputs.required_jobs }}
+      skipped_jobs: ${{ steps.scope.outputs.skipped_jobs }}
     steps:
-      - name: Check out source and base history
+      - name: Check out exact source and base history
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ env.SOURCE_SHA }}
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
-          python-version: "3.12"
+          python-version: ${{ env.PYTHON_VERSION }}
       - name: Classify changed paths conservatively
         id: scope
+        shell: bash
         env:
           BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
           HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-        run: >-
-          python scripts/ci_impact.py
-          --event-name "${{ github.event_name }}"
-          --base "$BASE_SHA"
-          --head "$HEAD_SHA"
-          --github-output "$GITHUB_OUTPUT"
+          EXPECTED_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          FORK_PULL_REQUEST: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+        run: |
+          set -euo pipefail
+          args=(--event-name "${{ github.event_name }}" --base "$BASE_SHA" --head "$HEAD_SHA" --expected-base "$EXPECTED_BASE_SHA" --github-output "$GITHUB_OUTPUT" --check-inventory)
+          [[ "$FORK_PULL_REQUEST" == true ]] && args+=(--fork-pull-request)
+          if ! git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null ||
+             ! git merge-base --is-ancestor "$BASE_SHA" "$HEAD_SHA"; then
+            args+=(--base-unreachable)
+          fi
+          python scripts/ci_impact.py "${args[@]}"
+      - name: Set up uv for canonical inventory
+        if: contains(steps.scope.outputs.required_jobs, 'python-')
+        uses: astral-sh/setup-uv@d31148d669074a8d0a63714ba94f3201e7020bc3 # v8.3.0
+      - name: Restore exact-lock uv downloads
+        if: contains(steps.scope.outputs.required_jobs, 'python-')
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ~/.cache/uv
+          key: uv-${{ runner.os }}-${{ runner.arch }}-${{ env.PYTHON_VERSION }}-${{ hashFiles('uv.lock') }}
+      - name: Install locked dependencies for inventory
+        if: contains(steps.scope.outputs.required_jobs, 'python-')
+        run: uv sync --frozen --all-groups --extra providers
+      - name: Collect canonical Python inventory exactly once
+        if: contains(steps.scope.outputs.required_jobs, 'python-')
+        run: |
+          mkdir -p test-results/python-inventory
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          uv run --frozen python scripts/ci_test_inventory.py collect --source-sha "$SOURCE_SHA" --source-tree "$(git rev-parse HEAD^{tree})" --output test-results/python-inventory/inventory.json
+      - name: Upload canonical Python inventory
+        if: contains(steps.scope.outputs.required_jobs, 'python-')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: python-test-inventory
+          path: test-results/python-inventory/inventory.json
+          if-no-files-found: error
+          retention-days: 7
 
   windows-runtime-acl:
     name: Windows runtime ACL execution
     needs: impact
-    if: needs.impact.outputs.full == 'true' || needs.impact.outputs.profile == 'release-infra-desktop'
+    if: contains(fromJSON(needs.impact.outputs.required_jobs), 'artifact-proof')
     runs-on: windows-2025
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
-      - name: Check out source
+      - name: Check out exact source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ env.SOURCE_SHA }}
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
-          python-version: "3.12"
+          python-version: ${{ env.PYTHON_VERSION }}
       - name: Set up uv
         uses: astral-sh/setup-uv@d31148d669074a8d0a63714ba94f3201e7020bc3 # v8.3.0
-      - name: Set up pnpm for frozen Windows smoke
+      - name: Set up pnpm
         uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:
-          version: 11.7.0
+          version: ${{ env.PNPM_VERSION }}
           run_install: false
-      - name: Set up Node.js for frozen Windows smoke
+      - name: Set up Node.js
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
-          node-version: "24"
-          cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
-      - name: Install locked Python dependencies
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Install locked dependencies
         run: |
           uv sync --frozen --all-groups --extra providers
           pnpm install --frozen-lockfile
-      - name: Execute Windows ACL contract
-        run: uv run --frozen pytest -W error tests/integration/test_windows_runtime_acl.py
-      - name: Execute Windows first-start journal contract
-        run: >-
-          uv run --frozen pytest -W error tests/unit/storage/test_backup.py
-          -k restore_journal
+      - name: Execute Windows standard-user contracts
+        run: |
+          uv run --frozen pytest -W error tests/integration/test_windows_runtime_acl.py
+          uv run --frozen pytest -W error tests/unit/storage/test_backup.py -k restore_journal
       - name: Execute frozen Windows distribution lifecycle smoke
         shell: pwsh
         run: |
           $dist = 'dist\pr-windows-smoke'
           $work = 'build\pr-windows-smoke'
-          $diagnostics = Join-Path $env:RUNNER_TEMP 'pr-windows-diagnostics'
           try {
             pnpm build
             $env:STOCK_DESK_BUILD_VERSION = '1.0.0'
             uv run --frozen python -m PyInstaller --noconfirm --clean --distpath $dist --workpath $work packaging\stock-desk.spec
             $command = (Resolve-Path "$dist\stock-desk\stock-desk.exe").Path
             $runtime = Join-Path $env:LOCALAPPDATA 'stock-desk\runtime\runtime.json'
-            $systemPath = "$env:SystemRoot\System32;$env:SystemRoot"
-            uv run --frozen python scripts\verify_installed_app.py `
-              --command $command `
-              --runtime-record $runtime `
-              --sanitized-path $systemPath `
-              --fixture-sql tests\fixtures\distribution\v0.5.0.sql `
-              --diagnostic-dir $diagnostics
+            uv run --frozen python scripts\verify_installed_app.py --command $command --runtime-record $runtime --sanitized-path "$env:SystemRoot\System32;$env:SystemRoot" --fixture-sql tests\fixtures\distribution\v0.5.0.sql --diagnostic-dir (Join-Path $env:RUNNER_TEMP diagnostics)
           } finally {
-            $appLog = Join-Path $env:LOCALAPPDATA 'stock-desk\logs\stock-desk.log'
-            if (Test-Path -LiteralPath $appLog) {
-              Write-Host '--- Stock Desk shutdown diagnostics ---'
-              Get-Content -LiteralPath $appLog
-            }
-            Remove-Item -Recurse -Force (Join-Path $env:LOCALAPPDATA 'stock-desk') -ErrorAction SilentlyContinue
-            Remove-Item -Recurse -Force $diagnostics -ErrorAction SilentlyContinue
-            Remove-Item -Recurse -Force $dist, $work -ErrorAction SilentlyContinue
+            Remove-Item -Recurse -Force (Join-Path $env:LOCALAPPDATA 'stock-desk'), $dist, $work -ErrorAction SilentlyContinue
           }
 
   public-tree:
     name: Public tree and repository health
     needs: impact
+    if: contains(fromJSON(needs.impact.outputs.required_jobs), 'public-tree')
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 15
     steps:
-      - name: Check out source
+      - name: Check out source and public history
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          # Screenshot provenance manifests intentionally bind to historical
-          # commits; the pre-publish gate must be able to prove reachability.
           fetch-depth: 0
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ env.SOURCE_SHA }}
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
-          python-version: "3.12"
+          python-version: ${{ env.PYTHON_VERSION }}
       - name: Set up uv
         uses: astral-sh/setup-uv@d31148d669074a8d0a63714ba94f3201e7020bc3 # v8.3.0
-        with:
-          enable-cache: true
-      - name: Set up pnpm for pre-publish evidence
+      - name: Set up pnpm for main requirement collection
         if: github.event_name == 'push'
         uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:
           version: 11.7.0
           run_install: false
-      - name: Set up Node.js for pre-publish evidence
+      - name: Set up Node.js for main requirement collection
         if: github.event_name == 'push'
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
-          node-version: "24"
-          cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
-      - name: Install locked Python dependencies
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Install locked dependencies
         run: uv sync --frozen --all-groups --extra providers
-      - name: Install locked web dependencies for pre-publish evidence
+      - name: Install locked frontend selector dependencies
         if: github.event_name == 'push'
         run: pnpm install --frozen-lockfile
-      - name: Audit public tree
-        run: make public-tree
-      - name: Verify repository contracts
-        run: uv run --frozen pytest -W error tests/unit/test_repository_health.py
-      - name: Run main-only pre-publish evidence gates
+      - name: Audit public tree and repository contracts
+        run: |
+          make public-tree
+          uv run --frozen pytest -W error tests/unit/test_repository_health.py tests/unit/test_ci_cache_policy.py
+          uv run --frozen python scripts/verify_ci_cache_policy.py workflows .github/workflows/*.yml
+      - name: Run main-only pre-publish gates
         if: github.event_name == 'push'
         run: |
           uv run --frozen python scripts/check_requirement_coverage.py --mode pre-publish
@@ -161,19 +187,21 @@ jobs:
   dependency-audit:
     name: Locked production dependency audit
     needs: impact
+    if: contains(fromJSON(needs.impact.outputs.required_jobs), 'dependency-audit')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Check out source
+      - name: Check out exact source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ env.SOURCE_SHA }}
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
-          python-version: "3.12"
+          python-version: ${{ env.PYTHON_VERSION }}
       - name: Set up uv
         uses: astral-sh/setup-uv@d31148d669074a8d0a63714ba94f3201e7020bc3 # v8.3.0
-        with:
-          enable-cache: true
       - name: Set up pnpm
         uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:
@@ -182,202 +210,225 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
-          node-version: "24"
-          cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
-      - name: Audit locked production dependencies
-        run: make security
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Verify locked production dependency manifests
+        run: |
+          uv lock --check
+          pnpm install --lockfile-only --frozen-lockfile --ignore-scripts
 
-  python:
-    name: Python quality, tests, and package
+  python-unit:
+    name: Python unit shard
     needs: impact
+    if: contains(fromJSON(needs.impact.outputs.required_jobs), 'python-unit')
     runs-on: ubuntu-latest
-    # The exhaustive coverage run plus staged acceptance and package gates can
-    # exceed 45 minutes on a saturated hosted runner while still making steady
-    # progress. Keep it bounded, with enough headroom to finish those gates.
-    timeout-minutes: 75
-    steps:
-      - name: Check out source
+    timeout-minutes: 45
+    env:
+      PYTHON_SHARD: unit
+      PYTHON_ROOTS: tests/unit tests/contract tests/property
+      EVIDENCE_ARTIFACT: python-evidence-unit
+      EVIDENCE_JOB_NAME: Python unit shard
+    steps: &python-shard-steps
+      - name: Check out exact source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ env.SOURCE_SHA }}
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
-          python-version: "3.12"
+          python-version: ${{ env.PYTHON_VERSION }}
       - name: Set up uv
         uses: astral-sh/setup-uv@d31148d669074a8d0a63714ba94f3201e7020bc3 # v8.3.0
+      - name: Download canonical inventory
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          enable-cache: true
-      - name: Set up pnpm
+          name: python-test-inventory
+          path: test-results/python-inventory
+      - name: Install locked Python dependencies
+        run: uv sync --frozen --all-groups --extra providers
+      - name: Set up pnpm for selector-bearing shards
+        if: env.PYTHON_SHARD == 'unit' || env.PYTHON_SHARD == 'acceptance-performance'
         uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:
-          version: 11.7.0
+          version: ${{ env.PNPM_VERSION }}
           run_install: false
-      - name: Set up Node.js
+      - name: Set up Node.js for selector-bearing shards
+        if: env.PYTHON_SHARD == 'unit' || env.PYTHON_SHARD == 'acceptance-performance'
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
-          node-version: "24"
-      - name: Install locked dependencies
-        run: uv sync --frozen --all-groups --extra providers
-      - name: Check Python formatting
-        run: uv run --frozen ruff format --check .
-      - name: Lint Python
-        run: uv run --frozen ruff check .
-      - name: Type-check Python
-        run: uv run --frozen mypy --strict src scripts
-      - name: Scan Python security rules
-        run: uv run --frozen bandit -q -ll -r src scripts
-      - name: Test impacted release infrastructure
-        if: needs.impact.outputs.profile == 'release-infra-desktop'
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Restore exact-lock pnpm downloads for selector-bearing shards
+        if: env.PYTHON_SHARD == 'unit' || env.PYTHON_SHARD == 'acceptance-performance'
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ~/.local/share/pnpm/store
+          key: pnpm-${{ runner.os }}-${{ runner.arch }}-${{ env.NODE_VERSION }}-${{ hashFiles('pnpm-lock.yaml') }}
+      - name: Restore exact-lock browser binaries for the performance shard
+        if: env.PYTHON_SHARD == 'acceptance-performance'
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ env.PLAYWRIGHT_VERSION }}-${{ hashFiles('pnpm-lock.yaml') }}
+      - name: Install locked selector toolchain
+        if: env.PYTHON_SHARD == 'unit' || env.PYTHON_SHARD == 'acceptance-performance'
+        run: pnpm install --frozen-lockfile
+      - name: Install Chromium for the performance shard
+        if: env.PYTHON_SHARD == 'acceptance-performance'
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Run Python quality gates once with the unit shard
+        if: env.PYTHON_SHARD == 'unit'
+        run: |
+          uv run --frozen ruff format --check .
+          uv run --frozen ruff check .
+          uv run --frozen mypy --strict src scripts
+          uv run --frozen bandit -q -ll -r src scripts
+      - name: Verify documentation provenance before performance
+        if: env.PYTHON_SHARD == 'acceptance-performance'
+        shell: bash
+        env:
+          PROVENANCE_SOURCE_REPOSITORY: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name || github.repository }}
+          PROVENANCE_SOURCE_SHA: ${{ env.SOURCE_SHA }}
+        run: |
+          set -euo pipefail
+          audit_repo="$RUNNER_TEMP/documentation-provenance.git"
+          rm -rf "$audit_repo"
+          git init --bare --quiet "$audit_repo"
+          git -C "$audit_repo" fetch --quiet --no-tags --force --no-recurse-submodules \
+            "$GITHUB_SERVER_URL/$PROVENANCE_SOURCE_REPOSITORY.git" \
+            "+${PROVENANCE_SOURCE_SHA}:refs/heads/exact-source"
+          test "$(git -C "$audit_repo" rev-parse refs/heads/exact-source)" = "$PROVENANCE_SOURCE_SHA"
+          export STOCK_DESK_DOC_PROVENANCE_GIT_DIR="$audit_repo"
+          export STOCK_DESK_DOC_PROVENANCE_TIP=refs/heads/exact-source
+          {
+            printf 'STOCK_DESK_DOC_PROVENANCE_GIT_DIR=%s\n' "$audit_repo"
+            printf 'STOCK_DESK_DOC_PROVENANCE_TIP=%s\n' "$STOCK_DESK_DOC_PROVENANCE_TIP"
+          } >> "$GITHUB_ENV"
+          printf 'documentation-provenance source=%s sha=%s tip=%s\n' \
+            "$PROVENANCE_SOURCE_REPOSITORY" "$PROVENANCE_SOURCE_SHA" \
+            "$STOCK_DESK_DOC_PROVENANCE_TIP"
+          uv run --frozen python scripts/verify_docs.py --repo-root .
+      - name: Prepare deterministic performance evidence once
+        if: env.PYTHON_SHARD == 'acceptance-performance'
         run: >-
-          uv run --frozen pytest -W error
-          tests/unit/test_ci_impact.py
-          tests/unit/test_main_validation_proof.py
-          tests/unit/test_desktop_launcher.py
-          tests/unit/test_installer_scripts.py
-          tests/unit/test_repository_health.py
-          tests/unit/test_requirement_coverage.py
-          tests/unit/storage/test_backup.py
-          tests/integration/market/test_lake_descriptor_security.py
-          tests/integration/market/test_lake_latest.py
-          tests/integration/market/test_lake_lock_cleanup.py
-          tests/integration/market/test_lake_lock_namespace.py
-          tests/integration/market/test_lake_ownership.py
-          tests/integration/market/test_lake_publish_crash_recovery.py
-          tests/integration/market/test_lake_read.py
-          tests/integration/market/test_lake_read_catalog_corruption.py
-          tests/integration/market/test_lake_read_corruption.py
-          tests/integration/market/test_lake_read_inode_binding.py
-          tests/integration/market/test_lake_root_identity.py
-          tests/integration/market/test_lake_snapshot_cleanup.py
-          tests/integration/market/test_lake_write.py
-          tests/integration/market/test_lake_write_faults.py
-          tests/integration/market/test_lake_write_final_binding.py
-          tests/integration/market/test_lake_write_security.py
-          tests/integration/market/test_sqlite_market_lake.py
-          tests/integration/storage/test_migration_locking.py
-          tests/integration/storage/test_migrations.py
-          tests/integration/storage/test_package_migrations.py
-          tests/integration/storage/test_restore_recovery.py
-          tests/integration/storage/test_windows_market_payload_migration.py
-          tests/acceptance/test_upgrade_path.py
-          tests/acceptance/test_installed_distribution.py
-          tests/acceptance/test_release_acceptance_scope.py
-          tests/acceptance/test_release_docs.py
-          tests/acceptance/test_release_artifacts.py
-      - name: Test Python
-        if: needs.impact.outputs.full == 'true'
-        run: >-
-          uv run --frozen pytest -W error --junitxml=python-test-results.xml
-          --ignore=tests/acceptance/test_market_flow.py
-          --ignore=tests/acceptance/test_formula_consistency.py
-          --ignore=tests/acceptance/test_macd_formula_flow.py
-          --ignore=tests/acceptance/test_backtest_semantics.py
-          --ignore=tests/performance/test_chart_query.py
-          --ignore=tests/performance/test_formula_preview.py
-          --ignore=tests/performance/test_single_backtest.py
-          --ignore=tests/performance/test_v1_budgets.py
-          --cov=src/stock_desk --cov=scripts --cov=migrations --cov-branch
-          --cov-report=term-missing --cov-report=xml:coverage.xml
-          --cov-fail-under=85
-      - name: Publish Python test failure notice
-        if: failure() && needs.impact.outputs.full == 'true'
+          uv run --frozen python scripts/run_performance_baseline.py
+          --fixture full-a-scope-bounded-ten-year
+          --evidence-kind target_baseline
+          --output test-results/performance/current.json
+          --compare tests/performance/baseline.json
+      - name: Run authoritative shard exactly once
         shell: bash
         run: |
           set -euo pipefail
-          report=python-test-results.xml
-          diagnostic=python-test-failures.json
-          [[ -f "$report" ]] || exit 0
-          uv run --frozen python - "$report" "$diagnostic" <<'PY'
+          out="test-results/$EVIDENCE_ARTIFACT"
+          mkdir -p "$out"
+          tree=$(git rev-parse HEAD^{tree})
+          read -r -a roots <<< "$PYTHON_ROOTS"
+          export STOCK_DESK_SOURCE_SHA="$SOURCE_SHA"
+          export STOCK_DESK_SOURCE_TREE="$tree"
+          export STOCK_DESK_PYTHON_SHARD="$PYTHON_SHARD"
+          export COVERAGE_FILE="$out/.coverage"
+          uv run --frozen coverage run --branch --parallel-mode \
+            --context="stock-desk:$SOURCE_SHA:$tree:$PYTHON_SHARD" \
+            -m pytest -W error -p scripts.ci_test_inventory "${roots[@]}" \
+            --junitxml="$out/junit.xml"
+          mapfile -t coverage_files < <(find "$out" -maxdepth 1 -type f -name '.coverage.*' -print)
+          test "${#coverage_files[@]}" -eq 1
+          mv "${coverage_files[0]}" "$out/.coverage.$PYTHON_SHARD"
+          uv run --frozen python scripts/aggregate_ci_evidence.py shard \
+            --inventory test-results/python-inventory/inventory.json \
+            --shard "$PYTHON_SHARD" --junit "$out/junit.xml" \
+            --coverage-data "$out/.coverage.$PYTHON_SHARD" \
+            --source-sha "$SOURCE_SHA" --source-tree "$tree" \
+            --output "$out/shard-evidence.json"
+      - name: Create exact-SHA shard manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="test-results/$EVIDENCE_ARTIFACT"
+          tree=$(git rev-parse HEAD^{tree})
+          uv run --frozen python scripts/artifact_manifest.py create \
+            --root "$out" --output "$out/$EVIDENCE_ARTIFACT.json" \
+            --source-sha "$SOURCE_SHA" --source-tree "$tree" \
+            --workflow CI --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --job-id "$GITHUB_JOB" --job-name "$EVIDENCE_JOB_NAME" \
+            --payload "shard-evidence.json:provenance" \
+            --payload ".coverage.$PYTHON_SHARD:python" --payload "junit.xml:python" \
+            --critical-input "aggregate-ci=$(sha256sum scripts/aggregate_ci_evidence.py | cut -d' ' -f1)" \
+            --toolchain "python=$(python --version | cut -d' ' -f2)" \
+            --lockfile "uv.lock=$(sha256sum uv.lock | cut -d' ' -f1)"
+          uv run --frozen python - "$out" "$EVIDENCE_ARTIFACT" <<'PY'
           import json
           import sys
-          import xml.etree.ElementTree as ET
           from pathlib import Path
-
-          root = ET.parse(sys.argv[1]).getroot()
-          failures = []
-          for testcase in root.findall(".//testcase"):
-              for kind in ("failure", "error"):
-                  node = testcase.find(kind)
-                  if node is None:
-                      continue
-                  text = node.text or ""
-                  failures.append(
-                      {
-                          "class": testcase.get("classname", ""),
-                          "name": testcase.get("name", ""),
-                          "kind": kind,
-                          "message": node.get("message", ""),
-                          "trace_tail": text[-12_000:],
-                      }
-                  )
-                  break
-          payload = {
-              "schema": "stock-desk-junit-failure-summary-v1",
-              "reported_failure_count": len(failures),
-              "failures": failures[:10],
-          }
-          Path(sys.argv[2]).write_text(
-              json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+          from scripts.artifact_manifest import create_attestation_binding, read_manifest
+          root = Path(sys.argv[1])
+          manifest = read_manifest(root / f"{sys.argv[2]}.json")
+          (root / "manifest-binding.json").write_text(
+              json.dumps(create_attestation_binding(manifest), sort_keys=True) + "\n",
               encoding="utf-8",
           )
           PY
-          digest=$(sha256sum "$diagnostic" | cut -d' ' -f1)
-          payload=$(gzip -n -c "$diagnostic" | base64 -w0)
-          chunk_size=2800
-          part_count=$(((${#payload} + chunk_size - 1) / chunk_size))
-          for ((part_index = 0; part_index < part_count; part_index++)); do
-            chunk=${payload:part_index*chunk_size:chunk_size}
-            part=$((part_index + 1))
-            printf '::notice file=%s,title=Python test failure evidence::kind=junit_failure_summary;sha256=%s;part=%s/%s;gzip_base64=%s\n' \
-              "$diagnostic" "$digest" "$part" "$part_count" "$chunk"
-          done
-      - name: Test Stage 1 market acceptance
-        if: needs.impact.outputs.full == 'true'
-        run: make acceptance
-      - name: Verify legacy cached chart correctness
-        if: needs.impact.outputs.full == 'true'
-        run: make benchmark
-      - name: Test Stage 2 formula acceptance
-        if: needs.impact.outputs.full == 'true'
-        run: make acceptance-formula
-      - name: Verify legacy formula preview correctness
-        if: needs.impact.outputs.full == 'true'
-        run: make benchmark-formula
-      - name: Test Stage 3 backtest acceptance
-        if: needs.impact.outputs.full == 'true'
-        run: make acceptance-backtest
-      - name: Test Stage 4 analysis acceptance and security
-        if: needs.impact.outputs.full == 'true'
-        run: make acceptance-analysis
-      - name: Verify legacy single-backtest correctness
-        if: needs.impact.outputs.full == 'true'
-        run: make benchmark-backtest
-      - name: Build Python package
-        if: needs.impact.outputs.full == 'true'
-        run: uv build --no-build-isolation
-      - name: Upload Python results
-        if: always() && needs.impact.outputs.full == 'true'
+      - name: Upload immutable shard evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: python-results
-          path: |
-            python-test-results.xml
-            coverage.xml
-            dist/
-          if-no-files-found: ignore
+          name: ${{ env.EVIDENCE_ARTIFACT }}
+          path: test-results/${{ env.EVIDENCE_ARTIFACT }}/
+          if-no-files-found: error
+          include-hidden-files: true
           retention-days: 7
 
-  web:
-    name: Web quality, tests, and build
+  python-integration:
+    name: Python integration shard
     needs: impact
-    if: needs.impact.outputs.full == 'true'
+    if: contains(fromJSON(needs.impact.outputs.required_jobs), 'python-integration')
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 45
+    env:
+      PYTHON_SHARD: integration
+      PYTHON_ROOTS: tests/integration
+      EVIDENCE_ARTIFACT: python-evidence-integration
+      EVIDENCE_JOB_NAME: Python integration shard
+    steps: *python-shard-steps
+
+  python-acceptance-performance:
+    name: Python acceptance and performance shard
+    needs: impact
+    if: contains(fromJSON(needs.impact.outputs.required_jobs), 'python-acceptance-performance')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      PYTHON_SHARD: acceptance-performance
+      PYTHON_ROOTS: tests/acceptance tests/performance
+      EVIDENCE_ARTIFACT: python-evidence-acceptance-performance
+      EVIDENCE_JOB_NAME: Python acceptance and performance shard
+    steps: *python-shard-steps
+
+  python-security:
+    name: Python security shard
+    needs: impact
+    if: contains(fromJSON(needs.impact.outputs.required_jobs), 'python-security')
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      PYTHON_SHARD: security
+      PYTHON_ROOTS: tests/security
+      EVIDENCE_ARTIFACT: python-evidence-security
+      EVIDENCE_JOB_NAME: Python security shard
+    steps: *python-shard-steps
+
+  web:
+    name: Web quality tests and immutable build
+    needs: impact
+    if: contains(fromJSON(needs.impact.outputs.required_jobs), 'web')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - name: Check out source
+      - name: Check out exact source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ env.SOURCE_SHA }}
       - name: Set up pnpm
         uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:
@@ -386,59 +437,76 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
-          node-version: "24"
-          cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
-      - name: Install locked web dependencies
-        run: pnpm install --frozen-lockfile
-      - name: Check web formatting
-        run: pnpm format:check
-      - name: Lint web
-        run: pnpm lint
-      - name: Type-check web
-        run: pnpm typecheck
-      - name: Test web
-        run: pnpm test
-      - name: Upload web coverage
-        if: always()
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Restore exact-lock pnpm downloads
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ~/.local/share/pnpm/store
+          key: pnpm-${{ runner.os }}-${{ runner.arch }}-${{ env.NODE_VERSION }}-${{ hashFiles('pnpm-lock.yaml') }}
+      - name: Install and validate locked web source
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm format:check
+          pnpm lint
+          pnpm typecheck
+          pnpm test
+          pnpm build
+      - name: Create exact-SHA web artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          out=test-results/web-build-manifest
+          mkdir -p "$out"
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner -czf "$out/web-dist.tar.gz" -C web/dist .
+          cp test-results/vitest/junit.xml "$out/vitest-junit.xml"
+          tree=$(git rev-parse HEAD^{tree})
+          python scripts/artifact_manifest.py create \
+            --root "$out" --output "$out/web-build-manifest.json" \
+            --source-sha "$SOURCE_SHA" --source-tree "$tree" \
+            --workflow CI --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --job-id "$GITHUB_JOB" --job-name "Web quality tests and immutable build" \
+            --payload "web-dist.tar.gz:web" --payload "vitest-junit.xml:provenance" \
+            --critical-input "vite-config=$(sha256sum web/vite.config.ts | cut -d' ' -f1)" \
+            --toolchain "node=$(node --version)" \
+            --lockfile "pnpm-lock.yaml=$(sha256sum pnpm-lock.yaml | cut -d' ' -f1)"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from scripts.artifact_manifest import create_attestation_binding, read_manifest
+          root = Path("test-results/web-build-manifest")
+          (root / "manifest-binding.json").write_text(
+              json.dumps(create_attestation_binding(read_manifest(root / "web-build-manifest.json")), sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+      - name: Upload immutable web build
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: web-coverage
-          path: web/coverage/lcov.info
-          if-no-files-found: error
-          retention-days: 7
-      - name: Build web
-        run: pnpm build
-      - name: Upload web build
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: web-dist
-          path: web/dist/
+          name: web-build-manifest
+          path: test-results/web-build-manifest/
           if-no-files-found: error
           retention-days: 7
 
   e2e:
-    name: Chromium E2E and Ubuntu x64 4-core/16GB target evidence
+    name: Chromium E2E immutable snapshot
     needs: impact
-    if: needs.impact.outputs.full == 'true'
+    if: contains(fromJSON(needs.impact.outputs.required_jobs), 'e2e')
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     permissions:
       contents: read
     steps:
-      - name: Check out source
+      - name: Check out exact source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ env.SOURCE_SHA }}
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
-          python-version: "3.12"
+          python-version: ${{ env.PYTHON_VERSION }}
       - name: Set up uv
         uses: astral-sh/setup-uv@d31148d669074a8d0a63714ba94f3201e7020bc3 # v8.3.0
-        with:
-          enable-cache: true
       - name: Set up pnpm
         uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:
@@ -447,98 +515,331 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
-          node-version: "24"
-          cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Restore exact-lock pnpm downloads
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ~/.local/share/pnpm/store
+          key: pnpm-${{ runner.os }}-${{ runner.arch }}-${{ env.NODE_VERSION }}-${{ hashFiles('pnpm-lock.yaml') }}
+      - name: Restore exact-lock Playwright browser binaries
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ env.PLAYWRIGHT_VERSION }}-${{ hashFiles('pnpm-lock.yaml') }}
+      - name: Install locked dependencies and Chromium
+        run: |
+          uv sync --frozen --all-groups --extra providers
+          pnpm install --frozen-lockfile
+          pnpm exec playwright install --with-deps chromium
+      - name: Run every browser specification once against one snapshot
+        env:
+          STOCK_DESK_SOURCE_REVISION: ${{ env.SOURCE_SHA }}
+          STOCK_DESK_E2E_MANIFEST_OUT: test-results/playwright/snapshot-manifest.json
+        run: |
+          test "$(git rev-parse HEAD)" = "$STOCK_DESK_SOURCE_REVISION"
+          make e2e
+      - name: Normalize Playwright JUnit and create exact-SHA manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          out=test-results/e2e-evidence
+          mkdir -p "$out"
+          tree=$(git rev-parse HEAD^{tree})
+          cp test-results/playwright/snapshot-manifest.json "$out/snapshot-manifest.json"
+          cp test-results/playwright/junit.xml "$out/playwright-junit.xml"
+          uv run --frozen python scripts/aggregate_ci_evidence.py normalize-frontend-junit \
+            --runner playwright --junit "$out/playwright-junit.xml" \
+            --repo-root . \
+            --source-sha "$SOURCE_SHA" --source-tree "$tree" \
+            --output "$out/playwright-report.json"
+          uv run --frozen python scripts/artifact_manifest.py create \
+            --root "$out" --output "$out/e2e-evidence.json" \
+            --source-sha "$SOURCE_SHA" --source-tree "$tree" \
+            --workflow CI --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --job-id "$GITHUB_JOB" --job-name "Chromium E2E immutable snapshot" \
+            --payload "snapshot-manifest.json:provenance" \
+            --payload "playwright-report.json:provenance" \
+            --payload "playwright-junit.xml:provenance" \
+            --critical-input "playwright-config=$(sha256sum playwright.config.ts | cut -d' ' -f1)" \
+            --toolchain "node=$(node --version)" \
+            --lockfile "pnpm-lock.yaml=$(sha256sum pnpm-lock.yaml | cut -d' ' -f1)"
+          uv run --frozen python - <<'PY'
+          import json
+          from pathlib import Path
+          from scripts.artifact_manifest import create_attestation_binding, read_manifest
+          root = Path("test-results/e2e-evidence")
+          (root / "manifest-binding.json").write_text(
+              json.dumps(create_attestation_binding(read_manifest(root / "e2e-evidence.json")), sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+      - name: Upload immutable E2E evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: e2e-evidence
+          path: test-results/e2e-evidence/
+          if-no-files-found: error
+          retention-days: 7
+
+  python-evidence:
+    name: Aggregate Python evidence and coverage
+    needs:
+      - impact
+      - python-unit
+      - python-integration
+      - python-acceptance-performance
+      - python-security
+      - web
+      - e2e
+    if: >-
+      always() && !cancelled() &&
+      contains(fromJSON(needs.impact.outputs.required_jobs), 'requirement-evidence') &&
+      (
+        (
+          needs.impact.outputs.profile == 'web' &&
+          needs.web.result == 'success' && needs.e2e.result == 'success'
+        ) ||
+        (
+          needs.impact.outputs.profile != 'web' &&
+          needs.python-unit.result == 'success' &&
+          needs.python-integration.result == 'success' &&
+          needs.python-acceptance-performance.result == 'success' &&
+          needs.python-security.result == 'success' &&
+          (!contains(fromJSON(needs.impact.outputs.required_jobs), 'web') || needs.web.result == 'success') &&
+          (!contains(fromJSON(needs.impact.outputs.required_jobs), 'e2e') || needs.e2e.result == 'success')
+        )
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ env.SOURCE_SHA }}
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Set up uv
+        uses: astral-sh/setup-uv@d31148d669074a8d0a63714ba94f3201e7020bc3 # v8.3.0
+      - name: Set up pnpm for selector collection
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 11.7.0
+          run_install: false
+      - name: Set up Node.js for selector collection
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
       - name: Install locked dependencies
         run: |
           uv sync --frozen --all-groups --extra providers
           pnpm install --frozen-lockfile
-      - name: Install Playwright Chromium
-        run: pnpm exec playwright install --with-deps chromium
-      - name: Test live foundation slice
-        run: make e2e-foundation
-      - name: Test live Stage 1 market slice
-        run: make e2e-market
-      - name: Test live Stage 2 formula slice
-        run: make e2e-formula
-      - name: Test live Stage 3 backtest slice
-        run: make e2e-backtest
-      - name: Test live Stage 4 analysis slice
-        run: make e2e-analysis
-      - name: Test live Stage 5 task center slice
-        run: make e2e-task-center
-      - name: Test accessible responsive workspaces
-        run: make e2e-accessibility
-      - name: Measure Ubuntu x64 4-core/16GB target baseline
-        shell: bash
-        env:
-          STOCK_DESK_SOURCE_REVISION: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-        run: |
-          set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$STOCK_DESK_SOURCE_REVISION"
-          mkdir -p test-results/performance
-          make performance-target 2>&1 | tee test-results/performance/target-baseline.log
-      - name: Publish target baseline import notice
-        if: always()
+      - name: Download inventory and exact first-run reports
+        if: contains(fromJSON(needs.impact.outputs.required_jobs), 'python-unit')
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: python-*
+          path: incoming
+      - name: Download immutable web report
+        if: contains(fromJSON(needs.impact.outputs.required_jobs), 'web')
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: web-build-manifest
+          path: incoming/web-build-manifest
+      - name: Download immutable E2E report
+        if: contains(fromJSON(needs.impact.outputs.required_jobs), 'e2e')
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: e2e-evidence
+          path: incoming/e2e-evidence
+      - name: Normalize, bind requirements, and enforce 85.00 percent
         shell: bash
         run: |
           set -euo pipefail
-          publish_evidence() {
-            evidence=$1
-            kind=$2
-            title=$3
-            [[ -f "$evidence" ]] || return 0
-            digest=$(sha256sum "$evidence" | cut -d' ' -f1)
-            payload=$(gzip -n -c "$evidence" | base64 -w0)
-            chunk_size=2800
-            part_count=$(((${#payload} + chunk_size - 1) / chunk_size))
-            for ((part_index = 0; part_index < part_count; part_index++)); do
-              chunk=${payload:part_index*chunk_size:chunk_size}
-              part=$((part_index + 1))
-              printf '::notice file=%s,title=%s::kind=%s;sha256=%s;part=%s/%s;gzip_base64=%s\n' \
-                "$evidence" "$title" "$kind" "$digest" "$part" "$part_count" "$chunk"
+          out=test-results/python-evidence
+          aggregate="$out/python-evidence/aggregate"
+          mkdir -p "$aggregate"
+          tree=$(git rev-parse HEAD^{tree})
+          inventory=incoming/python-test-inventory/inventory.json
+          shard_args=()
+          report_args=()
+          inventory_args=()
+          required_runner_args=()
+          if [[ -f "$inventory" ]]; then
+            uv run --frozen python scripts/ci_test_inventory.py verify --inventory "$inventory" --source-sha "$SOURCE_SHA" --source-tree "$tree"
+            inventory_args=(--inventory "$inventory")
+            required_runner_args+=(--required-runner pytest)
+            for shard in unit integration acceptance-performance security; do
+              source="incoming/python-evidence-$shard"
+              shard_args+=(--shard-evidence "$source/shard-evidence.json")
+              report_args+=(--report "$source/shard-evidence.json")
             done
-          }
-          publish_evidence "test-results/performance/target-baseline.json" \
-            "target_baseline" "Target performance JSON evidence"
-          publish_evidence "test-results/performance/target-baseline.log" \
-            "measurement_log" "Target performance measurement log"
-      - name: Upload Playwright and performance evidence
-        if: always()
+          fi
+          if [[ -f incoming/web-build-manifest/vitest-junit.xml ]]; then
+            uv run --frozen python scripts/aggregate_ci_evidence.py normalize-frontend-junit \
+              --runner vitest --junit incoming/web-build-manifest/vitest-junit.xml \
+              --repo-root . \
+              --source-sha "$SOURCE_SHA" --source-tree "$tree" \
+              --output "$aggregate/vitest-report.json"
+            report_args+=(--report "$aggregate/vitest-report.json")
+            required_runner_args+=(--required-runner vitest)
+          fi
+          if [[ -f incoming/e2e-evidence/playwright-report.json ]]; then
+            cp incoming/e2e-evidence/playwright-report.json "$aggregate/playwright-report.json"
+            report_args+=(--report "$aggregate/playwright-report.json")
+            required_runner_args+=(--required-runner playwright)
+          fi
+          uv run --frozen python scripts/aggregate_ci_evidence.py requirements \
+            --manifest tests/acceptance/requirements.yml "${inventory_args[@]}" \
+            --repo-root . "${report_args[@]}" "${required_runner_args[@]}" \
+            --source-sha "$SOURCE_SHA" --source-tree "$tree" \
+            --output "$aggregate/requirement-evidence.json"
+          if [[ -f "$inventory" ]]; then
+            uv run --frozen python scripts/aggregate_ci_evidence.py aggregate \
+              --inventory "$inventory" "${shard_args[@]}" \
+              --source-sha "$SOURCE_SHA" --source-tree "$tree" \
+              --workdir "$out/coverage" --coverage-precision 2 \
+              --coverage-threshold 85.00 \
+              --requirement-evidence "$aggregate/requirement-evidence.json" \
+              --output "$aggregate/python-evidence.json"
+            cp "$out/coverage/coverage.json" "$aggregate/coverage.json"
+            uv build --no-build-isolation
+            tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner -czf "$aggregate/python-dist.tar.gz" -C dist .
+          fi
+      - name: Create exact-SHA aggregate manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          out=test-results/python-evidence
+          aggregate="$out/python-evidence/aggregate"
+          tree=$(git rev-parse HEAD^{tree})
+          payloads=(--payload "python-evidence/aggregate/requirement-evidence.json:provenance")
+          if [[ -f "$aggregate/python-evidence.json" ]]; then
+            payloads+=(--payload "python-evidence/aggregate/python-evidence.json:provenance" --payload "python-evidence/aggregate/coverage.json:python" --payload "python-evidence/aggregate/python-dist.tar.gz:python")
+          fi
+          [[ ! -f "$aggregate/vitest-report.json" ]] || payloads+=(--payload "python-evidence/aggregate/vitest-report.json:provenance")
+          [[ ! -f "$aggregate/playwright-report.json" ]] || payloads+=(--payload "python-evidence/aggregate/playwright-report.json:provenance")
+          uv run --frozen python scripts/artifact_manifest.py create \
+            --root "$out" --output "$out/python-evidence-aggregate.json" \
+            --source-sha "$SOURCE_SHA" --source-tree "$tree" \
+            --workflow CI --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --job-id "$GITHUB_JOB" --job-name "Aggregate Python evidence and coverage" \
+            "${payloads[@]}" \
+            --critical-input "requirements=$(sha256sum tests/acceptance/requirements.yml | cut -d' ' -f1)" \
+            --toolchain "python=$(python --version | cut -d' ' -f2)" \
+            --lockfile "uv.lock=$(sha256sum uv.lock | cut -d' ' -f1)"
+          uv run --frozen python - <<'PY'
+          import json
+          from pathlib import Path
+          from scripts.artifact_manifest import create_attestation_binding, read_manifest
+          root = Path("test-results/python-evidence")
+          (root / "manifest-binding.json").write_text(
+              json.dumps(create_attestation_binding(read_manifest(root / "python-evidence-aggregate.json")), sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+      - name: Upload aggregate Python evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: target-baseline-ubuntu-x64-4c16g
-          path: |
-            test-results/playwright/
-            test-results/performance/
-          if-no-files-found: ignore
+          name: python-evidence-aggregate
+          path: test-results/python-evidence/
+          if-no-files-found: error
           retention-days: 7
 
-  container:
-    name: Clean Compose build and smoke test
+  container-build:
+    name: Build immutable OCI image
     needs: impact
-    if: needs.impact.outputs.full == 'true'
+    if: contains(fromJSON(needs.impact.outputs.required_jobs), 'container')
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
-      - name: Check out source
+      - name: Check out exact source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ env.SOURCE_SHA }}
+      - name: Build the OCI image once
+        shell: bash
+        run: |
+          set -euo pipefail
+          out=test-results/oci-image-manifest
+          mkdir -p "$out"
+          docker build --pull --tag stock-desk:ci .
+          docker image save stock-desk:ci -o "$out/stock-desk-image.tar"
+          docker image inspect --format '{{.Id}}' stock-desk:ci > "$out/image-digest.txt"
+      - name: Create exact-SHA OCI manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          out=test-results/oci-image-manifest
+          tree=$(git rev-parse HEAD^{tree})
+          digest=$(cat "$out/image-digest.txt")
+          python scripts/artifact_manifest.py create \
+            --root "$out" --output "$out/oci-image-manifest.json" \
+            --source-sha "$SOURCE_SHA" --source-tree "$tree" \
+            --workflow CI --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --job-id "$GITHUB_JOB" --job-name "Build immutable OCI image" \
+            --payload "stock-desk-image.tar:oci" --image-digest "$digest" \
+            --critical-input "Dockerfile=$(sha256sum Dockerfile | cut -d' ' -f1)" \
+            --toolchain "docker=$(docker version --format '{{.Client.Version}}')" \
+            --lockfile "uv.lock=$(sha256sum uv.lock | cut -d' ' -f1)" \
+            --lockfile "pnpm-lock.yaml=$(sha256sum pnpm-lock.yaml | cut -d' ' -f1)"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from scripts.artifact_manifest import create_attestation_binding, read_manifest
+          root = Path("test-results/oci-image-manifest")
+          (root / "manifest-binding.json").write_text(
+              json.dumps(create_attestation_binding(read_manifest(root / "oci-image-manifest.json")), sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+      - name: Upload the single immutable OCI artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: oci-image-manifest
+          path: test-results/oci-image-manifest/
+          if-no-files-found: error
+          retention-days: 7
+
+  container-compose:
+    name: Verify OCI Compose smoke
+    needs: [impact, container-build]
+    if: contains(fromJSON(needs.impact.outputs.required_jobs), 'container')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ env.SOURCE_SHA }}
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
-          python-version: "3.12"
+          python-version: ${{ env.PYTHON_VERSION }}
       - name: Set up uv
         uses: astral-sh/setup-uv@d31148d669074a8d0a63714ba94f3201e7020bc3 # v8.3.0
-        with:
-          enable-cache: true
-      - name: Install smoke-test dependencies
+      - name: Install locked smoke dependencies
         run: uv sync --frozen --all-groups --extra providers
-      - name: Build, start, and smoke-test Compose
+      - name: Download the one OCI image
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: oci-image-manifest
+          path: incoming/oci-image
+      - name: Verify, load, and smoke the exact image without rebuilding
         shell: bash
         run: |
           set -Eeuo pipefail
-          : > compose.log
+          tree=$(git rev-parse HEAD^{tree})
+          python scripts/artifact_manifest.py verify \
+            --manifest incoming/oci-image/oci-image-manifest.json \
+            --root incoming/oci-image --source-sha "$SOURCE_SHA" --source-tree "$tree" \
+            --attestation incoming/oci-image/manifest-binding.json
+          docker load -i incoming/oci-image/stock-desk-image.tar
+          test "$(docker image inspect --format '{{.Id}}' stock-desk:ci)" = "$(jq -r .image_digest incoming/oci-image/oci-image-manifest.json)"
           cleanup() {
             status=$?
             docker compose logs --no-color > compose.log 2>&1 || true
@@ -546,18 +847,103 @@ jobs:
             exit "$status"
           }
           trap cleanup EXIT
-          docker compose down --volumes --remove-orphans
-          docker compose build --pull
-          docker compose up --wait --no-build
+          STOCK_DESK_IMAGE=stock-desk:ci docker compose up --wait --no-build --pull never
           make smoke
-      - name: Upload Compose logs
+      - name: Upload Compose diagnostics
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: compose-logs
+          name: compose-smoke-logs
           path: compose.log
-          if-no-files-found: error
+          if-no-files-found: ignore
           retention-days: 7
+
+  container-security:
+    name: Verify OCI SBOM and vulnerabilities
+    needs: [impact, container-build]
+    if: contains(fromJSON(needs.impact.outputs.required_jobs), 'container')
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ env.SOURCE_SHA }}
+      - name: Download the one OCI image
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: oci-image-manifest
+          path: incoming/oci-image
+      - name: Verify and load the exact image
+        shell: bash
+        run: |
+          set -euo pipefail
+          tree=$(git rev-parse HEAD^{tree})
+          python scripts/artifact_manifest.py verify \
+            --manifest incoming/oci-image/oci-image-manifest.json \
+            --root incoming/oci-image --source-sha "$SOURCE_SHA" --source-tree "$tree" \
+            --attestation incoming/oci-image/manifest-binding.json
+          docker load -i incoming/oci-image/stock-desk-image.tar
+          test "$(docker image inspect --format '{{.Id}}' stock-desk:ci)" = "$(jq -r .image_digest incoming/oci-image/oci-image-manifest.json)"
+          mkdir -p test-results/oci-security-evidence
+      - name: Generate SPDX image SBOM from the exact image
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: stock-desk:ci
+          format: spdx-json
+          output-file: test-results/oci-security-evidence/stock-desk-image.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+      - name: Report all high and critical image CVEs
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        with:
+          image-ref: stock-desk:ci
+          format: json
+          output: test-results/oci-security-evidence/vulnerabilities.json
+          severity: CRITICAL,HIGH
+          ignore-unfixed: false
+          exit-code: 0
+      - name: Reject fixable high and critical image CVEs
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        with:
+          image-ref: stock-desk:ci
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: 1
+      - name: Create exact-SHA OCI security manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          out=test-results/oci-security-evidence
+          tree=$(git rev-parse HEAD^{tree})
+          python scripts/artifact_manifest.py create \
+            --root "$out" --output "$out/oci-security-evidence.json" \
+            --source-sha "$SOURCE_SHA" --source-tree "$tree" \
+            --workflow CI --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --job-id "$GITHUB_JOB" --job-name "Verify OCI SBOM and vulnerabilities" \
+            --payload "stock-desk-image.spdx.json:sbom" --payload "vulnerabilities.json:provenance" \
+            --critical-input "Dockerfile=$(sha256sum Dockerfile | cut -d' ' -f1)" \
+            --toolchain "docker=$(docker version --format '{{.Client.Version}}')" \
+            --lockfile "uv.lock=$(sha256sum uv.lock | cut -d' ' -f1)"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from scripts.artifact_manifest import create_attestation_binding, read_manifest
+          root = Path("test-results/oci-security-evidence")
+          (root / "manifest-binding.json").write_text(
+              json.dumps(create_attestation_binding(read_manifest(root / "oci-security-evidence.json")), sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+      - name: Upload exact OCI security evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: oci-security-evidence
+          path: test-results/oci-security-evidence/
+          if-no-files-found: error
+          retention-days: 30
 
   validation-proof:
     name: Publish immutable main validation proof
@@ -566,12 +952,18 @@ jobs:
       - windows-runtime-acl
       - public-tree
       - dependency-audit
-      - python
+      - python-unit
+      - python-integration
+      - python-acceptance-performance
+      - python-security
+      - python-evidence
       - web
       - e2e
-      - container
+      - container-build
+      - container-compose
+      - container-security
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     permissions:
       actions: read
       attestations: write
@@ -582,10 +974,63 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ env.SOURCE_SHA }}
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
-          python-version: "3.12"
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Download Python validation evidence outside the worktree
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: python-evidence-*
+          path: ${{ runner.temp }}/validation-evidence
+      - name: Download web and OCI manifests outside the worktree
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: "*-manifest"
+          path: ${{ runner.temp }}/validation-evidence
+      - name: Download E2E and OCI security evidence outside the worktree
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: "*-evidence"
+          path: ${{ runner.temp }}/validation-evidence
+      - name: Attest all nine exact-SHA evidence manifests
+        id: attest-evidence
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        with:
+          subject-path: |
+            ${{ runner.temp }}/validation-evidence/python-evidence-unit/python-evidence-unit.json
+            ${{ runner.temp }}/validation-evidence/python-evidence-integration/python-evidence-integration.json
+            ${{ runner.temp }}/validation-evidence/python-evidence-acceptance-performance/python-evidence-acceptance-performance.json
+            ${{ runner.temp }}/validation-evidence/python-evidence-security/python-evidence-security.json
+            ${{ runner.temp }}/validation-evidence/python-evidence-aggregate/python-evidence-aggregate.json
+            ${{ runner.temp }}/validation-evidence/web-build-manifest/web-build-manifest.json
+            ${{ runner.temp }}/validation-evidence/e2e-evidence/e2e-evidence.json
+            ${{ runner.temp }}/validation-evidence/oci-image-manifest/oci-image-manifest.json
+            ${{ runner.temp }}/validation-evidence/oci-security-evidence/oci-security-evidence.json
+      - name: Verify and preserve signed evidence attestation bundle
+        env:
+          BUNDLE_PATH: ${{ steps.attest-evidence.outputs.bundle-path }}
+          EVIDENCE_ROOT: ${{ runner.temp }}/validation-evidence
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/main-validation"
+          test -s "$BUNDLE_PATH"
+          cp "$BUNDLE_PATH" "$RUNNER_TEMP/main-validation/evidence-attestation-bundle.jsonl"
+          : > "$RUNNER_TEMP/main-validation/evidence-attestation-verification.log"
+          for artifact in \
+            python-evidence-unit python-evidence-integration \
+            python-evidence-acceptance-performance python-evidence-security \
+            python-evidence-aggregate web-build-manifest e2e-evidence \
+            oci-image-manifest oci-security-evidence
+          do
+            gh attestation verify "$EVIDENCE_ROOT/$artifact/$artifact.json" \
+              --bundle "$BUNDLE_PATH" --repo "$GITHUB_REPOSITORY" \
+              --source-ref refs/heads/main --source-digest "$SOURCE_SHA" \
+              --signer-digest "$SOURCE_SHA" --deny-self-hosted-runners \
+              >> "$RUNNER_TEMP/main-validation/evidence-attestation-verification.log"
+          done
       - name: Locate exact CodeQL and Security runs
         id: runs
         shell: bash
@@ -594,11 +1039,10 @@ jobs:
         run: |
           set -euo pipefail
           find_run() {
-            local workflow=$1
-            local payload state run_id status conclusion
+            local workflow=$1 payload state run_id status conclusion
             for _ in {1..32}; do
               payload="$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/runs" -f branch=main -f event=push -f per_page=100)"
-              state="$(jq -r --arg sha "$GITHUB_SHA" '[.workflow_runs[] | select(.head_sha == $sha and .head_branch == "main" and .event == "push")] | sort_by(.run_attempt) | last | [.id, .status, (.conclusion // "")] | @tsv' <<<"$payload")"
+              state="$(jq -r --arg sha "$SOURCE_SHA" '[.workflow_runs[] | select(.head_sha == $sha and .head_branch == "main" and .event == "push")] | sort_by(.run_attempt) | last | [.id, .status, (.conclusion // "")] | @tsv' <<<"$payload")"
               if [[ -n "$state" ]]; then
                 IFS=$'\t' read -r run_id status conclusion <<<"$state"
                 if [[ "$status" == completed ]]; then
@@ -616,24 +1060,85 @@ jobs:
       - name: Generate exact validation proof
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          EVIDENCE_ROOT: ${{ runner.temp }}/validation-evidence
         run: |
-          mkdir -p test-results/main-validation
+          mkdir -p "$RUNNER_TEMP/main-validation"
           python scripts/main_validation_proof.py generate \
-            --repo-root . \
-            --repository "$GITHUB_REPOSITORY" \
-            --ref refs/heads/main \
+            --repo-root . --repository "$GITHUB_REPOSITORY" --ref refs/heads/main \
             --run "CI=$GITHUB_RUN_ID" \
             --run "CodeQL=${{ steps.runs.outputs.codeql }}" \
             --run "Security=${{ steps.runs.outputs.security }}" \
-            --output test-results/main-validation/proof.json
+            --evidence "python-evidence-unit=$EVIDENCE_ROOT/python-evidence-unit/python-evidence-unit.json" \
+            --evidence "python-evidence-integration=$EVIDENCE_ROOT/python-evidence-integration/python-evidence-integration.json" \
+            --evidence "python-evidence-acceptance-performance=$EVIDENCE_ROOT/python-evidence-acceptance-performance/python-evidence-acceptance-performance.json" \
+            --evidence "python-evidence-security=$EVIDENCE_ROOT/python-evidence-security/python-evidence-security.json" \
+            --evidence "python-evidence-aggregate=$EVIDENCE_ROOT/python-evidence-aggregate/python-evidence-aggregate.json" \
+            --evidence "web-build-manifest=$EVIDENCE_ROOT/web-build-manifest/web-build-manifest.json" \
+            --evidence "e2e-evidence=$EVIDENCE_ROOT/e2e-evidence/e2e-evidence.json" \
+            --evidence "oci-image-manifest=$EVIDENCE_ROOT/oci-image-manifest/oci-image-manifest.json" \
+            --evidence "oci-security-evidence=$EVIDENCE_ROOT/oci-security-evidence/oci-security-evidence.json" \
+            --output "$RUNNER_TEMP/main-validation/proof.json"
       - name: Attest main validation proof
+        id: attest
         uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
         with:
-          subject-path: test-results/main-validation/proof.json
+          subject-path: ${{ runner.temp }}/main-validation/proof.json
+      - name: Verify and preserve signed proof attestation bundle
+        env:
+          BUNDLE_PATH: ${{ steps.attest.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          test -s "$BUNDLE_PATH"
+          cp "$BUNDLE_PATH" "$RUNNER_TEMP/main-validation/proof-attestation-bundle.jsonl"
+          gh attestation verify "$RUNNER_TEMP/main-validation/proof.json" \
+            --bundle "$BUNDLE_PATH" --repo "$GITHUB_REPOSITORY" \
+            --source-ref refs/heads/main --source-digest "$SOURCE_SHA" \
+            --signer-digest "$SOURCE_SHA" --deny-self-hosted-runners \
+            > "$RUNNER_TEMP/main-validation/proof-attestation-verification.log"
+      - name: Record post-gh-verify proof binding
+        env:
+          ATTESTATION_ID: ${{ steps.attest.outputs.attestation-id }}
+        run: |
+          python - "$RUNNER_TEMP/main-validation/proof.json" "$RUNNER_TEMP/main-validation/post-gh-verify-binding.json" <<'PY'
+          import hashlib
+          import json
+          import os
+          import sys
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          proof_path = Path(sys.argv[1])
+          output = Path(sys.argv[2])
+          proof_bytes = proof_path.read_bytes()
+          proof = json.loads(proof_bytes)
+          ci = proof["workflows"]["CI"]
+          generation = ci["generation_job"]
+          binding = {
+              "schema": "stock-desk-main-proof-post-gh-verify-binding-v1",
+              "repository": proof["repository"],
+              "commit_sha": proof["commit_sha"],
+              "tree_sha": proof["tree_sha"],
+              "proof_file_sha256": hashlib.sha256(proof_bytes).hexdigest(),
+              "attestation_id": os.environ["ATTESTATION_ID"],
+              "verified_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+              "verification_gate": "gh-attestation-verify",
+              "producer": {
+                  "workflow": "CI",
+                  "run_id": ci["run_id"],
+                  "run_attempt": ci["run_attempt"],
+                  "job_id": str(generation["id"]),
+                  "job_name": generation["name"],
+              },
+          }
+          output.write_text(
+              json.dumps(binding, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
       - name: Upload immutable main validation proof
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: main-validation-proof-${{ github.sha }}
-          path: test-results/main-validation/proof.json
+          path: ${{ runner.temp }}/main-validation/
           if-no-files-found: error
           retention-days: 90

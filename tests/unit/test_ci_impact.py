@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -7,108 +8,81 @@ from pathlib import Path
 import pytest
 
 from scripts.ci_impact import (
+    ALL_GATES,
+    BACKEND_PROFILE,
     DOCS_PROFILE,
     FULL_PROFILE,
     RELEASE_DESKTOP_PROFILE,
+    WEB_PROFILE,
     changed_files_between,
     classify_impact,
     main,
+    unclassified_tracked_paths,
 )
+
+
+@pytest.mark.parametrize(
+    ("path", "profile", "domain", "expected_gate"),
+    [
+        ("src/stock_desk/api/main.py", BACKEND_PROFILE, "backend", "python-unit"),
+        ("web/src/App.tsx", WEB_PROFILE, "web", "e2e"),
+        ("src-tauri/src/main.rs", RELEASE_DESKTOP_PROFILE, "tauri", "artifact-proof"),
+        (
+            "packaging/windows/stock-desk.iss",
+            RELEASE_DESKTOP_PROFILE,
+            "installer",
+            "artifact-proof",
+        ),
+        ("README.md", DOCS_PROFILE, "documentation", "docs"),
+    ],
+)
+def test_single_domain_paths_select_explicit_gates(
+    path: str, profile: str, domain: str, expected_gate: str
+) -> None:
+    impact = classify_impact("pull_request", [path])
+
+    assert impact.profile == profile
+    assert impact.full is False
+    assert impact.domains == (domain,)
+    assert expected_gate in impact.required_jobs
+    assert set(impact.required_jobs).isdisjoint(impact.skipped_jobs)
+    assert set(impact.required_jobs) | set(impact.skipped_jobs) == set(ALL_GATES)
+
+
+def test_documentation_can_accompany_one_functional_domain() -> None:
+    impact = classify_impact(
+        "pull_request", ["src/stock_desk/desktop.py", "docs/architecture.md"]
+    )
+
+    assert impact.profile == BACKEND_PROFILE
+    assert impact.full is False
+    assert impact.domains == ("backend", "documentation")
+    assert impact.reason == "explicit-backend-only"
 
 
 @pytest.mark.parametrize(
     "paths",
     [
-        ["README.md", "docs/architecture.md"],
-        ["CHANGELOG.md", "SECURITY.md"],
+        ["src/stock_desk/api/main.py", "web/src/App.tsx"],
+        ["web/src/App.tsx", "src-tauri/src/main.rs"],
+        ["src/stock_desk/desktop.py", "packaging/windows/stock-desk.iss"],
     ],
 )
-def test_pull_request_allows_only_explicit_documentation(paths: list[str]) -> None:
+def test_cross_domain_changes_fail_closed_to_full(paths: list[str]) -> None:
     impact = classify_impact("pull_request", paths)
 
-    assert impact.profile == DOCS_PROFILE
-    assert impact.full is False
-    assert impact.reason == "explicit-docs-only"
-
-
-def test_pull_request_allows_explicit_release_desktop_scope_with_docs() -> None:
-    impact = classify_impact(
-        "pull_request",
-        [
-            "src/stock_desk/desktop.py",
-            "packaging/windows/stock-desk.iss",
-            "tests/unit/test_installer_scripts.py",
-            "docs/installation-windows.md",
-        ],
-    )
-
-    assert impact.profile == RELEASE_DESKTOP_PROFILE
-    assert impact.full is False
-
-
-def test_windows_first_start_fix_uses_targeted_release_desktop_scope() -> None:
-    impact = classify_impact(
-        "pull_request",
-        [
-            ".github/workflows/ci.yml",
-            "scripts/ci_impact.py",
-            "src/stock_desk/storage/backup.py",
-            "tests/integration/storage/test_restore_recovery.py",
-            "tests/unit/storage/test_backup.py",
-            "tests/unit/test_ci_impact.py",
-        ],
-    )
-
-    assert impact.profile == RELEASE_DESKTOP_PROFILE
-    assert impact.full is False
-
-
-def test_pre_publish_timeout_budget_uses_targeted_release_desktop_scope() -> None:
-    impact = classify_impact(
-        "pull_request",
-        [
-            ".github/workflows/ci.yml",
-            "scripts/check_requirement_coverage.py",
-            "scripts/ci_impact.py",
-            "tests/unit/test_ci_impact.py",
-            "tests/unit/test_requirement_coverage.py",
-        ],
-    )
-
-    assert impact.profile == RELEASE_DESKTOP_PROFILE
-    assert impact.full is False
-
-
-def test_current_release_proof_change_set_uses_targeted_profile() -> None:
-    impact = classify_impact(
-        "pull_request",
-        [
-            ".github/workflows/ci.yml",
-            ".github/workflows/release.yml",
-            "scripts/ci_impact.py",
-            "scripts/main_validation_proof.py",
-            "scripts/verify_installed_app.py",
-            "src/stock_desk/desktop.py",
-            "tests/acceptance/test_installed_distribution.py",
-            "tests/acceptance/test_release_artifacts.py",
-            "tests/integration/test_windows_runtime_acl.py",
-            "tests/unit/test_ci_impact.py",
-            "tests/unit/test_desktop_launcher.py",
-            "tests/unit/test_installer_scripts.py",
-            "tests/unit/test_main_validation_proof.py",
-            "tests/unit/test_repository_health.py",
-        ],
-    )
-
-    assert impact.profile == RELEASE_DESKTOP_PROFILE
-    assert impact.full is False
+    assert impact.profile == FULL_PROFILE
+    assert impact.full is True
+    assert impact.reason == "cross-domain-change"
+    assert impact.required_jobs == ALL_GATES
+    assert impact.skipped_jobs == ()
 
 
 @pytest.mark.parametrize(
     "path",
     [
-        ".github/workflows/codeql.yml",
-        ".github/workflows/security.yml",
+        ".github/workflows/ci.yml",
+        ".github/CODEOWNERS",
         "uv.lock",
         "pnpm-lock.yaml",
         "pyproject.toml",
@@ -116,20 +90,39 @@ def test_current_release_proof_change_set_uses_targeted_profile() -> None:
         "Makefile",
         "Dockerfile",
         "compose.yaml",
-        "migrations/versions/001_schema.py",
-        "src/stock_desk/api/schemas.py",
         "scripts/security_scan.py",
         "scripts/verify_release.py",
-        "web/src/unknown.ts",
-        ".github/dependabot.yml",
+        "scripts/main_validation_proof.py",
+        "scripts/artifact_manifest.py",
+        "scripts/verify_ci_cache_policy.py",
+        "tests/unit/test_ci_impact.py",
+        "tests/unit/test_artifact_manifest.py",
     ],
 )
-def test_sensitive_and_unknown_paths_fail_closed_to_full(path: str) -> None:
+def test_workflow_dependency_permission_signing_and_proof_paths_are_full(
+    path: str,
+) -> None:
     impact = classify_impact("pull_request", [path])
 
     assert impact.profile == FULL_PROFILE
     assert impact.full is True
-    assert impact.reason == f"unclassified-path:{path}"
+    assert impact.reason == f"high-risk-path:{path}"
+
+
+@pytest.mark.parametrize(
+    ("path", "domain"),
+    [
+        ("uv.lock", "dependency"),
+        (".github/workflows/ci.yml", "delivery"),
+        (".github/CODEOWNERS", "permissions"),
+        ("scripts/signpath_contract.py", "signing"),
+    ],
+)
+def test_high_risk_paths_keep_an_auditable_domain(path: str, domain: str) -> None:
+    impact = classify_impact("pull_request", [path])
+
+    assert impact.domains == (domain,)
+    assert impact.required_jobs == ALL_GATES
 
 
 def test_one_unknown_path_makes_an_otherwise_targeted_change_full() -> None:
@@ -149,6 +142,7 @@ def test_every_push_is_full(paths: list[str]) -> None:
     assert impact.profile == FULL_PROFILE
     assert impact.full is True
     assert impact.reason == "push-events-require-full"
+    assert impact.required_jobs == ALL_GATES
 
 
 @pytest.mark.parametrize("event", ["workflow_dispatch", "schedule", "merge_group", ""])
@@ -169,10 +163,49 @@ def test_invalid_paths_are_full(path: str) -> None:
     assert impact.reason == "invalid-or-empty-path"
 
 
+def test_empty_pull_request_diff_is_full() -> None:
+    impact = classify_impact("pull_request", [])
+
+    assert impact.full is True
+    assert impact.reason == "empty-change-set"
+
+
+def test_fork_pull_request_is_full() -> None:
+    impact = classify_impact("pull_request", ["README.md"], fork_pull_request=True)
+
+    assert impact.full is True
+    assert impact.reason == "fork-pull-request-requires-full"
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "reason"),
+    [
+        ({"base_reachable": False}, "unreachable-base-sha"),
+        (
+            {"base_sha": "a" * 40, "expected_base_sha": "b" * 40},
+            "stale-base-sha",
+        ),
+    ],
+)
+def test_untrusted_or_stale_base_is_full(
+    kwargs: dict[str, object], reason: str
+) -> None:
+    impact = classify_impact("pull_request", ["README.md"], **kwargs)  # type: ignore[arg-type]
+
+    assert impact.full is True
+    assert impact.reason == reason
+
+
 def test_paths_are_deduplicated_and_sorted() -> None:
     impact = classify_impact("pull_request", ["README.md", "docs/z.md", "README.md"])
 
     assert impact.changed_files == ("README.md", "docs/z.md")
+
+
+def test_every_current_tracked_path_has_a_risk_owner() -> None:
+    repo_root = Path(__file__).parents[2]
+
+    assert unclassified_tracked_paths(repo_root) == ()
 
 
 def test_changed_files_between_reads_nul_delimited_git_diff(tmp_path: Path) -> None:
@@ -207,7 +240,7 @@ def test_changed_files_between_reads_nul_delimited_git_diff(tmp_path: Path) -> N
     )
 
 
-def test_cli_writes_stdout_and_github_outputs(
+def test_cli_writes_auditable_stdout_and_github_outputs(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     github_output = tmp_path / "github-output"
@@ -223,19 +256,30 @@ def test_cli_writes_stdout_and_github_outputs(
         ]
     )
 
-    expected = "profile=docs-only\nfull=false\nreason=explicit-docs-only\n"
+    output = capsys.readouterr().out
     assert result == 0
-    assert capsys.readouterr().out == expected
-    assert github_output.read_text(encoding="utf-8") == expected
+    assert github_output.read_text(encoding="utf-8") == output
+    fields = dict(line.split("=", 1) for line in output.splitlines())
+    assert fields["profile"] == "docs-only"
+    assert fields["full"] == "false"
+    assert fields["reason"] == "explicit-docs-only"
+    assert json.loads(fields["domains"]) == ["documentation"]
+    assert json.loads(fields["required_jobs"]) == [
+        "change-policy",
+        "public-tree",
+        "docs",
+    ]
+    assert "python-unit" in json.loads(fields["skipped_jobs"])
 
 
 def test_cli_missing_change_source_is_full(capsys: pytest.CaptureFixture[str]) -> None:
     result = main(["--event-name", "pull_request"])
 
     assert result == 0
-    assert capsys.readouterr().out == (
-        "profile=full\nfull=true\nreason=missing-change-source\n"
-    )
+    fields = dict(line.split("=", 1) for line in capsys.readouterr().out.splitlines())
+    assert fields["profile"] == "full"
+    assert fields["full"] == "true"
+    assert fields["reason"] == "missing-change-source"
 
 
 def test_script_cli_can_be_invoked_directly() -> None:
@@ -256,8 +300,6 @@ def test_script_cli_can_be_invoked_directly() -> None:
 
     assert result.returncode == 0
     assert result.stderr == ""
-    assert result.stdout == (
-        "profile=release-infra-desktop\n"
-        "full=false\n"
-        "reason=explicit-release-infra-desktop-only\n"
-    )
+    fields = dict(line.split("=", 1) for line in result.stdout.splitlines())
+    assert fields["profile"] == "backend"
+    assert fields["reason"] == "explicit-backend-only"

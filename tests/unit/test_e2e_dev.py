@@ -65,6 +65,7 @@ def test_main_honors_sigterm_received_during_seed_and_removes_profile(
     monkeypatch.setattr(sys, "argv", ["e2e_dev.py"])
     monkeypatch.setattr(e2e_dev.tempfile, "mkdtemp", lambda **_kwargs: str(profile))
     monkeypatch.setattr(e2e_dev, "_seed", interrupt_seed)
+    monkeypatch.setattr(e2e_dev, "_record_snapshot", lambda _data_dir: None)
     monkeypatch.setattr(e2e_dev, "supervise", stopped_supervisor)
 
     assert e2e_dev.main() == 128 + signal.SIGTERM
@@ -98,6 +99,7 @@ def test_performance_harness_records_supervisor_and_service_pids(
     monkeypatch.setattr(sys, "argv", ["e2e_dev.py"])
     monkeypatch.setattr(e2e_dev.tempfile, "mkdtemp", lambda **_kwargs: str(profile))
     monkeypatch.setattr(e2e_dev, "_seed", lambda _data_dir: None)
+    monkeypatch.setattr(e2e_dev, "_record_snapshot", lambda _data_dir: None)
     monkeypatch.setattr(e2e_dev, "supervise", fake_supervisor)
     monkeypatch.setenv("STOCK_DESK_PERFORMANCE_PROCESS_FILE", str(pid_file))
 

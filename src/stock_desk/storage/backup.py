@@ -1956,6 +1956,7 @@ def recover_interrupted_restore(
     *,
     data_dir: Path,
     _lifecycle_held: bool = False,
+    lifecycle_timeout_seconds: float = 0,
 ) -> bool:
     """Roll back an unfinished restore, or finish cleanup after commit."""
     data_dir = Path(data_dir)
@@ -1965,7 +1966,7 @@ def recover_interrupted_restore(
     if _lifecycle_held:
         return _recover_interrupted_restore_locked(data_dir)
     try:
-        with restore_lifecycle(data_dir):
+        with restore_lifecycle(data_dir, timeout_seconds=lifecycle_timeout_seconds):
             return _recover_interrupted_restore_locked(data_dir)
     except (LifecycleBusyError, LifecycleCorruptionError) as error:
         raise RestoreRecoveryRequired(str(error)) from error

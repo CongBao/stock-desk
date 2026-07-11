@@ -3624,6 +3624,104 @@ def test_repository_requires_commit_reachable_from_verified_root(
     assert any("reachable repository commit" in item for item in failures)
 
 
+def test_repository_commit_reachability_uses_one_bounded_ancestor_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[tuple[tuple[str, ...], dict[str, object]]] = []
+
+    def run(
+        command: tuple[str, ...], **options: object
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append((command, options))
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(verify_docs_module.subprocess, "run", run)
+
+    assert verify_docs_module._repository_commit_is_reachable(tmp_path, "1" * 40)
+    assert len(calls) == 1
+    command, options = calls[0]
+    assert command == (
+        "git",
+        "merge-base",
+        "--is-ancestor",
+        f"{'1' * 40}^{{commit}}",
+        "HEAD^{commit}",
+    )
+    assert options["cwd"] == str(tmp_path.resolve())
+    assert options["check"] is False
+    assert options["capture_output"] is True
+    assert options["text"] is True
+    assert options["timeout"] == 30
+
+
+def test_repository_commit_reachability_rejects_side_branch_and_non_commit(
+    tmp_path: Path,
+) -> None:
+    def git(*arguments: str) -> str:
+        return subprocess.run(
+            ("git", *arguments),
+            cwd=tmp_path,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.name", "Stock Desk Test")
+    git("config", "user.email", "test@example.invalid")
+    marker = tmp_path / "marker.txt"
+    marker.write_text("ancestor\n", encoding="utf-8")
+    git("add", "marker.txt")
+    git("commit", "-q", "-m", "ancestor")
+    ancestor = git("rev-parse", "HEAD")
+    marker.write_text("head\n", encoding="utf-8")
+    git("commit", "-q", "-am", "head")
+    head = git("rev-parse", "HEAD")
+    git("switch", "-q", "-c", "side", ancestor)
+    marker.write_text("side\n", encoding="utf-8")
+    git("commit", "-q", "-am", "side")
+    side = git("rev-parse", "HEAD")
+    blob = git("rev-parse", "HEAD:marker.txt")
+    git("switch", "-q", "main")
+
+    assert verify_docs_module._repository_commit_is_reachable(tmp_path, ancestor)
+    assert verify_docs_module._repository_commit_is_reachable(tmp_path, head)
+    assert not verify_docs_module._repository_commit_is_reachable(tmp_path, side)
+    assert not verify_docs_module._repository_commit_is_reachable(tmp_path, blob)
+    assert not verify_docs_module._repository_commit_is_reachable(tmp_path, "f" * 40)
+
+
+def test_repository_commit_reachability_uses_explicit_audit_graph(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audit_repo = tmp_path / "audit.git"
+    audit_repo.mkdir()
+    calls: list[tuple[tuple[str, ...], dict[str, object]]] = []
+
+    def run(
+        command: tuple[str, ...], **options: object
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append((command, options))
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setenv("STOCK_DESK_DOC_PROVENANCE_GIT_DIR", str(audit_repo))
+    monkeypatch.setenv("STOCK_DESK_DOC_PROVENANCE_TIP", "refs/heads/exact-source")
+    monkeypatch.setattr(verify_docs_module.subprocess, "run", run)
+
+    assert verify_docs_module._repository_commit_is_reachable(tmp_path, "2" * 40)
+    assert calls[0][0][-1] == "refs/heads/exact-source^{commit}"
+    assert calls[0][1]["cwd"] == str(audit_repo.resolve())
+
+
+def test_repository_commit_reachability_rejects_partial_audit_configuration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("STOCK_DESK_DOC_PROVENANCE_GIT_DIR", str(tmp_path))
+    monkeypatch.delenv("STOCK_DESK_DOC_PROVENANCE_TIP", raising=False)
+
+    assert not verify_docs_module._repository_commit_is_reachable(tmp_path, "3" * 40)
+
+
 def test_wiki_uses_routes_from_explicit_repository_root(tmp_path: Path) -> None:
     wiki = tmp_path / "wiki"
     wiki.mkdir()
