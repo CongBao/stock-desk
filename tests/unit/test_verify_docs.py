@@ -3624,6 +3624,34 @@ def test_repository_requires_commit_reachable_from_verified_root(
     assert any("reachable repository commit" in item for item in failures)
 
 
+def test_repository_commit_reachability_uses_one_bounded_ancestor_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[tuple[tuple[str, ...], dict[str, object]]] = []
+
+    def run(
+        command: tuple[str, ...], **options: object
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append((command, options))
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(verify_docs_module.subprocess, "run", run)
+
+    assert verify_docs_module._repository_commit_is_reachable(tmp_path, "1" * 40)
+    assert len(calls) == 1
+    command, options = calls[0]
+    assert command == (
+        "git",
+        "merge-base",
+        "--is-ancestor",
+        "1" * 40,
+        "HEAD",
+    )
+    assert options["cwd"] == str(tmp_path.resolve())
+    assert options["check"] is True
+    assert options["timeout"] == 30
+
+
 def test_wiki_uses_routes_from_explicit_repository_root(tmp_path: Path) -> None:
     wiki = tmp_path / "wiki"
     wiki.mkdir()

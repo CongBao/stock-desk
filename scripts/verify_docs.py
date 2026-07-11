@@ -4781,20 +4781,12 @@ def _repository_commit_is_reachable(repo_root: Path, commit: str) -> bool:
 def _repository_commit_is_reachable_cached(root_key: str, commit: str) -> bool:
     try:
         subprocess.run(
-            ("git", "cat-file", "-e", f"{commit}^{{commit}}"),
-            cwd=root_key,
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=5,
-        )
-        subprocess.run(
             ("git", "merge-base", "--is-ancestor", commit, "HEAD"),
             cwd=root_key,
             check=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            timeout=5,
+            timeout=30,
         )
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         return False
