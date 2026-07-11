@@ -808,6 +808,7 @@ def _copy_coverage_inputs(
     manifests: Sequence[tuple[Path, Mapping[str, Any]]], workdir: Path
 ) -> list[Path]:
     workdir.mkdir(parents=True, exist_ok=True)
+    resolved_workdir = workdir.resolve()
     copied: list[Path] = []
     for manifest_path, evidence in manifests:
         filename = evidence["coverage"]["file"]
@@ -816,7 +817,7 @@ def _copy_coverage_inputs(
         source = manifest_path.parent / filename
         if _sha256_file(source) != evidence["coverage"]["sha256"]:
             raise EvidenceError(f"coverage digest mismatch for {evidence['shard']}")
-        target = workdir / f".coverage.{evidence['shard']}"
+        target = resolved_workdir / f".coverage.{evidence['shard']}"
         shutil.copyfile(source, target)
         copied.append(target)
     return copied
@@ -825,10 +826,11 @@ def _copy_coverage_inputs(
 def combine_coverage(
     manifests: Sequence[tuple[Path, Mapping[str, Any]]], workdir: Path
 ) -> tuple[Path, object]:
+    resolved_workdir = workdir.resolve()
     inputs = _copy_coverage_inputs(manifests, workdir)
     result = subprocess.run(
         [sys.executable, "-m", "coverage", "combine", "--keep", *map(str, inputs)],
-        cwd=workdir,
+        cwd=resolved_workdir,
         capture_output=True,
         text=True,
         check=False,
@@ -837,7 +839,7 @@ def combine_coverage(
         raise EvidenceError(
             "coverage combine failed:\n" + result.stdout + result.stderr
         )
-    output = workdir / "coverage.json"
+    output = resolved_workdir / "coverage.json"
     result = subprocess.run(
         [
             sys.executable,
@@ -848,7 +850,7 @@ def combine_coverage(
             "-o",
             str(output),
         ],
-        cwd=workdir,
+        cwd=resolved_workdir,
         capture_output=True,
         text=True,
         check=False,

@@ -148,6 +148,28 @@ def test_parallel_coverage_files_are_digest_checked_and_combined(
         aggregate.combine_coverage(manifests, tmp_path / "tampered")
 
 
+def test_coverage_combine_resolves_a_relative_workdir_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    evidence = _shard_evidence(tmp_path / "inputs")
+    manifests: list[tuple[Path, dict[str, object]]] = []
+    for item in evidence:
+        shard = item["shard"]
+        manifest = tmp_path / "inputs" / shard / "shard-evidence.json"
+        manifest.write_bytes(inventory.canonical_json(item))
+        manifests.append((manifest, item))
+    monkeypatch.chdir(tmp_path)
+    workdir = Path("relative-coverage")
+    workdir.mkdir()
+    (workdir / "example.py").write_text("value = 1\nvalue += 1\n", encoding="utf-8")
+
+    report_path, report = aggregate.combine_coverage(manifests, workdir)
+
+    assert report_path == workdir.resolve() / "coverage.json"
+    assert report_path.is_file()
+    assert report["totals"]["num_branches"] >= 0
+
+
 def test_missing_duplicate_retry_and_stale_shard_evidence_fail_closed(
     tmp_path: Path,
 ) -> None:
