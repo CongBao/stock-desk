@@ -40,6 +40,7 @@ def test_module_inventory_and_heavy_work_use_independent_worker(
         "backtest",
         "formula",
         "market",
+        "onboarding",
         "security",
         "storage",
         "tasks",

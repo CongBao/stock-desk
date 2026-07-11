@@ -49,6 +49,7 @@ from stock_desk.api.models import (
     ModelSettingsDatabaseMismatch,
     router as models_router,
 )
+from stock_desk.api.onboarding import router as onboarding_router
 from stock_desk.api.settings import (
     SourceSettingsServices,
     SourceSettingsStorageError,
@@ -71,6 +72,7 @@ from stock_desk.security.secrets import (
     SecretStoreError,
 )
 from stock_desk.security.persistence import StartupSecretHydrator
+from stock_desk.onboarding.service import OnboardingService
 from stock_desk.storage.backup import recover_interrupted_restore
 from stock_desk.storage.lifecycle import service_lifecycle
 from stock_desk.tasks.repository import TaskRepository, TaskRepositoryError
@@ -139,6 +141,7 @@ def create_app(
     analysis_preflight_service: AnalysisPreflightService | None = None,
     desktop_session: DesktopSession | None = None,
     desktop_lifecycle: DesktopLifecycleController | None = None,
+    onboarding_service: OnboardingService | None = None,
 ) -> FastAPI:
     resolved_settings = settings if settings is not None else get_settings()
     database_identity = _ApplicationDatabaseIdentity(
@@ -180,6 +183,8 @@ def create_app(
     owned_analysis_preflight: AnalysisPreflightService | None = None
     analysis_preflight_lock = Lock()
     owned_startup_secret_hydrator: StartupSecretHydrator | None = None
+    owned_onboarding_service: OnboardingService | None = None
+    onboarding_service_lock = Lock()
     shutdown_lock = Lock()
     active_lifespans = 0
     service_guard: AbstractContextManager[None] | None = None
@@ -438,6 +443,21 @@ def create_app(
                 raise AnalysisDatabaseMismatch() from None
             return owned_analysis_preflight
 
+    def provide_onboarding_service() -> OnboardingService:
+        nonlocal owned_onboarding_service
+        if onboarding_service is not None:
+            return onboarding_service
+        with onboarding_service_lock:
+            if owned_onboarding_service is None:
+                data_dir = Path(
+                    os.path.abspath(os.fspath(resolved_settings.data_dir.expanduser()))
+                )
+                owned_onboarding_service = OnboardingService.open(
+                    data_dir=data_dir,
+                    market=provide_market_services,
+                )
+            return owned_onboarding_service
+
     @asynccontextmanager
     async def lifespan(_application: FastAPI) -> AsyncIterator[None]:
         nonlocal active_lifespans
@@ -455,6 +475,7 @@ def create_app(
         nonlocal owned_analysis_service
         nonlocal owned_analysis_preflight
         nonlocal owned_startup_secret_hydrator
+        nonlocal owned_onboarding_service
         with shutdown_lock:
             if active_lifespans == 0:
                 candidate = service_lifecycle(
@@ -501,6 +522,7 @@ def create_app(
                 owned_analysis_service = None
                 owned_analysis_preflight = None
                 owned_startup_secret_hydrator = None
+                owned_onboarding_service = None
                 closing_service_guard = service_guard
                 service_guard = None
             for resource in resources:
@@ -533,6 +555,7 @@ def create_app(
     application.state.model_settings_services_provider = provide_model_settings_services
     application.state.analysis_services_provider = provide_analysis_services
     application.state.analysis_preflight_provider = provide_analysis_preflight
+    application.state.onboarding_service_provider = provide_onboarding_service
     application.state.database_identity_provider = database_identity.current
     application.state.model_settings_cursor_key = secrets.token_bytes(32)
     application.state.analysis_cursor_key = secrets.token_bytes(32)
@@ -550,6 +573,7 @@ def create_app(
                 "/api/settings/models",
                 "/api/analysis",
                 "/api/tasks",
+                "/api/v1/onboarding",
             )
         ):
             return JSONResponse(status_code=422, content={"code": "invalid_request"})
@@ -595,6 +619,7 @@ def create_app(
         application_database_mismatch_handler,
     )
     application.include_router(health_router, prefix="/api")
+    application.include_router(onboarding_router, prefix="/api")
     application.include_router(tasks_router, prefix="/api")
     application.include_router(market_router, prefix="/api")
     application.include_router(settings_router, prefix="/api")
