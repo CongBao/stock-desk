@@ -2166,6 +2166,7 @@ def test_performance_target_ci_is_explicit_and_requirement_is_verified() -> None
     assert "+${PROVENANCE_SOURCE_SHA}:refs/heads/exact-source" in provenance["run"]
     assert "STOCK_DESK_DOC_PROVENANCE_GIT_DIR" in provenance["run"]
     assert "STOCK_DESK_DOC_PROVENANCE_TIP=refs/heads/exact-source" in provenance["run"]
+    assert '>> "$GITHUB_ENV"' in provenance["run"]
     assert "scripts/verify_docs.py --repo-root ." in provenance["run"]
     assert acceptance["steps"].index(provenance) < acceptance["steps"].index(
         steps["Prepare deterministic performance evidence once"]

@@ -300,6 +300,10 @@ jobs:
           test "$(git -C "$audit_repo" rev-parse refs/heads/exact-source)" = "$PROVENANCE_SOURCE_SHA"
           export STOCK_DESK_DOC_PROVENANCE_GIT_DIR="$audit_repo"
           export STOCK_DESK_DOC_PROVENANCE_TIP=refs/heads/exact-source
+          {
+            printf 'STOCK_DESK_DOC_PROVENANCE_GIT_DIR=%s\n' "$audit_repo"
+            printf 'STOCK_DESK_DOC_PROVENANCE_TIP=%s\n' "$STOCK_DESK_DOC_PROVENANCE_TIP"
+          } >> "$GITHUB_ENV"
           printf 'documentation-provenance source=%s sha=%s tip=%s\n' \
             "$PROVENANCE_SOURCE_REPOSITORY" "$PROVENANCE_SOURCE_SHA" \
             "$STOCK_DESK_DOC_PROVENANCE_TIP"
