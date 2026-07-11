@@ -341,6 +341,17 @@ def test_workflows_declare_the_expected_github_triggers() -> None:
     assert loaded_triggers["release.yml"] == {"push": {"tags": ["v*"]}}
 
 
+def test_workflow_job_environment_avoids_runtime_only_contexts() -> None:
+    for workflow_path in _workflow_paths():
+        workflow = _load_github_actions_yaml(workflow_path.read_text("utf-8"))
+        for job_name, job in workflow.get("jobs", {}).items():
+            for variable, value in job.get("env", {}).items():
+                assert "${{ runner." not in str(value), (
+                    f"{workflow_path.name}:{job_name} job env {variable} uses the "
+                    "runner context before a runner exists"
+                )
+
+
 def test_security_workflow_fails_closed_on_dependency_and_boundary_audits() -> None:
     workflow = _load_github_actions_yaml(_read(".github/workflows/security.yml"))
     serialized = _read(".github/workflows/security.yml")
@@ -659,9 +670,12 @@ def test_alpha_release_reuses_exact_main_evidence_without_running_stable_path() 
         "contents": "read",
     }
     assert verify["env"]["STOCK_DESK_SIGNPATH_ENABLED"] == "false"
+    assert "EVIDENCE_ROOT" not in verify["env"]
+    assert "PROOF_ROOT" not in verify["env"]
     steps = verify["steps"]
     names = [step.get("name") for step in steps]
     assert names == [
+        "Configure alpha temporary roots",
         "Check out exact alpha source",
         "Set up Python",
         "Set up uv",
@@ -674,6 +688,10 @@ def test_alpha_release_reuses_exact_main_evidence_without_running_stable_path() 
         "Prepare explicitly unsigned evidence assets",
         "Upload verified unsigned alpha assets",
     ]
+    root_configuration = steps[0]["run"]
+    assert "EVIDENCE_ROOT=$RUNNER_TEMP/alpha-evidence" in root_configuration
+    assert "PROOF_ROOT=$RUNNER_TEMP/alpha-proof" in root_configuration
+    assert '>> "$GITHUB_ENV"' in root_configuration
 
     publish = jobs["alpha-prerelease"]
     assert publish["if"] == "github.ref_name == 'v1.1.0-alpha.1'"

@@ -622,10 +622,14 @@ jobs:
       attestations: read
       contents: read
     env:
-      EVIDENCE_ROOT: ${{ runner.temp }}/alpha-evidence
-      PROOF_ROOT: ${{ runner.temp }}/alpha-proof
       STOCK_DESK_SIGNPATH_ENABLED: "false"
     steps:
+      - name: Configure alpha temporary roots
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "EVIDENCE_ROOT=$RUNNER_TEMP/alpha-evidence" >> "$GITHUB_ENV"
+          echo "PROOF_ROOT=$RUNNER_TEMP/alpha-proof" >> "$GITHUB_ENV"
       - name: Check out exact alpha source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
