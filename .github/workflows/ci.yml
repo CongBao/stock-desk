@@ -325,8 +325,8 @@ jobs:
             --source-sha "$SOURCE_SHA" --source-tree "$tree" \
             --workflow CI --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
             --job-id "$GITHUB_JOB" --job-name "$EVIDENCE_JOB_NAME" \
-            --payload "shard-evidence.json=provenance" \
-            --payload ".coverage.$PYTHON_SHARD=python" --payload "junit.xml=python" \
+            --payload "shard-evidence.json:provenance" \
+            --payload ".coverage.$PYTHON_SHARD:python" --payload "junit.xml:python" \
             --critical-input "aggregate-ci=$(sha256sum scripts/aggregate_ci_evidence.py | cut -d' ' -f1)" \
             --toolchain "python=$(python --version | cut -d' ' -f2)" \
             --lockfile "uv.lock=$(sha256sum uv.lock | cut -d' ' -f1)"
@@ -438,7 +438,7 @@ jobs:
             --source-sha "$SOURCE_SHA" --source-tree "$tree" \
             --workflow CI --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
             --job-id "$GITHUB_JOB" --job-name "Web quality tests and immutable build" \
-            --payload "web-dist.tar.gz=web" --payload "vitest-junit.xml=provenance" \
+            --payload "web-dist.tar.gz:web" --payload "vitest-junit.xml:provenance" \
             --critical-input "vite-config=$(sha256sum web/vite.config.ts | cut -d' ' -f1)" \
             --toolchain "node=$(node --version)" \
             --lockfile "pnpm-lock.yaml=$(sha256sum pnpm-lock.yaml | cut -d' ' -f1)"
@@ -530,9 +530,9 @@ jobs:
             --source-sha "$SOURCE_SHA" --source-tree "$tree" \
             --workflow CI --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
             --job-id "$GITHUB_JOB" --job-name "Chromium E2E immutable snapshot" \
-            --payload "snapshot-manifest.json=provenance" \
-            --payload "playwright-report.json=provenance" \
-            --payload "playwright-junit.xml=provenance" \
+            --payload "snapshot-manifest.json:provenance" \
+            --payload "playwright-report.json:provenance" \
+            --payload "playwright-junit.xml:provenance" \
             --critical-input "playwright-config=$(sha256sum playwright.config.ts | cut -d' ' -f1)" \
             --toolchain "node=$(node --version)" \
             --lockfile "pnpm-lock.yaml=$(sha256sum pnpm-lock.yaml | cut -d' ' -f1)"
@@ -688,12 +688,12 @@ jobs:
           out=test-results/python-evidence
           aggregate="$out/python-evidence/aggregate"
           tree=$(git rev-parse HEAD^{tree})
-          payloads=(--payload "python-evidence/aggregate/requirement-evidence.json=provenance")
+          payloads=(--payload "python-evidence/aggregate/requirement-evidence.json:provenance")
           if [[ -f "$aggregate/python-evidence.json" ]]; then
-            payloads+=(--payload "python-evidence/aggregate/python-evidence.json=provenance" --payload "python-evidence/aggregate/coverage.json=python" --payload "python-evidence/aggregate/python-dist.tar.gz=python")
+            payloads+=(--payload "python-evidence/aggregate/python-evidence.json:provenance" --payload "python-evidence/aggregate/coverage.json:python" --payload "python-evidence/aggregate/python-dist.tar.gz:python")
           fi
-          [[ ! -f "$aggregate/vitest-report.json" ]] || payloads+=(--payload "python-evidence/aggregate/vitest-report.json=provenance")
-          [[ ! -f "$aggregate/playwright-report.json" ]] || payloads+=(--payload "python-evidence/aggregate/playwright-report.json=provenance")
+          [[ ! -f "$aggregate/vitest-report.json" ]] || payloads+=(--payload "python-evidence/aggregate/vitest-report.json:provenance")
+          [[ ! -f "$aggregate/playwright-report.json" ]] || payloads+=(--payload "python-evidence/aggregate/playwright-report.json:provenance")
           uv run --frozen python scripts/artifact_manifest.py create \
             --root "$out" --output "$out/python-evidence-aggregate.json" \
             --source-sha "$SOURCE_SHA" --source-tree "$tree" \
@@ -754,7 +754,7 @@ jobs:
             --source-sha "$SOURCE_SHA" --source-tree "$tree" \
             --workflow CI --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
             --job-id "$GITHUB_JOB" --job-name "Build immutable OCI image" \
-            --payload "stock-desk-image.tar=oci" --image-digest "$digest" \
+            --payload "stock-desk-image.tar:oci" --image-digest "$digest" \
             --critical-input "Dockerfile=$(sha256sum Dockerfile | cut -d' ' -f1)" \
             --toolchain "docker=$(docker version --format '{{.Client.Version}}')" \
             --lockfile "uv.lock=$(sha256sum uv.lock | cut -d' ' -f1)" \
@@ -896,7 +896,7 @@ jobs:
             --source-sha "$SOURCE_SHA" --source-tree "$tree" \
             --workflow CI --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
             --job-id "$GITHUB_JOB" --job-name "Verify OCI SBOM and vulnerabilities" \
-            --payload "stock-desk-image.spdx.json=sbom" --payload "vulnerabilities.json=provenance" \
+            --payload "stock-desk-image.spdx.json:sbom" --payload "vulnerabilities.json:provenance" \
             --critical-input "Dockerfile=$(sha256sum Dockerfile | cut -d' ' -f1)" \
             --toolchain "docker=$(docker version --format '{{.Client.Version}}')" \
             --lockfile "uv.lock=$(sha256sum uv.lock | cut -d' ' -f1)"

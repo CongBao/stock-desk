@@ -419,6 +419,12 @@ def test_stage_zero_ci_has_unique_shards_frontend_reports_and_one_oci_build() ->
         name: "\n".join(str(step.get("run", "")) for step in job["steps"])
         for name, job in jobs.items()
     }
+    manifest_payloads = re.findall(
+        r'--payload\s+"([^"\n]+)"',
+        "\n".join(all_commands.values()),
+    )
+    assert manifest_payloads
+    assert all(":" in payload and "=" not in payload for payload in manifest_payloads)
     assert "docker build --pull --tag stock-desk:ci" in all_commands["container-build"]
     for consumer in ("container-compose", "container-security"):
         assert "docker build" not in all_commands[consumer]
