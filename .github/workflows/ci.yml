@@ -430,7 +430,7 @@ jobs:
           $root = Join-Path $env:RUNNER_TEMP 'windows-compare'; $evidence = Join-Path $root 'evidence'; $promoted = Join-Path $root 'promoted'
           $diagnostics = Join-Path $root 'diagnostics'; New-Item -ItemType Directory -Force $evidence, $promoted, $diagnostics | Out-Null
           trap { $_ | Out-String | Set-Content -Encoding utf8NoBOM (Join-Path $diagnostics 'comparison-failure.txt'); Get-ChildItem $root -Recurse -Force -ErrorAction SilentlyContinue | Select-Object FullName,Length | Out-File -Encoding utf8 (Join-Path $diagnostics 'artifact-inventory.txt'); throw $_ }
-          uv run --frozen python scripts/compare_windows_payloads.py (Join-Path $root 'a\windows-desktop-bundle.json') (Join-Path $root 'b\windows-desktop-bundle.json') --left-installer (Join-Path $root 'a\stock-desk-unsigned-nsis.exe') --right-installer (Join-Path $root 'b\stock-desk-unsigned-nsis.exe') --output (Join-Path $evidence 'windows-payload-comparison.json')
+          uv run --frozen python -m scripts.compare_windows_payloads (Join-Path $root 'a\windows-desktop-bundle.json') (Join-Path $root 'b\windows-desktop-bundle.json') --left-installer (Join-Path $root 'a\stock-desk-unsigned-nsis.exe') --right-installer (Join-Path $root 'b\stock-desk-unsigned-nsis.exe') --output (Join-Path $evidence 'windows-payload-comparison.json')
           Copy-Item (Join-Path $root 'a\stock-desk-unsigned-nsis.exe') (Join-Path $promoted 'stock-desk-1.1.0-alpha.2-unsigned-x64-setup.exe')
           Copy-Item (Join-Path $root 'a\windows-desktop-bundle.json') (Join-Path $promoted 'windows-desktop-bundle.json')
           Copy-Item (Join-Path $root 'a\provenance.json') (Join-Path $promoted 'builder-a-provenance.json')
