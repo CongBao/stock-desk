@@ -133,7 +133,10 @@ def test_performance_seed_is_opt_in_and_default_demo_is_unchanged(
 
     performance_dir = tmp_path / "performance"
     monkeypatch.setenv("STOCK_DESK_PERFORMANCE_MODE", "1")
-    e2e_dev._seed(performance_dir)
+    # The dedicated performance E2E gate exercises all 40 runnable symbols.
+    # This unit contract only needs a bounded second symbol to prove that the
+    # opt-in branch augments the default fixture without duplicating that gate.
+    e2e_dev._seed(performance_dir, performance_runnable_symbol_limit=2)
     performance_engine = create_engine_for_url(
         f"sqlite:///{performance_dir / 'stock-desk.db'}"
     )
