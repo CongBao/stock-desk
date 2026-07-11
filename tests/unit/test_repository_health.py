@@ -2162,8 +2162,11 @@ def test_performance_target_ci_is_explicit_and_requirement_is_verified() -> None
     provenance = steps["Verify documentation provenance after performance"]
     assert provenance["if"] == "env.PYTHON_SHARD == 'acceptance-performance'"
     assert "git cat-file -t" in provenance["run"]
-    assert "git rev-list --max-count=1" in provenance["run"]
+    assert "git log --format=%H HEAD" in provenance["run"]
     assert "documentation-provenance head=%s commit=%s" in provenance["run"]
+    assert "grep_status=$?" in provenance["run"]
+    assert 'test "$grep_status" -eq 1' in provenance["run"]
+    assert 'test "$in_head" -eq 1' in provenance["run"]
     assert "scripts/verify_docs.py --repo-root ." in provenance["run"]
     assert acceptance["steps"].index(provenance) > acceptance["steps"].index(
         steps["Prepare deterministic performance evidence once"]

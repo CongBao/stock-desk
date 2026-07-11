@@ -4781,14 +4781,7 @@ def _repository_commit_is_reachable(repo_root: Path, commit: str) -> bool:
 def _repository_commit_is_reachable_cached(root_key: str, commit: str) -> bool:
     try:
         completed = subprocess.run(
-            (
-                "git",
-                "rev-list",
-                "--max-count=1",
-                f"{commit}^{{commit}}",
-                "--not",
-                "HEAD",
-            ),
+            ("git", "log", "--format=%H", "HEAD"),
             cwd=root_key,
             check=True,
             capture_output=True,
@@ -4797,7 +4790,7 @@ def _repository_commit_is_reachable_cached(root_key: str, commit: str) -> bool:
         )
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         return False
-    return completed.stdout.strip() == ""
+    return commit in completed.stdout.splitlines()
 
 
 def _surface_tuple(value: object) -> tuple[str, str] | None:

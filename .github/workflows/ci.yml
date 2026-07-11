@@ -306,13 +306,19 @@ jobs:
           )
           test -n "$commits"
           head=$(git rev-parse HEAD)
+          history=$(git log --format=%H HEAD)
           while IFS= read -r commit; do
             object_type=$(git cat-file -t "$commit")
-            outside_head=$(git rev-list --max-count=1 "$commit^{commit}" --not HEAD)
-            printf 'documentation-provenance head=%s commit=%s type=%s outside_head=%s\n' \
-              "$head" "$commit" "$object_type" "${outside_head:-none}"
+            if in_head=$(grep -Fxc -- "$commit" <<< "$history"); then
+              :
+            else
+              grep_status=$?
+              test "$grep_status" -eq 1
+            fi
+            printf 'documentation-provenance head=%s commit=%s type=%s in_head=%s\n' \
+              "$head" "$commit" "$object_type" "$in_head"
             test "$object_type" = commit
-            test -z "$outside_head"
+            test "$in_head" -eq 1
           done <<< "$commits"
           uv run --frozen python scripts/verify_docs.py --repo-root .
       - name: Run authoritative shard exactly once

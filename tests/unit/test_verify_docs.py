@@ -3633,7 +3633,7 @@ def test_repository_commit_reachability_uses_one_bounded_ancestor_check(
         command: tuple[str, ...], **options: object
     ) -> subprocess.CompletedProcess[str]:
         calls.append((command, options))
-        return subprocess.CompletedProcess(command, 0, stdout="")
+        return subprocess.CompletedProcess(command, 0, stdout=f"{'1' * 40}\n")
 
     monkeypatch.setattr(verify_docs_module.subprocess, "run", run)
 
@@ -3642,10 +3642,8 @@ def test_repository_commit_reachability_uses_one_bounded_ancestor_check(
     command, options = calls[0]
     assert command == (
         "git",
-        "rev-list",
-        "--max-count=1",
-        f"{'1' * 40}^{{commit}}",
-        "--not",
+        "log",
+        "--format=%H",
         "HEAD",
     )
     assert options["cwd"] == str(tmp_path.resolve())
