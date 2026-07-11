@@ -2096,6 +2096,25 @@ def test_performance_target_ci_is_explicit_and_requirement_is_verified() -> None
     workflow = _load_github_actions_yaml(_read(".github/workflows/ci.yml"))
     acceptance = workflow["jobs"]["python-acceptance-performance"]
     assert acceptance["runs-on"] == "ubuntu-24.04"
+    steps = {step["name"]: step for step in acceptance["steps"]}
+    performance_only = {
+        "Set up pnpm for the performance shard",
+        "Set up Node.js for the performance shard",
+        "Restore exact-lock pnpm downloads for the performance shard",
+        "Restore exact-lock browser binaries for the performance shard",
+        "Install locked browser toolchain for the performance shard",
+        "Prepare deterministic performance evidence once",
+    }
+    assert performance_only <= set(steps)
+    assert all(
+        steps[name]["if"] == "env.PYTHON_SHARD == 'acceptance-performance'"
+        for name in performance_only
+    )
+    browser_install = steps[
+        "Install locked browser toolchain for the performance shard"
+    ]
+    assert "pnpm install --frozen-lockfile" in browser_install["run"]
+    assert "pnpm exec playwright install --with-deps chromium" in browser_install["run"]
     command = "\n".join(str(step.get("run", "")) for step in acceptance["steps"])
     assert acceptance["env"]["PYTHON_ROOTS"] == "tests/acceptance tests/performance"
     assert "--context=" in command
@@ -2250,7 +2269,7 @@ def test_python_ci_publishes_bounded_junit_failure_diagnostics() -> None:
         assert required in command
 
 
-def test_python_ci_provisions_the_locked_node_and_pnpm_test_runtime() -> None:
+def test_python_ci_keeps_browser_tooling_isolated_to_the_performance_shard() -> None:
     workflow = _load_github_actions_yaml(_read(".github/workflows/ci.yml"))
     for key in (
         "python-unit",
@@ -2263,12 +2282,26 @@ def test_python_ci_provisions_the_locked_node_and_pnpm_test_runtime() -> None:
             step.get("run") == "uv sync --frozen --all-groups --extra providers"
             for step in steps
         )
-        assert not any(
-            str(step.get("uses", "")).startswith(
+        browser_setup = [
+            step
+            for step in steps
+            if str(step.get("uses", "")).startswith(
                 ("pnpm/action-setup@", "actions/setup-node@")
             )
-            for step in steps
+        ]
+        assert len(browser_setup) == 2
+        assert all(
+            step["if"] == "env.PYTHON_SHARD == 'acceptance-performance'"
+            for step in browser_setup
         )
+        if key == "python-acceptance-performance":
+            assert workflow["jobs"][key]["env"]["PYTHON_SHARD"] == (
+                "acceptance-performance"
+            )
+        else:
+            assert workflow["jobs"][key]["env"]["PYTHON_SHARD"] != (
+                "acceptance-performance"
+            )
     return
     python_job = workflow["jobs"]["python"]
     assert python_job["timeout-minutes"] == 75
