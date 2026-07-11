@@ -15,12 +15,14 @@
     ]
   },
   "market_bars": {
-    "sz.000001": {"date": "2024-07-01", "code": "sz.000001", "open": "10.00", "high": "10.50", "low": "9.90", "close": "10.20", "volume": "100", "tradestatus": "1"}
+    "sz.000001": {"date": "2024-07-01", "code": "sz.000001", "open": "10.00", "high": "10.50", "low": "9.90", "close": "10.20", "volume": "100", "tradestatus": "1"},
+    "sh.000001": {"date": "2024-07-01", "code": "sh.000001", "open": "2995.00", "high": "3000.00", "low": "2980.00", "close": "2994.73", "volume": "260000000", "tradestatus": "1"}
   },
   "instruments": [
     {"code": "sh.600000", "code_name": "浦发银行", "ipoDate": "1999-11-10", "outDate": "", "type": "1", "status": "1"},
     {"code": "sz.000001", "code_name": "平安银行", "ipoDate": "1991-04-03", "outDate": "", "type": "1", "status": "1"},
-    {"code": "bj.920000", "code_name": "北交样本", "ipoDate": "2024-01-02", "outDate": "", "type": "1", "status": "1"}
+    {"code": "bj.920000", "code_name": "北交样本", "ipoDate": "2024-01-02", "outDate": "", "type": "1", "status": "1"},
+    {"code": "sh.000001", "code_name": "上证指数", "ipoDate": "1991-07-15", "outDate": "", "type": "2", "status": "1"}
   ],
   "calendar": [
     {"calendar_date": "2024-07-01", "is_trading_day": "1"},

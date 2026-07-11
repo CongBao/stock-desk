@@ -26,7 +26,10 @@ CanonicalSymbol = Annotated[
     str,
     StringConstraints(
         strict=True,
-        pattern=r"^[0-9]{6}\.(?:SH|SZ|BJ)$",
+        # SS is a Stock Desk public index namespace, not an exchange suffix.
+        # Keep it allowlisted until each additional index has an explicit,
+        # tested provider identity mapping.
+        pattern=r"^(?:[0-9]{6}\.(?:SH|SZ|BJ)|000001\.SS)$",
     ),
 ]
 NonEmptyText = Annotated[
@@ -156,6 +159,11 @@ class InstrumentKind(StrEnum):
     BOND = "bond"
 
 
+def instrument_kind_for_symbol(symbol: str) -> InstrumentKind:
+    """Resolve only Stock Desk identities whose kind is unambiguous by contract."""
+    return InstrumentKind.INDEX if symbol == "000001.SS" else InstrumentKind.STOCK
+
+
 class ListingStatus(StrEnum):
     UNKNOWN = "unknown"
     LISTED = "listed"
@@ -213,8 +221,20 @@ class Instrument(_FrozenMarketModel):
 
     @model_validator(mode="after")
     def validate_identity_and_dates(self) -> Self:
-        if self.symbol.rsplit(".", maxsplit=1)[1] != self.exchange.value:
+        suffix = self.symbol.rsplit(".", maxsplit=1)[1]
+        if suffix == "SS":
+            if (
+                self.symbol != "000001.SS"
+                or self.exchange is not Exchange.SH
+                or self.instrument_kind is not InstrumentKind.INDEX
+            ):
+                raise ValueError("index identity must match its registered mapping")
+        elif suffix != self.exchange.value:
             raise ValueError("instrument exchange must match its symbol suffix")
+        elif (
+            self.symbol == "000001.SZ" and self.instrument_kind is InstrumentKind.INDEX
+        ):
+            raise ValueError("known stock identity cannot be reclassified as an index")
         if self.delisted_on is not None and self.listed_on is None:
             raise ValueError("delisted instrument must include its listing date")
         if (
@@ -372,6 +392,7 @@ class Bar(_FrozenMarketModel):
 
 class BarQuery(_FrozenMarketModel):
     symbol: CanonicalSymbol
+    instrument_kind: InstrumentKind = InstrumentKind.STOCK
     period: Period
     adjustment: Adjustment
     start: UtcDatetime
@@ -379,6 +400,13 @@ class BarQuery(_FrozenMarketModel):
 
     @model_validator(mode="after")
     def validate_range(self) -> Self:
+        if (
+            self.symbol == "000001.SS"
+            and self.instrument_kind is not InstrumentKind.INDEX
+        ) or (
+            self.symbol == "000001.SZ" and self.instrument_kind is InstrumentKind.INDEX
+        ):
+            raise ValueError("bar query symbol and instrument kind do not match")
         if self.start >= self.end:
             raise ValueError("bar query start must be before end")
         if self.end - self.start > _MAX_QUERY_SPAN[self.period]:

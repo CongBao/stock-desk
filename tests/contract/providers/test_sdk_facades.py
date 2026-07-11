@@ -30,6 +30,7 @@ from stock_desk.market.types import (
     BarResult,
     Exchange,
     FailureReason,
+    InstrumentKind,
     Period,
 )
 from tests.contract.providers.conftest import (
@@ -141,6 +142,7 @@ class FakeAkShareModule:
     ) -> None:
         self.fixture = load_fixture("akshare")
         self.bar_calls: list[dict[str, object]] = []
+        self.index_bar_calls: list[dict[str, object]] = []
         self.chunk_rows = chunk_rows
 
     def stock_zh_a_hist(self, **kwargs: object) -> object:
@@ -152,6 +154,13 @@ class FakeAkShareModule:
 
     def stock_info_a_code_name(self) -> object:
         return self.fixture["instruments"]
+
+    def stock_zh_index_spot_sina(self) -> object:
+        return self.fixture["indices"]
+
+    def stock_zh_index_daily(self, **kwargs: object) -> object:
+        self.index_bar_calls.append(kwargs)
+        return self.fixture["index_bars"]
 
     def tool_trade_date_hist_sina(self) -> object:
         return self.fixture["calendar"]
@@ -300,6 +309,29 @@ def test_akshare_from_sdk_uses_module_facade(
 
     assert isinstance(outcome, BarResult)
     assert len(module.bar_calls) == 1
+
+
+def test_akshare_sdk_facade_uses_explicit_index_endpoint_and_provider_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = FakeAkShareModule()
+    install_fake_module(monkeypatch, "akshare", module)
+    provider = AkShareProvider.from_sdk(clock=lambda: FETCHED_AT)
+
+    outcome = provider.fetch_bars(
+        BarQuery(
+            symbol="000001.SS",
+            instrument_kind=InstrumentKind.INDEX,
+            period=Period.DAY,
+            adjustment=Adjustment.NONE,
+            start=datetime(2024, 7, 1, tzinfo=SHANGHAI),
+            end=datetime(2024, 7, 3, tzinfo=SHANGHAI),
+        )
+    )
+
+    assert isinstance(outcome, BarResult)
+    assert module.index_bar_calls == [{"symbol": "sh000001"}]
+    assert module.bar_calls == []
 
 
 @pytest.mark.parametrize(

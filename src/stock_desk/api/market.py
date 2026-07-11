@@ -93,6 +93,7 @@ from stock_desk.market.types import (
     Provenance,
     ProviderId,
     UtcDatetime,
+    instrument_kind_for_symbol,
 )
 from stock_desk.market.update import (
     MARKET_UPDATE_TASK_KIND,
@@ -896,6 +897,7 @@ def _bar_lookup(
             assert end is not None
             query = BarQuery(
                 symbol=symbol,
+                instrument_kind=instrument_kind_for_symbol(symbol),
                 period=period,
                 adjustment=adjustment,
                 start=_parse_rfc3339(start),

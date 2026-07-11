@@ -25,6 +25,8 @@ from stock_desk.market.providers.base import (
     ProviderUnavailable,
     ProviderUnsupported,
 )
+from stock_desk.market.provenance import RoutedBarSuccess
+from stock_desk.market.routing import SourcePriorities, SourceRouter
 from stock_desk.market.types import (
     Adjustment,
     BarFailure,
@@ -33,6 +35,7 @@ from stock_desk.market.types import (
     CapabilityState,
     Exchange,
     FailureReason,
+    InstrumentKind,
     MarketCapability,
     Period,
     ProviderId,
@@ -59,6 +62,7 @@ def query(
     adjustment: Adjustment = Adjustment.NONE,
     *,
     symbol: str = "600000.SH",
+    instrument_kind: InstrumentKind = InstrumentKind.STOCK,
 ) -> BarQuery:
     if period is Period.DAY:
         start, end = market_time(1), market_time(3)
@@ -68,6 +72,7 @@ def query(
         start, end = market_time(1, 9, 30), market_time(1, 15)
     return BarQuery(
         symbol=symbol,
+        instrument_kind=instrument_kind,
         period=period,
         adjustment=adjustment,
         start=start,
@@ -418,6 +423,95 @@ def test_akshare_rejects_index_or_suffix_ambiguous_stock_symbols_without_calling
     assert isinstance(outcome, BarFailure)
     assert outcome.reason is FailureReason.UNSUPPORTED
     assert client.calls == []
+
+
+@pytest.mark.parametrize("source", [ProviderId.AKSHARE, ProviderId.BAOSTOCK])
+def test_free_provider_index_identity_catalog_and_daily_mapping(
+    source: ProviderId,
+) -> None:
+    case = next(case for case in _provider_cases() if case.source is source)
+    provider, client = provider_and_client(case)
+
+    catalog = provider.fetch_instruments()
+    assert isinstance(catalog, ProviderBatch)
+    index = next(item for item in catalog.items if item.symbol == "000001.SS")
+    assert index.exchange is Exchange.SH
+    assert index.name == "上证指数"
+    assert index.instrument_kind is InstrumentKind.INDEX
+
+    client.calls.clear()
+    outcome = provider.fetch_bars(
+        query(
+            Period.DAY,
+            Adjustment.NONE,
+            symbol="000001.SS",
+            instrument_kind=InstrumentKind.INDEX,
+        )
+    )
+    assert isinstance(outcome, BarResult)
+    assert {bar.symbol for bar in outcome.bars} == {"000001.SS"}
+    if source is ProviderId.AKSHARE:
+        assert client.calls == [
+            (
+                "stock_zh_index_daily",
+                {
+                    "symbol": "sh000001",
+                    "start_date": "20240701",
+                    "end_date": "20240703",
+                },
+            )
+        ]
+    else:
+        assert client.calls[0][1]["code"] == "sh.000001"
+
+
+@pytest.mark.parametrize("source", [ProviderId.AKSHARE, ProviderId.BAOSTOCK])
+def test_index_adapter_rejects_unmapped_capabilities_before_sdk_call(
+    source: ProviderId,
+) -> None:
+    case = next(case for case in _provider_cases() if case.source is source)
+    provider, client = provider_and_client(case)
+
+    for period, adjustment in (
+        (Period.WEEK, Adjustment.NONE),
+        (Period.DAY, Adjustment.QFQ),
+    ):
+        outcome = provider.fetch_bars(
+            query(
+                period,
+                adjustment,
+                symbol="000001.SS",
+                instrument_kind=InstrumentKind.INDEX,
+            )
+        )
+        assert isinstance(outcome, BarFailure)
+        assert outcome.reason is FailureReason.UNSUPPORTED
+    assert client.calls == []
+
+
+@pytest.mark.parametrize("source", [ProviderId.AKSHARE, ProviderId.BAOSTOCK])
+def test_router_keeps_index_query_whole_and_uses_registered_exchange(
+    source: ProviderId,
+) -> None:
+    case = next(case for case in _provider_cases() if case.source is source)
+    provider, _client = provider_and_client(case)
+    router = SourceRouter(
+        [(source, provider)],
+        priorities=SourcePriorities(bars=(source,)),
+    )
+    index_query = query(
+        Period.DAY,
+        Adjustment.NONE,
+        symbol="000001.SS",
+        instrument_kind=InstrumentKind.INDEX,
+    )
+
+    outcome = router.fetch_bars(index_query)
+
+    assert isinstance(outcome, RoutedBarSuccess)
+    assert outcome.result.query == index_query
+    assert outcome.result.provenance.source is source
+    assert {bar.symbol for bar in outcome.result.bars} == {"000001.SS"}
 
 
 def test_exact_provider_parameter_mappings(provider_case: ProviderCase) -> None:
@@ -837,11 +931,12 @@ def test_instrument_and_calendar_contracts(provider_case: ProviderCase) -> None:
     assert instruments.provenance.data_cutoff == FETCHED_AT
     assert instruments.provenance.dataset_version.startswith("sha256:")
     assert not hasattr(instruments.provenance, "adjustment")
-    assert tuple(item.symbol for item in instruments.items) == (
-        "000001.SZ",
-        "600000.SH",
-        "920000.BJ",
+    expected_symbols = (
+        ("000001.SS", "000001.SZ", "600000.SH", "920000.BJ")
+        if provider_case.source in {ProviderId.AKSHARE, ProviderId.BAOSTOCK}
+        else ("000001.SZ", "600000.SH", "920000.BJ")
     )
+    assert tuple(item.symbol for item in instruments.items) == expected_symbols
     assert {item.exchange for item in instruments.items} == set(Exchange)
     if provider_case.source is ProviderId.AKSHARE:
         assert all(item.listing_status.value == "unknown" for item in instruments.items)
@@ -1105,6 +1200,8 @@ def test_empty_instrument_batches_return_no_data(
 ) -> None:
     fixture = load_fixture(provider_case.fixture_name)
     fixture["instruments"] = []
+    if provider_case.source is ProviderId.AKSHARE:
+        fixture["indices"] = []
     client = provider_case.client_type(fixture)
     provider = cast(
         MarketDataProvider,
@@ -1125,8 +1222,8 @@ def test_baostock_catalog_filters_non_stock_and_b_share_rows() -> None:
     fixture["instruments"].extend(
         (
             {
-                "code": "sh.000001",
-                "code_name": "上证指数",
+                "code": "sh.000002",
+                "code_name": "未映射指数",
                 "ipoDate": "1990-12-19",
                 "outDate": "",
                 "type": "2",
@@ -1154,6 +1251,7 @@ def test_baostock_catalog_filters_non_stock_and_b_share_rows() -> None:
 
     assert isinstance(outcome, ProviderBatch)
     assert tuple(item.symbol for item in outcome.items) == (
+        "000001.SS",
         "000001.SZ",
         "600000.SH",
         "920000.BJ",
@@ -1217,6 +1315,7 @@ def test_akshare_catalog_filters_explicit_b_share_rows() -> None:
 
     assert isinstance(outcome, ProviderBatch)
     assert tuple(item.symbol for item in outcome.items) == (
+        "000001.SS",
         "000001.SZ",
         "600000.SH",
         "920000.BJ",
@@ -1241,6 +1340,8 @@ def test_catalog_with_only_explicitly_out_of_scope_rows_is_no_data(
         if source is ProviderId.BAOSTOCK
         else {"代码": "900901", "名称": "沪市B股样本"}
     ]
+    if source is ProviderId.AKSHARE:
+        fixture["indices"] = []
     provider = cast(
         MarketDataProvider,
         case.provider_type(
@@ -1325,7 +1426,9 @@ def test_akshare_instruments_accept_current_official_code_name_schema() -> None:
     outcome = provider.fetch_instruments()
 
     assert isinstance(outcome, ProviderBatch)
-    assert outcome.items[0].symbol == "600000.SH"
+    assert next(item for item in outcome.items if item.symbol == "600000.SH").name == (
+        "浦发银行"
+    )
 
 
 def test_akshare_instruments_reject_mixed_code_name_schema() -> None:

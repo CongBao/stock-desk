@@ -33,6 +33,7 @@ from stock_desk.market.providers.normalization import (
 from stock_desk.market.providers.sdk import (
     call_sdk,
     combine_complete_chunks,
+    complete_bar_table,
     import_optional_sdk,
     inclusive_date_chunks,
     materialize_sdk_rows,
@@ -70,6 +71,10 @@ class AkShareClient(Protocol):
     def stock_zh_a_hist_min_em(self, **kwargs: object) -> object: ...
 
     def stock_info_a_code_name(self) -> object: ...
+
+    def stock_zh_index_spot_sina(self) -> object: ...
+
+    def stock_zh_index_daily(self, **kwargs: object) -> object: ...
 
 
 class AkShareSdkFacade:
@@ -128,16 +133,68 @@ class AkShareSdkFacade:
     def stock_info_a_code_name(self) -> object:
         return call_sdk(required_sdk_callable(self._module, "stock_info_a_code_name"))
 
+    def stock_zh_index_spot_sina(self) -> object:
+        return call_sdk(required_sdk_callable(self._module, "stock_zh_index_spot_sina"))
+
+    def stock_zh_index_daily(self, **kwargs: object) -> object:
+        coverage_start = kwargs.pop("_coverage_start", None)
+        coverage_end = kwargs.pop("_coverage_end", None)
+        symbol = kwargs.get("symbol")
+        if (
+            not isinstance(coverage_start, datetime)
+            or not isinstance(coverage_end, datetime)
+            or symbol != "sh000001"
+        ):
+            raise ProviderUnavailable()
+        response = call_sdk(
+            required_sdk_callable(self._module, "stock_zh_index_daily"),
+            symbol=symbol,
+        )
+        start_day = coverage_start.astimezone(MARKET_TIMEZONE).date()
+        end_day = coverage_end.astimezone(MARKET_TIMEZONE).date()
+        rows = tuple(
+            row
+            for row in records_from_table(response, required=frozenset())
+            if start_day <= parse_date(row["date"]) < end_day
+        )
+        materialized = materialize_sdk_rows(
+            rows,
+            chunk_start=start_day,
+            chunk_end=end_day,
+            period=Period.DAY,
+            provider_row_limit=_SDK_BAR_ROW_LIMIT,
+        )
+        validate_sdk_chunk_rows(
+            materialized,
+            chunk_start=start_day,
+            chunk_end=end_day,
+            temporal_identity=_sdk_index_temporal_identity,
+            seen_identities=set(),
+        )
+        return complete_bar_table(
+            materialized,
+            coverage_start=coverage_start,
+            coverage_end=coverage_end,
+        )
+
 
 _PERIODS = {Period.DAY: "daily", Period.WEEK: "weekly"}
 _SDK_PERIODS = {value: key for key, value in _PERIODS.items()}
 _SDK_BAR_ROW_LIMIT = 1_000_000
 _BAR_COLUMNS = frozenset({"日期", "股票代码", "开盘", "最高", "最低", "收盘", "成交量"})
+_INDEX_BAR_COLUMNS = frozenset({"date", "open", "high", "low", "close", "volume"})
 _B_SHARE_PREFIXES = ("200", "900")
 
 
 def _sdk_temporal_identity(row: dict[str, object]) -> tuple[date, Hashable]:
     raw_day = parse_date(row["日期"])
+    if raw_day.weekday() > 4:
+        raise ProviderInvalidResponse()
+    return raw_day, raw_day
+
+
+def _sdk_index_temporal_identity(row: dict[str, object]) -> tuple[date, Hashable]:
+    raw_day = parse_date(row["date"])
     if raw_day.weekday() > 4:
         raise ProviderInvalidResponse()
     return raw_day, raw_day
@@ -164,6 +221,8 @@ class AkShareProvider:
     def from_sdk(cls, *, clock: Clock) -> Self:
         module = import_optional_sdk("akshare")
         required_sdk_callable(module, "stock_zh_a_hist")
+        required_sdk_callable(module, "stock_zh_index_daily")
+        required_sdk_callable(module, "stock_zh_index_spot_sina")
         return cls(client=AkShareSdkFacade(module=module), clock=clock)
 
     def capabilities(self) -> CapabilityReport:
@@ -204,6 +263,8 @@ class AkShareProvider:
         )
 
     def fetch_bars(self, query: BarQuery) -> BarFetchOutcome:
+        if query.instrument_kind is InstrumentKind.INDEX:
+            return self._fetch_index_bars(query)
         expected_exchange = _stock_exchange(query.symbol[:6])
         requested_exchange = Exchange(query.symbol[-2:])
         if expected_exchange is None or expected_exchange is not requested_exchange:
@@ -266,6 +327,56 @@ class AkShareProvider:
         except Exception as error:
             return bar_failure(source=self.name, query=query, error=error)
 
+    def _fetch_index_bars(self, query: BarQuery) -> BarFetchOutcome:
+        if (
+            query.symbol != "000001.SS"
+            or query.period is not Period.DAY
+            or query.adjustment is not Adjustment.NONE
+        ):
+            return bar_failure(
+                source=self.name,
+                query=query,
+                error=ProviderUnsupported(),
+            )
+        try:
+            response = self._client.stock_zh_index_daily(
+                symbol="sh000001",
+                start_date=query.start.astimezone(MARKET_TIMEZONE).strftime("%Y%m%d"),
+                end_date=query.end.astimezone(MARKET_TIMEZONE).strftime("%Y%m%d"),
+                _coverage_start=query.start,
+                _coverage_end=query.end,
+            )
+            table = validated_bar_table(response, query)
+            rows = records_from_table(table, required=_INDEX_BAR_COLUMNS)
+            normalized: list[tuple[Bar, datetime]] = []
+            for row in rows:
+                timestamp, endpoint = period_bounds(row["date"], query.period)
+                normalized.append(
+                    (
+                        Bar(
+                            symbol=query.symbol,
+                            timestamp=timestamp,
+                            period=query.period,
+                            adjustment=query.adjustment,
+                            open=decimal_price(row["open"], query.adjustment),
+                            high=decimal_price(row["high"], query.adjustment),
+                            low=decimal_price(row["low"], query.adjustment),
+                            close=decimal_price(row["close"], query.adjustment),
+                            volume=share_volume(row["volume"], lot_size=1),
+                            status=TradingStatus.UNKNOWN,
+                        ),
+                        endpoint,
+                    )
+                )
+            return make_bar_result(
+                source=self.name,
+                query=query,
+                normalized=normalized,
+                clock=self._clock,
+            )
+        except Exception as error:
+            return bar_failure(source=self.name, query=query, error=error)
+
     def fetch_instruments(self) -> InstrumentFetchOutcome:
         try:
             table = self._client.stock_info_a_code_name()
@@ -281,6 +392,24 @@ class AkShareProvider:
                         row,
                         code_field=code_field,
                         name_field=name_field,
+                    )
+                )
+            index_rows = records_from_table(
+                self._client.stock_zh_index_spot_sina(),
+                required=frozenset({"代码", "名称"}),
+            )
+            for row in index_rows:
+                if row["代码"] != "sh000001":
+                    continue
+                selected.append(
+                    Instrument(
+                        symbol="000001.SS",
+                        exchange=Exchange.SH,
+                        name=required_text(row["名称"]),
+                        instrument_kind=InstrumentKind.INDEX,
+                        listing_status=ListingStatus.UNKNOWN,
+                        listed_on=None,
+                        delisted_on=None,
                     )
                 )
             instruments = tuple(sorted(selected, key=lambda item: item.symbol))

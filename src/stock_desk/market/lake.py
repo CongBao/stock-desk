@@ -56,6 +56,7 @@ from stock_desk.market.types import (
     Provenance,
     ProviderId,
     TradingStatus,
+    instrument_kind_for_symbol,
 )
 from stock_desk.storage.models import (
     MarketDataset,
@@ -1920,6 +1921,7 @@ class MarketLake:
                     )
                     stored_query = BarQuery(
                         symbol=symbol,
+                        instrument_kind=instrument_kind_for_symbol(symbol),
                         period=Period(cast(str, row["period"])),
                         adjustment=Adjustment(cast(str, row["adjustment"])),
                         start=_catalog_datetime(row["query_start"]),
@@ -2235,6 +2237,7 @@ class MarketLake:
             source = ProviderId(dataset["source"])
             query = BarQuery(
                 symbol=dataset["symbol"],
+                instrument_kind=instrument_kind_for_symbol(dataset["symbol"]),
                 period=Period(dataset["period"]),
                 adjustment=Adjustment(dataset["adjustment"]),
                 start=_catalog_datetime(dataset["query_start"]),
@@ -3366,6 +3369,7 @@ class SqliteMarketLake(MarketLake):
             source = ProviderId(dataset["source"])
             query = BarQuery(
                 symbol=dataset["symbol"],
+                instrument_kind=instrument_kind_for_symbol(dataset["symbol"]),
                 period=Period(dataset["period"]),
                 adjustment=Adjustment(dataset["adjustment"]),
                 start=_catalog_datetime(dataset["query_start"]),

@@ -24,6 +24,7 @@ from stock_desk.market.types import (
     CapabilityState,
     Exchange,
     FailureReason,
+    InstrumentKind,
     MarketCapability,
     Period,
     ProviderId,
@@ -41,6 +42,28 @@ from tests.unit.market.providers.tdx_test_helpers import (
     tdx_local,
     write_tdx_file,
 )
+
+
+def test_tdx_rejects_public_index_identity_before_local_file_access(
+    tmp_path: Path,
+) -> None:
+    provider = tdx_local().TdxLocalProvider(
+        root=tmp_path / "missing-vipdoc",
+        clock=lambda: FETCHED_AT,
+    )
+    query = BarQuery(
+        symbol="000001.SS",
+        instrument_kind=InstrumentKind.INDEX,
+        period=Period.DAY,
+        adjustment=Adjustment.NONE,
+        start=datetime(2024, 7, 1, tzinfo=SHANGHAI),
+        end=datetime(2024, 7, 3, tzinfo=SHANGHAI),
+    )
+
+    outcome = provider.fetch_bars(query)
+
+    assert isinstance(outcome, BarFailure)
+    assert outcome.reason is FailureReason.UNSUPPORTED
 
 
 def test_tdx_provider_static_capabilities_and_unsupported_operations_do_not_scan(

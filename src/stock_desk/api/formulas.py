@@ -44,6 +44,7 @@ from stock_desk.market.types import (
     CanonicalSymbol,
     Period,
     UtcDatetime,
+    instrument_kind_for_symbol,
 )
 
 
@@ -167,6 +168,7 @@ class FormulaPreviewRequest(BaseModel):
     def query(self) -> BarQuery:
         return BarQuery(
             symbol=self.symbol,
+            instrument_kind=instrument_kind_for_symbol(self.symbol),
             period=self.period,
             adjustment=self.adjustment,
             start=self.start,

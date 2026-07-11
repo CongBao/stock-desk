@@ -287,7 +287,11 @@ class SourceRouter:
 
     @staticmethod
     def _supports_bars(report: CapabilityReport, query: BarQuery) -> bool:
-        exchange = Exchange(query.symbol.rsplit(".", maxsplit=1)[1])
+        exchange = (
+            Exchange.SH
+            if query.symbol == "000001.SS"
+            else Exchange(query.symbol.rsplit(".", maxsplit=1)[1])
+        )
         return (
             MarketCapability.BARS in report.capabilities
             and query.period in report.available_periods

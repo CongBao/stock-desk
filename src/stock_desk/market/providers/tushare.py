@@ -18,6 +18,7 @@ from stock_desk.market.providers.base import (
     ProviderOperation,
     ProviderPermissionDenied,
     ProviderTimeout,
+    ProviderUnsupported,
     ProviderUnavailable,
 )
 from stock_desk.market.execution_status import (
@@ -310,6 +311,12 @@ class TushareProvider:
         )
 
     def fetch_bars(self, query: BarQuery) -> BarFetchOutcome:
+        if query.instrument_kind is not InstrumentKind.STOCK:
+            return bar_failure(
+                source=self.name,
+                query=query,
+                error=ProviderUnsupported(),
+            )
         local_start = query.start.astimezone(MARKET_TIMEZONE)
         local_end = query.end.astimezone(MARKET_TIMEZONE)
         try:

@@ -38,6 +38,14 @@ def test_request_parses_strict_json_into_frozen_canonical_values() -> None:
         request.symbols = ("600000.SH",)
 
 
+def test_request_accepts_registered_public_index_identity() -> None:
+    request = MarketUpdateRequest.from_payload(
+        _payload(symbols=["000001.SS"], adjustment="none")
+    )
+
+    assert request.symbols == ("000001.SS",)
+
+
 @pytest.mark.parametrize(
     "symbols",
     [

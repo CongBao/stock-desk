@@ -180,7 +180,7 @@ _INSTRUMENT_COLUMNS = frozenset(
     {"code", "code_name", "ipoDate", "outDate", "type", "status"}
 )
 _CALENDAR_COLUMNS = frozenset({"calendar_date", "is_trading_day"})
-_NON_STOCK_TYPES = frozenset({"2", "3", "4", "5"})
+_NON_STOCK_TYPES = frozenset({"3", "4", "5"})
 _A_SHARE_PREFIXES = {
     Exchange.SH: ("600", "601", "603", "605", "688", "689"),
     Exchange.SZ: ("000", "001", "002", "003", "300", "301", "302"),
@@ -305,7 +305,22 @@ class BaoStockProvider:
         )
 
     def fetch_bars(self, query: BarQuery) -> BarFetchOutcome:
-        exchange = Exchange(query.symbol[-2:])
+        if query.instrument_kind is InstrumentKind.INDEX:
+            if (
+                query.symbol != "000001.SS"
+                or query.period is not Period.DAY
+                or query.adjustment is not Adjustment.NONE
+            ):
+                return bar_failure(
+                    source=self.name,
+                    query=query,
+                    error=ProviderUnsupported(),
+                )
+            exchange = Exchange.SH
+            provider_code = "sh.000001"
+        else:
+            exchange = Exchange(query.symbol[-2:])
+            provider_code = f"{exchange.value.lower()}.{query.symbol[:6]}"
         if exchange is Exchange.BJ:
             return bar_failure(
                 source=self.name,
@@ -314,7 +329,6 @@ class BaoStockProvider:
             )
         local_start = query.start.astimezone(MARKET_TIMEZONE)
         local_end = query.end.astimezone(MARKET_TIMEZONE)
-        provider_code = f"{exchange.value.lower()}.{query.symbol[:6]}"
         try:
             fields = ["date"]
             if query.period is Period.MIN60:
@@ -384,6 +398,10 @@ class BaoStockProvider:
             selected: list[Instrument] = []
             for row in rows:
                 raw_type = row["type"]
+                if raw_type == "2":
+                    if row["code"] == "sh.000001":
+                        selected.append(self._index_instrument(row))
+                    continue
                 if raw_type in _NON_STOCK_TYPES:
                     continue
                 if raw_type != "1":
@@ -501,6 +519,29 @@ class BaoStockProvider:
             exchange=exchange,
             name=required_text(row["code_name"]),
             instrument_kind=InstrumentKind.STOCK,
+            listing_status=status,
+            listed_on=listed_on,
+            delisted_on=delisted_on,
+        )
+
+    @staticmethod
+    def _index_instrument(row: dict[str, object]) -> Instrument:
+        exchange, digits = _provider_stock_code(row["code"])
+        if row["type"] != "2" or (exchange, digits) != (Exchange.SH, "000001"):
+            raise ProviderUnsupported()
+        listed_on = parse_date(row["ipoDate"])
+        delisted_on = parse_optional_date(row["outDate"])
+        if delisted_on is not None:
+            status = ListingStatus.DELISTED
+        elif row["status"] == "1":
+            status = ListingStatus.LISTED
+        else:
+            status = ListingStatus.UNKNOWN
+        return Instrument(
+            symbol="000001.SS",
+            exchange=Exchange.SH,
+            name=required_text(row["code_name"]),
+            instrument_kind=InstrumentKind.INDEX,
             listing_status=status,
             listed_on=listed_on,
             delisted_on=delisted_on,
