@@ -4005,6 +4005,34 @@ def _tracked_boundary_failures(repo_root: Path) -> list[str]:
     ]
 
 
+def _public_markdown_paths(repo_root: Path) -> list[Path]:
+    """Return tracked or publishable Markdown while excluding ignored private work."""
+    candidates = sorted(repo_root.glob("*.md")) + sorted(
+        (repo_root / "docs").rglob("*.md")
+    )
+    if not (repo_root / ".git").exists() or not candidates:
+        return candidates
+    relative = [path.relative_to(repo_root).as_posix() for path in candidates]
+    try:
+        result = subprocess.run(
+            ["git", "-C", os.fspath(repo_root), "check-ignore", "-z", "--stdin"],
+            input="\0".join(relative).encode() + b"\0",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    except OSError:
+        return candidates
+    if result.returncode not in {0, 1}:
+        return candidates
+    ignored = {os.fsdecode(value) for value in result.stdout.split(b"\0") if value}
+    return [
+        path
+        for path, relative_path in zip(candidates, relative, strict=True)
+        if relative_path not in ignored
+    ]
+
+
 def _required_settings(repo_root: Path) -> set[str]:
     settings = {"STOCK_DESK_WEB_DIST_DIR"}
     environment = repo_root / ".env.example"
@@ -4157,7 +4185,7 @@ def verify_repository(repo_root: Path) -> list[str]:
                     f"{relative_path}: missing required guidance: {snippet}"
                 )
 
-    public_paths = sorted(root.glob("*.md")) + sorted((root / "docs").rglob("*.md"))
+    public_paths = _public_markdown_paths(root)
     for path in public_paths:
         relative_path = path.relative_to(root).as_posix()
         document = documents.get(relative_path, _read(path))

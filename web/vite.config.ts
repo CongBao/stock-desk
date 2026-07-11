@@ -22,6 +22,10 @@ export default defineConfig({
     include: ['src/**/*.test.{ts,tsx}'],
     setupFiles: './src/test/setup.ts',
     css: true,
+    reporters: process.env.CI ? ['default', 'junit'] : ['default'],
+    outputFile: process.env.CI
+      ? { junit: '../test-results/vitest/junit.xml' }
+      : undefined,
     coverage: {
       provider: 'v8',
       reportsDirectory: 'coverage',

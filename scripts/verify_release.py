@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 import csv
 from dataclasses import dataclass
 from datetime import date
@@ -33,6 +33,12 @@ if __package__ in {None, ""}:
 
 from scripts.check_public_tree import forbidden_paths
 from scripts.check_requirement_coverage import RELEASE_EVIDENCE_TIMEOUT_BUDGET
+from scripts.main_validation_proof import (
+    MainValidationProofError,
+    verify_proof,
+    verify_post_gh_attestation_binding,
+    verify_proved_artifacts,
+)
 from scripts.source_fingerprint import compute_source_fingerprint
 
 
@@ -60,6 +66,15 @@ class GateCommand:
     command: tuple[str, ...]
     timeout_seconds: int
     environment: tuple[tuple[str, str], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ProvedReleaseInputs:
+    proof_path: Path
+    proof_verification_binding_path: Path
+    proof_gh_verification_path: Path
+    artifact_roots: Mapping[str, Path]
+    artifact_attestation_paths: Mapping[str, Path]
 
 
 PRE_PUBLISH_EVIDENCE_GATE = GateCommand(
@@ -590,6 +605,134 @@ def check_branch(repo: Path) -> None:
         raise ReleaseVerificationError("release branch must be main or phase/*")
 
 
+def check_exact_release_tag(
+    repo: Path, version: str, *, tag_name: str | None = None
+) -> None:
+    expected = tag_name or f"v{version}"
+    if (
+        re.fullmatch(rf"v{re.escape(version)}(?:-alpha\.[1-9][0-9]*)?", expected)
+        is None
+    ):
+        raise ReleaseVerificationError(
+            "release tag name is not allowed for this version"
+        )
+    try:
+        tagged_commit = _git(
+            repo, "rev-parse", "--verify", f"refs/tags/{expected}^{{commit}}"
+        ).strip()
+        head = _git(repo, "rev-parse", "--verify", "HEAD^{commit}").strip()
+    except ReleaseVerificationError as error:
+        raise ReleaseVerificationError(
+            "release tag is missing or does not resolve to a commit"
+        ) from error
+    if tagged_commit != head:
+        raise ReleaseVerificationError(
+            "release tag does not point to the proved commit"
+        )
+
+
+def _load_strict_json(path: Path, *, label: str) -> object:
+    if path.is_symlink() or not path.is_file():
+        raise ReleaseVerificationError(f"{label} is missing or unsafe")
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ReleaseVerificationError(f"{label} is invalid") from error
+
+
+def _verify_controlled_gh_proof_output(
+    value: object,
+    *,
+    proof_sha256: str,
+    commit_sha: str,
+) -> None:
+    """Accept gh's verification result only inside the exact release runner context.
+
+    This file is not a signature or a portable trust token.  The preceding workflow
+    step performs the cryptographic verification; these checks prevent the reusable
+    Python entry point from silently treating a caller-authored JSON receipt as one.
+    """
+    expected_environment = {
+        "GITHUB_ACTIONS": "true",
+        "GITHUB_REPOSITORY": "CongBao/stock-desk",
+        "GITHUB_SHA": commit_sha,
+        "GITHUB_WORKFLOW": "Release",
+    }
+    if any(
+        os.environ.get(name) != expected
+        for name, expected in expected_environment.items()
+    ):
+        raise ReleaseVerificationError(
+            "proved release reuse requires the controlled GitHub Release workflow"
+        )
+    if not isinstance(value, list) or not value:
+        raise ReleaseVerificationError("GitHub proof verification evidence is empty")
+    for index, entry in enumerate(value):
+        if not isinstance(entry, dict):
+            raise ReleaseVerificationError(
+                f"GitHub proof verification entry {index} is invalid"
+            )
+        result = entry.get("verificationResult")
+        statement = result.get("statement") if isinstance(result, dict) else None
+        subjects = statement.get("subject") if isinstance(statement, dict) else None
+        if not isinstance(subjects, list):
+            continue
+        for subject in subjects:
+            digest = subject.get("digest") if isinstance(subject, dict) else None
+            if isinstance(digest, dict) and digest.get("sha256") == proof_sha256:
+                return
+    raise ReleaseVerificationError(
+        "GitHub proof verification evidence does not bind the exact proof"
+    )
+
+
+def verify_proved_release_inputs(
+    repo: Path,
+    inputs: ProvedReleaseInputs,
+) -> dict[str, object]:
+    proof_value = _load_strict_json(inputs.proof_path, label="main validation proof")
+    if not isinstance(proof_value, dict):
+        raise ReleaseVerificationError("main validation proof must be an object")
+    try:
+        proof_bytes = inputs.proof_path.read_bytes()
+        verify_proof(
+            proof_value,
+            repo_root=repo,
+            expected_repository="CongBao/stock-desk",
+            expected_ref="refs/heads/main",
+        )
+        _verify_controlled_gh_proof_output(
+            _load_strict_json(
+                inputs.proof_gh_verification_path,
+                label="controlled GitHub proof verification evidence",
+            ),
+            proof_sha256=hashlib.sha256(proof_bytes).hexdigest(),
+            commit_sha=str(proof_value.get("commit_sha", "")),
+        )
+        verify_post_gh_attestation_binding(
+            proof_value,
+            proof_bytes=proof_bytes,
+            binding_value=_load_strict_json(
+                inputs.proof_verification_binding_path,
+                label="main proof post-gh-verify binding",
+            ),
+            expected_repository="CongBao/stock-desk",
+        )
+        verify_proved_artifacts(
+            proof_value,
+            artifact_roots=inputs.artifact_roots,
+            artifact_attestations={
+                name: _load_strict_json(path, label=f"{name} attestation")
+                for name, path in inputs.artifact_attestation_paths.items()
+            },
+        )
+    except (MainValidationProofError, OSError) as error:
+        raise ReleaseVerificationError(
+            f"proved release input verification failed: {error}"
+        ) from error
+    return proof_value
+
+
 def _is_safe_github_branch(branch: str) -> bool:
     components = branch.split("/")
     return ".." not in branch and all(
@@ -702,13 +845,36 @@ def check_versions(repo: Path, version: str) -> None:
         )
 
 
-def check_changelog(repo: Path, version: str) -> None:
+def check_changelog(repo: Path, version: str, *, tag_name: str | None = None) -> None:
     try:
         changelog = (repo / "CHANGELOG.md").read_text(encoding="utf-8")
     except OSError as error:
         raise ReleaseVerificationError(
             "unable to read the release changelog"
         ) from error
+    alpha_tag_pattern = rf"v{re.escape(version)}-alpha\.[1-9][0-9]*"
+    if tag_name is not None and re.fullmatch(alpha_tag_pattern, tag_name):
+        if changelog.count("## [Unreleased]") != 1 or changelog.count(tag_name) != 1:
+            raise ReleaseVerificationError(
+                "alpha changelog entry is not uniquely recorded under Unreleased"
+            )
+        release_note = repo / "docs" / "releases" / f"{tag_name}.md"
+        try:
+            note = release_note.read_text(encoding="utf-8")
+        except OSError as error:
+            raise ReleaseVerificationError("alpha release note is missing") from error
+        if (
+            f"# Stock Desk {tag_name}" not in note
+            or "unsigned prerelease" not in note.casefold()
+        ):
+            raise ReleaseVerificationError(
+                "alpha release note must identify an unsigned prerelease"
+            )
+        return
+    if tag_name is not None and tag_name != f"v{version}":
+        raise ReleaseVerificationError(
+            "release tag name is not allowed for this version"
+        )
     headings = re.findall(
         rf"^## \[{re.escape(version)}\] - (?P<release_date>\S+)$",
         changelog,
@@ -1133,6 +1299,7 @@ def verify_candidate(
     target_performance: bool = False,
     fingerprint: Callable[[Path], str] = compute_source_fingerprint,
     fixture_hashes: Callable[[Path], dict[str, str]] = compute_fixture_hashes,
+    proved_inputs: ProvedReleaseInputs | None = None,
 ) -> None:
     resolved_repo = repo.resolve(strict=True)
     if VERSION_PATTERN.fullmatch(version) is None:
@@ -1187,7 +1354,28 @@ def verify_candidate(
 
     gate_reports: list[dict[str, object]] = []
     failure: dict[str, object] | None = None
-    for gate in _candidate_gates(target_performance=target_performance):
+    candidate_gates = (
+        ()
+        if proved_inputs is not None
+        else _candidate_gates(target_performance=target_performance)
+    )
+    if proved_inputs is not None:
+        try:
+            verify_proved_release_inputs(resolved_repo, proved_inputs)
+        except ReleaseVerificationError:
+            failure = {
+                "kind": "proved_inputs_failed",
+                "gate": ["reuse-main-validation-proof"],
+                "message": "proved release inputs failed verification",
+            }
+            gate_reports.append(
+                {"command": ["reuse-main-validation-proof"], "status": "failed"}
+            )
+        else:
+            gate_reports.append(
+                {"command": ["reuse-main-validation-proof"], "status": "passed"}
+            )
+    for gate in candidate_gates:
         gate_error: BaseException | None = None
         try:
             runner.run(gate)
@@ -1260,14 +1448,17 @@ def verify_release(
     runner: GateRunner,
     *,
     fingerprint: Callable[[Path], str] = compute_source_fingerprint,
+    proved_inputs: ProvedReleaseInputs | None = None,
+    tag_name: str | None = None,
 ) -> None:
     resolved_repo = repo.resolve(strict=True)
     check_clean_worktree(resolved_repo)
-    check_branch(resolved_repo)
+    if proved_inputs is None:
+        check_branch(resolved_repo)
     check_identity(resolved_repo)
     check_remote(resolved_repo)
     check_versions(resolved_repo, version)
-    check_changelog(resolved_repo, version)
+    check_changelog(resolved_repo, version, tag_name=tag_name)
     check_public_history(resolved_repo)
     try:
         initial_fingerprint = fingerprint(resolved_repo)
@@ -1277,14 +1468,23 @@ def verify_release(
         ) from error
 
     gates = (
-        PRE_PUBLISH_EVIDENCE_GATE,
-        GateCommand(("make", "release-check"), timeout_seconds=1800),
-        GateCommand(
-            ("pnpm", "e2e"),
-            timeout_seconds=600,
-            environment=(("STOCK_DESK_E2E_BASE_URL", E2E_BASE_URL),),
-        ),
+        (
+            PRE_PUBLISH_EVIDENCE_GATE,
+            GateCommand(("make", "release-check"), timeout_seconds=1800),
+            GateCommand(
+                ("pnpm", "e2e"),
+                timeout_seconds=600,
+                environment=(("STOCK_DESK_E2E_BASE_URL", E2E_BASE_URL),),
+            ),
+        )
+        if proved_inputs is None
+        else ()
     )
+    if proved_inputs is not None:
+        check_exact_release_tag(resolved_repo, version, tag_name=tag_name)
+        verify_proved_release_inputs(resolved_repo, proved_inputs)
+    elif tag_name is not None:
+        raise ReleaseVerificationError("--tag requires exact-SHA proved release inputs")
     for gate in gates:
         try:
             runner.run(gate)
@@ -1295,7 +1495,8 @@ def verify_release(
         ) as error:
             raise ReleaseVerificationError("release gate failed") from error
 
-    check_build_artifacts(resolved_repo, version)
+    if proved_inputs is None:
+        check_build_artifacts(resolved_repo, version)
     check_clean_worktree(resolved_repo)
     try:
         final_fingerprint = fingerprint(resolved_repo)
@@ -1328,26 +1529,127 @@ def _parser() -> argparse.ArgumentParser:
         default=Path("test-results/release/candidate.json"),
         help="candidate JSON report path inside test-results/release",
     )
+    parser.add_argument(
+        "--main-proof",
+        type=Path,
+        help="exact-SHA immutable main proof to reuse instead of source test reruns",
+    )
+    parser.add_argument(
+        "--main-proof-verification-binding",
+        type=Path,
+        help="post-gh-verify identity binding for --main-proof (not a signature)",
+    )
+    parser.add_argument(
+        "--main-proof-gh-verification",
+        type=Path,
+        help="JSON output from the controlled gh attestation verify step",
+    )
+    parser.add_argument(
+        "--tag",
+        help="exact stable or alpha tag expected to point at the proved commit",
+    )
+    parser.add_argument(
+        "--artifact",
+        action="append",
+        default=[],
+        metavar="NAME=ROOT",
+        help="downloaded proved artifact root; repeat for every proof artifact",
+    )
+    parser.add_argument(
+        "--artifact-attestation",
+        action="append",
+        default=[],
+        metavar="NAME=PATH",
+        help="attestation binding for a proved artifact; repeat for every artifact",
+    )
     return parser
+
+
+def _named_paths(values: list[str], *, label: str) -> dict[str, Path]:
+    result: dict[str, Path] = {}
+    for value in values:
+        name, separator, raw_path = value.partition("=")
+        if not separator or not name or not raw_path or name in result:
+            raise ReleaseVerificationError(
+                f"{label} values must uniquely use NAME=PATH"
+            )
+        result[name] = Path(raw_path)
+    return result
+
+
+def _proved_inputs_from_options(
+    options: argparse.Namespace,
+) -> ProvedReleaseInputs | None:
+    supplied = any(
+        (
+            options.main_proof is not None,
+            options.main_proof_verification_binding is not None,
+            options.main_proof_gh_verification is not None,
+            bool(options.artifact),
+            bool(options.artifact_attestation),
+        )
+    )
+    if not supplied:
+        return None
+    if (
+        options.main_proof is None
+        or options.main_proof_verification_binding is None
+        or options.main_proof_gh_verification is None
+    ):
+        raise ReleaseVerificationError(
+            "proved release reuse requires proof, post-gh-verify binding, and controlled gh verification evidence"
+        )
+    roots = _named_paths(options.artifact, label="--artifact")
+    attestations = _named_paths(
+        options.artifact_attestation, label="--artifact-attestation"
+    )
+    if not roots or set(roots) != set(attestations):
+        raise ReleaseVerificationError(
+            "proved release reuse requires matching artifact roots and attestations"
+        )
+    return ProvedReleaseInputs(
+        proof_path=options.main_proof,
+        proof_verification_binding_path=options.main_proof_verification_binding,
+        proof_gh_verification_path=options.main_proof_gh_verification,
+        artifact_roots=roots,
+        artifact_attestation_paths=attestations,
+    )
 
 
 def main(arguments: list[str] | None = None) -> int:
     options = _parser().parse_args(arguments)
     repo = Path(__file__).resolve().parent.parent
     try:
+        proved_inputs = _proved_inputs_from_options(options)
+        if options.tag is not None and proved_inputs is None:
+            raise ReleaseVerificationError(
+                "--tag requires exact-SHA proved release inputs"
+            )
+        if options.candidate and options.tag is not None:
+            raise ReleaseVerificationError("--tag is only valid for final release mode")
         if options.candidate:
             report_path = (
                 options.report
                 if options.report.is_absolute()
                 else repo / options.report
             )
-            verify_candidate(
-                repo,
-                options.version,
-                SubprocessGateRunner(repo),
-                report_path=report_path,
-                target_performance=options.target_performance,
-            )
+            if proved_inputs is None:
+                verify_candidate(
+                    repo,
+                    options.version,
+                    SubprocessGateRunner(repo),
+                    report_path=report_path,
+                    target_performance=options.target_performance,
+                )
+            else:
+                verify_candidate(
+                    repo,
+                    options.version,
+                    SubprocessGateRunner(repo),
+                    report_path=report_path,
+                    target_performance=options.target_performance,
+                    proved_inputs=proved_inputs,
+                )
         else:
             if options.target_performance or options.report != Path(
                 "test-results/release/candidate.json"
@@ -1355,7 +1657,16 @@ def main(arguments: list[str] | None = None) -> int:
                 raise ReleaseVerificationError(
                     "candidate report options require --candidate"
                 )
-            verify_release(repo, options.version, SubprocessGateRunner(repo))
+            if proved_inputs is None:
+                verify_release(repo, options.version, SubprocessGateRunner(repo))
+            else:
+                verify_release(
+                    repo,
+                    options.version,
+                    SubprocessGateRunner(repo),
+                    proved_inputs=proved_inputs,
+                    tag_name=options.tag,
+                )
     except ReleaseVerificationError as error:
         print(f"Release verification failed: {error}", file=sys.stderr)
         return 1

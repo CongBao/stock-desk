@@ -13,8 +13,24 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  tag-policy:
+    name: Enforce supported release tag policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Reject unsupported prerelease tags explicitly
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF_NAME" == v1.1.0-alpha.1 ]]; then
+            exit 0
+          fi
+          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+
   verify:
     name: Verify main proof and build release assets
+    if: ${{ !contains(github.ref_name, '-alpha.') }}
+    needs: tag-policy
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -32,8 +48,6 @@ jobs:
           python-version: "3.12"
       - name: Set up uv
         uses: astral-sh/setup-uv@d31148d669074a8d0a63714ba94f3201e7020bc3 # v8.3.0
-        with:
-          enable-cache: true
       - name: Set up pnpm
         uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:
@@ -43,8 +57,6 @@ jobs:
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: "24"
-          cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
       - name: Install locked dependencies
         run: |
           uv sync --frozen --all-groups --extra providers
@@ -133,6 +145,7 @@ jobs:
 
   attest:
     name: Attest verified release assets
+    if: ${{ !contains(github.ref_name, '-alpha.') }}
     needs:
       - verify
       - verify-windows-installer
@@ -227,6 +240,7 @@ jobs:
 
   build-installers:
     name: Build ${{ matrix.os_name }} ${{ matrix.architecture }} installer
+    if: ${{ !contains(github.ref_name, '-alpha.') }}
     needs: verify
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
@@ -257,8 +271,6 @@ jobs:
           python-version: "3.12"
       - name: Set up uv
         uses: astral-sh/setup-uv@d31148d669074a8d0a63714ba94f3201e7020bc3 # v8.3.0
-        with:
-          enable-cache: true
       - name: Set up pnpm
         uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:
@@ -268,8 +280,6 @@ jobs:
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: "24"
-          cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
       - name: Install locked build dependencies
         run: |
           uv sync --frozen --all-groups --extra providers
@@ -367,6 +377,7 @@ jobs:
 
   verify-windows-installer:
     name: Verify clean Windows installer
+    if: ${{ !contains(github.ref_name, '-alpha.') }}
     needs: build-installers
     runs-on: windows-2025
     timeout-minutes: 30
@@ -471,6 +482,7 @@ jobs:
 
   verify-macos-installer:
     name: Verify clean macOS ${{ matrix.architecture }} installer
+    if: ${{ !contains(github.ref_name, '-alpha.') }}
     needs: build-installers
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
@@ -553,6 +565,7 @@ jobs:
 
   release:
     name: Create GitHub release
+    if: ${{ !contains(github.ref_name, '-alpha.') }}
     needs:
       - verify
       - attest
@@ -597,3 +610,242 @@ jobs:
         run: >-
           gh release create "$GITHUB_REF_NAME" release-assets/*
           --verify-tag --generate-notes --title "Stock Desk $GITHUB_REF_NAME"
+
+  alpha-verify:
+    name: Verify unsigned alpha inputs from immutable main proof
+    if: github.ref_name == 'v1.1.0-alpha.1'
+    needs: tag-policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      attestations: read
+      contents: read
+    env:
+      EVIDENCE_ROOT: ${{ runner.temp }}/alpha-evidence
+      PROOF_ROOT: ${{ runner.temp }}/alpha-proof
+      STOCK_DESK_SIGNPATH_ENABLED: "false"
+    steps:
+      - name: Check out exact alpha source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+      - name: Set up uv
+        uses: astral-sh/setup-uv@d31148d669074a8d0a63714ba94f3201e7020bc3 # v8.3.0
+      - name: Verify exact alpha tag is on main and remains unsigned
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_TYPE" = tag
+          test "$GITHUB_REF_NAME" = v1.1.0-alpha.1
+          test "$STOCK_DESK_SIGNPATH_ENABLED" = false
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main
+          test "$(git rev-parse --verify "refs/tags/${GITHUB_REF_NAME}^{commit}")" = "$GITHUB_SHA"
+          remote_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          direct="$(git ls-remote --refs "$remote_url" "refs/tags/$GITHUB_REF_NAME" | awk 'NR == 1 {print $1}')"
+          peeled="$(git ls-remote "$remote_url" "refs/tags/${GITHUB_REF_NAME}^{}" | awk 'NR == 1 {print $1}')"
+          remote_target="${peeled:-$direct}"
+          test -n "$remote_target"
+          test "$remote_target" = "$GITHUB_SHA"
+      - name: Locate successful exact-SHA main validation run
+        id: proof
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          payload="$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" -f branch=main -f event=push -f status=success -f per_page=100)"
+          run_id="$(jq -r --arg sha "$GITHUB_SHA" '[.workflow_runs[] | select(.head_sha == $sha and .head_branch == "main" and .event == "push" and .status == "completed" and .conclusion == "success")] | sort_by(.run_attempt, .id) | last | .id // empty' <<<"$payload")"
+          test -n "$run_id"
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+      - name: Download exact proof and all proved artifacts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MAIN_RUN_ID: ${{ steps.proof.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          evidence_names=(
+            python-evidence-unit
+            python-evidence-integration
+            python-evidence-acceptance-performance
+            python-evidence-security
+            python-evidence-aggregate
+            web-build-manifest
+            e2e-evidence
+            oci-image-manifest
+            oci-security-evidence
+          )
+          mkdir -p "$PROOF_ROOT" "$EVIDENCE_ROOT"
+          gh run download "$MAIN_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name "main-validation-proof-$GITHUB_SHA" \
+            --dir "$PROOF_ROOT"
+          test -s "$PROOF_ROOT/proof.json"
+          test -s "$PROOF_ROOT/post-gh-verify-binding.json"
+          test -s "$PROOF_ROOT/evidence-attestation-bundle.jsonl"
+          for name in "${evidence_names[@]}"; do
+            root="$EVIDENCE_ROOT/$name"
+            mkdir -p "$root"
+            gh run download "$MAIN_RUN_ID" \
+              --repo "$GITHUB_REPOSITORY" \
+              --name "$name" \
+              --dir "$root"
+            test -s "$root/$name.json"
+            test -s "$root/manifest-binding.json"
+          done
+          test "$(find "$EVIDENCE_ROOT" -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 9
+      - name: Verify GitHub proof attestation
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh attestation verify "$PROOF_ROOT/proof.json" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/ci.yml" \
+            --source-ref refs/heads/main \
+            --source-digest "$GITHUB_SHA" \
+            --signer-digest "$GITHUB_SHA" \
+            --deny-self-hosted-runners \
+            --format json > "$RUNNER_TEMP/proof-attestation-verification.json"
+          jq -e 'length >= 1' "$RUNNER_TEMP/proof-attestation-verification.json" >/dev/null
+      - name: Verify real GitHub attestations for every proved manifest
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          evidence_names=(
+            python-evidence-unit
+            python-evidence-integration
+            python-evidence-acceptance-performance
+            python-evidence-security
+            python-evidence-aggregate
+            web-build-manifest
+            e2e-evidence
+            oci-image-manifest
+            oci-security-evidence
+          )
+          receipt_root="$RUNNER_TEMP/evidence-attestation-verification"
+          mkdir -p "$receipt_root"
+          for name in "${evidence_names[@]}"; do
+            gh attestation verify "$EVIDENCE_ROOT/$name/$name.json" \
+              --bundle "$PROOF_ROOT/evidence-attestation-bundle.jsonl" \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/ci.yml" \
+              --source-ref refs/heads/main \
+              --source-digest "$GITHUB_SHA" \
+              --signer-digest "$GITHUB_SHA" \
+              --deny-self-hosted-runners \
+              --format json > "$receipt_root/$name.json"
+            jq -e 'length >= 1' "$receipt_root/$name.json" >/dev/null
+          done
+          test "$(find "$receipt_root" -maxdepth 1 -type f -name '*.json' | wc -l)" -eq 9
+      - name: Verify proved release inputs without rebuilding or rerunning tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence_names=(
+            python-evidence-unit
+            python-evidence-integration
+            python-evidence-acceptance-performance
+            python-evidence-security
+            python-evidence-aggregate
+            web-build-manifest
+            e2e-evidence
+            oci-image-manifest
+            oci-security-evidence
+          )
+          arguments=(
+            1.1.0
+            --tag "$GITHUB_REF_NAME"
+            --main-proof "$PROOF_ROOT/proof.json"
+            --main-proof-verification-binding "$PROOF_ROOT/post-gh-verify-binding.json"
+            --main-proof-gh-verification "$RUNNER_TEMP/proof-attestation-verification.json"
+          )
+          for name in "${evidence_names[@]}"; do
+            root="$EVIDENCE_ROOT/$name"
+            arguments+=(--artifact "$name=$root")
+            arguments+=(--artifact-attestation "$name=$root/manifest-binding.json")
+          done
+          git config user.name CongBao
+          git config user.email bao_cong@outlook.com
+          git remote set-url origin git@github.com:CongBao/stock-desk.git
+          git remote set-url --push origin git@github.com:CongBao/stock-desk.git
+          uv run --frozen python scripts/verify_release.py "${arguments[@]}"
+      - name: Prepare explicitly unsigned evidence assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          asset_root="$RUNNER_TEMP/unsigned-alpha-assets"
+          mkdir -p "$asset_root"
+          cp "$PROOF_ROOT/proof.json" \
+            "$asset_root/UNSIGNED-TEST-ONLY-main-validation-proof-$GITHUB_REF_NAME.json"
+          cp "$PROOF_ROOT/post-gh-verify-binding.json" \
+            "$asset_root/UNSIGNED-TEST-ONLY-main-proof-post-gh-verify-binding-$GITHUB_REF_NAME.json"
+          cp "$PROOF_ROOT/evidence-attestation-bundle.jsonl" \
+            "$asset_root/UNSIGNED-TEST-ONLY-evidence-attestation-bundle-$GITHUB_REF_NAME.jsonl"
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
+            -C "$EVIDENCE_ROOT" -cf \
+            "$asset_root/UNSIGNED-TEST-ONLY-proved-artifacts-$GITHUB_REF_NAME.tar" .
+          cat > "$asset_root/UNSIGNED-TEST-ONLY-NO-INSTALLER.txt" <<'MARKER'
+          UNSIGNED PRERELEASE / 未签名预发布
+          This delivery-foundation alpha contains no Windows or macOS installer.
+          It is not Authenticode signed and is not a stable or latest release.
+          此交付基础 alpha 不包含 Windows 或 macOS 安装器，不具备 Authenticode 签名，亦非稳定版或最新版。
+          MARKER
+          (cd "$asset_root" && sha256sum -- * > UNSIGNED-TEST-ONLY-SHA256SUMS)
+          cp docs/releases/v1.1.0-alpha.1.md "$asset_root/release-notes.md"
+      - name: Upload verified unsigned alpha assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: unsigned-alpha-release-assets-${{ github.sha }}
+          path: ${{ runner.temp }}/unsigned-alpha-assets/
+          if-no-files-found: error
+          retention-days: 7
+
+  alpha-prerelease:
+    name: Publish explicitly unsigned alpha prerelease
+    if: github.ref_name == 'v1.1.0-alpha.1'
+    needs: alpha-verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Download verified unsigned alpha assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: unsigned-alpha-release-assets-${{ github.sha }}
+          path: unsigned-alpha-assets
+      - name: Recheck exact tag and unsigned asset checksums
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_NAME" = v1.1.0-alpha.1
+          test "$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_REF_NAME" --jq .sha)" = "$GITHUB_SHA"
+          cd unsigned-alpha-assets
+          sha256sum -c UNSIGNED-TEST-ONLY-SHA256SUMS
+          test "$(find . -maxdepth 1 -type f -name 'UNSIGNED-TEST-ONLY-*' | wc -l)" -eq 6
+      - name: Create unsigned alpha prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          asset_root=unsigned-alpha-assets
+          gh release create "$GITHUB_REF_NAME" "$asset_root"/UNSIGNED-TEST-ONLY-* \
+            --verify-tag \
+            --prerelease \
+            --latest=false \
+            --notes-file "$asset_root/release-notes.md" \
+            --title "Stock Desk $GITHUB_REF_NAME — UNSIGNED PRERELEASE / 未签名预发布"

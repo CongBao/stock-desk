@@ -69,6 +69,105 @@ def test_mapping_cli_collects_every_existing_selector() -> None:
     assert "planned/manual evidence explicitly enumerated" in result.stdout
 
 
+def test_pre_publish_selector_validation_collects_but_never_reexecutes_pytest(
+    checker: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    commands: list[list[str]] = []
+
+    def completed(
+        command: list[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(checker, "_run_collection_command", completed)
+    checker._collect_existing_selectors(
+        [
+            {
+                "evidence": [
+                    {
+                        "state": "existing",
+                        "runner": "pytest",
+                        "selector": "tests/unit/test_sample.py::test_behavior",
+                    }
+                ]
+            }
+        ],
+        ROOT,
+        frozenset(),
+    )
+
+    assert len(commands) == 1
+    assert "--collect-only" in commands[0]
+    assert "--runxfail" not in commands[0]
+
+
+def test_selector_collection_can_be_scoped_without_weakening_manifest_validation(
+    checker: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    commands: list[tuple[str, list[str]]] = []
+
+    def completed(
+        command: list[str], *, runner: str, **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        commands.append((runner, command))
+        listing = {
+            "pytest": "",
+            "vitest": "suite > exact vitest title\n",
+            "playwright": "chromium › exact playwright title\n",
+        }[runner]
+        return subprocess.CompletedProcess(command, 0, stdout=listing, stderr="")
+
+    monkeypatch.setattr(checker, "_run_collection_command", completed)
+    items = [
+        {
+            "evidence": [
+                {
+                    "state": "existing",
+                    "runner": "pytest",
+                    "path": "tests/unit/test_sample.py",
+                    "selector": "tests/unit/test_sample.py::test_behavior",
+                },
+                {
+                    "state": "existing",
+                    "runner": "vitest",
+                    "path": "web/src/sample.test.ts",
+                    "selector": "exact vitest title",
+                },
+                {
+                    "state": "existing",
+                    "runner": "playwright",
+                    "path": "web/e2e/sample.spec.ts",
+                    "selector": "exact playwright title",
+                },
+            ]
+        }
+    ]
+
+    checker._collect_existing_selectors(
+        items, ROOT, frozenset(), selector_runners=frozenset({"pytest"})
+    )
+    assert [runner for runner, _ in commands] == ["pytest"]
+
+    commands.clear()
+    checker._collect_existing_selectors(
+        items,
+        ROOT,
+        frozenset(),
+        selector_runners=frozenset({"vitest", "playwright"}),
+    )
+    assert [runner for runner, _ in commands] == ["playwright", "vitest"]
+
+    with pytest.raises(checker.ValidationError, match="non-empty subset"):
+        checker.validate_manifest(
+            {},
+            repo_root=ROOT,
+            mode="mapping",
+            verify_selectors=True,
+            selector_runners=frozenset(),
+        )
+
+
 def test_pre_publish_gate_rejects_planned_and_release_acceptance_evidence(
     checker: ModuleType,
 ) -> None:

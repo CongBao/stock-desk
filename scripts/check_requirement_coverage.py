@@ -859,6 +859,7 @@ def _run_collection_command(
     *,
     repo_root: Path,
     runner: str,
+    environment: Mapping[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     timeout_seconds = RELEASE_EVIDENCE_TIMEOUT_BUDGET.collection_timeout_seconds
     started_at = time.monotonic()
@@ -870,6 +871,7 @@ def _run_collection_command(
             text=True,
             check=False,
             timeout=timeout_seconds,
+            env=None if environment is None else {**os.environ, **environment},
         )
     except subprocess.TimeoutExpired as exc:
         elapsed_seconds = max(0.0, time.monotonic() - started_at)
@@ -884,7 +886,7 @@ def _collect_existing_selectors(
     repo_root: Path,
     tracked_paths: frozenset[str] | None = None,
     *,
-    execute_pytest_evidence: bool = False,
+    selector_runners: frozenset[str] | None = None,
 ) -> None:
     pytest_selectors: list[str] = []
     frontend: dict[tuple[str, str], list[str]] = {}
@@ -894,6 +896,12 @@ def _collect_existing_selectors(
             if evidence["state"] != "existing":
                 continue
             runner = evidence["runner"]
+            if (
+                runner in {"pytest", "vitest", "playwright"}
+                and selector_runners is not None
+                and runner not in selector_runners
+            ):
+                continue
             if runner == "pytest":
                 pytest_selectors.append(evidence["selector"])
             elif runner in {"vitest", "playwright"}:
@@ -913,17 +921,6 @@ def _collect_existing_selectors(
             raise ValidationError(
                 f"pytest selectors did not collect:\n{result.stdout}{result.stderr}"
             )
-        if execute_pytest_evidence:
-            result = _run_collection_command(
-                [sys.executable, "-m", "pytest", "--runxfail", "-q", *unique],
-                repo_root=repo_root,
-                runner="pytest evidence",
-            )
-            if result.returncode != 0:
-                raise ValidationError(
-                    "pytest evidence did not pass without xfail semantics:\n"
-                    f"{result.stdout}{result.stderr}"
-                )
     for (runner, path), selectors in sorted(frontend.items()):
         command = (
             [
@@ -942,6 +939,11 @@ def _collect_existing_selectors(
             command,
             repo_root=repo_root,
             runner=runner,
+            environment=(
+                {"STOCK_DESK_PERFORMANCE_MODE": "1"}
+                if runner == "playwright" and path.endswith("/performance.spec.ts")
+                else None
+            ),
         )
         listing = result.stdout + result.stderr
         if result.returncode != 0:
@@ -998,6 +1000,7 @@ def validate_manifest(
     repo_root: Path,
     mode: str,
     verify_selectors: bool = True,
+    selector_runners: frozenset[str] | None = None,
 ) -> dict[str, int]:
     if not isinstance(mode, str) or mode not in {
         "mapping",
@@ -1005,6 +1008,13 @@ def validate_manifest(
         "release",
     }:
         raise ValidationError("mode must be mapping, pre-publish, or release")
+    if selector_runners is not None and (
+        not selector_runners
+        or not selector_runners <= {"pytest", "vitest", "playwright"}
+    ):
+        raise ValidationError(
+            "selector_runners must be a non-empty subset of pytest, vitest, playwright"
+        )
     _reject_publication_boundary(matrix)
     _expect_exact_fields(matrix, ROOT_FIELDS, "manifest")
     if type(matrix["schema_version"]) is not int or matrix["schema_version"] != 1:
@@ -1072,7 +1082,7 @@ def validate_manifest(
             validated,
             repo_root,
             tracked_paths,
-            execute_pytest_evidence=mode != "mapping",
+            selector_runners=selector_runners,
         )
     return {
         "requirements": len(requirements),

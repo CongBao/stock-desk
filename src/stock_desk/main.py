@@ -507,7 +507,7 @@ def create_app(
 
     application = FastAPI(
         title=resolved_settings.app_name,
-        version="1.0.0",
+        version="1.1.0",
         lifespan=lifespan,
     )
     application.state.task_repository_provider = provide_task_repository

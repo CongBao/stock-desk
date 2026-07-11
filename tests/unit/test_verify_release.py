@@ -20,6 +20,7 @@ import pytest
 import scripts.verify_release as verify_release_module
 from scripts.verify_release import (
     GateCommand,
+    ProvedReleaseInputs,
     ReleaseVerificationError,
     ReleaseLeakScanner,
     SubprocessGateRunner,
@@ -724,6 +725,30 @@ def test_rejects_unreleased_malformed_or_duplicate_release_dates(
         check_changelog(release_repo, "0.1.0")
 
 
+def test_alpha_tag_uses_unreleased_entry_and_unsigned_release_note(
+    release_repo: Path,
+) -> None:
+    changelog = release_repo / "CHANGELOG.md"
+    changelog.write_text(
+        "# Changelog\n\n## [Unreleased]\n\n- `v0.1.0-alpha.1` delivery preview.\n",
+        encoding="utf-8",
+    )
+    release_note = release_repo / "docs" / "releases" / "v0.1.0-alpha.1.md"
+    release_note.parent.mkdir(parents=True, exist_ok=True)
+    release_note.write_text(
+        "# Stock Desk v0.1.0-alpha.1\n\nUnsigned prerelease.\n",
+        encoding="utf-8",
+    )
+
+    check_changelog(
+        release_repo,
+        "0.1.0",
+        tag_name="v0.1.0-alpha.1",
+    )
+    with pytest.raises(ReleaseVerificationError, match="release changelog entry"):
+        check_changelog(release_repo, "0.1.0")
+
+
 def test_accepts_exact_valid_current_release_artifacts(release_repo: Path) -> None:
     write_valid_artifacts(release_repo, "0.1.0")
 
@@ -1255,6 +1280,186 @@ def test_success_runs_timed_gates_and_rechecks_clean_sources(
             timeout_seconds=600,
             environment=(("STOCK_DESK_E2E_BASE_URL", E2E_BASE_URL),),
         ),
+    ]
+
+
+def _proved_inputs(repo: Path) -> ProvedReleaseInputs:
+    return ProvedReleaseInputs(
+        proof_path=repo / "proof.json",
+        proof_verification_binding_path=repo / "proof-verification-binding.json",
+        proof_gh_verification_path=repo / "proof-gh-verification.json",
+        artifact_roots={"web-build-manifest": repo / "web-artifact"},
+        artifact_attestation_paths={
+            "web-build-manifest": repo / "web-attestation.json"
+        },
+    )
+
+
+def test_controlled_gh_proof_output_requires_release_runner_and_exact_subject(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commit = "a" * 40
+    digest = "b" * 64
+    evidence = [
+        {
+            "verificationResult": {
+                "statement": {
+                    "subject": [{"name": "proof.json", "digest": {"sha256": digest}}]
+                }
+            }
+        }
+    ]
+    for name, value in {
+        "GITHUB_ACTIONS": "true",
+        "GITHUB_REPOSITORY": "CongBao/stock-desk",
+        "GITHUB_SHA": commit,
+        "GITHUB_WORKFLOW": "Release",
+    }.items():
+        monkeypatch.setenv(name, value)
+
+    verify_release_module._verify_controlled_gh_proof_output(
+        evidence, proof_sha256=digest, commit_sha=commit
+    )
+
+    monkeypatch.setenv("GITHUB_WORKFLOW", "Untrusted")
+    with pytest.raises(ReleaseVerificationError, match="controlled GitHub Release"):
+        verify_release_module._verify_controlled_gh_proof_output(
+            evidence, proof_sha256=digest, commit_sha=commit
+        )
+
+    monkeypatch.setenv("GITHUB_WORKFLOW", "Release")
+    with pytest.raises(ReleaseVerificationError, match="does not bind"):
+        verify_release_module._verify_controlled_gh_proof_output(
+            evidence, proof_sha256="c" * 64, commit_sha=commit
+        )
+
+
+def test_exact_sha_proof_replaces_compatible_source_test_reruns(
+    release_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    git(release_repo, "tag", "v0.1.0")
+    observed: list[ProvedReleaseInputs] = []
+    monkeypatch.setattr(
+        verify_release_module,
+        "verify_proved_release_inputs",
+        lambda _repo, inputs: observed.append(inputs),
+    )
+    runner = FakeGateRunner(release_repo)
+    inputs = _proved_inputs(release_repo)
+
+    verify_release(
+        release_repo,
+        "0.1.0",
+        runner,
+        fingerprint=lambda _repo: "stable",
+        proved_inputs=inputs,
+    )
+
+    assert observed == [inputs]
+    assert runner.calls == []
+
+
+def test_proved_alpha_release_accepts_only_the_explicit_exact_alpha_tag(
+    release_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    changelog = release_repo / "CHANGELOG.md"
+    changelog.write_text(
+        "# Changelog\n\n## [Unreleased]\n\n- `v0.1.0-alpha.1` delivery preview.\n",
+        encoding="utf-8",
+    )
+    release_note = release_repo / "docs" / "releases" / "v0.1.0-alpha.1.md"
+    release_note.parent.mkdir(parents=True, exist_ok=True)
+    release_note.write_text(
+        "# Stock Desk v0.1.0-alpha.1\n\nUnsigned prerelease.\n",
+        encoding="utf-8",
+    )
+    git(release_repo, "add", ".")
+    git(release_repo, "commit", "-q", "-m", "prepare alpha release")
+    git(release_repo, "tag", "v0.1.0-alpha.1")
+    monkeypatch.setattr(
+        verify_release_module,
+        "verify_proved_release_inputs",
+        lambda _repo, _inputs: None,
+    )
+
+    verify_release(
+        release_repo,
+        "0.1.0",
+        FakeGateRunner(release_repo),
+        fingerprint=lambda _repo: "stable",
+        proved_inputs=_proved_inputs(release_repo),
+        tag_name="v0.1.0-alpha.1",
+    )
+
+    with pytest.raises(ReleaseVerificationError, match="tag name is not allowed"):
+        verify_release(
+            release_repo,
+            "0.1.0",
+            FakeGateRunner(release_repo),
+            fingerprint=lambda _repo: "stable",
+            proved_inputs=_proved_inputs(release_repo),
+            tag_name="v0.1.0-beta.1",
+        )
+
+
+def test_proved_release_rejects_tag_pointing_to_another_commit(
+    release_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    git(release_repo, "tag", "v0.1.0")
+    (release_repo / "next.txt").write_text("next\n", encoding="utf-8")
+    git(release_repo, "add", "next.txt")
+    git(release_repo, "commit", "-q", "-m", "next")
+    monkeypatch.setattr(
+        verify_release_module,
+        "verify_proved_release_inputs",
+        lambda _repo, _inputs: None,
+    )
+
+    with pytest.raises(ReleaseVerificationError, match="tag does not point"):
+        verify_release(
+            release_repo,
+            "0.1.0",
+            FakeGateRunner(release_repo),
+            fingerprint=lambda _repo: "stable",
+            proved_inputs=_proved_inputs(release_repo),
+        )
+
+
+def test_candidate_reuses_proof_without_running_compatible_source_tests(
+    release_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = release_repo / "test-results" / "release" / "proved.json"
+    gitignore = release_repo / ".gitignore"
+    gitignore.write_text(
+        gitignore.read_text(encoding="utf-8") + "test-results/\n",
+        encoding="utf-8",
+    )
+    git(release_repo, "add", ".gitignore")
+    git(release_repo, "commit", "-q", "-m", "ignore proved report")
+    inputs = _proved_inputs(release_repo)
+    observed: list[ProvedReleaseInputs] = []
+    monkeypatch.setattr(
+        verify_release_module,
+        "verify_proved_release_inputs",
+        lambda _repo, value: observed.append(value),
+    )
+    runner = FakeGateRunner(release_repo)
+
+    verify_candidate(
+        release_repo,
+        "0.1.0",
+        runner,
+        report_path=report,
+        fingerprint=lambda _repo: "stable",
+        fixture_hashes=lambda _repo: {"requirements.yml": "sha256:" + "1" * 64},
+        proved_inputs=inputs,
+    )
+
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    assert observed == [inputs]
+    assert runner.calls == []
+    assert payload["gates"] == [
+        {"command": ["reuse-main-validation-proof"], "status": "passed"}
     ]
 
 

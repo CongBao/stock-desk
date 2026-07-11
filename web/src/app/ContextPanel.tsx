@@ -1,3 +1,4 @@
+/* eslint-disable jsx-a11y/no-noninteractive-tabindex -- The independently scrollable context region must be keyboard focusable. */
 import { useEffect, useRef } from 'react';
 
 import type {
@@ -95,6 +96,7 @@ export function ContextPanel({
       className="context-panel"
       aria-label="上下文状态"
       data-open={String(isOpen)}
+      tabIndex={0}
     >
       <header className="context-panel-header">
         <div>

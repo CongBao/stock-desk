@@ -157,6 +157,28 @@ def test_runtime_accepts_a_nonempty_command() -> None:
     assert isinstance(command, Sequence)
 
 
+def test_runtime_recovery_waits_for_a_peer_startup(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    entrypoint = _entrypoint()
+    calls: list[tuple[Path, float]] = []
+
+    def record_recovery(
+        *,
+        data_dir: Path,
+        lifecycle_timeout_seconds: float,
+    ) -> bool:
+        calls.append((data_dir, lifecycle_timeout_seconds))
+        return False
+
+    monkeypatch.setattr(entrypoint, "recover_interrupted_restore", record_recovery)
+
+    entrypoint._recover_runtime_data(tmp_path)
+
+    assert calls == [(tmp_path, 30.0)]
+
+
 def test_runtime_recovery_refuses_a_corrupt_restore_journal(tmp_path: Path) -> None:
     entrypoint = _entrypoint()
     (tmp_path / ".stock-desk-restore-journal.json").write_text(

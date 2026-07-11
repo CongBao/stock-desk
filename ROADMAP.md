@@ -18,7 +18,12 @@ it does not expand the research-only or local trust boundaries.
 
 ## Planned
 
-No post-v1 stage is committed. Future work will be proposed only after user
-feedback and separate technical validation; it does not expand v1 scope.
+| Stage | Status | Intended outcome |
+| --- | --- | --- |
+| v1.1 Stage 0 — Delivery foundation | In progress | Auditable incremental PR feedback, exact-SHA full `main` proof, content-addressed artifacts, and unsigned alpha prerelease boundary. |
+| v1.1 Stages 1–5 — Windows desktop UX | Planned | Tauri desktop shell, first-run real-data onboarding, consumer desktop UX, trusted current-user distribution, and formal Windows `v1.1.0`. |
+
+v1.1 is Windows x64 only. New macOS, Linux, Android, and Windows ARM64
+distributions are outside this release scope.
 
 No later-stage capability is considered complete merely because its navigation route or layout preview exists.

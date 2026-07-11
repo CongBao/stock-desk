@@ -474,6 +474,7 @@ it('opens the drawer after the click settles and restores focus on Escape', asyn
   expect(toggle).toHaveAttribute('aria-expanded', 'false');
   expect(toggle).toHaveAttribute('aria-controls', 'context-panel');
   expect(panel).toHaveAttribute('data-open', 'false');
+  expect(panel).toHaveAttribute('tabindex', '0');
 
   await user.click(toggle);
 

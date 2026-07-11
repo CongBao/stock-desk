@@ -81,7 +81,7 @@ def test_main_openapi_exposes_complete_model_and_analysis_contract(
 
     document = application.openapi()
 
-    assert document["info"]["version"] == "1.0.0"
+    assert document["info"]["version"] == "1.1.0"
     expected_operations = {
         "/api/settings/models": {"get", "post"},
         "/api/settings/models/{config_id}": {"get", "put"},
