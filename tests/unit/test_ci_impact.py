@@ -40,6 +40,18 @@ from scripts.ci_impact import (
             "artifact-proof",
         ),
         (
+            "src/stock_desk/market/lake.py",
+            RELEASE_DESKTOP_PROFILE,
+            "windows-storage",
+            "artifact-proof",
+        ),
+        (
+            "tests/integration/market/test_sqlite_market_lake.py",
+            RELEASE_DESKTOP_PROFILE,
+            "windows-storage",
+            "artifact-proof",
+        ),
+        (
             "tests/unit/test_verify_windows_desktop_bundle.py",
             RELEASE_DESKTOP_PROFILE,
             "installer",

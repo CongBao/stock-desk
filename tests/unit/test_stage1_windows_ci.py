@@ -84,6 +84,9 @@ def test_builders_use_exact_source_frozen_inputs_and_preserve_acl_contracts() ->
     assert both.count("pnpm install --frozen-lockfile") == 2
     assert both.count("rustup target add x86_64-pc-windows-msvc") == 2
     assert "tests/integration/test_windows_runtime_acl.py" in a_commands
+    assert "test_windows_market_lake_direct_constructor" in (
+        ROOT / "tests" / "integration" / "test_windows_runtime_acl.py"
+    ).read_text(encoding="utf-8")
     assert "tests/unit/storage/test_backup.py -k restore_journal" in a_commands
     assert "make e2e" not in both
     assert "tests/unit tests/integration" not in both
