@@ -617,6 +617,18 @@ def test_reviewed_non_release_evidence_is_existing_and_precisely_scoped(
         for evidence in installed_evidence
     )
 
+    performance_evidence = by_id["R-053"]["evidence"]
+    performance_selectors = {
+        evidence.get("selector")
+        for evidence in performance_evidence
+        if evidence.get("runner") == "pytest"
+        and evidence.get("path") == "tests/performance/test_v1_budgets.py"
+    }
+    assert {
+        "tests/performance/test_v1_budgets.py::test_v1_cached_budgets",
+        "tests/performance/test_v1_budgets.py::test_v1_correctness_and_measurement_evidence_is_complete",
+    } <= performance_selectors
+
     tdx_selectors = {
         evidence.get("selector"): evidence["state"]
         for evidence in by_id["R-031"]["evidence"]
