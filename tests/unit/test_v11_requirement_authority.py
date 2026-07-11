@@ -47,7 +47,7 @@ def test_all_authorities_validate_together_and_reject_cross_namespace_semantics(
         "v1_requirements": 82,
         "v1_non_goals": 10,
         "v11_requirements": 2,
-        "planned": 2,
+        "planned": 0,
         "manual": 20,
     }
 
@@ -60,13 +60,14 @@ def test_all_authorities_validate_together_and_reject_cross_namespace_semantics(
         )
 
 
-def test_v11_pre_publish_fails_closed_until_planned_selectors_are_delivered() -> None:
-    with pytest.raises(checker.ValidationError, match="planned evidence.*V11-R-001"):
-        checker.validate_all_manifests(
-            repo_root=ROOT,
-            mode="pre-publish",
-            verify_selectors=False,
-        )
+def test_v11_pre_publish_accepts_only_delivered_selectors() -> None:
+    counts = checker.validate_all_manifests(
+        repo_root=ROOT,
+        mode="pre-publish",
+        verify_selectors=False,
+    )
+    assert counts["v11_requirements"] == 2
+    assert counts["planned"] == 0
 
 
 def test_v11_authority_rejects_meaning_or_id_drift() -> None:

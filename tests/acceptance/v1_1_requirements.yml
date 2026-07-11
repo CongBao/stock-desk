@@ -11,7 +11,7 @@ requirements:
     owning_stage: 1
     status: mapped
     evidence:
-      - state: planned
+      - state: existing
         runner: pytest
         kind: acceptance
         path: tests/acceptance/test_v11_onboarding.py
@@ -29,7 +29,7 @@ requirements:
     owning_stage: 1
     status: mapped
     evidence:
-      - state: planned
+      - state: existing
         runner: playwright
         kind: acceptance
         path: web/e2e/onboarding.spec.ts

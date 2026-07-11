@@ -1023,13 +1023,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             manifest_paths = list(args.manifest)
             if len({path.name for path in manifest_paths}) != len(manifest_paths):
                 raise EvidenceError("requirement manifest paths must be unique")
-            manifests = [
+            requirement_manifests = [
                 check_requirement_coverage.load_manifest(path)
                 for path in manifest_paths
             ]
             # This performs schema, frozen authority, public-boundary and collect
             # validation. It never executes the selected tests.
-            for manifest_path, manifest in zip(manifest_paths, manifests, strict=True):
+            for manifest_path, manifest in zip(
+                manifest_paths, requirement_manifests, strict=True
+            ):
                 check_requirement_coverage.validate_authority_manifest(
                     manifest,
                     manifest_path=manifest_path,
@@ -1042,12 +1044,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                         else None
                     ),
                 )
-            if len(manifests) > 1:
+            if len(requirement_manifests) > 1:
                 check_requirement_coverage._validate_cross_authority_uniqueness(
                     {
                         manifest_path.name: manifest
                         for manifest_path, manifest in zip(
-                            manifest_paths, manifests, strict=True
+                            manifest_paths, requirement_manifests, strict=True
                         )
                     }
                 )
@@ -1058,7 +1060,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             if inventory is not None and not isinstance(inventory, dict):
                 raise EvidenceError("inventory must be a JSON object")
             payload = build_requirement_evidence(
-                manifests=manifests,
+                manifests=requirement_manifests,
                 reports=reports,
                 source_sha=args.source_sha,
                 source_tree=args.source_tree,
