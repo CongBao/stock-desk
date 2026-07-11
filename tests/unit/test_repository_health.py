@@ -1252,6 +1252,18 @@ def test_e2e_is_a_root_script_without_changing_the_make_contract() -> None:
     status_hook = _read("web/src/shared/api/useSystemStatus.ts")
     assert "refetchInterval: 5_000" in status_hook
 
+    app = _read("web/src/app/App.tsx")
+    route_boundary = app.split("const WorkspaceRoutes = memo", 1)[1].split(
+        "function WorkspaceShell()", 1
+    )[0]
+    workspace_shell = app.split("function WorkspaceShell()", 1)[1].split(
+        "export function App()", 1
+    )[0]
+    assert "<Routes>" in route_boundary
+    assert "<RouteEffects />" in route_boundary
+    assert "<WorkspaceRoutes />" in workspace_shell
+    assert "<Routes>" not in workspace_shell
+
     makefile = _read("Makefile")
     targets = {
         match.group(1)

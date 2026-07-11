@@ -1,5 +1,6 @@
 import {
   lazy,
+  memo,
   Suspense,
   useCallback,
   useEffect,
@@ -217,6 +218,58 @@ function AboutDialog({ onClose }: { readonly onClose: () => void }) {
   );
 }
 
+const WorkspaceRoutes = memo(function WorkspaceRoutes() {
+  return (
+    <>
+      <RouteEffects />
+      <Routes>
+        <Route path="/" element={<Navigate to="/market" replace />} />
+        {appRoutes.map((route) => (
+          <Route
+            key={route.path}
+            path={route.path}
+            element={
+              route.path === '/market' ? (
+                <MarketPage />
+              ) : route.path === '/formulas' ? (
+                <Suspense
+                  fallback={
+                    <p className="workspace-route-loading" role="status">
+                      正在加载公式工作台…
+                    </p>
+                  }
+                >
+                  <FormulaStudioPage />
+                </Suspense>
+              ) : route.path === '/settings' ? (
+                <DataSourcesPage />
+              ) : route.path === '/backtests' ? (
+                <BacktestWorkspacePage />
+              ) : route.path === '/analysis' ? (
+                <Suspense
+                  fallback={
+                    <p className="workspace-route-loading" role="status">
+                      正在加载智能分析工作台…
+                    </p>
+                  }
+                >
+                  <AnalysisPage />
+                </Suspense>
+              ) : route.path === '/tasks' ? (
+                <TaskCenterPage />
+              ) : (
+                <NotFoundPage />
+              )
+            }
+          />
+        ))}
+        <Route path="/backtests/:runId" element={<BacktestRunPage />} />
+        <Route path="*" element={<NotFoundPage />} />
+      </Routes>
+    </>
+  );
+});
+
 function WorkspaceShell() {
   const location = useLocation();
   const isContextOpen = useWorkspaceStore((state) => state.isContextOpen);
@@ -330,51 +383,7 @@ function WorkspaceShell() {
             </div>
           </header>
 
-          <RouteEffects />
-          <Routes>
-            <Route path="/" element={<Navigate to="/market" replace />} />
-            {appRoutes.map((route) => (
-              <Route
-                key={route.path}
-                path={route.path}
-                element={
-                  route.path === '/market' ? (
-                    <MarketPage />
-                  ) : route.path === '/formulas' ? (
-                    <Suspense
-                      fallback={
-                        <p className="workspace-route-loading" role="status">
-                          正在加载公式工作台…
-                        </p>
-                      }
-                    >
-                      <FormulaStudioPage />
-                    </Suspense>
-                  ) : route.path === '/settings' ? (
-                    <DataSourcesPage />
-                  ) : route.path === '/backtests' ? (
-                    <BacktestWorkspacePage />
-                  ) : route.path === '/analysis' ? (
-                    <Suspense
-                      fallback={
-                        <p className="workspace-route-loading" role="status">
-                          正在加载智能分析工作台…
-                        </p>
-                      }
-                    >
-                      <AnalysisPage />
-                    </Suspense>
-                  ) : route.path === '/tasks' ? (
-                    <TaskCenterPage />
-                  ) : (
-                    <NotFoundPage />
-                  )
-                }
-              />
-            ))}
-            <Route path="/backtests/:runId" element={<BacktestRunPage />} />
-            <Route path="*" element={<NotFoundPage />} />
-          </Routes>
+          <WorkspaceRoutes />
         </main>
 
         <ContextPanel
