@@ -2159,16 +2159,15 @@ def test_performance_target_ci_is_explicit_and_requirement_is_verified() -> None
     assert steps["Install Chromium for the performance shard"]["run"] == (
         "pnpm exec playwright install --with-deps chromium"
     )
-    provenance = steps["Verify documentation provenance after performance"]
+    provenance = steps["Verify documentation provenance before performance"]
     assert provenance["if"] == "env.PYTHON_SHARD == 'acceptance-performance'"
-    assert "git cat-file -t" in provenance["run"]
-    assert "git log --format=%H HEAD" in provenance["run"]
-    assert "documentation-provenance head=%s commit=%s" in provenance["run"]
-    assert "grep_status=$?" in provenance["run"]
-    assert 'test "$grep_status" -eq 1' in provenance["run"]
-    assert 'test "$in_head" -eq 1' in provenance["run"]
+    assert "git init --bare --quiet" in provenance["run"]
+    assert 'git -C "$audit_repo" fetch' in provenance["run"]
+    assert "+${PROVENANCE_SOURCE_SHA}:refs/heads/exact-source" in provenance["run"]
+    assert "STOCK_DESK_DOC_PROVENANCE_GIT_DIR" in provenance["run"]
+    assert "STOCK_DESK_DOC_PROVENANCE_TIP=refs/heads/exact-source" in provenance["run"]
     assert "scripts/verify_docs.py --repo-root ." in provenance["run"]
-    assert acceptance["steps"].index(provenance) > acceptance["steps"].index(
+    assert acceptance["steps"].index(provenance) < acceptance["steps"].index(
         steps["Prepare deterministic performance evidence once"]
     )
     assert acceptance["steps"].index(provenance) < acceptance["steps"].index(

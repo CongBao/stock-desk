@@ -3633,7 +3633,7 @@ def test_repository_commit_reachability_uses_one_bounded_ancestor_check(
         command: tuple[str, ...], **options: object
     ) -> subprocess.CompletedProcess[str]:
         calls.append((command, options))
-        return subprocess.CompletedProcess(command, 0, stdout=f"{'1' * 40}\n")
+        return subprocess.CompletedProcess(command, 0)
 
     monkeypatch.setattr(verify_docs_module.subprocess, "run", run)
 
@@ -3642,12 +3642,13 @@ def test_repository_commit_reachability_uses_one_bounded_ancestor_check(
     command, options = calls[0]
     assert command == (
         "git",
-        "log",
-        "--format=%H",
-        "HEAD",
+        "merge-base",
+        "--is-ancestor",
+        f"{'1' * 40}^{{commit}}",
+        "HEAD^{commit}",
     )
     assert options["cwd"] == str(tmp_path.resolve())
-    assert options["check"] is True
+    assert options["check"] is False
     assert options["capture_output"] is True
     assert options["text"] is True
     assert options["timeout"] == 30
@@ -3688,6 +3689,37 @@ def test_repository_commit_reachability_rejects_side_branch_and_non_commit(
     assert not verify_docs_module._repository_commit_is_reachable(tmp_path, side)
     assert not verify_docs_module._repository_commit_is_reachable(tmp_path, blob)
     assert not verify_docs_module._repository_commit_is_reachable(tmp_path, "f" * 40)
+
+
+def test_repository_commit_reachability_uses_explicit_audit_graph(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audit_repo = tmp_path / "audit.git"
+    audit_repo.mkdir()
+    calls: list[tuple[tuple[str, ...], dict[str, object]]] = []
+
+    def run(
+        command: tuple[str, ...], **options: object
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append((command, options))
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setenv("STOCK_DESK_DOC_PROVENANCE_GIT_DIR", str(audit_repo))
+    monkeypatch.setenv("STOCK_DESK_DOC_PROVENANCE_TIP", "refs/heads/exact-source")
+    monkeypatch.setattr(verify_docs_module.subprocess, "run", run)
+
+    assert verify_docs_module._repository_commit_is_reachable(tmp_path, "2" * 40)
+    assert calls[0][0][-1] == "refs/heads/exact-source^{commit}"
+    assert calls[0][1]["cwd"] == str(audit_repo.resolve())
+
+
+def test_repository_commit_reachability_rejects_partial_audit_configuration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("STOCK_DESK_DOC_PROVENANCE_GIT_DIR", str(tmp_path))
+    monkeypatch.delenv("STOCK_DESK_DOC_PROVENANCE_TIP", raising=False)
+
+    assert not verify_docs_module._repository_commit_is_reachable(tmp_path, "3" * 40)
 
 
 def test_wiki_uses_routes_from_explicit_repository_root(tmp_path: Path) -> None:

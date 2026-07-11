@@ -4770,27 +4770,41 @@ def _real_market_source_ids() -> frozenset[str]:
 
 
 def _repository_commit_is_reachable(repo_root: Path, commit: str) -> bool:
+    audit_root = os.environ.get("STOCK_DESK_DOC_PROVENANCE_GIT_DIR")
+    audit_tip = os.environ.get("STOCK_DESK_DOC_PROVENANCE_TIP")
+    if bool(audit_root) != bool(audit_tip):
+        return False
     try:
-        root_key = os.fspath(repo_root.resolve())
+        root_key = os.fspath(
+            Path(audit_root).resolve() if audit_root else repo_root.resolve()
+        )
     except (OSError, ValueError, RuntimeError):
         return False
-    return _repository_commit_is_reachable_cached(root_key, commit)
+    return _repository_commit_is_reachable_cached(root_key, commit, audit_tip or "HEAD")
 
 
 @lru_cache(maxsize=128)
-def _repository_commit_is_reachable_cached(root_key: str, commit: str) -> bool:
+def _repository_commit_is_reachable_cached(
+    root_key: str, commit: str, audit_tip: str
+) -> bool:
     try:
         completed = subprocess.run(
-            ("git", "log", "--format=%H", "HEAD"),
+            (
+                "git",
+                "merge-base",
+                "--is-ancestor",
+                f"{commit}^{{commit}}",
+                f"{audit_tip}^{{commit}}",
+            ),
             cwd=root_key,
-            check=True,
+            check=False,
             capture_output=True,
             text=True,
             timeout=30,
         )
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         return False
-    return commit in completed.stdout.splitlines()
+    return completed.returncode == 0
 
 
 def _surface_tuple(value: object) -> tuple[str, str] | None:

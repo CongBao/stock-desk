@@ -283,6 +283,27 @@ jobs:
           uv run --frozen ruff check .
           uv run --frozen mypy --strict src scripts
           uv run --frozen bandit -q -ll -r src scripts
+      - name: Verify documentation provenance before performance
+        if: env.PYTHON_SHARD == 'acceptance-performance'
+        shell: bash
+        env:
+          PROVENANCE_SOURCE_REPOSITORY: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name || github.repository }}
+          PROVENANCE_SOURCE_SHA: ${{ env.SOURCE_SHA }}
+        run: |
+          set -euo pipefail
+          audit_repo="$RUNNER_TEMP/documentation-provenance.git"
+          rm -rf "$audit_repo"
+          git init --bare --quiet "$audit_repo"
+          git -C "$audit_repo" fetch --quiet --no-tags --force --no-recurse-submodules \
+            "$GITHUB_SERVER_URL/$PROVENANCE_SOURCE_REPOSITORY.git" \
+            "+${PROVENANCE_SOURCE_SHA}:refs/heads/exact-source"
+          test "$(git -C "$audit_repo" rev-parse refs/heads/exact-source)" = "$PROVENANCE_SOURCE_SHA"
+          export STOCK_DESK_DOC_PROVENANCE_GIT_DIR="$audit_repo"
+          export STOCK_DESK_DOC_PROVENANCE_TIP=refs/heads/exact-source
+          printf 'documentation-provenance source=%s sha=%s tip=%s\n' \
+            "$PROVENANCE_SOURCE_REPOSITORY" "$PROVENANCE_SOURCE_SHA" \
+            "$STOCK_DESK_DOC_PROVENANCE_TIP"
+          uv run --frozen python scripts/verify_docs.py --repo-root .
       - name: Prepare deterministic performance evidence once
         if: env.PYTHON_SHARD == 'acceptance-performance'
         run: >-
@@ -291,36 +312,6 @@ jobs:
           --evidence-kind target_baseline
           --output test-results/performance/current.json
           --compare tests/performance/baseline.json
-      - name: Verify documentation provenance after performance
-        if: env.PYTHON_SHARD == 'acceptance-performance'
-        shell: bash
-        run: |
-          set -euo pipefail
-          commits=$(uv run --frozen python - <<'PY'
-          import yaml
-          from pathlib import Path
-
-          manifest = yaml.safe_load(Path("docs/images/manifest.yml").read_text(encoding="utf-8"))
-          print("\n".join(sorted({entry["product"]["git_commit"] for entry in manifest["screenshots"]})))
-          PY
-          )
-          test -n "$commits"
-          head=$(git rev-parse HEAD)
-          history=$(git log --format=%H HEAD)
-          while IFS= read -r commit; do
-            object_type=$(git cat-file -t "$commit")
-            if in_head=$(grep -Fxc -- "$commit" <<< "$history"); then
-              :
-            else
-              grep_status=$?
-              test "$grep_status" -eq 1
-            fi
-            printf 'documentation-provenance head=%s commit=%s type=%s in_head=%s\n' \
-              "$head" "$commit" "$object_type" "$in_head"
-            test "$object_type" = commit
-            test "$in_head" -eq 1
-          done <<< "$commits"
-          uv run --frozen python scripts/verify_docs.py --repo-root .
       - name: Run authoritative shard exactly once
         shell: bash
         run: |
