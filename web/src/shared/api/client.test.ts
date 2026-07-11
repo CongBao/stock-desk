@@ -2,6 +2,7 @@ import {
   ApiError,
   createApiClient,
   type ApiGetOptions,
+  type ApiTransport,
   type ApiWriteOptions,
 } from './client';
 
@@ -145,6 +146,36 @@ it('returns valid JSON from the relative API base', async () => {
       headers: { Accept: 'application/json' },
     }),
   );
+});
+
+it('uses an injected desktop transport without exposing browser request metadata', async () => {
+  const fetchMock = vi.fn<typeof fetch>();
+  vi.stubGlobal('fetch', fetchMock);
+  const transport = vi.fn<ApiTransport>().mockResolvedValue(
+    new Response(JSON.stringify({ status: 'ok' }), {
+      headers: { 'Content-Type': 'application/json' },
+    }),
+  );
+  const controller = new AbortController();
+
+  const result = await createApiClient('/api', transport).post('/analysis', {
+    body: { symbol: '000001.SS' },
+    cache: 'no-store',
+    credentials: 'include',
+    headers: { 'X-Request-Test': 'not-forwarded' },
+    signal: controller.signal,
+  });
+
+  expect(result).toEqual({ status: 'ok' });
+  expect(transport).toHaveBeenCalledWith(
+    {
+      body: '{"symbol":"000001.SS"}',
+      method: 'POST',
+      path: '/api/analysis',
+    },
+    controller.signal,
+  );
+  expect(fetchMock).not.toHaveBeenCalled();
 });
 
 it('treats 204 as the only successful empty response', async () => {

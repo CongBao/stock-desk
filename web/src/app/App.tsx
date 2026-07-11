@@ -20,6 +20,8 @@ import { BacktestRunPage } from '../features/backtests/BacktestRunPage';
 import { BacktestWorkspacePage } from '../features/backtests/BacktestWorkspacePage';
 import { DataSourcesPage } from '../features/settings/DataSourcesPage';
 import { TaskCenterPage } from '../features/tasks/TaskCenterPage';
+import { DesktopStartup } from '../features/desktop/DesktopStartup';
+import { DesktopExitGuard } from '../features/desktop/DesktopExitGuard';
 import { useSystemStatus } from '../shared/api/useSystemStatus';
 import type { WorkerState } from '../shared/api/useSystemStatus';
 import { ContextPanel } from './ContextPanel';
@@ -29,6 +31,14 @@ import { RouteEffects } from './RouteEffects';
 import { appRoutes } from './routes';
 import { useWorkspaceStore } from './store';
 import { WorkspaceStoreProvider } from './WorkspaceStoreProvider';
+import { createDesktopBridge, type DesktopBridge } from './desktopBridge';
+import { createTauriAdapter } from './tauriAdapter';
+
+const tauriAdapter = createTauriAdapter();
+const defaultDesktopBridge: DesktopBridge =
+  tauriAdapter === undefined
+    ? createDesktopBridge()
+    : createDesktopBridge(tauriAdapter);
 
 const FormulaStudioPage = lazy(async () => {
   const module = await import('../features/formulas/FormulaStudioPage');
@@ -397,10 +407,18 @@ function WorkspaceShell() {
   );
 }
 
-export function App() {
+export function App({
+  desktopBridge = defaultDesktopBridge,
+}: {
+  readonly desktopBridge?: DesktopBridge;
+}) {
   return (
-    <WorkspaceStoreProvider>
-      <WorkspaceShell />
-    </WorkspaceStoreProvider>
+    <DesktopExitGuard bridge={desktopBridge}>
+      <DesktopStartup bridge={desktopBridge}>
+        <WorkspaceStoreProvider>
+          <WorkspaceShell />
+        </WorkspaceStoreProvider>
+      </DesktopStartup>
+    </DesktopExitGuard>
   );
 }

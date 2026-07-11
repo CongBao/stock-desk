@@ -358,8 +358,13 @@ class TaskWorker:
     def registered_claimed_kinds(self) -> tuple[str, ...]:
         return tuple(sorted(self._claimed_handlers))
 
-    def run_once(self) -> TaskSnapshot | None:
-        claimed = self._repository.claim_next(self._worker_id)
+    def run_once(
+        self, *, stop_event: threading.Event | None = None
+    ) -> TaskSnapshot | None:
+        claimed = self._repository.claim_next(
+            self._worker_id,
+            stop_event=stop_event,
+        )
         if claimed is None:
             return None
         if isinstance(claimed, TaskClaim):
@@ -447,7 +452,7 @@ class TaskWorker:
         with self.heartbeat_lifecycle(stop_event) as heartbeat:
             while not stop_event.is_set():
                 heartbeat.raise_if_failed()
-                completed = self.run_once()
+                completed = self.run_once(stop_event=stop_event)
                 if completed is None:
                     stop_event.wait(
                         max(self._poll_interval, _MINIMUM_IDLE_WAIT_SECONDS)

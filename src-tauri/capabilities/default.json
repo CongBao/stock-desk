@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Minimal Windows main-window capability for Stock Desk",
+  "windows": ["main"],
+  "platforms": ["windows"],
+  "permissions": ["core:event:default"]
+}

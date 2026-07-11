@@ -5,7 +5,7 @@ import json
 import math
 from pathlib import Path
 from types import MappingProxyType
-from threading import RLock
+from threading import Event, RLock
 from typing import Any, cast
 from uuid import UUID, uuid4
 
@@ -1099,8 +1099,11 @@ class TaskRepository:
         *,
         now: datetime | None = None,
         lease_duration: timedelta = _DEFAULT_LEASE_DURATION,
+        stop_event: Event | None = None,
     ) -> TaskSnapshot | TaskClaim | None:
         with self.hold_claim_gate():
+            if stop_event is not None and stop_event.is_set():
+                return None
             return self._claim_next_without_gate(
                 worker_id,
                 now=now,

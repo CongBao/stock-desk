@@ -70,6 +70,26 @@ export type ApiClient = {
   ) => Promise<JsonValue | undefined>;
 };
 
+export type ApiTransportRequest = {
+  readonly body?: string;
+  readonly method: 'DELETE' | 'GET' | 'POST' | 'PUT';
+  readonly path: string;
+};
+
+export type ApiTransport = (
+  request: ApiTransportRequest,
+  signal?: AbortSignal,
+) => Promise<Response>;
+
+let runtimeApiTransport: ApiTransport | undefined;
+
+export function installRuntimeApiTransport(transport: ApiTransport): void {
+  if (runtimeApiTransport !== undefined && runtimeApiTransport !== transport) {
+    throw new Error('Runtime API transport is already installed');
+  }
+  runtimeApiTransport = transport;
+}
+
 function joinApiPath(baseUrl: string, path: string): string {
   const normalizedBase = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
   const normalizedPath = path.startsWith('/') ? path : `/${path}`;
@@ -196,7 +216,10 @@ function validatedSerializedBody(options: ApiWriteOptions): string | undefined {
   return options.serializedBody;
 }
 
-export function createApiClient(baseUrl = '/api'): ApiClient {
+export function createApiClient(
+  baseUrl = '/api',
+  transport?: ApiTransport,
+): ApiClient {
   async function request(
     method: 'DELETE' | 'GET' | 'POST' | 'PUT',
     path: string,
@@ -217,14 +240,27 @@ export function createApiClient(baseUrl = '/api'): ApiClient {
     let response: Response;
 
     try {
-      response = await fetch(joinApiPath(baseUrl, path), {
-        cache: options.cache,
-        credentials: options.credentials,
-        method,
-        headers,
-        body: serializedBody,
-        signal: options.signal,
-      });
+      const selectedTransport = transport ?? runtimeApiTransport;
+      response =
+        selectedTransport === undefined
+          ? await fetch(joinApiPath(baseUrl, path), {
+              cache: options.cache,
+              credentials: options.credentials,
+              method,
+              headers,
+              body: serializedBody,
+              signal: options.signal,
+            })
+          : await selectedTransport(
+              {
+                ...(serializedBody === undefined
+                  ? {}
+                  : { body: serializedBody }),
+                method,
+                path: joinApiPath(baseUrl, path),
+              },
+              options.signal,
+            );
     } catch (error) {
       if (isAbortFailure(error, options.signal)) {
         throw new ApiError('API request was aborted', {

@@ -4,7 +4,14 @@ import { createRoot } from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
 
 import { App } from './app/App';
+import { createTauriApiTransport } from './app/tauriAdapter';
 import './app/theme.css';
+import { installRuntimeApiTransport } from './shared/api/client';
+
+const desktopApiTransport = createTauriApiTransport();
+if (desktopApiTransport !== undefined) {
+  installRuntimeApiTransport(desktopApiTransport);
+}
 
 const queryClient = new QueryClient({
   defaultOptions: {

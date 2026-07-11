@@ -1,0 +1,38 @@
+[package]
+name = "stock-desk-desktop"
+version = "1.1.0-alpha.2"
+description = "Windows desktop host for Stock Desk"
+authors = ["CongBao <bao_cong@outlook.com>"]
+edition = "2021"
+license = "Apache-2.0"
+rust-version = "1.88"
+publish = false
+
+[build-dependencies]
+tauri-build = { version = "=2.6.3", features = [] }
+
+[dependencies]
+base64 = { version = "=0.22.1" }
+getrandom = { version = "=0.3.4" }
+reqwest = { version = "=0.13.4", default-features = false, features = ["json"] }
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = { version = "=1.0.150" }
+tauri = { version = "=2.11.5", features = [] }
+tauri-plugin-single-instance = { version = "=2.4.2" }
+tauri-plugin-shell = { version = "=2.3.5" }
+tokio = { version = "=1.52.3", features = ["time"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

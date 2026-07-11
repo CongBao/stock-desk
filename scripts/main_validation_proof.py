@@ -28,7 +28,7 @@ from scripts.artifact_manifest import (
 
 
 LEGACY_SCHEMA: Final = "stock-desk-main-validation-proof-v1"
-SCHEMA: Final = "stock-desk-main-validation-proof-v2"
+SCHEMA: Final = "stock-desk-main-validation-proof-v3"
 POST_GH_VERIFY_BINDING_SCHEMA: Final = "stock-desk-main-proof-post-gh-verify-binding-v1"
 SHA256_PATTERN: Final = re.compile(r"^[0-9a-f]{64}$")
 GIT_SHA_PATTERN: Final = re.compile(r"^[0-9a-f]{40}$")
@@ -57,15 +57,26 @@ LEGACY_CRITICAL_INPUTS: Final = (
     "uv.lock",
 )
 CRITICAL_INPUTS: Final = LEGACY_CRITICAL_INPUTS + (
+    "packaging/nsis/installer.nsi",
+    "packaging/stock-desk-sidecar.spec",
     "playwright.config.ts",
     "schemas/artifact-manifest-v2.schema.json",
     "scripts/aggregate_ci_evidence.py",
     "scripts/artifact_manifest.py",
+    "scripts/build_windows_desktop.py",
     "scripts/check_requirement_coverage.py",
     "scripts/ci_impact.py",
     "scripts/ci_test_inventory.py",
+    "scripts/clean_build_artifacts.py",
+    "scripts/compare_windows_payloads.py",
     "scripts/e2e_snapshot.py",
     "scripts/verify_ci_cache_policy.py",
+    "scripts/verify_windows_desktop_bundle.py",
+    "src-tauri/Cargo.lock",
+    "src-tauri/Cargo.toml",
+    "src-tauri/tauri.conf.json",
+    "src-tauri/tauri.windows.conf.json",
+    "rust-toolchain.toml",
     "tests/acceptance/requirements.yml",
     "web/vite.config.ts",
 )
@@ -85,7 +96,9 @@ WORKFLOW_POLICIES: Final = {
         required_jobs=frozenset(
             {
                 "Select required test scope",
-                "Windows runtime ACL execution",
+                "Build and verify Windows desktop candidate A",
+                "Build and verify Windows desktop candidate B",
+                "Compare independent Windows desktop candidates",
                 "Public tree and repository health",
                 "Locked production dependency audit",
                 "Python unit shard",
@@ -203,6 +216,18 @@ EVIDENCE_POLICIES: Final = {
         "container-security",
         "Verify OCI SBOM and vulnerabilities",
         "oci-security-evidence",
+    ),
+    "windows-payload-comparison": EvidencePolicy(
+        "CI",
+        "windows-desktop-compare",
+        "Compare independent Windows desktop candidates",
+        "windows-payload-comparison-manifest",
+    ),
+    "windows-alpha-candidate": EvidencePolicy(
+        "CI",
+        "windows-desktop-compare",
+        "Compare independent Windows desktop candidates",
+        "windows-desktop-alpha-candidate-manifest",
     ),
 }
 
@@ -703,6 +728,19 @@ def _validation_evidence(
             raise MainValidationProofError(
                 f"{artifact_name} producer does not match its GitHub job identity"
             )
+        if artifact_name == "windows-desktop-alpha-candidate-manifest":
+            unsigned_installers = [
+                payload
+                for payload in manifest["payloads"]
+                if isinstance(payload, dict)
+                and payload.get("kind") == "tauri-unsigned"
+                and isinstance(payload.get("path"), str)
+                and str(payload["path"]).casefold().endswith(".exe")
+            ]
+            if len(unsigned_installers) != 1 or "tauri" not in manifest:
+                raise MainValidationProofError(
+                    "Windows alpha candidate must bind exactly one Tauri unsigned installer"
+                )
         for payload_value in manifest["payloads"]:
             payload = _object(payload_value, f"{artifact_name} payload")
             identity = (artifact_name, _string(payload.get("path"), "payload path"))

@@ -484,7 +484,7 @@ class ProductionMarketWorker:
                 if now >= next_schedule_poll:
                     self.scheduler.tick()
                     next_schedule_poll = now + _SCHEDULE_POLL_SECONDS
-                completed = self.worker.run_once()
+                completed = self.worker.run_once(stop_event=stop_event)
                 if completed is None:
                     stop_event.wait(_IDLE_TASK_POLL_SECONDS)
             heartbeat.raise_if_failed()
