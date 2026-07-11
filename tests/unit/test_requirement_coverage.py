@@ -587,6 +587,20 @@ def test_reviewed_non_release_evidence_is_existing_and_precisely_scoped(
             for evidence in by_id[requirement_id]["evidence"]
         ), requirement_id
 
+    container_evidence = by_id["R-035"]["evidence"]
+    assert not any(
+        evidence.get("runner") == "pytest"
+        and evidence.get("path") == "tests/acceptance/test_container_smoke.py"
+        for evidence in container_evidence
+    )
+    assert any(
+        evidence.get("runner") == "github-actions"
+        and evidence.get("path") == ".github/workflows/ci.yml"
+        and evidence.get("selector")
+        == "Verify OCI Compose smoke / Verify, load, and smoke the exact image without rebuilding"
+        for evidence in container_evidence
+    )
+
     tdx_selectors = {
         evidence.get("selector"): evidence["state"]
         for evidence in by_id["R-031"]["evidence"]

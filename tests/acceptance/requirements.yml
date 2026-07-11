@@ -447,7 +447,7 @@ requirements:
     status: mapped
     evidence:
       - {state: existing, runner: pytest, kind: contract, path: tests/unit/analysis/test_workflow.py, selector: 'tests/unit/analysis/test_workflow.py::test_analysis_import_boundary_rejects_domain_and_direct_network_imports', assertion: The analysis module boundary rejects forbidden domain and direct-network imports.}
-      - {state: existing, runner: pytest, kind: integration, path: tests/acceptance/test_container_smoke.py, selector: 'tests/acceptance/test_container_smoke.py::test_compose_worker_completes_demo_task_through_shared_sqlite', assertion: The container smoke test proves heavy task execution crosses an independent worker through shared durable storage.}
+      - {state: existing, runner: github-actions, kind: integration, path: .github/workflows/ci.yml, selector: 'Verify OCI Compose smoke / Verify, load, and smoke the exact image without rebuilding', assertion: The exact-image Compose job runs make smoke and proves heavy task execution crosses an independent worker through shared durable SQLite storage without rebuilding the image.}
       - {state: existing, runner: pytest, kind: contract, path: tests/acceptance/test_architecture_boundaries.py, selector: 'tests/acceptance/test_architecture_boundaries.py::test_module_inventory_and_heavy_work_use_independent_worker', assertion: 'The architecture inventory verifies the exact capability packages, forbids heavy-worker imports from API modules, and executes queued work through an independent production worker.'}
   - id: R-036
     category: market
