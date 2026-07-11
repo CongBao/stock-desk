@@ -26,7 +26,8 @@ Kweichow Moutai `600519.SH`; BaoStock daily/qfq data; cutoff `2026-07-08T07:00:0
 ## Download and install
 
 Download the source-free installer for your platform from the
-[Latest Release](https://github.com/CongBao/stock-desk/releases/latest):
+[Latest Release](https://github.com/CongBao/stock-desk/releases/latest). See the bilingual
+[download and authenticity guide](docs/download.md) before installation:
 
 - `stock-desk-<version>-windows-x86_64.exe`
 - `stock-desk-<version>-macos-x86_64.dmg`
@@ -59,3 +60,7 @@ Local deployments have no authentication, authorization, or TLS; do not expose t
 Report security issues privately through
 [GitHub Security Advisories](https://github.com/CongBao/stock-desk/security/advisories/new) and read
 [SECURITY.md](SECURITY.md).
+
+See the bilingual [Code signing policy](docs/code-signing-policy.md) for signing status,
+manual approval, and trusted-build boundaries, and the [privacy policy](docs/privacy.md)
+for local data and network behavior.
