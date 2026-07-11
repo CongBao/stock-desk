@@ -569,7 +569,14 @@ def normalize_frontend_junit(
     root = _junit_root(path)
     resolved_root = (repo_root or Path.cwd()).resolve()
     separator = " > " if runner == "vitest" else " › "
-    records: list[dict[str, str]] = []
+    records_by_selector: dict[tuple[str, str], dict[str, str]] = {}
+    status_priority = {
+        "skipped": 0,
+        "passed": 1,
+        "xfail": 2,
+        "failed": 3,
+        "error": 4,
+    }
     for testcase in root.findall(".//testcase"):
         classname = testcase.get("classname", "")
         name = testcase.get("name", "").strip()
@@ -588,18 +595,23 @@ def normalize_frontend_junit(
             if skipped is not None:
                 skip_type = skipped.get("type", "").lower()
                 status = "xfail" if "xfail" in skip_type else "skipped"
-        records.append(
-            {
-                "path": _frontend_path(runner, classname, resolved_root),
+        frontend_path = _frontend_path(runner, classname, resolved_root)
+        key = (frontend_path, selector)
+        existing = records_by_selector.get(key)
+        if (
+            existing is None
+            or status_priority[status] > status_priority[existing["status"]]
+        ):
+            records_by_selector[key] = {
+                "path": frontend_path,
                 "selector": selector,
                 "status": status,
             }
-        )
     return build_test_report(
         runner=runner,
         source_sha=source_sha,
         source_tree=source_tree,
-        tests=records,
+        tests=records_by_selector.values(),
     )
 
 

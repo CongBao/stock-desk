@@ -727,6 +727,44 @@ def test_playwright_junit_basename_resolves_to_one_exact_repo_path(
     assert payload["tests"][0]["path"] == "web/e2e/nested/market.spec.ts"
 
 
+def test_playwright_junit_collapses_parameterized_selector_family_fail_closed(
+    tmp_path: Path,
+) -> None:
+    junit = tmp_path / "playwright.xml"
+    suites = ET.Element("testsuites")
+    suite = ET.SubElement(suites, "testsuite")
+    ET.SubElement(
+        suite,
+        "testcase",
+        classname="chromium › web/e2e/responsive.spec.ts › wide desktop",
+        name="wide desktop › /market has bounded non-overlapping layout",
+    )
+    failed = ET.SubElement(
+        suite,
+        "testcase",
+        classname="chromium › web/e2e/responsive.spec.ts › mobile portrait",
+        name="mobile portrait › /market has bounded non-overlapping layout",
+    )
+    ET.SubElement(failed, "failure", message="overlap")
+    ET.ElementTree(suites).write(junit, encoding="utf-8", xml_declaration=True)
+
+    payload = aggregate.normalize_frontend_junit(
+        junit,
+        runner="playwright",
+        source_sha=SHA,
+        source_tree=TREE,
+    )
+
+    assert payload["status"] == "failed"
+    assert payload["tests"] == [
+        {
+            "path": "web/e2e/responsive.spec.ts",
+            "selector": "/market has bounded non-overlapping layout",
+            "status": "failed",
+        }
+    ]
+
+
 def test_shard_normalize_and_aggregate_cli_dispatch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
