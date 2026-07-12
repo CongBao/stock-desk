@@ -32,6 +32,12 @@ const SAMPLE_COUNT = 20;
 const RSS_SAMPLE_INTERVAL_MS = 500;
 const PROGRESS_GATE_HEADER = 'x-stock-desk-performance-window';
 let progressGateGeneration = 0;
+let backtestCorrectnessReference:
+  | {
+      correctnessHash: string;
+      componentHashes: Readonly<Record<string, string>>;
+    }
+  | undefined;
 const OUTPUT = process.env['STOCK_DESK_PERFORMANCE_RAW_OUTPUT'];
 const PROCESS_FILE = process.env['STOCK_DESK_PERFORMANCE_PROCESS_FILE'];
 const FIXTURE_FILE = process.env['STOCK_DESK_PERFORMANCE_FIXTURE'];
@@ -711,17 +717,31 @@ async function backtestAction(
     outcomes: typedReport?.outcomes,
   };
   const correctnessHash = digest(normalizedReport);
-  console.log(
-    `[performance-backtest-correctness] ${JSON.stringify({
-      correctness_hash: correctnessHash,
-      component_hashes: Object.fromEntries(
+  if (backtestCorrectnessReference === undefined) {
+    backtestCorrectnessReference = {
+      correctnessHash,
+      componentHashes: Object.fromEntries(
         Object.entries(normalizedReport).map(([name, value]) => [
           name,
           digest(value),
         ]),
       ),
-    })}`,
-  );
+    };
+  } else if (correctnessHash !== backtestCorrectnessReference.correctnessHash) {
+    console.log(
+      `[performance-backtest-correctness-drift] ${JSON.stringify({
+        expected_hash: backtestCorrectnessReference.correctnessHash,
+        actual_hash: correctnessHash,
+        expected_components: backtestCorrectnessReference.componentHashes,
+        actual_components: Object.fromEntries(
+          Object.entries(normalizedReport).map(([name, value]) => [
+            name,
+            digest(value),
+          ]),
+        ),
+      })}`,
+    );
+  }
   return {
     wall_seconds: wall,
     local_seconds: wall,
