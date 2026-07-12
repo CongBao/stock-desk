@@ -94,10 +94,12 @@ export function MarketPage({
   const selectedPoolId = useMarketStore((state) => state.selectedPoolId);
   const period = useMarketStore((state) => state.period);
   const adjustment = useMarketStore((state) => state.adjustment);
+  const zoom = useMarketStore((state) => state.zoom);
   const selectInstrument = useMarketStore((state) => state.selectInstrument);
   const selectPool = useMarketStore((state) => state.selectPool);
   const setPeriod = useMarketStore((state) => state.setPeriod);
   const setAdjustment = useMarketStore((state) => state.setAdjustment);
+  const setZoom = useMarketStore((state) => state.setZoom);
 
   const navigation = useQuery({
     queryKey: ['market', 'navigation'],
@@ -419,6 +421,8 @@ export function MarketPage({
             bars={bars.data?.bars}
             isLoading={bars.isFetching && bars.data === undefined}
             errorMessage={errorMessage}
+            initialZoom={zoom}
+            onZoomChange={setZoom}
           />
           {isCacheMiss ? (
             <div className="cache-miss-guidance" role="note">

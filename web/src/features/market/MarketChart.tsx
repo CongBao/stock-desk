@@ -105,13 +105,13 @@ export type MarketChartOption = {
       readonly moveOnMouseMove: true;
       readonly moveOnMouseWheel: false;
       readonly start: number;
-      readonly end: 100;
+      readonly end: number;
     },
     {
       readonly type: 'slider';
       readonly xAxisIndex: readonly [0, 1];
       readonly start: number;
-      readonly end: 100;
+      readonly end: number;
       readonly bottom: number;
       readonly height: number;
     },
@@ -326,12 +326,18 @@ function signalMarkerOffset(bar: MarketBar): number {
 // eslint-disable-next-line react-refresh/only-export-components
 export function buildMarketChartOption(
   bars: readonly MarketBar[],
-  theme: ResolvedTheme = 'dark',
+  themeOrZoom: ResolvedTheme | ZoomRange = 'dark',
+  requestedZoom?: ZoomRange,
 ): MarketChartOption {
+  const theme = typeof themeOrZoom === 'string' ? themeOrZoom : 'dark';
+  const effectiveZoom =
+    typeof themeOrZoom === 'string' ? requestedZoom : themeOrZoom;
   const colors = CHART_THEMES[theme];
   const categories = bars.map((bar) => bar.timestamp);
   const visibleStart =
-    bars.length > 160 ? Math.max(0, 100 - (160 / bars.length) * 100) : 0;
+    effectiveZoom?.start ??
+    (bars.length > 160 ? Math.max(0, 100 - (160 / bars.length) * 100) : 0);
+  const visibleEnd = effectiveZoom?.end ?? 100;
   return {
     animation: false,
     aria: {
@@ -407,7 +413,7 @@ export function buildMarketChartOption(
         type: 'inside',
         xAxisIndex: [0, 1],
         start: visibleStart,
-        end: 100,
+        end: visibleEnd,
         zoomOnMouseWheel: true,
         moveOnMouseMove: true,
         moveOnMouseWheel: false,
@@ -416,7 +422,7 @@ export function buildMarketChartOption(
         type: 'slider',
         xAxisIndex: [0, 1],
         start: visibleStart,
-        end: 100,
+        end: visibleEnd,
         bottom: 8,
         height: 18,
       },
@@ -448,10 +454,14 @@ export function buildMarketChartOption(
 export function buildFormulaMarketChartOption(
   bars: readonly MarketBar[],
   formula: FormulaChartLayer,
-  theme: ResolvedTheme = 'dark',
+  themeOrZoom: ResolvedTheme | ZoomRange = 'dark',
+  requestedZoom?: ZoomRange,
 ): EChartsCoreOption {
+  const theme = typeof themeOrZoom === 'string' ? themeOrZoom : 'dark';
+  const effectiveZoom =
+    typeof themeOrZoom === 'string' ? requestedZoom : themeOrZoom;
   const colors = CHART_THEMES[theme];
-  const base = buildMarketChartOption(bars, theme);
+  const base = buildMarketChartOption(bars, theme, effectiveZoom);
   const byTimestamp = new Map(
     formula.timestamps.map((timestamp, index) => [timestamp, index] as const),
   );
@@ -581,6 +591,8 @@ type MarketChartProps = {
   readonly formulaEmptyMessage?: string;
   readonly formulaEmptyPlacement?: FormulaChartLayer['placement'];
   readonly isLoading?: boolean;
+  readonly initialZoom?: ZoomRange;
+  readonly onZoomChange?: (zoom: ZoomRange) => void;
 };
 
 type RenderGeneration = {
@@ -597,6 +609,8 @@ export function MarketChart({
   formulaEmptyMessage,
   formulaEmptyPlacement = 'subchart',
   isLoading = false,
+  initialZoom = { start: 0, end: 100 },
+  onZoomChange,
 }: MarketChartProps) {
   const { resolvedTheme } = useTheme();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -617,7 +631,10 @@ export function MarketChart({
     readonly bars: readonly MarketBar[];
     readonly index: number;
   } | null>(null);
-  const [zoom, setZoom] = useState<ZoomRange>({ start: 0, end: 100 });
+  const [zoom, setZoom] = useState<ZoomRange>(initialZoom);
+  const zoomRef = useRef<ZoomRange>(initialZoom);
+  const onZoomChangeRef = useRef(onZoomChange);
+  onZoomChangeRef.current = onZoomChange;
   barsRef.current = bars;
   const hasBars = bars !== undefined && bars.length > 0;
   const isReady =
@@ -645,7 +662,11 @@ export function MarketChart({
     };
     const handleDataZoom = (event: unknown) => {
       const next = dataZoomRange(event);
-      if (next !== null) setZoom(next);
+      if (next !== null) {
+        zoomRef.current = next;
+        setZoom(next);
+        onZoomChangeRef.current?.(next);
+      }
     };
     const issueRender = (render: RenderGeneration) => {
       activeRenderRef.current = render;
@@ -695,6 +716,22 @@ export function MarketChart({
   }, [hasBars]);
 
   useEffect(() => {
+    if (
+      zoomRef.current.start === initialZoom.start &&
+      zoomRef.current.end === initialZoom.end
+    ) {
+      return;
+    }
+    zoomRef.current = initialZoom;
+    setZoom(initialZoom);
+    instanceRef.current?.dispatchAction({
+      type: 'dataZoom',
+      start: initialZoom.start,
+      end: initialZoom.end,
+    });
+  }, [initialZoom.end, initialZoom.start]);
+
+  useEffect(() => {
     if (!hasBars || instanceRef.current === null || bars === undefined) {
       queuedRenderRef.current = null;
       setFinishedFor(null);
@@ -702,8 +739,13 @@ export function MarketChart({
     }
     const option =
       formula === undefined
-        ? buildMarketChartOption(bars, resolvedTheme)
-        : buildFormulaMarketChartOption(bars, formula, resolvedTheme);
+        ? buildMarketChartOption(bars, resolvedTheme, zoomRef.current)
+        : buildFormulaMarketChartOption(
+            bars,
+            formula,
+            resolvedTheme,
+            zoomRef.current,
+          );
     const render: RenderGeneration = {
       generation: nextGenerationRef.current + 1,
       bars,
@@ -760,6 +802,8 @@ export function MarketChart({
                   end: 100,
                 });
                 setZoom({ start: 0, end: 100 });
+                zoomRef.current = { start: 0, end: 100 };
+                onZoomChangeRef.current?.({ start: 0, end: 100 });
               }}
             >
               重置视图

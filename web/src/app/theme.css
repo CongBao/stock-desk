@@ -469,6 +469,26 @@ a {
   font-size: 12px;
 }
 
+.workspace-restore-shell {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  color: var(--text-muted);
+  background: var(--surface-0);
+}
+
+.workspace-restore-notice {
+  inline-size: min(560px, calc(100vw - 32px));
+  margin: 12px auto;
+  padding: 10px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--surface-2) 94%, transparent);
+  box-shadow: 0 10px 28px rgb(0 0 0 / 28%);
+}
+
 .workspace-topbar > div {
   display: flex;
   align-items: center;

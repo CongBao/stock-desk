@@ -457,6 +457,39 @@ it('initializes, resizes, resets, and disposes the tree-shaken chart instance', 
   expect(chartMocks.dispose).toHaveBeenCalledOnce();
 });
 
+it('restores the persisted zoom and reports later chart zoom changes', () => {
+  let dataZoomHandler: ((event: unknown) => void) | undefined;
+  chartMocks.on.mockImplementation(
+    (eventName: string, handler: (event: unknown) => void) => {
+      if (eventName === 'dataZoom') dataZoomHandler = handler;
+    },
+  );
+  const onZoomChange = vi.fn();
+  render(
+    <MarketChart
+      bars={bars}
+      initialZoom={{ start: 20, end: 80 }}
+      onZoomChange={onZoomChange}
+    />,
+  );
+
+  expect(chartMocks.setOption).toHaveBeenCalledWith(
+    expect.objectContaining({
+      dataZoom: [
+        expect.objectContaining({ start: 20, end: 80 }),
+        expect.objectContaining({ start: 20, end: 80 }),
+      ],
+    }),
+    { lazyUpdate: true, notMerge: true },
+  );
+  expect(
+    screen.getByRole('status', { name: '图表缩放范围' }),
+  ).toHaveTextContent('20%–80%');
+
+  act(() => dataZoomHandler?.({ batch: [{ start: 30, end: 70 }] }));
+  expect(onZoomChange).toHaveBeenCalledWith({ start: 30, end: 70 });
+});
+
 it('serializes delayed ECharts generations so A cannot mark queued B ready', () => {
   let finishedHandler: ((event: unknown) => void) | undefined;
   chartMocks.on.mockImplementation(

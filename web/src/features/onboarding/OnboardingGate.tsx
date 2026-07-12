@@ -635,12 +635,19 @@ export function OnboardingGate({
       selectInstrument({
         symbol: state.instrument.symbol,
         name: state.instrument.name,
+        exchange: state.instrument.exchange,
+        instrumentKind: state.instrument.instrumentKind,
       });
     }
   }, [selectInstrument, state]);
 
   function openMarket(instrument: OnboardingInstrument) {
-    selectInstrument({ symbol: instrument.symbol, name: instrument.name });
+    selectInstrument({
+      symbol: instrument.symbol,
+      name: instrument.name,
+      exchange: instrument.exchange,
+      instrumentKind: instrument.instrumentKind,
+    });
     void navigate('/market', { replace: true });
   }
 
