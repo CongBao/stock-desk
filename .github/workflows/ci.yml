@@ -430,17 +430,25 @@ jobs:
           $root = Join-Path $env:RUNNER_TEMP 'windows-compare'; $evidence = Join-Path $root 'evidence'; $promoted = Join-Path $root 'promoted'
           $diagnostics = Join-Path $root 'diagnostics'; New-Item -ItemType Directory -Force $evidence, $promoted, $diagnostics | Out-Null
           trap { $_ | Out-String | Set-Content -Encoding utf8NoBOM (Join-Path $diagnostics 'comparison-failure.txt'); Get-ChildItem $root -Recurse -Force -ErrorAction SilentlyContinue | Select-Object FullName,Length | Out-File -Encoding utf8 (Join-Path $diagnostics 'artifact-inventory.txt'); throw $_ }
-          $leftManifests = @(Get-ChildItem (Join-Path $root 'a') -Recurse -File -Filter 'windows-desktop-bundle.json')
-          $rightManifests = @(Get-ChildItem (Join-Path $root 'b') -Recurse -File -Filter 'windows-desktop-bundle.json')
-          if ($leftManifests.Count -ne 1 -or $rightManifests.Count -ne 1) { throw 'expected exactly one bundle manifest per downloaded candidate' }
-          $leftRoot = $leftManifests[0].DirectoryName; $rightRoot = $rightManifests[0].DirectoryName
-          $leftInstaller = Join-Path $leftRoot 'stock-desk-unsigned-nsis.exe'; $rightInstaller = Join-Path $rightRoot 'stock-desk-unsigned-nsis.exe'
-          $leftProvenance = Join-Path $leftRoot 'provenance.json'
-          foreach ($required in @($leftInstaller, $rightInstaller, $leftProvenance)) { if (-not (Test-Path -LiteralPath $required -PathType Leaf)) { throw "candidate companion file is missing: $([IO.Path]::GetFileName($required))" } }
-          uv run --frozen python -m scripts.compare_windows_payloads $leftManifests[0].FullName $rightManifests[0].FullName --left-installer $leftInstaller --right-installer $rightInstaller --output (Join-Path $evidence 'windows-payload-comparison.json')
-          Copy-Item $leftInstaller (Join-Path $promoted 'stock-desk-1.1.0-alpha.2-unsigned-x64-setup.exe')
-          Copy-Item $leftManifests[0].FullName (Join-Path $promoted 'windows-desktop-bundle.json')
-          Copy-Item $leftProvenance (Join-Path $promoted 'builder-a-provenance.json')
+          function Get-CompleteCandidate([string]$downloadRoot, [string]$label) {
+            $manifests = @(Get-ChildItem $downloadRoot -Recurse -File -Filter 'windows-desktop-bundle.json')
+            $complete = @()
+            foreach ($manifest in $manifests) {
+              $installer = Join-Path $manifest.DirectoryName 'stock-desk-unsigned-nsis.exe'
+              $provenance = Join-Path $manifest.DirectoryName 'provenance.json'
+              if ((Test-Path -LiteralPath $installer -PathType Leaf) -and (Test-Path -LiteralPath $provenance -PathType Leaf)) {
+                $complete += [PSCustomObject]@{ Manifest=$manifest.FullName; Installer=$installer; Provenance=$provenance }
+              }
+            }
+            if ($complete.Count -ne 1) { throw "$label candidate root is invalid (manifests=$($manifests.Count), complete=$($complete.Count))" }
+            return $complete[0]
+          }
+          $left = Get-CompleteCandidate (Join-Path $root 'a') 'left'
+          $right = Get-CompleteCandidate (Join-Path $root 'b') 'right'
+          uv run --frozen python -m scripts.compare_windows_payloads $left.Manifest $right.Manifest --left-installer $left.Installer --right-installer $right.Installer --output (Join-Path $evidence 'windows-payload-comparison.json')
+          Copy-Item $left.Installer (Join-Path $promoted 'stock-desk-1.1.0-alpha.2-unsigned-x64-setup.exe')
+          Copy-Item $left.Manifest (Join-Path $promoted 'windows-desktop-bundle.json')
+          Copy-Item $left.Provenance (Join-Path $promoted 'builder-a-provenance.json')
           Copy-Item (Join-Path $evidence 'windows-payload-comparison.json') (Join-Path $promoted 'windows-payload-comparison.json')
           $tree = git rev-parse 'HEAD^{tree}'; $cargoLock=(Get-FileHash src-tauri\Cargo.lock -Algorithm SHA256).Hash.ToLowerInvariant(); $cargoToml=(Get-FileHash src-tauri\Cargo.toml -Algorithm SHA256).Hash.ToLowerInvariant(); $ciHash=(Get-FileHash .github\workflows\ci.yml -Algorithm SHA256).Hash.ToLowerInvariant(); $buildHash=(Get-FileHash scripts\build_windows_desktop.py -Algorithm SHA256).Hash.ToLowerInvariant(); $verifyHash=(Get-FileHash scripts\verify_windows_desktop_bundle.py -Algorithm SHA256).Hash.ToLowerInvariant(); $compareHash=(Get-FileHash scripts\compare_windows_payloads.py -Algorithm SHA256).Hash.ToLowerInvariant(); $tauriHash=(Get-FileHash src-tauri\tauri.conf.json -Algorithm SHA256).Hash.ToLowerInvariant(); $tauriWindowsHash=(Get-FileHash src-tauri\tauri.windows.conf.json -Algorithm SHA256).Hash.ToLowerInvariant(); $sidecarSpecHash=(Get-FileHash packaging\stock-desk-sidecar.spec -Algorithm SHA256).Hash.ToLowerInvariant(); $nsisHash=(Get-FileHash packaging\nsis\installer.nsi -Algorithm SHA256).Hash.ToLowerInvariant()
           $critical = @('--critical-input', ".github/workflows/ci.yml=$ciHash", '--critical-input', "scripts/build_windows_desktop.py=$buildHash", '--critical-input', "scripts/verify_windows_desktop_bundle.py=$verifyHash", '--critical-input', "scripts/compare_windows_payloads.py=$compareHash", '--critical-input', "src-tauri/tauri.conf.json=$tauriHash", '--critical-input', "src-tauri/tauri.windows.conf.json=$tauriWindowsHash", '--critical-input', "src-tauri/Cargo.toml=$cargoToml", '--critical-input', "packaging/stock-desk-sidecar.spec=$sidecarSpecHash", '--critical-input', "packaging/nsis/installer.nsi=$nsisHash")

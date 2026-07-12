@@ -123,22 +123,17 @@ def test_comparison_promotes_only_a_and_main_proof_attests_both_identities() -> 
     assert isinstance(compare, dict) and isinstance(proof, dict)
     commands = _commands(compare)
     assert "python -m scripts.compare_windows_payloads" in commands
-    assert (
-        "$leftInstaller = Join-Path $leftRoot 'stock-desk-unsigned-nsis.exe'"
-        in commands
-    )
-    assert (
-        "$rightInstaller = Join-Path $rightRoot 'stock-desk-unsigned-nsis.exe'"
-        in commands
-    )
-    assert "Copy-Item $leftInstaller" in commands
-    assert "Copy-Item $rightInstaller" not in commands
+    assert "function Get-CompleteCandidate" in commands
+    assert "Get-ChildItem $downloadRoot -Recurse -File" in commands
+    assert "[PSCustomObject]@{ Manifest=$manifest.FullName" in commands
+    assert "candidate root is invalid" in commands
+    assert "complete=$($complete.Count)" in commands
+    assert "Copy-Item $left.Installer" in commands
+    assert "Copy-Item $right.Installer" not in commands
     assert "windows-desktop-alpha-candidate-manifest.json" in commands
     assert "windows-payload-comparison-manifest.json" in commands
-    assert "Get-ChildItem (Join-Path $root 'a') -Recurse -File" in commands
-    assert "Get-ChildItem (Join-Path $root 'b') -Recurse -File" in commands
-    assert "expected exactly one bundle manifest per downloaded candidate" in commands
-    assert "candidate companion file is missing" in commands
+    assert "$left = Get-CompleteCandidate (Join-Path $root 'a') 'left'" in commands
+    assert "$right = Get-CompleteCandidate (Join-Path $root 'b') 'right'" in commands
     assert "a\\windows-desktop-bundle.json" not in commands
     assert "b\\windows-desktop-bundle.json" not in commands
     assert "manifest-binding.json" in commands
