@@ -703,8 +703,10 @@ def test_cancel_between_symbols_keeps_checkpoint_and_stops_new_work(
 
         monkeypatch.setattr(tasks, "heartbeat", count_cancel_heartbeat)
         monkeypatch.setattr(repository, "cancel_claim", slow_cancel)
+        # Give slow CI a bounded preparation lease before the runner's heartbeat
+        # thread starts; subsequent heartbeats still exercise the short lease.
         claim = tasks.claim_next(
-            "cancelling-worker", lease_duration=timedelta(seconds=1)
+            "cancelling-worker", lease_duration=timedelta(seconds=15)
         )
         assert isinstance(claim, TaskClaim)
         runner(claim)

@@ -200,8 +200,11 @@ def test_windows_backend_rejects_marker_rebinding_before_catalog_write(
     try:
         lake = MarketLake(engine=engine, root=root)
         marker = root / ".stock-desk-market-lake"
-        marker.unlink()
-        marker.write_bytes(b"stock-desk-market-lake-v1\n")
+        original_identity = (marker.stat().st_dev, marker.stat().st_ino)
+        replacement = root / ".stock-desk-market-lake.replacement"
+        replacement.write_bytes(b"stock-desk-market-lake-v1\n")
+        replacement.replace(marker)
+        assert (marker.stat().st_dev, marker.stat().st_ino) != original_identity
 
         with pytest.raises(MarketLakeCorruptionError, match="root"):
             lake.write(routed)

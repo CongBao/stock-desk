@@ -61,7 +61,7 @@ describe('contextual guidance', () => {
     expect(dialog).toHaveTextContent('预期结果');
     const skip = screen.getByRole('button', { name: '跳过引导' });
     const next = screen.getByRole('button', { name: '下一步' });
-    expect(next).toHaveFocus();
+    await waitFor(() => expect(next).toHaveFocus());
     await user.tab();
     expect(skip).toHaveFocus();
     await user.tab();
