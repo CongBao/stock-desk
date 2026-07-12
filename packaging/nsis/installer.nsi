@@ -13,6 +13,10 @@ ManifestDPIAwareness PerMonitorV2
   SetCompressor /SOLID "{{compression}}"
 !endif
 
+; Independent CI runners check out identical bytes with different mtimes.
+; Do not serialize those host timestamps into the otherwise identical payload.
+SetDateSave off
+
 ; Keep above !include to stay ahead of any plugin command
 ; see https://github.com/tauri-apps/tauri/pull/15422#discussion_r3289239624
 {{#if signed_plugins_path}}

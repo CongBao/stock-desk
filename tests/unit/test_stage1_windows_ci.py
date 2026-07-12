@@ -51,6 +51,10 @@ def test_windows_workflow_models_the_pinned_direct_file_nsis_template() -> None:
     template = (ROOT / "packaging" / "nsis" / "installer.nsi").read_text(
         encoding="utf-8"
     )
+    assert "SetDateSave on" not in template
+    assert template.index("SetDateSave off") < template.index(
+        'File "${MAINBINARYSRCPATH}"'
+    )
     assert 'File "${MAINBINARYSRCPATH}"' in template
     assert "app.7z" not in template.casefold()
     jobs = _workflow()["jobs"]
