@@ -154,6 +154,9 @@ def test_comparison_promotes_only_a_and_main_proof_attests_both_identities() -> 
     proof = jobs["validation-proof"]
     assert isinstance(compare, dict) and isinstance(proof, dict)
     commands = _commands(compare)
+    assert "$PSNativeCommandUseErrorActionPreference = $true" in commands
+    assert "left-windows-desktop-bundle.json" in commands
+    assert "right-windows-desktop-bundle.json" in commands
     assert "python -m scripts.compare_windows_payloads" in commands
     assert "function Get-CompleteCandidate" in commands
     assert "Get-ChildItem $downloadRoot -Recurse -File" in commands

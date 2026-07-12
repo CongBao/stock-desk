@@ -127,6 +127,7 @@ def test_dry_run_binds_reproducible_environment_and_exact_commands(
         assert environment["STOCK_DESK_SOURCE_REVISION"] == "b" * 40
         assert environment["SOURCE_DATE_EPOCH"] == "1700000123"
         assert environment["PYTHONHASHSEED"] == "0"
+        assert environment["CARGO_ENCODED_RUSTFLAGS"] == "-C\x1flink-arg=/Brepro"
 
 
 def test_artifact_validation_requires_one_exact_pe_x64_binary(

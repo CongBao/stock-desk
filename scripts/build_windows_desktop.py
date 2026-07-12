@@ -241,6 +241,7 @@ def _build_with_work_dir(
     environment = os.environ.copy()
     environment.update(
         {
+            "CARGO_ENCODED_RUSTFLAGS": "-C\x1flink-arg=/Brepro",
             "PYTHONHASHSEED": "0",
             "SOURCE_DATE_EPOCH": str(identity.epoch),
             "STOCK_DESK_SOURCE_REVISION": identity.revision,

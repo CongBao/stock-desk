@@ -87,6 +87,19 @@ def test_comparison_requires_exact_source_locks_toolchain_and_payload() -> None:
             comparer.compare_manifests(left, right)
 
 
+def test_file_mismatch_reports_only_bounded_public_identity_fields() -> None:
+    left = _manifest()
+    right = copy.deepcopy(left)
+    right["files"][1]["sha256"] = "d" * 64
+    right["manifest_sha256"] = verifier.manifest_digest(right)
+
+    with pytest.raises(
+        comparer.PayloadComparisonError,
+        match=r"desktop manifests differ in files: desktop-host\.sha256",
+    ):
+        comparer.compare_manifests(left, right)
+
+
 def test_nsis_only_allows_named_pe_timestamp_and_checksum_differences(
     tmp_path: Path,
 ) -> None:

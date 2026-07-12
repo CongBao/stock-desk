@@ -8,6 +8,7 @@ from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 ROOT = Path(SPECPATH).parent.resolve()
 SIDECAR_EXCLUDES = ["stock_desk.desktop", "stock_desk.web"]
+MIGRATIONS_ROOT = ROOT / "migrations"
 
 
 def include_sidecar_module(module_name: str) -> bool:
@@ -17,9 +18,18 @@ def include_sidecar_module(module_name: str) -> bool:
     )
 
 
+migration_datas = [
+    (
+        str(source),
+        (Path("stock_desk/migrations") / source.relative_to(MIGRATIONS_ROOT).parent)
+        .as_posix(),
+    )
+    for source in sorted(MIGRATIONS_ROOT.rglob("*.py"))
+]
+
 datas = [
     (str(ROOT / "alembic.ini"), "stock_desk"),
-    (str(ROOT / "migrations"), "stock_desk/migrations"),
+    *migration_datas,
     (
         str(ROOT / "src" / "stock_desk" / "formula" / "grammar.lark"),
         "stock_desk/formula",

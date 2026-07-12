@@ -108,3 +108,11 @@ def test_sidecar_datas_contain_no_browser_test_or_development_assets() -> None:
 
     for forbidden in ("web/dist", "browser", "/src/tests", "/tests", "/dev"):
         assert forbidden not in source
+
+
+def test_sidecar_packages_only_sorted_migration_sources_not_ignored_caches() -> None:
+    source = SPEC.read_text(encoding="utf-8").replace("\\", "/")
+
+    assert 'rglob("*.py")' in source
+    assert 'str(ROOT / "migrations"), "stock_desk/migrations"' not in source
+    assert "sorted(" in source

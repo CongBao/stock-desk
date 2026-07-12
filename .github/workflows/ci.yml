@@ -440,6 +440,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           $root = Join-Path $env:RUNNER_TEMP 'windows-compare'; $evidence = Join-Path $root 'evidence'; $promoted = Join-Path $root 'promoted'
           $diagnostics = Join-Path $root 'diagnostics'; New-Item -ItemType Directory -Force $evidence, $promoted, $diagnostics | Out-Null
           trap { $_ | Out-String | Set-Content -Encoding utf8NoBOM (Join-Path $diagnostics 'comparison-failure.txt'); Get-ChildItem $root -Recurse -Force -ErrorAction SilentlyContinue | Select-Object FullName,Length | Out-File -Encoding utf8 (Join-Path $diagnostics 'artifact-inventory.txt'); throw $_ }
@@ -458,6 +459,8 @@ jobs:
           }
           $left = Get-CompleteCandidate (Join-Path $root 'a') 'left'
           $right = Get-CompleteCandidate (Join-Path $root 'b') 'right'
+          Copy-Item $left.Manifest (Join-Path $diagnostics 'left-windows-desktop-bundle.json')
+          Copy-Item $right.Manifest (Join-Path $diagnostics 'right-windows-desktop-bundle.json')
           uv run --frozen python -m scripts.compare_windows_payloads $left.Manifest $right.Manifest --left-installer $left.Installer --right-installer $right.Installer --output (Join-Path $evidence 'windows-payload-comparison.json')
           Copy-Item $left.Installer (Join-Path $promoted 'stock-desk-1.1.0-alpha.2-unsigned-x64-setup.exe')
           Copy-Item $left.Manifest (Join-Path $promoted 'windows-desktop-bundle.json')
