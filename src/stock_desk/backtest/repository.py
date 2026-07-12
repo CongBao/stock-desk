@@ -40,6 +40,7 @@ from stock_desk.backtest.types import (
     FrozenSymbolGap,
     PinnedMarketRef,
 )
+from stock_desk.market.provenance import bar_query_identity_payload
 from stock_desk.storage.database import (
     DatabaseIdentity,
     DatabaseIdentityError,
@@ -254,8 +255,14 @@ def _provenance_summary(
     status_sources = tuple(
         sorted({item.execution_status_source.value for item in runnable})
     )
+    identity_payloads: list[dict[str, object]] = []
+    for item in snapshot.symbol_inputs:
+        payload = item.model_dump(mode="json")
+        payload["signal_query"] = bar_query_identity_payload(item.signal_query)
+        payload["execution_query"] = bar_query_identity_payload(item.execution_query)
+        identity_payloads.append(payload)
     canonical = json.dumps(
-        [item.model_dump(mode="json") for item in snapshot.symbol_inputs],
+        identity_payloads,
         allow_nan=False,
         ensure_ascii=True,
         separators=(",", ":"),

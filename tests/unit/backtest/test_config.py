@@ -9,11 +9,19 @@ from pydantic import ValidationError
 import pytest
 
 from stock_desk.backtest.config import BacktestRequest
+from stock_desk.backtest.repository import _provenance_summary
 from stock_desk.backtest.snapshot import freeze_request
 from stock_desk.backtest.types import FrozenSymbolGap, GapReason, PinnedMarketRef
 from stock_desk.formula.signal_series import NormalizedParameter
 from stock_desk.market.execution_status import ExecutionStatusQuery
-from stock_desk.market.types import Adjustment, BarQuery, Exchange, Period, ProviderId
+from stock_desk.market.types import (
+    Adjustment,
+    BarQuery,
+    Exchange,
+    InstrumentKind,
+    Period,
+    ProviderId,
+)
 
 
 UTC = timezone.utc
@@ -166,6 +174,29 @@ def test_freeze_is_stable_immutable_and_normalizes_decimal_identity() -> None:
         original.quantity_shares = 2_000
     with pytest.raises(TypeError, match="does not accept update"):
         original.model_copy(update={"quantity_shares": 2_000})
+
+
+def test_report_provenance_keeps_published_stock_identity_and_binds_kind() -> None:
+    stock = freeze_request(_request())
+    stock_digest = _provenance_summary(stock)[-1]
+    query = _query().model_copy(update={"instrument_kind": InstrumentKind.ETF})
+    etf = freeze_request(
+        _request(
+            symbol_inputs=(
+                _replace_pinned(
+                    _pinned(),
+                    signal_query=query,
+                    execution_query=query,
+                ),
+            )
+        )
+    )
+
+    assert (
+        stock_digest
+        == "sha256:e9e0dbae84a5896f0ecb3a44a9702dd06e011738ef19dd6e647e31a6670bbfa4"
+    )
+    assert _provenance_summary(etf)[-1] != stock_digest
 
 
 @pytest.mark.parametrize(

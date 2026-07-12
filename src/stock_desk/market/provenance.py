@@ -465,15 +465,18 @@ def _route_payload(
 def routing_request_identity_payload(request: RoutingRequest) -> dict[str, Any]:
     """Serialize a request for the published routing-manifest-v1 identity."""
     payload = request.model_dump(mode="json")
-    if (
-        isinstance(request, BarRoutingRequest)
-        and request.query.instrument_kind is InstrumentKind.STOCK
-    ):
+    if isinstance(request, BarRoutingRequest):
+        payload["query"] = bar_query_identity_payload(request.query)
+    return payload
+
+
+def bar_query_identity_payload(query: BarQuery) -> dict[str, Any]:
+    """Serialize a bar query without changing the published v1 stock identity."""
+    payload = query.model_dump(mode="json")
+    if query.instrument_kind is InstrumentKind.STOCK:
         # Stock was the only bar kind when v1 identities were published. Keep
         # its canonical identity stable while binding every non-stock kind.
-        query = payload.get("query")
-        if isinstance(query, dict):
-            query.pop("instrument_kind", None)
+        payload.pop("instrument_kind", None)
     return payload
 
 
