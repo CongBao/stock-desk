@@ -6,6 +6,7 @@ import type { editor } from 'monaco-editor';
 import './monacoSetup';
 
 import type { FormulaDiagnostic } from './formulaApi';
+import { useTheme } from '../../app/themePreference';
 import {
   registerTdxLanguage,
   setTdxDiagnostics,
@@ -35,6 +36,7 @@ export const FormulaEditor = forwardRef<
   { diagnostics, documentation, onChange, onValidate, source },
   forwardedRef,
 ) {
+  const { resolvedTheme } = useTheme();
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
   const monacoRef = useRef<MonacoInstance | null>(null);
   const onValidateRef = useRef(onValidate);
@@ -42,6 +44,28 @@ export const FormulaEditor = forwardRef<
 
   const beforeMount = (monaco: MonacoInstance) => {
     monacoRef.current = monaco;
+    monaco.editor.defineTheme('stock-desk-dark', {
+      base: 'vs-dark',
+      inherit: true,
+      rules: [],
+      colors: {
+        'editor.background': '#07111f',
+        'editor.foreground': '#e6edf7',
+        'editorLineNumber.foreground': '#8296ae',
+        focusBorder: '#38bdf8',
+      },
+    });
+    monaco.editor.defineTheme('stock-desk-light', {
+      base: 'vs',
+      inherit: true,
+      rules: [],
+      colors: {
+        'editor.background': '#ffffff',
+        'editor.foreground': '#172033',
+        'editorLineNumber.foreground': '#667085',
+        focusBorder: '#0369a1',
+      },
+    });
     registerTdxLanguage(monaco, documentation);
   };
   const onMount = (
@@ -55,6 +79,10 @@ export const FormulaEditor = forwardRef<
       onValidateRef.current(),
     );
   };
+
+  useEffect(() => {
+    monacoRef.current?.editor.setTheme(`stock-desk-${resolvedTheme}`);
+  }, [resolvedTheme]);
 
   useEffect(() => {
     if (monacoRef.current !== null) {
@@ -129,7 +157,7 @@ export const FormulaEditor = forwardRef<
       <Editor
         height="100%"
         language={TDX_LANGUAGE_ID}
-        theme="vs-dark"
+        theme={`stock-desk-${resolvedTheme}`}
         value={source}
         beforeMount={beforeMount}
         onMount={onMount}
@@ -142,10 +170,10 @@ export const FormulaEditor = forwardRef<
           fontFamily:
             'JetBrains Mono, SFMono-Regular, Menlo, Consolas, monospace',
           fontLigatures: true,
-          fontSize: 13,
+          fontSize: 14,
           formatOnPaste: false,
           glyphMargin: true,
-          lineHeight: 22,
+          lineHeight: 24,
           minimap: { enabled: false },
           padding: { top: 12, bottom: 12 },
           quickSuggestions: { other: true, comments: false, strings: false },

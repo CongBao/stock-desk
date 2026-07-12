@@ -1,5 +1,5 @@
 :root {
-  color-scheme: dark;
+  color-scheme: light dark;
   font-family:
     Inter,
     ui-sans-serif,
@@ -27,9 +27,43 @@
   --rise: #ef4444;
   --fall: #22c55e;
   --warning: #f59e0b;
+  --success: #22c55e;
+  --danger: #ef4444;
+  --focus-ring: #38bdf8;
+  --scrim: rgb(2 8 18 / 72%);
+  --panel-translucent: rgb(9 21 36 / 88%);
+  --shadow-color: rgb(0 0 0 / 45%);
   --rail-width: 232px;
   --collapsed-rail-width: 80px;
   --panel-width: 300px;
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+  --surface-0: #f4f7fb;
+  --surface-1: #ffffff;
+  --surface-2: #edf2f8;
+  --surface-3: #e2eaf4;
+  --text-primary: #172033;
+  --text-secondary: #344054;
+  --text-muted: #667085;
+  --border: #d0d9e5;
+  --border-strong: #aab8ca;
+  --accent: #0369a1;
+  --accent-soft: rgb(3 105 161 / 11%);
+  --rise: #b42318;
+  --fall: #067647;
+  --warning: #b54708;
+  --success: #067647;
+  --danger: #b42318;
+  --focus-ring: #0369a1;
+  --scrim: rgb(23 32 51 / 42%);
+  --panel-translucent: rgb(255 255 255 / 94%);
+  --shadow-color: rgb(23 32 51 / 18%);
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
 }
 
 * {
@@ -70,8 +104,68 @@ a {
 }
 
 :focus-visible {
-  outline: 3px solid var(--accent);
+  outline: 3px solid var(--focus-ring);
   outline-offset: 3px;
+}
+
+.theme-selector {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  color: var(--text-secondary);
+  background: var(--surface-1);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.global-theme-control {
+  position: fixed;
+  z-index: 1000;
+  top: 10px;
+  right: 18px;
+}
+
+.workspace-topbar .topbar-actions {
+  margin-right: 150px;
+}
+
+.theme-selector select {
+  min-height: 30px;
+  max-width: 104px;
+  border: 0;
+  border-radius: 5px;
+  color: var(--text-primary);
+  background: var(--surface-2);
+  font: inherit;
+}
+
+:root[data-theme='light'] body {
+  background:
+    radial-gradient(circle at 52% -20%, rgb(3 105 161 / 9%), transparent 42%),
+    var(--surface-0);
+}
+
+:root[data-theme='light']
+  :where(
+    .navigation-rail,
+    .context-panel,
+    [class*='-panel'],
+    [class*='-card'],
+    [class*='-dialog'],
+    [class*='-drawer'],
+    [class*='-toolbar']
+  ) {
+  background-color: var(--surface-1);
+  box-shadow: 0 14px 36px var(--shadow-color);
+}
+
+:root[data-theme='light'] :where(input, select, textarea, button) {
+  border-color: var(--border);
+  color: var(--text-primary);
 }
 
 .visually-hidden {
@@ -3832,7 +3926,7 @@ a {
   height: clamp(310px, 42vh, 510px);
   border-top: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
-  background: #07111f;
+  background: var(--surface-0);
 }
 
 .formula-diagnostic-panel {
@@ -6126,6 +6220,37 @@ a {
     gap: 4px !important;
   }
 
+  .theme-selector {
+    width: 44px;
+    padding-inline: 0;
+    justify-content: center;
+  }
+
+  .global-theme-control {
+    top: 5px;
+    right: 8px;
+  }
+
+  .workspace-topbar .topbar-actions {
+    margin-right: 48px;
+  }
+
+  .theme-selector-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+  }
+
+  .theme-selector select {
+    position: absolute;
+    width: 44px;
+    height: 44px;
+    opacity: 0;
+    cursor: pointer;
+  }
+
   .about-toggle,
   .context-toggle {
     width: 44px;
@@ -6360,7 +6485,7 @@ a {
   display: grid;
   place-items: center;
   padding: 20px;
-  background: rgb(7 14 26 / 68%);
+  background: var(--scrim);
   backdrop-filter: blur(4px);
 }
 
@@ -6431,7 +6556,7 @@ a {
 .desktop-exit-primary {
   border-color: var(--accent);
   background: var(--accent);
-  color: #fff;
+  color: var(--surface-1);
 }
 
 @media (max-width: 480px) {

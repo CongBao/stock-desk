@@ -36,6 +36,7 @@ import { useWorkspaceStore } from './store';
 import { WorkspaceStoreProvider } from './WorkspaceStoreProvider';
 import { createDesktopBridge, type DesktopBridge } from './desktopBridge';
 import { createTauriAdapter } from './tauriAdapter';
+import { ThemeSelector } from './ThemeProvider';
 
 const tauriAdapter = createTauriAdapter();
 const defaultDesktopBridge: DesktopBridge =
@@ -436,19 +437,24 @@ export function App({
     </WorkspaceStoreProvider>
   );
   return (
-    <DesktopExitGuard bridge={desktopBridge}>
-      <DesktopStartup bridge={desktopBridge}>
-        {onboardingApi === null ? (
-          workspace
-        ) : (
-          <OnboardingGate
-            api={onboardingApi}
-            onDiagnostics={() => void desktopBridge.openDiagnostics()}
-          >
-            {workspace}
-          </OnboardingGate>
-        )}
-      </DesktopStartup>
-    </DesktopExitGuard>
+    <>
+      <div className="global-theme-control">
+        <ThemeSelector />
+      </div>
+      <DesktopExitGuard bridge={desktopBridge}>
+        <DesktopStartup bridge={desktopBridge}>
+          {onboardingApi === null ? (
+            workspace
+          ) : (
+            <OnboardingGate
+              api={onboardingApi}
+              onDiagnostics={() => void desktopBridge.openDiagnostics()}
+            >
+              {workspace}
+            </OnboardingGate>
+          )}
+        </DesktopStartup>
+      </DesktopExitGuard>
+    </>
   );
 }

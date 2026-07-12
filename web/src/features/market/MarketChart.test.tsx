@@ -141,6 +141,20 @@ it('builds synchronized candlestick and volume grids with explicit rise/fall enc
   expect(formatMarketTooltip(bars[0])).toContain('量 1,000');
 });
 
+it('uses an explicit readable ECharts palette for the light desktop theme', () => {
+  const option = buildMarketChartOption(bars, 'light');
+  expect(option.tooltip).toMatchObject({
+    backgroundColor: 'rgba(255, 255, 255, 0.98)',
+    borderColor: '#aab8ca',
+    textStyle: { color: '#172033' },
+  });
+  expect(option.yAxis[0]).toMatchObject({
+    axisLabel: { color: '#4b5f78' },
+    splitLine: { lineStyle: { color: '#d8e0ea' } },
+  });
+  expect(option.aria).toMatchObject({ decal: { show: true } });
+});
+
 it('keeps full market bars out of the ECharts series graph while preserving indexed tooltips', () => {
   const option = buildMarketChartOption(bars);
 
