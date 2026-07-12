@@ -392,7 +392,14 @@ class Bar(_FrozenMarketModel):
 
 class BarQuery(_FrozenMarketModel):
     symbol: CanonicalSymbol
-    instrument_kind: InstrumentKind = InstrumentKind.STOCK
+    # Stock was the only supported bar identity in routing-manifest-v1. Keep
+    # that default out of the canonical JSON so adding typed index support does
+    # not invalidate already published stock manifests or backup archives.
+    # Non-stock kinds remain serialized and therefore identity-bound.
+    instrument_kind: InstrumentKind = Field(
+        default=InstrumentKind.STOCK,
+        exclude_if=lambda value: value is InstrumentKind.STOCK,
+    )
     period: Period
     adjustment: Adjustment
     start: UtcDatetime
