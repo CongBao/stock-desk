@@ -159,6 +159,7 @@ test('complete public demo journey uses real API worker and frozen provenance', 
         readonly signal_route_version: string;
         readonly signal_query: {
           readonly symbol: string;
+          readonly instrument_kind: string;
           readonly period: string;
           readonly adjustment: string;
           readonly start: string;
@@ -201,6 +202,7 @@ test('complete public demo journey uses real API worker and frozen provenance', 
   );
   expect(symbolResult?.provenance.signal_query).toEqual({
     symbol: previewBody.formula.symbol,
+    instrument_kind: 'stock',
     period: previewBody.formula.period,
     adjustment: previewBody.formula.adjustment,
     start: previewBody.formula.query_start,

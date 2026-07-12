@@ -139,6 +139,7 @@ export type RoutingAttempt = {
 
 export type MarketBarsQuery = {
   readonly symbol: string;
+  readonly instrumentKind?: 'stock' | 'index' | 'etf' | 'fund' | 'bond';
   readonly period: MarketPeriod;
   readonly adjustment: MarketAdjustment;
   readonly start: string;
@@ -512,6 +513,9 @@ function routingRequestJson(manifest: RoutingManifest): JsonValue {
     return {
       query: {
         symbol: manifest.requestQuery.symbol,
+        ...(manifest.requestQuery.instrumentKind === undefined
+          ? {}
+          : { instrument_kind: manifest.requestQuery.instrumentKind }),
         period: manifest.requestQuery.period,
         adjustment: manifest.requestQuery.adjustment,
         start: manifest.requestQuery.start,
@@ -1259,6 +1263,14 @@ function decodeQuery(value: JsonValue | undefined, path: string) {
   const item = record(value, path);
   const result: MarketBarsQuery = {
     symbol: symbol(item['symbol'], `${path}.symbol`),
+    instrumentKind:
+      item['instrument_kind'] === undefined
+        ? undefined
+        : enumValue(
+            item['instrument_kind'],
+            instrumentKinds,
+            `${path}.instrument_kind`,
+          ),
     period: enumValue(item['period'], periods, `${path}.period`),
     adjustment: enumValue(
       item['adjustment'],
@@ -1285,6 +1297,7 @@ type ExpectedBarsRequest = Pick<
 function sameQuery(left: MarketBarsQuery, right: MarketBarsQuery): boolean {
   return (
     left.symbol === right.symbol &&
+    left.instrumentKind === right.instrumentKind &&
     left.period === right.period &&
     left.adjustment === right.adjustment &&
     left.start === right.start &&

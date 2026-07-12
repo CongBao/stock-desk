@@ -47,7 +47,10 @@ function Probe() {
   const market = useMarketStore((value) => value);
   return (
     <div>
-      <span>route:{location.pathname}</span>
+      <span>
+        route:{location.pathname}
+        {location.search}
+      </span>
       <span>
         instrument:{market.selectedInstrument?.name}:
         {market.selectedInstrument?.symbol}
@@ -63,15 +66,32 @@ function Probe() {
   );
 }
 
-function renderGate(api: WorkspaceApi) {
+function renderGate(api: WorkspaceApi, initialEntry = '/market') {
   return render(
-    <MemoryRouter initialEntries={['/market']}>
+    <MemoryRouter initialEntries={[initialEntry]}>
       <WorkspacePersistenceGate api={api}>
         <Probe />
       </WorkspacePersistenceGate>
     </MemoryRouter>,
   );
 }
+
+it.each([
+  '/backtests/11111111-1111-1111-1111-111111111111',
+  '/backtests?symbol=600000.SH&period=1d',
+])(
+  'preserves an explicit backtest entry while restoring market preferences',
+  async (entry) => {
+    const api: WorkspaceApi = {
+      get: vi.fn(() => Promise.resolve(state())),
+      put: vi.fn(),
+    };
+    renderGate(api, entry);
+
+    expect(await screen.findByText(`route:${entry}`)).toBeVisible();
+    expect(screen.getByText('instrument:浦发银行:600000.SH')).toBeVisible();
+  },
+);
 
 beforeEach(() => resetMarketStore());
 

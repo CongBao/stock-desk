@@ -157,9 +157,14 @@ export function WorkspacePersistenceGate({
         subchart: workspace.subchart,
         zoom: workspace.zoom,
       });
-      void navigate(workspace.currentPage, { replace: true });
+      const preservesBacktestEntry =
+        location.pathname.startsWith('/backtests/') ||
+        (location.pathname === '/backtests' && location.search.length > 0);
+      if (!preservesBacktestEntry) {
+        void navigate(workspace.currentPage, { replace: true });
+      }
     },
-    [navigate, restoreMarket],
+    [location.pathname, location.search, navigate, restoreMarket],
   );
   const applyWorkspaceRef = useRef(applyWorkspace);
   applyWorkspaceRef.current = applyWorkspace;
