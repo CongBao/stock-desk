@@ -215,6 +215,10 @@ it('keeps demo read-only and does not mark onboarding complete', async () => {
 
   expect(await screen.findByText(/只读演示 · 设置尚未完成/u)).toBeVisible();
   expect(
+    screen.getByRole('button', { name: '退出演示并配置真实数据' }).parentElement
+      ?.parentElement,
+  ).toHaveClass('onboarding-notice-frame');
+  expect(
     screen.getByText(
       'workspace:Stock Desk 合成演示标的（非真实行情）:600000.SH',
     ),

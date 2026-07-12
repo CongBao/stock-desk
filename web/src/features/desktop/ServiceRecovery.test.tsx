@@ -10,6 +10,7 @@ function bridge(
   return {
     cancelExit: vi.fn(() => Promise.resolve()),
     confirmExit: vi.fn(() => Promise.resolve()),
+    exportDiagnostics: vi.fn(() => Promise.resolve('saved' as const)),
     isDesktop: true,
     getRuntimeState: vi.fn(() => Promise.resolve({ state: 'ready' } as const)),
     openDiagnostics: vi.fn(() => Promise.resolve()),
@@ -31,20 +32,41 @@ it('offers the three safe recovery actions without technical details', () => {
     />,
   );
 
-  expect(screen.getByRole('button', { name: 'Restart Service' })).toBeEnabled();
-  expect(
-    screen.getByRole('button', { name: 'Open Diagnostics' }),
-  ).toBeEnabled();
-  expect(screen.getByRole('button', { name: 'Safe Exit' })).toBeEnabled();
+  expect(screen.getByRole('button', { name: '重启服务' })).toBeEnabled();
+  expect(screen.getByRole('button', { name: '打开诊断' })).toBeEnabled();
+  expect(screen.getByRole('button', { name: '安全退出' })).toBeEnabled();
   expect(document.body).not.toHaveTextContent(
     /traceback|https?:|127\.0\.0\.1/u,
   );
+  expect(screen.getByText(/仅保存到本机，不会自动上传/u)).toBeVisible();
+});
+
+it('keeps diagnostic export keyboard reachable', async () => {
+  const user = userEvent.setup();
+  const openDiagnostics = vi.fn(() => Promise.resolve());
+  render(
+    <ServiceRecovery
+      bridge={bridge({ openDiagnostics })}
+      reason="sidecar_unavailable"
+      canRestart
+      onRestarting={() => Promise.resolve()}
+    />,
+  );
+
+  await user.tab();
+  expect(screen.getByRole('button', { name: '重启服务' })).toHaveFocus();
+  await user.tab();
+  expect(screen.getByRole('button', { name: '打开诊断' })).toHaveFocus();
+  await user.keyboard('{Enter}');
+  expect(openDiagnostics).toHaveBeenCalledOnce();
 });
 
 it('does not automatically loop after restart fails or expose the exception', async () => {
   const user = userEvent.setup();
   const onRestarting = vi.fn(() =>
-    Promise.reject(new Error('Traceback at C:\\Users\\private\\token.txt')),
+    Promise.reject(
+      new Error('Traceback at C:\\' + 'Users\\private\\token.txt'),
+    ),
   );
   render(
     <ServiceRecovery
@@ -55,7 +77,7 @@ it('does not automatically loop after restart fails or expose the exception', as
     />,
   );
 
-  await user.click(screen.getByRole('button', { name: 'Restart Service' }));
+  await user.click(screen.getByRole('button', { name: '重启服务' }));
 
   expect(onRestarting).toHaveBeenCalledOnce();
   expect(await screen.findByRole('status')).toHaveTextContent(
@@ -78,10 +100,26 @@ it('delegates diagnostics and safe exit without arguments', async () => {
   );
 
   expect(
-    screen.queryByRole('button', { name: 'Restart Service' }),
+    screen.queryByRole('button', { name: '重启服务' }),
   ).not.toBeInTheDocument();
-  await user.click(screen.getByRole('button', { name: 'Open Diagnostics' }));
-  await user.click(screen.getByRole('button', { name: 'Safe Exit' }));
+  await user.click(screen.getByRole('button', { name: '打开诊断' }));
+  await user.click(screen.getByRole('button', { name: '安全退出' }));
   expect(openDiagnostics).toHaveBeenCalledWith();
   expect(requestExit).toHaveBeenCalledWith();
+});
+
+it('explains the bounded restart limit and keeps only diagnostics and safe exit', () => {
+  render(
+    <ServiceRecovery
+      bridge={bridge()}
+      reason="restart_limit_reached"
+      canRestart={false}
+      onRestarting={() => Promise.resolve()}
+    />,
+  );
+
+  expect(screen.getByText(/已达到安全重启上限/u)).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: '重启服务' })).toBeNull();
+  expect(screen.getByRole('button', { name: '打开诊断' })).toBeEnabled();
+  expect(screen.getByRole('button', { name: '安全退出' })).toBeEnabled();
 });

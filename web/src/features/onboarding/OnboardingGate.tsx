@@ -543,7 +543,9 @@ function OnboardingWizard({
           {state.error !== null ? (
             <section className="onboarding-inline-error" role="alert">
               <strong>数据准备没有完成</strong>
-              <p>你可以安全重试、更换来源，或查看不含隐私信息的诊断。</p>
+              <p>
+                你可以安全重试、更换来源，或将不含隐私信息的诊断包保存到本机；诊断不会自动上传。
+              </p>
               <div>
                 {state.error.actions.includes('retry') ? (
                   <button
@@ -678,33 +680,35 @@ export function OnboardingGate({
   if (advancedMode) {
     return (
       <OnboardingDemoContext.Provider value={false}>
-        <div className="onboarding-demo-banner" role="status">
-          <span>
-            高级数据设置 · 可在此配置 Tushare Token 或通达信本地 vipdoc 目录
-          </span>
-          <button
-            type="button"
-            disabled={recoveryBusy}
-            onClick={() => {
-              setRecoveryBusy(true);
-              setRecoveryFailed(false);
-              void api
-                .saveProgress({ currentStep: 'data_preparation' })
-                .then((next) => {
-                  setState(next);
-                  void navigate('/market', { replace: true });
-                })
-                .catch(() => setRecoveryFailed(true))
-                .finally(() => setRecoveryBusy(false));
-            }}
-          >
-            返回首次设置
-          </button>
-          {recoveryFailed ? (
-            <span role="alert">暂时无法返回，请重试。</span>
-          ) : null}
+        <div className="onboarding-notice-frame">
+          <div className="onboarding-demo-banner" role="status">
+            <span>
+              高级数据设置 · 可在此配置 Tushare Token 或通达信本地 vipdoc 目录
+            </span>
+            <button
+              type="button"
+              disabled={recoveryBusy}
+              onClick={() => {
+                setRecoveryBusy(true);
+                setRecoveryFailed(false);
+                void api
+                  .saveProgress({ currentStep: 'data_preparation' })
+                  .then((next) => {
+                    setState(next);
+                    void navigate('/market', { replace: true });
+                  })
+                  .catch(() => setRecoveryFailed(true))
+                  .finally(() => setRecoveryBusy(false));
+              }}
+            >
+              返回首次设置
+            </button>
+            {recoveryFailed ? (
+              <span role="alert">暂时无法返回，请重试。</span>
+            ) : null}
+          </div>
+          {children}
         </div>
-        {children}
       </OnboardingDemoContext.Provider>
     );
   }
@@ -716,32 +720,36 @@ export function OnboardingGate({
     return (
       <OnboardingDemoContext.Provider value={state.demoMode}>
         {state.demoMode ? (
-          <div className="onboarding-demo-banner" role="status">
-            <span>只读演示 · 设置尚未完成，重新启动后仍保持只读演示</span>
-            <button
-              type="button"
-              disabled={recoveryBusy}
-              onClick={() => {
-                setRecoveryBusy(true);
-                setRecoveryFailed(false);
-                void api
-                  .runAction('exit_demo')
-                  .then((next) => {
-                    setState(next);
-                    void navigate('/market', { replace: true });
-                  })
-                  .catch(() => setRecoveryFailed(true))
-                  .finally(() => setRecoveryBusy(false));
-              }}
-            >
-              退出演示并配置真实数据
-            </button>
-            {recoveryFailed ? (
-              <span role="alert">退出演示失败，请重试。</span>
-            ) : null}
+          <div className="onboarding-notice-frame">
+            <div className="onboarding-demo-banner" role="status">
+              <span>只读演示 · 设置尚未完成，重新启动后仍保持只读演示</span>
+              <button
+                type="button"
+                disabled={recoveryBusy}
+                onClick={() => {
+                  setRecoveryBusy(true);
+                  setRecoveryFailed(false);
+                  void api
+                    .runAction('exit_demo')
+                    .then((next) => {
+                      setState(next);
+                      void navigate('/market', { replace: true });
+                    })
+                    .catch(() => setRecoveryFailed(true))
+                    .finally(() => setRecoveryBusy(false));
+                }}
+              >
+                退出演示并配置真实数据
+              </button>
+              {recoveryFailed ? (
+                <span role="alert">退出演示失败，请重试。</span>
+              ) : null}
+            </div>
+            {children}
           </div>
-        ) : null}
-        {children}
+        ) : (
+          children
+        )}
       </OnboardingDemoContext.Provider>
     );
   }

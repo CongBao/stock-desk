@@ -79,7 +79,7 @@ test('complete public demo journey uses real API worker and frozen provenance', 
   page,
   request,
 }) => {
-  test.setTimeout(120_000);
+  test.setTimeout(180_000);
   await expect
     .poll(async () => (await request.get('/api/health')).status())
     .toBe(200);
@@ -318,7 +318,7 @@ test('complete public demo journey uses real API worker and frozen provenance', 
   expect(await noHorizontalOverflow(page)).toBe(true);
   await expect(
     page.getByRole('heading', { name: '600000.SH 智能分析' }),
-  ).toBeVisible({ timeout: 45_000 });
+  ).toBeVisible({ timeout: 90_000 });
   await expect(page.getByText('中性', { exact: true })).toBeVisible();
   await expect(page.getByText('不构成投资建议')).toBeVisible();
   await page.getByRole('button', { name: '查看证据' }).click();

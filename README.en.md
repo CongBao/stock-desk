@@ -2,11 +2,11 @@
 
 # Stock Desk
 
-> The current stable release is `v1.0.0`. `v1.1.0-alpha.1` improves delivery foundations only; any test assets are unsigned prereleases, not a new stable desktop installer. See the [v1.1 alpha.1 notes](docs/releases/v1.1.0-alpha.1.md).
+> The current stable release is `v1.0.0`. The current `v1.1.0-beta.2` candidate is a Windows x64 desktop-experience prerelease; test assets do not replace the stable release. See the [beta.2 notes](docs/releases/v1.1.0-beta.2.md).
 
 ## Product positioning
 
-Stock Desk v1.0.0 is a local-first personal A-share research desk for traceable
+Stock Desk is a local-first personal A-share desktop research app for traceable
 market charts, TDX-compatible formulas, reproducible historical backtests, and
 evidence-linked multi-agent research. It does not connect to a broker or place orders.
 
@@ -27,20 +27,21 @@ Kweichow Moutai `600519.SH`; BaoStock daily/qfq data; cutoff `2026-07-08T07:00:0
 
 ## Download and install
 
-Download the source-free installer for your platform from the
-[Latest Release](https://github.com/CongBao/stock-desk/releases/latest). See the bilingual
-[download and authenticity guide](docs/download.md) before installation:
+For stable use, download `v1.0.0` from the
+[Latest Release](https://github.com/CongBao/stock-desk/releases/latest). To test the Windows x64 desktop candidate, use the separate
+[`v1.1.0-beta.2` prerelease](https://github.com/CongBao/stock-desk/releases/tag/v1.1.0-beta.2)
+and download `stock-desk-1.1.0-beta.2-unsigned-x64-setup.exe`. It is unsigned, so Windows may show an Unknown Publisher or SmartScreen warning.
 
-- `stock-desk-<version>-windows-x86_64.exe`
-- `stock-desk-<version>-macos-x86_64.dmg`
-- `stock-desk-<version>-macos-arm64.dmg`
+To test `v1.1.0-beta.2`:
 
-1. Choose the installer matching your platform and processor architecture.
-2. Run the EXE on Windows; on macOS, open the DMG and copy the app to Applications.
-3. Launch Stock Desk for the first time and wait for its bundled services and application window.
+1. Run the installer as an ordinary Windows user; administrator rights are not required.
+2. Open Stock Desk from the Start menu; its bundled service starts with the desktop window.
+3. Complete the first-run data and stock setup. If no stock is chosen, the Shanghai Composite `000001.SS` opens by default.
 
-Ordinary users do not need GitHub CLI, a source checkout, Docker, or development tools. Checksums,
-build attestations, and advanced deployment guidance remain available on the release page and in the guides.
+Ordinary users do not need GitHub CLI, a source checkout, Docker, or development tools. Use the bilingual
+[download and authenticity guide](docs/download.md) for the stable release; beta.2 checksums and immutable build proof are on its prerelease page.
+
+`v1.1.0` does not ship macOS, Linux, Android, or ARM64 installers, and it does not migrate or delete v1 local data. Refer to the release page and [code-signing policy](docs/code-signing-policy.md) for the authoritative signing status.
 
 ## Documentation
 

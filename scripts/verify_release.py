@@ -611,7 +611,9 @@ def check_exact_release_tag(
 ) -> None:
     expected = tag_name or f"v{version}"
     if (
-        re.fullmatch(rf"v{re.escape(version)}(?:-alpha\.[1-9][0-9]*)?", expected)
+        re.fullmatch(
+            rf"v{re.escape(version)}(?:-(?:alpha|beta)\.[1-9][0-9]*)?", expected
+        )
         is None
     ):
         raise ReleaseVerificationError(
@@ -853,23 +855,25 @@ def check_changelog(repo: Path, version: str, *, tag_name: str | None = None) ->
         raise ReleaseVerificationError(
             "unable to read the release changelog"
         ) from error
-    alpha_tag_pattern = rf"v{re.escape(version)}-alpha\.[1-9][0-9]*"
-    if tag_name is not None and re.fullmatch(alpha_tag_pattern, tag_name):
+    prerelease_tag_pattern = rf"v{re.escape(version)}-(?:alpha|beta)\.[1-9][0-9]*"
+    if tag_name is not None and re.fullmatch(prerelease_tag_pattern, tag_name):
         if changelog.count("## [Unreleased]") != 1 or changelog.count(tag_name) != 1:
             raise ReleaseVerificationError(
-                "alpha changelog entry is not uniquely recorded under Unreleased"
+                "prerelease changelog entry is not uniquely recorded under Unreleased"
             )
         release_note = repo / "docs" / "releases" / f"{tag_name}.md"
         try:
             note = release_note.read_text(encoding="utf-8")
         except OSError as error:
-            raise ReleaseVerificationError("alpha release note is missing") from error
+            raise ReleaseVerificationError(
+                "prerelease release note is missing"
+            ) from error
         if (
             f"# Stock Desk {tag_name}" not in note
             or "unsigned prerelease" not in note.casefold()
         ):
             raise ReleaseVerificationError(
-                "alpha release note must identify an unsigned prerelease"
+                "prerelease release note must identify an unsigned prerelease"
             )
         return
     if tag_name is not None and tag_name != f"v{version}":
@@ -1547,7 +1551,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--tag",
-        help="exact stable or alpha tag expected to point at the proved commit",
+        help="exact stable or supported prerelease tag expected to point at the proved commit",
     )
     parser.add_argument(
         "--artifact",

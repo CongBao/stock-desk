@@ -151,3 +151,75 @@ test('first run wizard configures data and opens a usable default market', async
     page.getByRole('status', { name: '当前 K 线 OHLCV' }),
   ).toContainText('量');
 });
+
+test('readonly demo notice stays in flow without covering controls at 200% equivalent scale', async ({
+  page,
+}) => {
+  let demoMode = false;
+  const state = () => ({
+    schema_version: 1,
+    revision: demoMode ? 2 : 1,
+    current_step: 'welcome',
+    status: 'pending',
+    source: null,
+    instrument: {
+      symbol: '600000.SH',
+      name: 'Stock Desk 合成演示标的（非真实行情）',
+      exchange: 'SH',
+      instrument_kind: 'stock',
+    },
+    sync: null,
+    error: demoMode ? { code: 'demo_read_only', actions: ['exit_demo'] } : null,
+    demo_mode: demoMode,
+  });
+  await page.route('**/api/v1/onboarding/**', async (route) => {
+    if (new URL(route.request().url()).pathname.endsWith('/actions/demo')) {
+      demoMode = true;
+    }
+    await route.fulfill({ json: state() });
+  });
+
+  await page.setViewportSize({ width: 683, height: 384 });
+  await page.goto('/market');
+  await page.getByRole('button', { name: '先看只读演示' }).click();
+
+  const banner = page.locator('.onboarding-demo-banner');
+  await expect(banner).toHaveCSS('position', 'relative');
+  const exitDemo = page.getByRole('button', {
+    name: '退出演示并配置真实数据',
+  });
+  const overlaps = await exitDemo.evaluate((target) => {
+    const targetBox = target.getBoundingClientRect();
+    return Array.from(
+      document.querySelectorAll(
+        'a, button, input, select, textarea, [role="tab"]',
+      ),
+    ).flatMap((candidate) => {
+      if (!(candidate instanceof HTMLElement) || candidate === target)
+        return [];
+      const style = getComputedStyle(candidate);
+      const box = candidate.getBoundingClientRect();
+      if (
+        style.display === 'none' ||
+        style.visibility === 'hidden' ||
+        box.width <= 0 ||
+        box.height <= 0
+      )
+        return [];
+      const intersects = !(
+        targetBox.right <= box.left ||
+        box.right <= targetBox.left ||
+        targetBox.bottom <= box.top ||
+        box.bottom <= targetBox.top
+      );
+      return intersects
+        ? [
+            candidate.getAttribute('aria-label') ??
+              candidate.textContent?.trim().slice(0, 80) ??
+              candidate.tagName,
+          ]
+        : [];
+    });
+  });
+  expect(overlaps).toEqual([]);
+});

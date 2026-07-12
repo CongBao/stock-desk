@@ -163,9 +163,20 @@ function NavigationRail({
   );
 }
 
-function AboutDialog({ onClose }: { readonly onClose: () => void }) {
+function AboutDialog({
+  onClose,
+  onExportDiagnostics,
+}: {
+  readonly onClose: () => void;
+  readonly onExportDiagnostics: () => Promise<
+    'cancelled' | 'saved' | undefined
+  >;
+}) {
   const dialogRef = useRef<HTMLElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
+  const [diagnosticState, setDiagnosticState] = useState<
+    'cancelled' | 'failed' | 'saving' | 'saved' | null
+  >(null);
 
   useEffect(() => {
     closeRef.current?.focus();
@@ -195,6 +206,23 @@ function AboutDialog({ onClose }: { readonly onClose: () => void }) {
     window.addEventListener('keydown', containFocus);
     return () => window.removeEventListener('keydown', containFocus);
   }, [onClose]);
+
+  async function exportDiagnostics() {
+    if (diagnosticState === 'saving') return;
+    setDiagnosticState('saving');
+    try {
+      const result = await onExportDiagnostics();
+      setDiagnosticState(
+        result === 'saved'
+          ? 'saved'
+          : result === 'cancelled'
+            ? 'cancelled'
+            : 'failed',
+      );
+    } catch {
+      setDiagnosticState('failed');
+    }
+  }
 
   return (
     <div className="about-backdrop" role="presentation">
@@ -242,6 +270,27 @@ function AboutDialog({ onClose }: { readonly onClose: () => void }) {
           </div>
         </dl>
         <p>本地优先的个人 A 股分析工作台。</p>
+        <div className="diagnostic-export-control">
+          <button
+            type="button"
+            disabled={diagnosticState === 'saving'}
+            onClick={() => void exportDiagnostics()}
+          >
+            {diagnosticState === 'saving' ? '正在准备诊断包…' : '导出诊断包'}
+          </button>
+          <p>
+            诊断包仅保存到你选择的本机位置，不会自动上传，也不包含用户名、文件路径、会话凭证或原始日志。
+          </p>
+          {diagnosticState === null || diagnosticState === 'saving' ? null : (
+            <p role="status">
+              {diagnosticState === 'saved'
+                ? '诊断包已保存到本机，未上传。'
+                : diagnosticState === 'cancelled'
+                  ? '已取消导出，没有写入文件。'
+                  : '暂时无法导出。请确认使用最新 WebView2 后重试。'}
+            </p>
+          )}
+        </div>
       </section>
     </div>
   );
@@ -299,7 +348,11 @@ const WorkspaceRoutes = memo(function WorkspaceRoutes() {
   );
 });
 
-function WorkspaceShell() {
+function WorkspaceShell({
+  desktopBridge,
+}: {
+  readonly desktopBridge: DesktopBridge;
+}) {
   const location = useLocation();
   const readonlyDemo = useOnboardingDemoMode();
   const selectedInstrument = useMarketStore(
@@ -439,7 +492,17 @@ function WorkspaceShell() {
           systemStatus={systemStatus}
         />
       </div>
-      {isAboutOpen ? <AboutDialog onClose={closeAbout} /> : null}
+      {isAboutOpen ? (
+        <AboutDialog
+          onClose={closeAbout}
+          onExportDiagnostics={async () => {
+            const result = await desktopBridge.exportDiagnostics();
+            return result === 'saved' || result === 'cancelled'
+              ? result
+              : undefined;
+          }}
+        />
+      ) : null}
     </>
   );
 }
@@ -455,7 +518,7 @@ export function App({
 }) {
   const shell = (
     <WorkspaceStoreProvider>
-      <WorkspaceShell />
+      <WorkspaceShell desktopBridge={desktopBridge} />
     </WorkspaceStoreProvider>
   );
   const workspace =
@@ -478,7 +541,7 @@ export function App({
           ) : (
             <OnboardingGate
               api={onboardingApi}
-              onDiagnostics={() => void desktopBridge.openDiagnostics()}
+              onDiagnostics={() => void desktopBridge.exportDiagnostics()}
             >
               {workspace}
             </OnboardingGate>

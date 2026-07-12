@@ -91,15 +91,7 @@ def _workflow() -> dict[str, Any]:
 
 
 def _native_artifact_patterns() -> tuple[str, ...]:
-    matrix = _workflow()["jobs"]["build-installers"]["strategy"]["matrix"]["include"]
-    patterns: list[str] = []
-    for target in matrix:
-        suffix = "exe" if target["os_name"] == "windows" else "dmg"
-        patterns.append(
-            "stock-desk-<version>-"
-            f"{target['os_name']}-{target['architecture']}.{suffix}"
-        )
-    return tuple(sorted(patterns))
+    return ("stock-desk-1.1.0-beta.2-unsigned-x64-setup.exe",)
 
 
 def _readmes() -> tuple[str, str]:

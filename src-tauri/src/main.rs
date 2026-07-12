@@ -3,6 +3,7 @@
 use tauri::Manager;
 
 mod app;
+mod diagnostics;
 mod exit;
 mod proxy;
 mod sidecar;
@@ -25,7 +26,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             app::desktop_runtime_state,
             app::desktop_restart_service,
-            app::desktop_open_diagnostics,
+            diagnostics::desktop_open_diagnostics,
+            diagnostics::desktop_validate_diagnostics,
             proxy::desktop_api_request,
             exit::desktop_request_exit,
             exit::desktop_cancel_exit,

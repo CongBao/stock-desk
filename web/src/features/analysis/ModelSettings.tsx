@@ -7,6 +7,7 @@ import {
   useState,
 } from 'react';
 
+import { safeUserMessage } from '../../shared/safeUserMessage';
 import type {
   AnalysisApi,
   ModelConfig,
@@ -181,7 +182,7 @@ export function ModelSettings({
           : '模型配置已安全保存，请测试连接后使用。',
       );
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : '保存模型配置失败');
+      setMessage(safeUserMessage(error, '保存模型配置失败'));
     } finally {
       setSaving(false);
     }
@@ -212,7 +213,7 @@ export function ModelSettings({
           : '连接测试失败，请检查非敏感配置。',
       );
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : '连接测试失败');
+      setMessage(safeUserMessage(error, '连接测试失败'));
     } finally {
       finishOperation(item.id);
     }
@@ -245,7 +246,7 @@ export function ModelSettings({
       );
       setMessage('模型配置已禁用，不再可用于新分析。');
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : '禁用模型配置失败');
+      setMessage(safeUserMessage(error, '禁用模型配置失败'));
     } finally {
       finishOperation(item.id);
     }

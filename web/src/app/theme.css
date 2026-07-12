@@ -689,6 +689,36 @@ a {
   font-size: 11px;
 }
 
+.diagnostic-export-control {
+  display: grid;
+  gap: 8px;
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.diagnostic-export-control > button {
+  min-height: 44px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  color: var(--text-primary);
+  background: var(--surface-0);
+  cursor: pointer;
+}
+
+.diagnostic-export-control > button:disabled {
+  cursor: wait;
+  opacity: 0.68;
+}
+
+.diagnostic-export-control > p,
+.desktop-diagnostic-privacy {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
 .desktop-startup,
 .desktop-recovery {
   display: grid;
@@ -1189,6 +1219,14 @@ a {
   font-size: 12px;
 }
 
+.onboarding-notice-frame > .onboarding-demo-banner {
+  position: relative;
+  right: auto;
+  bottom: auto;
+  max-width: min(640px, calc(100vw - 212px));
+  margin: 10px 180px 0 16px;
+}
+
 .onboarding-demo-banner button {
   min-height: 36px;
   padding: 7px 11px;
@@ -1210,6 +1248,11 @@ a {
 }
 
 @media (max-width: 620px) {
+  .onboarding-notice-frame > .onboarding-demo-banner {
+    max-width: calc(100vw - 16px);
+    margin: 58px 8px 0;
+  }
+
   .onboarding-shell {
     align-items: start;
     padding: 0;
@@ -3907,6 +3950,7 @@ a {
 
 .formula-editor-panel {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .formula-identity-row,
@@ -3927,6 +3971,7 @@ a {
 .formula-identity-row label,
 .formula-preview-controls label {
   display: grid;
+  min-width: 0;
   gap: 4px;
   color: var(--text-muted);
   font-size: 9px;
@@ -3936,6 +3981,9 @@ a {
 .formula-identity-row select,
 .formula-preview-controls input,
 .formula-preview-controls select {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   min-height: 36px;
   padding: 6px 8px;
 }
@@ -4181,14 +4229,41 @@ a {
   font-size: 8px;
 }
 
-@media (max-width: 1300px) {
+@media (max-width: 1400px) {
   .formula-studio-grid {
     grid-template-columns: minmax(190px, 0.55fr) minmax(380px, 1.1fr);
+  }
+
+  .formula-identity-row {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .formula-preview-panel {
     position: static;
     grid-column: 1 / -1;
+  }
+
+  .formula-kind-row,
+  .formula-editor-actions {
+    flex-wrap: wrap;
+  }
+
+  .formula-kind-row > div {
+    min-width: 0;
+    flex: 1 1 160px;
+  }
+
+  .formula-kind-row button,
+  .formula-editor-actions button {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .formula-editor-actions > div {
+    flex-basis: 100%;
   }
 }
 
@@ -4906,6 +4981,13 @@ a {
   border-radius: 10px;
   background: rgba(10, 24, 41, 0.82);
   box-shadow: 0 16px 34px rgba(0, 0, 0, 0.12);
+}
+
+:root[data-theme='light'] .analysis-run-panel,
+:root[data-theme='light'] .analysis-process,
+:root[data-theme='light'] .analysis-conclusion,
+:root[data-theme='light'] .analysis-evidence {
+  background: var(--surface-1);
 }
 
 .analysis-run-panel {
@@ -5753,6 +5835,55 @@ a {
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--surface-1);
+}
+
+.actionable-state {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 0.9rem;
+  align-items: center;
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 0.9rem;
+  background: var(--surface-1);
+}
+
+.actionable-state-icon {
+  width: 0.75rem;
+  height: 0.75rem;
+  border: 2px solid currentColor;
+  border-radius: 50%;
+  color: var(--accent);
+}
+
+.actionable-state[data-state-kind='error'] .actionable-state-icon,
+.actionable-state[data-state-kind='permission'] .actionable-state-icon,
+.actionable-state[data-state-kind='sidecar-unavailable']
+  .actionable-state-icon {
+  border-radius: 0.2rem;
+  color: var(--danger);
+}
+
+.actionable-state-copy > * {
+  margin: 0;
+}
+
+.actionable-state-copy p,
+.actionable-state-copy small,
+.actionable-state-action small {
+  display: block;
+  margin-top: 0.35rem;
+  color: var(--text-muted);
+}
+
+@media (max-width: 720px) {
+  .actionable-state {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .actionable-state-action {
+    grid-column: 2;
+  }
 }
 
 .task-recent-panel,

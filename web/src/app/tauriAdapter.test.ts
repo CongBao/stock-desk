@@ -8,6 +8,7 @@ import {
   isDesktopApiResponseSizeAllowed,
   MAX_DESKTOP_API_RESPONSE_BYTES,
 } from './tauriAdapter';
+import { validateDiagnosticSnapshot } from './diagnosticsExport';
 
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn(),
@@ -49,6 +50,85 @@ it('uses only closed payload-free desktop commands', async () => {
     ['desktop_confirm_exit'],
     ['desktop_open_diagnostics'],
   ]);
+});
+
+it('keeps the WebView2 save picker bound to window and uses only host IPC', async () => {
+  vi.mocked(isTauri).mockReturnValue(true);
+  const snapshot = {
+    schema_version: 'stock-desk-diagnostic-snapshot-v1',
+    created_at: '2026-07-13T08:00:00Z',
+    application: { version: '1.1.0', source_revision: null },
+    platform: { system: 'windows', architecture: 'x86_64' },
+    service_health: {
+      sidecar: 'ready',
+      storage: 'ready',
+      market_worker: 'ready',
+    },
+    configuration: {
+      available: true,
+      daily_sources: [],
+      weekly_sources: [],
+      minute_sources: [],
+      instrument_sources: [],
+      tushare_token_configured: false,
+      local_tdx_configured: false,
+      model_providers: [],
+    },
+    events: [],
+    failure_ids: [],
+    privacy: {
+      telemetry_enabled: false,
+      automatic_crash_upload: false,
+      automatic_diagnostic_upload: false,
+      stable_device_identifier: false,
+    },
+  };
+  const rendered = validateDiagnosticSnapshot(snapshot);
+  const write = vi.fn(() => Promise.resolve());
+  const picker = vi.fn(function (this: unknown) {
+    expect(this).toBe(window);
+    return Promise.resolve({
+      createWritable: () =>
+        Promise.resolve({
+          write,
+          close: () => Promise.resolve(),
+          abort: () => Promise.resolve(),
+        }),
+    });
+  });
+  Object.defineProperty(window, 'showSaveFilePicker', {
+    configurable: true,
+    value: picker,
+  });
+  vi.mocked(invoke).mockImplementation((command) => {
+    if (command === 'desktop_api_request') {
+      return Promise.resolve({
+        body: JSON.stringify(snapshot),
+        content_type: 'application/json',
+        status: 200,
+      });
+    }
+    if (command === 'desktop_validate_diagnostics') {
+      return Promise.resolve(rendered);
+    }
+    return Promise.resolve(undefined);
+  });
+  const browserFetch = vi.spyOn(globalThis, 'fetch');
+  const adapter = createTauriAdapter();
+  if (adapter === undefined) throw new Error('adapter was not created');
+
+  await expect(adapter.exportDiagnostics()).resolves.toBe('saved');
+  expect(picker).toHaveBeenCalledOnce();
+  expect(write).toHaveBeenCalledWith(rendered);
+  expect(browserFetch).not.toHaveBeenCalled();
+  expect(invoke).toHaveBeenCalledWith('desktop_api_request', {
+    request: { method: 'POST', path: '/api/v1/diagnostics/snapshot' },
+  });
+  expect(invoke).toHaveBeenCalledWith('desktop_validate_diagnostics', {
+    snapshot,
+  });
+  browserFetch.mockRestore();
+  Reflect.deleteProperty(window, 'showSaveFilePicker');
 });
 
 it('subscribes only to the closed exit-state event payload', async () => {

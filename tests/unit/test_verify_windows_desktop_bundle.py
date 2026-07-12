@@ -18,7 +18,7 @@ def test_cli_requires_an_explicit_manifest_output() -> None:
             [
                 "payload",
                 "--version",
-                "1.1.0-alpha.2",
+                "1.1.0-beta.2",
                 "--source-sha",
                 "a" * 40,
                 "--toolchain",
@@ -77,7 +77,7 @@ def _payload(root: Path) -> None:
 def _verify(root: Path) -> dict[str, object]:
     return verifier.verify_bundle(
         root,
-        version="1.1.0-alpha.2",
+        version="1.1.0-beta.2",
         source_sha=SOURCE_SHA,
         toolchain={"rust": "1.88.0", "python": "3.12.11"},
         locks={"Cargo.lock": LOCK_SHA, "uv.lock": LOCK_SHA},
@@ -105,7 +105,7 @@ def test_verifier_emits_closed_public_safe_manifest(tmp_path: Path) -> None:
         "manifest_sha256",
     }
     assert manifest["release"] == {
-        "version": "1.1.0-alpha.2",
+        "version": "1.1.0-beta.2",
         "channel": "prerelease",
         "signature": "unsigned",
     }
@@ -167,7 +167,7 @@ def test_verifier_rejects_unexpected_executable_and_missing_offline_webview(
 def test_webview_requires_valid_microsoft_authenticode(tmp_path: Path) -> None:
     _payload(tmp_path)
     common = {
-        "version": "1.1.0-alpha.2",
+        "version": "1.1.0-beta.2",
         "source_sha": SOURCE_SHA,
         "toolchain": {"rust": "1.88.0"},
         "locks": {"Cargo.lock": LOCK_SHA},
@@ -388,7 +388,7 @@ def test_verifier_rejects_unsafe_external_path_and_non_x64_pe(tmp_path: Path) ->
     ):
         verifier.verify_bundle(
             tmp_path,
-            version="1.1.0-alpha.2",
+            version="1.1.0-beta.2",
             source_sha=SOURCE_SHA,
             toolchain={"rust": "1.88.0"},
             locks={"Cargo.lock": LOCK_SHA},
@@ -412,7 +412,7 @@ def test_x86_nsis_launcher_is_allowed_while_installed_binaries_remain_x64(
 
     manifest = verifier.verify_bundle(
         tmp_path,
-        version="1.1.0-alpha.2",
+        version="1.1.0-beta.2",
         source_sha=SOURCE_SHA,
         toolchain={"rust": "1.88.0"},
         locks={"Cargo.lock": LOCK_SHA},
@@ -430,7 +430,7 @@ def test_limits_are_fail_closed(tmp_path: Path) -> None:
     with pytest.raises(verifier.BundleVerificationError, match="file-count limit"):
         verifier.verify_bundle(
             tmp_path,
-            version="1.1.0-alpha.2",
+            version="1.1.0-beta.2",
             source_sha=SOURCE_SHA,
             toolchain={"rust": "1.88.0"},
             locks={"Cargo.lock": LOCK_SHA},
@@ -444,7 +444,7 @@ def test_limits_are_fail_closed(tmp_path: Path) -> None:
     with pytest.raises(verifier.BundleVerificationError, match="single-file limit"):
         verifier.verify_bundle(
             tmp_path,
-            version="1.1.0-alpha.2",
+            version="1.1.0-beta.2",
             source_sha=SOURCE_SHA,
             toolchain={"rust": "1.88.0"},
             locks={"Cargo.lock": LOCK_SHA},

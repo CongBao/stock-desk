@@ -52,6 +52,11 @@ def test_sidecar_main_waits_at_gate_before_parsing_authority_or_starting_runtime
         return 0 if actual is config else 1
 
     monkeypatch.setattr(
+        sidecar_module.multiprocessing,
+        "freeze_support",
+        lambda: events.append("freeze_support"),
+    )
+    monkeypatch.setattr(
         sidecar_module.SidecarLaunchConfig,
         "consume",
         consume,
@@ -68,7 +73,7 @@ def test_sidecar_main_waits_at_gate_before_parsing_authority_or_starting_runtime
     )
 
     assert sidecar_module.main() == 0
-    assert events == ["gate", "consume", "runtime"]
+    assert events == ["freeze_support", "gate", "consume", "runtime"]
 
 
 def test_sidecar_main_eof_cannot_parse_authority_or_start_runtime(
@@ -209,11 +214,47 @@ def test_desktop_lifecycle_honors_shutdown_requested_before_server_binding() -> 
     assert server.should_exit is True
 
 
+def test_desktop_lifecycle_stages_worker_stop_before_server_exit() -> None:
+    lifecycle = DesktopLifecycleController()
+    server = SimpleNamespace(should_exit=False)
+    lifecycle.bind_server(server)
+
+    lifecycle.begin_shutdown()
+
+    assert lifecycle.shutdown_prepared is True
+    assert lifecycle.shutdown_requested is True
+    assert lifecycle.stop_event.is_set()
+    assert server.should_exit is False
+
+    lifecycle.complete_shutdown()
+
+    assert server.should_exit is True
+
+
+def test_desktop_lifecycle_prepare_does_not_stop_worker_before_response() -> None:
+    lifecycle = DesktopLifecycleController()
+    server = SimpleNamespace(should_exit=False)
+    lifecycle.bind_server(server)
+
+    lifecycle.prepare_shutdown()
+
+    assert lifecycle.shutdown_prepared is True
+    assert lifecycle.claim_stop_event.is_set() is True
+    assert lifecycle.shutdown_requested is False
+    assert lifecycle.stop_event.is_set() is False
+    assert server.should_exit is False
+
+    lifecycle.complete_shutdown()
+
+    assert lifecycle.shutdown_requested is True
+    assert server.should_exit is True
+
+
 def test_sidecar_startup_failure_stops_worker_and_removes_runtime_record(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    import stock_desk.desktop as desktop_module
+    import stock_desk.desktop_runtime as desktop_runtime_module
     import stock_desk.main as main_module
     import stock_desk.market.worker_runtime as worker_module
     import stock_desk.storage.database as database_module
@@ -224,6 +265,8 @@ def test_sidecar_startup_failure_stops_worker_and_removes_runtime_record(
     record_path = root / "runtime.json"
     stop_observed: list[bool] = []
     worker_closed: list[bool] = []
+    worker_sinks: list[Any] = []
+    application_sinks: list[Any] = []
 
     class FakePaths:
         log_file = root / "sidecar.log"
@@ -238,7 +281,14 @@ def test_sidecar_startup_failure_stops_worker_and_removes_runtime_record(
             record_path.write_text("runtime", encoding="utf-8")
 
     class FakeWorker:
-        def run_forever(self, stop_event: Any, *, ready_event: Any) -> None:
+        def run_forever(
+            self,
+            stop_event: Any,
+            *,
+            ready_event: Any,
+            claim_stop_event: Any,
+        ) -> None:
+            assert not claim_stop_event.is_set()
             ready_event.set()
             stop_event.wait(0.5)
             stop_observed.append(stop_event.is_set())
@@ -246,8 +296,21 @@ def test_sidecar_startup_failure_stops_worker_and_removes_runtime_record(
         def close(self) -> None:
             worker_closed.append(True)
 
+    def open_worker(
+        _settings: object,
+        *,
+        worker_id: str,
+        diagnostic_event_sink: Any,
+    ) -> FakeWorker:
+        worker_sinks.append(diagnostic_event_sink)
+        return FakeWorker()
+
+    def fail_application(*_args: object, **kwargs: object) -> object:
+        application_sinks.append(kwargs["diagnostic_event_sink"])
+        raise RuntimeError("injected application startup failure")
+
     monkeypatch.setattr(
-        desktop_module.RuntimePaths,
+        desktop_runtime_module.RuntimePaths,
         "create",
         lambda _root: FakePaths(),
     )
@@ -255,14 +318,12 @@ def test_sidecar_startup_failure_stops_worker_and_removes_runtime_record(
     monkeypatch.setattr(
         worker_module.ProductionMarketWorker,
         "open",
-        lambda _settings, *, worker_id: FakeWorker(),
+        open_worker,
     )
     monkeypatch.setattr(
         main_module,
         "create_app",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            RuntimeError("injected application startup failure")
-        ),
+        fail_application,
     )
 
     with pytest.raises(RuntimeError, match="application startup failure"):
@@ -270,4 +331,15 @@ def test_sidecar_startup_failure_stops_worker_and_removes_runtime_record(
 
     assert stop_observed == [True]
     assert worker_closed == [True]
+    assert worker_sinks == application_sinks
+    assert len(worker_sinks) == 1
+    assert [event.event_code for event in worker_sinks[0].event_buffer.snapshot()] == [
+        "sidecar.starting",
+        "storage.ready",
+        "worker.starting",
+        "worker.ready",
+        "sidecar.runtime_failed",
+        "sidecar.stopping",
+        "worker.stopped",
+    ]
     assert not record_path.exists()

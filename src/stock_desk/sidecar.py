@@ -1,6 +1,7 @@
 from collections.abc import MutableMapping
 from dataclasses import dataclass
 import logging
+import multiprocessing
 import os
 from pathlib import Path
 import socket
@@ -14,6 +15,8 @@ from sqlalchemy.engine import URL
 
 from stock_desk.config import Settings, V11_DATA_VERSION, V11_PRODUCT_DIRECTORY
 from stock_desk.desktop_session import DesktopLifecycleController, DesktopSession
+from stock_desk.desktop_runtime import RuntimePaths, RuntimeRecord
+from stock_desk.diagnostics.models import DiagnosticEventCode, DiagnosticEventSink
 
 
 _PREFIX = "STOCK_DESK_DESKTOP_"
@@ -93,7 +96,6 @@ def run_sidecar(config: SidecarLaunchConfig) -> int:
     """Run the authenticated API and market worker inside one controlled process."""
     import uvicorn
 
-    from stock_desk.desktop import RuntimePaths, RuntimeRecord
     from stock_desk.main import create_app
     from stock_desk.market.worker_runtime import ProductionMarketWorker
     from stock_desk.storage.database import migrate
@@ -105,24 +107,50 @@ def run_sidecar(config: SidecarLaunchConfig) -> int:
         format="%(asctime)s %(process)d %(levelname)s %(name)s %(message)s",
         force=True,
     )
+    diagnostic_events = DiagnosticEventSink()
+    diagnostic_events.emit(DiagnosticEventCode.SIDECAR_STARTING)
     settings = build_sidecar_settings(
         config,
         master_key=paths.load_or_create_master_key(),
     )
-    migrate(settings.database_url)
+    try:
+        migrate(settings.database_url)
+    except BaseException:
+        diagnostic_events.emit(DiagnosticEventCode.STORAGE_UNAVAILABLE)
+        raise
+    diagnostic_events.emit(DiagnosticEventCode.STORAGE_READY)
     lifecycle = DesktopLifecycleController()
     stop_event = lifecycle.stop_event
     ready_event = threading.Event()
-    worker = ProductionMarketWorker.open(
-        settings,
-        worker_id=f"tauri-sidecar-{socket.gethostname()}-{os.getpid()}",
-    )
+    diagnostic_events.emit(DiagnosticEventCode.WORKER_STARTING)
+    try:
+        worker = ProductionMarketWorker.open(
+            settings,
+            worker_id=f"tauri-sidecar-{socket.gethostname()}-{os.getpid()}",
+            diagnostic_event_sink=diagnostic_events,
+        )
+    except BaseException:
+        diagnostic_events.emit(DiagnosticEventCode.WORKER_STARTUP_FAILED)
+        raise
 
     def run_worker() -> None:
         try:
-            worker.run_forever(stop_event, ready_event=ready_event)
+            worker.run_forever(
+                stop_event,
+                ready_event=ready_event,
+                claim_stop_event=lifecycle.claim_stop_event,
+            )
+        except BaseException:
+            diagnostic_events.emit(DiagnosticEventCode.WORKER_RUNTIME_FAILED)
+            raise
         finally:
-            worker.close()
+            try:
+                worker.close()
+            except BaseException:
+                diagnostic_events.emit(DiagnosticEventCode.WORKER_RUNTIME_FAILED)
+                raise
+            else:
+                diagnostic_events.emit(DiagnosticEventCode.WORKER_STOPPED)
 
     worker_thread = threading.Thread(
         name="stock-desk-market-worker",
@@ -134,12 +162,15 @@ def run_sidecar(config: SidecarLaunchConfig) -> int:
         deadline = time.monotonic() + _STARTUP_TIMEOUT_SECONDS
         while not ready_event.wait(timeout=0.05):
             if not worker_thread.is_alive() or time.monotonic() >= deadline:
+                diagnostic_events.emit(DiagnosticEventCode.WORKER_STARTUP_FAILED)
                 raise RuntimeError("desktop sidecar did not become ready")
+        diagnostic_events.emit(DiagnosticEventCode.WORKER_READY)
 
         application = create_app(
             settings,
             desktop_session=config.session,
             desktop_lifecycle=lifecycle,
+            diagnostic_event_sink=diagnostic_events,
         )
         server = uvicorn.Server(
             uvicorn.Config(
@@ -151,6 +182,7 @@ def run_sidecar(config: SidecarLaunchConfig) -> int:
             )
         )
         lifecycle.bind_server(server)
+        diagnostic_events.emit(DiagnosticEventCode.SIDECAR_READY)
         paths.write_runtime_record(
             RuntimeRecord(
                 pid=os.getpid(),
@@ -162,17 +194,24 @@ def run_sidecar(config: SidecarLaunchConfig) -> int:
             )
         )
         server.run()
+    except BaseException:
+        diagnostic_events.emit(DiagnosticEventCode.SIDECAR_RUNTIME_FAILED)
+        raise
     finally:
+        diagnostic_events.emit(DiagnosticEventCode.SIDECAR_STOPPING)
         stop_event.set()
         worker_thread.join(timeout=_SHUTDOWN_TIMEOUT_SECONDS)
         paths.runtime_record.unlink(missing_ok=True)
     if worker_thread.is_alive():
+        diagnostic_events.emit(DiagnosticEventCode.WORKER_SHUTDOWN_TIMEOUT)
         _LOGGER.error("desktop worker did not stop before shutdown deadline")
         return 1
+    diagnostic_events.emit(DiagnosticEventCode.SIDECAR_STOPPED)
     return 0
 
 
 def main() -> int:
+    multiprocessing.freeze_support()
     await_bootstrap_gate(sys.stdin.buffer)
     config = SidecarLaunchConfig.consume(os.environ)
     return run_sidecar(config)

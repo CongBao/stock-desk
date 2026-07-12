@@ -319,4 +319,139 @@ requirements:
         path: web/e2e/formula-studio.spec.ts
         selector: desktop MACD flow is atomic, versioned, parameterized, and safe
         assertion: Formula Studio saves and previews the built-in MACD as a subchart with numeric outputs and explicit BUY and SELL signals while unsupported or future-looking source remains blocked.
+  - id: V11-R-010
+    category: platform
+    kind: user_visible
+    behavior_key: bounded_actionable_desktop_recovery
+    acceptance: "Loading, empty, offline, permission, error, and sidecar-unavailable states explain the user-visible cause and provide an actionable next step without exposing HTTP status, tracebacks, internal paths, or secrets; startup and runtime sidecar failures remain recoverable, and the restart limit still permits diagnostics and confirmed safe exit."
+    source_refs:
+      - {
+          capability: desktop-user-experience,
+          requirement: actionable-empty-error-and-offline-states,
+          scenario: sidecar-unavailable,
+        }
+      - {
+          capability: windows-desktop-shell,
+          requirement: sidecar-lifecycle-and-session-security,
+          scenario: unexpected-sidecar-exit,
+        }
+    owning_stage: 3
+    status: mapped
+    evidence:
+      - state: existing
+        runner: pytest
+        kind: acceptance
+        path: tests/acceptance/test_v11_desktop_recovery.py
+        selector: tests/acceptance/test_v11_desktop_recovery.py::test_packaged_desktop_recovers_from_startup_and_runtime_sidecar_failures
+        assertion: The accepted Rust host contract routes permission, spawn, health, version, and bounded-restart failures into stable recovery states instead of terminating or blanking the desktop window.
+      - state: existing
+        runner: pytest
+        kind: acceptance
+        path: tests/acceptance/test_v11_desktop_recovery.py
+        selector: tests/acceptance/test_v11_desktop_recovery.py::test_starting_or_recovery_exit_cleans_resources_without_a_ready_session
+        assertion: Recovery exit is explicitly confirmed, releases failed managed resources, and exits without depending on a healthy sidecar session.
+      - state: existing
+        runner: vitest
+        kind: component
+        path: web/src/shared/ActionableState.test.tsx
+        selector: fails closed instead of rendering unsafe technical details
+        assertion: The shared user state surface replaces unsafe HTTP, traceback, credential, and path material while withholding malformed failure identifiers.
+      - state: existing
+        runner: vitest
+        kind: component
+        path: web/src/features/desktop/DesktopStartup.test.tsx
+        selector: keeps the bounded terminal recovery state without offering another restart
+        assertion: After the host reaches its restart limit, the desktop renders the stable terminal recovery copy without offering an unbounded retry.
+  - id: V11-R-011
+    category: security
+    kind: security
+    behavior_key: explicit_local_redacted_diagnostics_and_zero_telemetry
+    acceptance: "A desktop-only authenticated action exports a strict, bounded, inspectable diagnostic package only to a location explicitly chosen by the user, states that the package remains local and was not uploaded, excludes credentials, prompts, usernames, paths, arbitrary files, and free-form logs with fail-closed final-byte validation, and the application contains no telemetry or automatic crash-upload fallback."
+    source_refs:
+      - {
+          capability: desktop-user-experience,
+          requirement: local-redacted-diagnostic-bundle,
+          scenario: explicitly-export-diagnostic-bundle,
+        }
+      - {
+          capability: desktop-user-experience,
+          requirement: default-zero-telemetry,
+          scenario: normal-application-use,
+        }
+    owning_stage: 3
+    status: mapped
+    evidence:
+      - state: existing
+        runner: pytest
+        kind: security
+        path: tests/security/test_diagnostic_export.py
+        selector: tests/security/test_diagnostic_export.py::test_allowlisted_recursive_redaction_removes_all_private_classes
+        assertion: Recursive diagnostic sanitizing irreversibly removes credentials, authorization, private prompts, usernames, hostnames, and private paths from allowlisted structures.
+      - state: existing
+        runner: pytest
+        kind: security
+        path: tests/security/test_diagnostic_export.py
+        selector: tests/security/test_diagnostic_export.py::test_snapshot_is_fixed_schema_bounded_and_contains_no_free_form_log_message
+        assertion: The desktop snapshot contains only fixed version, platform, health, configuration, structured-event, failure-ID, and local-privacy fields with no free-form log message.
+      - state: existing
+        runner: pytest
+        kind: security
+        path: tests/security/test_zero_telemetry.py
+        selector: tests/security/test_zero_telemetry.py::test_current_locked_application_has_no_telemetry_or_crash_sdk
+        assertion: Locked dependencies and production source contain no telemetry or crash-reporting SDK or collection endpoint.
+      - state: existing
+        runner: pytest
+        kind: security
+        path: tests/unit/api/test_diagnostics_api.py
+        selector: tests/unit/api/test_diagnostics_api.py::test_snapshot_is_post_only_and_requires_exact_desktop_authority
+        assertion: Diagnostic generation is POST-only, desktop-session authenticated, and returns no session authority.
+      - state: existing
+        runner: vitest
+        kind: integration
+        path: web/src/app/diagnosticsExport.test.ts
+        selector: requests a snapshot only after invocation and saves host-validated bytes locally
+        assertion: An explicit user action obtains the strict authenticated snapshot, requires identical host validation, opens a local JSON save picker, and writes only the canonical validated bytes.
+      - state: existing
+        runner: vitest
+        kind: component
+        path: web/src/app/App.test.tsx
+        selector: offers a keyboard-accessible local diagnostic export with visible status
+        assertion: The About surface exposes a keyboard-reachable diagnostic action and confirms that the saved package remained local and was not uploaded.
+  - id: V11-R-012
+    category: platform
+    kind: user_visible
+    behavior_key: exact_sha_windows_icon_and_packaged_desktop_matrix
+    acceptance: "The rounded-window and three-candlestick identity remains readable from 16 through 256 pixels on light and dark Windows backgrounds and is shared by the installer and shell entries; an exact-SHA packaged Tauri candidate is installed, launched, keyboard-checked, theme-checked, and captured across the supported effective viewport matrix without claiming simulated viewport evidence as real OS DPI."
+    source_refs:
+      - {
+          capability: desktop-user-experience,
+          requirement: unified-desktop-icon,
+          scenario: consistent-icons-across-desktop-entry-points,
+        }
+      - {
+          capability: desktop-user-experience,
+          requirement: responsive-desktop-layout,
+          scenario: high-display-scaling,
+        }
+    owning_stage: 3
+    status: mapped
+    evidence:
+      - state: existing
+        runner: pytest
+        kind: acceptance
+        path: tests/unit/test_icon_visual_evidence.py
+        selector: tests/unit/test_icon_visual_evidence.py::test_icon_pixel_inventory_matches_reviewed_multisize_baseline
+        assertion: The reviewed SVG, PNG, and ICO pixel identities produce deterministic light and dark contact-sheet evidence for every required Windows size.
+      - state: existing
+        runner: pytest
+        kind: contract
+        path: tests/unit/test_windows_desktop_evidence_contract.py
+        selector: tests/unit/test_windows_desktop_evidence_contract.py::test_windows_candidate_runs_packaged_tauri_and_binds_visual_evidence
+        assertion: Candidate A installs and launches the actual packaged Tauri app and binds native, theme, keyboard, effective-scale, and shell-icon evidence to the exact source SHA and tree.
+      - state: existing
+        runner: pytest
+        kind: contract
+        path: tests/unit/test_windows_desktop_evidence_contract.py
+        selector: tests/unit/test_windows_desktop_evidence_contract.py::test_packaged_webview_matrix_is_explicitly_equivalent_not_real_os_dpi
+        assertion: The automated matrix covers 100 through 200 percent effective viewports while explicitly separating CDP evidence from the remaining real Windows 10 and 11 DPI confirmation.
 non_goals: []

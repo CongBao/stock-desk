@@ -382,6 +382,9 @@ it('never shows a previous task timeline under a newly selected task', async () 
   });
   renderPage(client);
   expect(await screen.findByText('已处理回测标的')).toBeVisible();
+  expect(
+    screen.getByRole('list', { name: '安全事件时间线列表' }),
+  ).toHaveAttribute('tabindex', '0');
 
   await userEvent.click(screen.getByRole('button', { name: /智能分析/u }));
 

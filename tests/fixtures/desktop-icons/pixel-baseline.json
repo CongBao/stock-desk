@@ -1,0 +1,20 @@
+{
+  "contact_sheet": {
+    "height": 2304,
+    "path": "windows-icon-light-dark-contact-sheet.png",
+    "rgba_sha256": "13b652e28ce2a70acba3c740d3632a908b3bdb973d99afe559b57526b70ccebc",
+    "width": 576
+  },
+  "ico_sha256": "73efb82ad5a0b74c741f83a44340673ceb546911777f5f0f6795bb18bbfd9409",
+  "sizes": {
+    "16": {"alpha_bbox": [0, 0, 16, 16], "ico_difference_rms": [0.618718, 0.299739, 0.369755, 0.153093], "ico_rgba_sha256": "cd7a7e7d83a409a8f834b1a811d22383692bcbd49002ca448f29a51aed8af27c", "opaque_pixels": 144, "png_sha256": "b4b227a00cc7950a19d9f7cb5bd5d69fbc1e563194536073400c925e3e283579", "rgba_sha256": "daa021d00a157a5d94ae19d3b2a67e8cdc56a6f378fa364658e8f08ae0bd5c3b", "visible_pixels": 248},
+    "20": {"alpha_bbox": [0, 0, 20, 20], "ico_difference_rms": [0.244949, 0.287228, 0.34641, 0.141421], "ico_rgba_sha256": "31eb8aa2d549ef41b9e5181846e4e91cf2f09c8f06b9a069c4b8115461c6fa64", "opaque_pixels": 244, "png_sha256": "08ceb01946abe5d3348b96f56af758af5b251b47871b5ea68a4d1173e2a5dd92", "rgba_sha256": "96fe14ab63908a17027812958fac1da11cafd88074da310ee8df29cb60ddeb26", "visible_pixels": 392},
+    "24": {"alpha_bbox": [0, 0, 24, 24], "ico_difference_rms": [0.260208, 0.263523, 0.450694, 0.144338], "ico_rgba_sha256": "6413a5f015c4f8dc76e14218c83c56c30d179eb6ef583b9c610c1741acdb82f5", "opaque_pixels": 388, "png_sha256": "772d97f4ed902df40dfb1cf4e824481140393005bab26cc0f6b3f3c266cb1958", "rgba_sha256": "f1713828f622e447aa36e7b82f2e02aa9c835a63645c7975159c5d9cba9141af", "visible_pixels": 556},
+    "32": {"alpha_bbox": [0, 0, 32, 32], "ico_difference_rms": [0.40625, 0.538553, 8.385371, 0.299739], "ico_rgba_sha256": "fffc8f7f11978743810f41a2fbeaf8e0f92d6bc67d53087416380c54d16066b8", "opaque_pixels": 668, "png_sha256": "beb00cb418149937c6b390262b95e0775e76a3eddfb55493e1047e88d7e200a3", "rgba_sha256": "cfc18fdf04e4a8230eb62f3bbdd6849a8eed114ff7c212cf40a6761eaa77fdfd", "visible_pixels": 984},
+    "48": {"alpha_bbox": [0, 0, 48, 48], "ico_difference_rms": [0.29756, 0.279508, 6.381873, 0.153093], "ico_rgba_sha256": "96c67b27c16619f44c3fac71db6d5f2024a0fddc1ed918b8783cf2bf8ca9ce0a", "opaque_pixels": 1704, "png_sha256": "0d993910f26bf7cd6dbd61243ecee5b1bdb456291022d946f2cc601bce0eb257", "rgba_sha256": "1f1f26b93d8911d33a5ee1ac57bec5a7d7384030a4545d045d26d2e61c1a411c", "visible_pixels": 2076},
+    "64": {"alpha_bbox": [0, 0, 64, 64], "ico_difference_rms": [0.444421, 1.329962, 4.778262, 0.342327], "ico_rgba_sha256": "bae8fd6d5e88dd142cacc78be96b4c060aa639990c0dc12c7252b08d02a58367", "opaque_pixels": 3072, "png_sha256": "b5336d62c91073ff2dad482d3bd947b4858e0346df4ecfb7e72fa954958c01b8", "rgba_sha256": "724635433b8b47ea74f1a73135d65c7a49ce0c9515b7d45dd83ba9f19415850d", "visible_pixels": 3720},
+    "128": {"alpha_bbox": [1, 1, 127, 127], "ico_difference_rms": [1.962524, 0.492188, 3.717609, 0.389765], "ico_rgba_sha256": "b8a16a74ad2ff9c10fde5109c62f0ac6350ed057132bb88f057d20beba82dd83", "opaque_pixels": 13028, "png_sha256": "d6d7fa1a763189059571c293e79b8e8f13447566415630421190bf708a17e0e7", "rgba_sha256": "505dfa88c53b090a240f662a94bb0928d39fd34702b55a5d4ee7cfaa4e20c6e9", "visible_pixels": 14632},
+    "256": {"alpha_bbox": [5, 5, 251, 251], "ico_difference_rms": [0.0, 0.0, 0.0, 0.0], "ico_rgba_sha256": "b12de53fe016f4d39747e1dd068617820af7ca0ce64ded799ac04846346910a3", "opaque_pixels": 53672, "png_sha256": "6f4a0c7982acddb0a7c48ffe2157bd9a92d0d2dd2315134a4908e15cb343897c", "rgba_sha256": "b12de53fe016f4d39747e1dd068617820af7ca0ce64ded799ac04846346910a3", "visible_pixels": 56919}
+  },
+  "source_svg_sha256": "fbdb39c13be1fe3c8c67b07c795fe8e5f51413da453337ca6d6eb468e4d8eb7f"
+}

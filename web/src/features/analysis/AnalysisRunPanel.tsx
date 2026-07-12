@@ -7,6 +7,7 @@ import {
   useState,
 } from 'react';
 
+import { safeUserMessage } from '../../shared/safeUserMessage';
 import type {
   AnalysisApi,
   AnalysisOverview,
@@ -114,7 +115,7 @@ export function AnalysisRunPanel({
         preflightGenerationRef.current === generation &&
         !controller.signal.aborted
       )
-        setMessage(error instanceof Error ? error.message : '预检失败');
+        setMessage(safeUserMessage(error, '预检失败'));
     } finally {
       if (preflightGenerationRef.current === generation) {
         preflightControllerRef.current = null;
@@ -149,7 +150,7 @@ export function AnalysisRunPanel({
       onStarted(submission.runId);
       setMessage('分析任务已提交，初始快照将在数据阶段完成后生成。');
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : '分析启动失败');
+      setMessage(safeUserMessage(error, '分析启动失败'));
     } finally {
       setBusy(null);
     }

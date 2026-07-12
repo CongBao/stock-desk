@@ -2,7 +2,16 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 
 import type { DesktopAdapter } from './desktopBridge';
-import type { ApiTransport, ApiTransportRequest } from '../shared/api/client';
+import {
+  createApiClient,
+  type ApiTransport,
+  type ApiTransportRequest,
+  type JsonValue,
+} from '../shared/api/client';
+import {
+  exportHealthyDiagnostics,
+  type DiagnosticSavePicker,
+} from './diagnosticsExport';
 
 const commands = {
   cancelExit: 'desktop_cancel_exit',
@@ -115,6 +124,11 @@ export function createTauriApiTransport(): ApiTransport | undefined {
 export function createTauriAdapter(): DesktopAdapter | undefined {
   if (!isTauri()) return undefined;
 
+  const savePicker = (
+    window as Window & {
+      readonly showSaveFilePicker?: DiagnosticSavePicker;
+    }
+  ).showSaveFilePicker;
   return {
     getRuntimeState: () => invoke<unknown>(commands.getRuntimeState),
     restartService: () => invoke<void>(commands.restartService),
@@ -122,6 +136,16 @@ export function createTauriAdapter(): DesktopAdapter | undefined {
     cancelExit: () => invoke<void>(commands.cancelExit),
     confirmExit: () => invoke<void>(commands.confirmExit),
     openDiagnostics: () => invoke<void>(commands.openDiagnostics),
+    exportDiagnostics: () =>
+      exportHealthyDiagnostics({
+        api: createApiClient('/api', invokeApi),
+        picker:
+          savePicker === undefined
+            ? undefined
+            : (options) => savePicker.call(window, options),
+        validateAtHost: (snapshot: JsonValue) =>
+          invoke<string>('desktop_validate_diagnostics', { snapshot }),
+      }),
     subscribe: (listener) =>
       listen<unknown>(runtimeStateEvent, (event) => listener(event.payload)),
     subscribeExit: (listener) =>

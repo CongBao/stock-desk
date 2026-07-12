@@ -510,7 +510,7 @@ def test_tag_release_generates_and_attests_sbom_and_artifacts() -> None:
         permissions = job.get("permissions", {})
         if job_name == "verify":
             assert permissions.get("attestations") == "read"
-        elif job_name == "alpha-verify":
+        elif job_name == "prerelease-verify":
             assert permissions == {
                 "actions": "read",
                 "attestations": "read",
@@ -641,15 +641,15 @@ def test_release_job_dependency_graph_is_acyclic_and_preserves_trust_order() -> 
     assert visited == set(jobs)
 
 
-def test_alpha_release_reuses_exact_main_evidence_without_running_stable_path() -> None:
+def test_prerelease_reuses_exact_main_evidence_without_running_stable_path() -> None:
     release = _load_github_actions_yaml(_read(".github/workflows/release.yml"))
     jobs = release["jobs"]
     tag_policy = jobs["tag-policy"]
     assert tag_policy["name"] == "Enforce supported release tag policy"
     tag_policy_command = tag_policy["steps"][0]["run"]
-    assert "v1.1.0-alpha.2" in tag_policy_command
+    assert "v1.1.0-beta.2" in tag_policy_command
     assert "^v[0-9]+\\.[0-9]+\\.[0-9]+$" in tag_policy_command
-    stable_condition = "${{ !contains(github.ref_name, '-alpha.') }}"
+    stable_condition = "${{ !contains(github.ref_name, '-') }}"
     for job_name in (
         "verify",
         "attest",
@@ -660,8 +660,8 @@ def test_alpha_release_reuses_exact_main_evidence_without_running_stable_path() 
     ):
         assert jobs[job_name]["if"] == stable_condition
 
-    verify = jobs["alpha-verify"]
-    assert verify["if"] == "github.ref_name == 'v1.1.0-alpha.2'"
+    verify = jobs["prerelease-verify"]
+    assert verify["if"] == "github.ref_name == 'v1.1.0-beta.2'"
     assert verify["needs"] == "tag-policy"
     assert verify["runs-on"] == "ubuntu-latest"
     assert verify["permissions"] == {
@@ -675,32 +675,32 @@ def test_alpha_release_reuses_exact_main_evidence_without_running_stable_path() 
     steps = verify["steps"]
     names = [step.get("name") for step in steps]
     assert names == [
-        "Configure alpha temporary roots",
-        "Check out exact alpha source",
+        "Configure prerelease temporary roots",
+        "Check out exact prerelease source",
         "Set up Python",
         "Set up uv",
-        "Verify exact alpha tag is on main and remains unsigned",
+        "Verify exact prerelease tag is on main and remains unsigned",
         "Locate successful exact-SHA main validation run",
         "Download exact proof and all proved artifacts",
         "Verify GitHub proof attestation",
         "Verify real GitHub attestations for every proved manifest",
         "Verify proved release inputs without rebuilding or rerunning tests",
         "Prepare explicitly unsigned evidence assets",
-        "Upload verified unsigned alpha assets",
+        "Upload verified unsigned prerelease assets",
     ]
     root_configuration = steps[0]["run"]
-    assert "EVIDENCE_ROOT=$RUNNER_TEMP/alpha-evidence" in root_configuration
-    assert "PROOF_ROOT=$RUNNER_TEMP/alpha-proof" in root_configuration
+    assert "EVIDENCE_ROOT=$RUNNER_TEMP/prerelease-evidence" in root_configuration
+    assert "PROOF_ROOT=$RUNNER_TEMP/prerelease-proof" in root_configuration
     assert '>> "$GITHUB_ENV"' in root_configuration
 
-    publish = jobs["alpha-prerelease"]
-    assert publish["if"] == "github.ref_name == 'v1.1.0-alpha.2'"
-    assert publish["needs"] == "alpha-verify"
+    publish = jobs["prerelease"]
+    assert publish["if"] == "github.ref_name == 'v1.1.0-beta.2'"
+    assert publish["needs"] == "prerelease-verify"
     assert publish["permissions"] == {"actions": "read", "contents": "write"}
     assert [step.get("name") for step in publish["steps"]] == [
-        "Download verified unsigned alpha assets",
+        "Download verified unsigned prerelease assets",
         "Recheck exact tag and unsigned asset checksums",
-        "Create unsigned alpha prerelease",
+        "Create unsigned prerelease",
     ]
 
     commands = "\n".join(str(step.get("run", "")) for step in steps + publish["steps"])
@@ -734,8 +734,8 @@ def test_alpha_release_reuses_exact_main_evidence_without_running_stable_path() 
         "--artifact-attestation",
         "manifest-binding.json",
         "windows-desktop-alpha-candidate-$GITHUB_SHA",
-        "stock-desk-1.1.0-alpha.2-unsigned-x64-setup.exe",
-        "docs/releases/v1.1.0-alpha.2.md",
+        "stock-desk-1.1.0-beta.2-unsigned-x64-setup.exe",
+        "docs/releases/v1.1.0-beta.2.md",
         "UNSIGNED-TEST-ONLY",
         "--prerelease",
         "--latest=false",
@@ -1282,10 +1282,10 @@ def test_e2e_is_a_root_script_without_changing_the_make_contract() -> None:
 
     app = _read("web/src/app/App.tsx")
     route_boundary = app.split("const WorkspaceRoutes = memo", 1)[1].split(
-        "function WorkspaceShell()", 1
+        "function WorkspaceShell(", 1
     )[0]
-    workspace_shell = app.split("function WorkspaceShell()", 1)[1].split(
-        "export function App()", 1
+    workspace_shell = app.split("function WorkspaceShell(", 1)[1].split(
+        "export function App(", 1
     )[0]
     assert "<Routes>" in route_boundary
     assert "<RouteEffects />" in route_boundary
@@ -1705,7 +1705,7 @@ def test_release_workflow_is_tag_only_and_scopes_write_permission() -> None:
         release,
     )
     assert re.search(
-        r"alpha-prerelease:\n(?:.|\n)*?permissions:\n"
+        r"prerelease:\n(?:.|\n)*?permissions:\n"
         r"\s+actions: read\n\s+contents: write",
         release,
     )
@@ -1719,7 +1719,7 @@ def test_release_workflow_is_tag_only_and_scopes_write_permission() -> None:
     assert 'os.environ["RELEASE_VERSION"]' in release
     stable_jobs = _load_github_actions_yaml(release)["jobs"]
     assert stable_jobs["release"]["permissions"] == {"contents": "write"}
-    assert stable_jobs["alpha-prerelease"]["permissions"] == {
+    assert stable_jobs["prerelease"]["permissions"] == {
         "actions": "read",
         "contents": "write",
     }
@@ -1979,8 +1979,9 @@ def test_pool_progress_window_orders_trigger_response_render_and_observer_end() 
     end = source.index("\n  expect(\n    progressWindowsDemonstrateChange", start)
     progress = source[start:end]
 
-    install = source.index("await installRenderSignalObserver(page)")
-    assert install < start
+    paint_dispose = source.index("await progressPaintSignals.dispose();", start)
+    render_install = source.index("await installRenderSignalObserver(page)")
+    assert start < paint_dispose < render_install < end
     arm = progress.index("await armNextProgressResponse(")
     assert "progressResponseGate.matches(response)" in progress
     observer = progress.index("await beginLongTaskWindow(page);")
@@ -2029,10 +2030,15 @@ def test_progress_paint_signal_is_preinstalled_and_causally_bound_to_token() -> 
     second_frame = instrument.index(
         "browser.requestAnimationFrame(() =>", first_frame + 1
     )
-    report = instrument.index("report?.({ token", second_frame)
+    close = instrument.index("longTaskWindow?.observer.disconnect();", second_frame)
+    report = instrument.index("setAttribute(", close)
     assert consumed < first_frame < second_frame < report
+    assert second_frame < close < report
     assert instrument.count("requestAnimationFrame(() =>") >= 2
-    assert "report?.({ token" in instrument
+    assert "new browser.MutationObserver(() =>" in instrument
+    assert "removeAttribute(attributeName)" in instrument
+    assert "exposeFunction" not in instrument
+    assert "console.debug(" not in instrument
 
     gate_start = source.index("async function armNextProgressResponse")
     gate_end = source.index("\ntest('records aggregate", gate_start)
@@ -2048,7 +2054,7 @@ def test_progress_paint_signal_and_unique_route_are_cleaned_up() -> None:
     end = source.index("\nfunction renderReadyAfter", start)
     instrument = source[start:end]
     assert "browser.fetch = originalFetch;" in instrument
-    assert "ledger.dispose();" in instrument
+    assert "removeAttribute(attributeName);" in instrument
 
     loop = source.index("  for (let index = 0; index < SAMPLE_COUNT - 2;")
     aggregate = source.index("\n  expect(\n    progressWindowsDemonstrateChange", loop)
@@ -2056,6 +2062,33 @@ def test_progress_paint_signal_and_unique_route_are_cleaned_up() -> None:
     assert "await progressResponseGate.stopRouting();" in progress
     assert "expect(progressResponseGate.finish()).toBe(1);" in progress
     assert "await progressPaintSignals.dispose();" in progress
+
+
+def test_performance_render_signal_avoids_cross_process_binding_in_measurement_window() -> (
+    None
+):
+    source = _read("web/e2e/performance.spec.ts")
+    start = source.index("async function installRenderSignalObserver")
+    end = source.index("\nasync function installProgressPaintSignals", start)
+    instrument = source[start:end]
+
+    assert "console.debug(" in instrument
+    assert "randomUUID()" in instrument
+    assert "page.on('console', capture);" in instrument
+    assert "page.off('console', capture);" in instrument
+    assert "observer?.disconnect();" in instrument
+    assert "exposeFunction" not in instrument
+
+
+def test_backtest_log_reconciliation_is_interruptible_during_progress() -> None:
+    source = _read("web/src/features/backtests/BacktestRunPage.tsx")
+
+    assert "const RunLogItem = memo(" in source
+    assert "startTransition(() => {" in source
+    assert "setLogs((current) => {" in source
+    assert source.index("startTransition(() => {") < source.index(
+        "setLogs((current) => {"
+    )
 
 
 def test_progress_response_gate_tags_exactly_one_request_and_counts_one_response() -> (

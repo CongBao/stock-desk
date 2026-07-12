@@ -25,6 +25,13 @@ def _desktop() -> ModuleType:
         pytest.fail("stock_desk.desktop packaged entrypoint is missing")
 
 
+def _desktop_runtime() -> ModuleType:
+    try:
+        return importlib.import_module("stock_desk.desktop_runtime")
+    except ModuleNotFoundError:
+        pytest.fail("stock_desk.desktop_runtime packaged support is missing")
+
+
 class _RecordingStopEvent:
     def __init__(self, name: str, calls: list[tuple[str, str]]) -> None:
         self.name = name
@@ -352,6 +359,7 @@ def test_shutdown_helper_reuses_protected_runtime_without_acl_subprocess(
     tmp_path: Path,
 ) -> None:
     desktop = _desktop()
+    desktop_runtime = _desktop_runtime()
     paths = desktop.RuntimePaths.create(tmp_path / "data")
     paths.write_runtime_record(
         desktop.RuntimeRecord(
@@ -371,7 +379,7 @@ def test_shutdown_helper_reuses_protected_runtime_without_acl_subprocess(
     def reject_acl(*_args: object, **_kwargs: object) -> None:
         pytest.fail("shutdown helper must reuse the protected runtime ACL")
 
-    monkeypatch.setattr(desktop, "_run_windows_acl", reject_acl)
+    monkeypatch.setattr(desktop_runtime, "_run_windows_acl", reject_acl)
 
     def acknowledge_shutdown() -> None:
         deadline = time.monotonic() + 2
@@ -589,20 +597,20 @@ def test_windows_acl_target_is_passed_only_in_the_child_environment(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    desktop = _desktop()
+    desktop_runtime = _desktop_runtime()
     target = tmp_path / "runtime user's 数据"
     target.mkdir()
     calls: list[dict[str, object]] = []
 
     monkeypatch.setattr(
-        desktop.subprocess,
+        desktop_runtime.subprocess,
         "run",
         lambda *_args, **kwargs: (
             calls.append(kwargs) or type("Completed", (), {"returncode": 0})()
         ),
     )
 
-    desktop._run_windows_acl(target, directory=True)
+    desktop_runtime._run_windows_acl(target, directory=True)
 
     assert calls[0]["env"]["STOCK_DESK_ACL_TARGET"] == str(target)
     assert calls[0]["timeout"] == 30

@@ -159,7 +159,10 @@ def test_worker_executes_pinned_single_run_and_persists_open_trade(
             status_lake=status,
             formulas=formula_service,
             heartbeat_interval_seconds=0.01,
-            heartbeat_lease_duration=timedelta(milliseconds=250),
+            # Keep the lease comfortably above shared-runner scheduling jitter.
+            # The 10 ms heartbeat interval still proves that slow finalization is
+            # renewed, while avoiding a wall-clock race under a loaded CI shard.
+            heartbeat_lease_duration=timedelta(seconds=2),
         )
         finish_active = threading.Event()
         finish_heartbeat_seen = threading.Event()

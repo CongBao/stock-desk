@@ -165,7 +165,7 @@ def _validation_evidence(
             else "provenance"
         )
         payload_name = (
-            "stock-desk-1.1.0-alpha.2-unsigned-x64-setup.exe"
+            "stock-desk-1.1.0-beta.2-unsigned-x64-setup.exe"
             if payload_kind == "tauri-unsigned"
             else f"{policy.artifact_name}.json"
         )
