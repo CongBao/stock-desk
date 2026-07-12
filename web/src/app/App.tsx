@@ -25,6 +25,7 @@ import { DesktopExitGuard } from '../features/desktop/DesktopExitGuard';
 import { OnboardingGate } from '../features/onboarding/OnboardingGate';
 import { useOnboardingDemoMode } from '../features/onboarding/demoMode';
 import { useMarketStore } from '../features/market/marketStore';
+import { ContextualGuidance } from '../features/guidance/ContextualGuidance';
 import type { OnboardingApi } from '../features/onboarding/onboardingApi';
 import { useSystemStatus } from '../shared/api/useSystemStatus';
 import type { WorkerState } from '../shared/api/useSystemStatus';
@@ -401,6 +402,7 @@ function WorkspaceShell() {
               </span>
             </div>
             <div className="topbar-actions">
+              <ContextualGuidance />
               <button
                 ref={aboutToggleRef}
                 className="about-toggle"

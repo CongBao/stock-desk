@@ -334,23 +334,29 @@ export function BacktestWorkspacePage({
           正在核对行情预填…
         </p>
       ) : (
-        <BacktestWizard
-          key={`${String(wizardKey)}:${location.search}`}
-          api={api}
-          formulaChoices={formulaChoices}
-          initialState={restoredDraft ?? currentPrefill ?? undefined}
-          marketApiClient={marketClient}
-          pools={pools}
-          catalogRevision={refreshGeneration}
-          onSubmitted={(submission, notice) =>
-            void navigate(`/backtests/${submission.runId}`, {
-              state: { submissionNotice: notice },
-            })
-          }
-        />
+        <div
+          className="guidance-anchor-contents"
+          data-guidance-target="backtest-wizard"
+        >
+          <BacktestWizard
+            key={`${String(wizardKey)}:${location.search}`}
+            api={api}
+            formulaChoices={formulaChoices}
+            initialState={restoredDraft ?? currentPrefill ?? undefined}
+            marketApiClient={marketClient}
+            pools={pools}
+            catalogRevision={refreshGeneration}
+            onSubmitted={(submission, notice) =>
+              void navigate(`/backtests/${submission.runId}`, {
+                state: { submissionNotice: notice },
+              })
+            }
+          />
+        </div>
       )}
       <section
         className="backtest-history"
+        data-guidance-target="backtest-history"
         aria-labelledby="backtest-history-heading"
       >
         <div className="section-heading">

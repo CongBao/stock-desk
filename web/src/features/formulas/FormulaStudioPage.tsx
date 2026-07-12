@@ -942,14 +942,19 @@ export function FormulaStudioPage({
               </button>
             </div>
           </div>
-          <FormulaEditor
-            ref={editorRef}
-            diagnostics={diagnostics}
-            documentation={documentation}
-            source={source}
-            onChange={updateSource}
-            onValidate={() => void runValidation()}
-          />
+          <div
+            className="guidance-anchor-contents"
+            data-guidance-target="formula-editor"
+          >
+            <FormulaEditor
+              ref={editorRef}
+              diagnostics={diagnostics}
+              documentation={documentation}
+              source={source}
+              onChange={updateSource}
+              onValidate={() => void runValidation()}
+            />
+          </div>
           <div className="formula-diagnostic-panel" aria-live="polite">
             {diagnostics.length === 0 ? (
               <p>
@@ -971,22 +976,27 @@ export function FormulaStudioPage({
               </ol>
             )}
           </div>
-          <ParameterPanel
-            schema={parameterSchema}
-            onChange={(schema) => {
-              draftEpochRef.current += 1;
-              cancelOperation('load');
-              cancelOperation('save');
-              cancelOperation('copy');
-              cancelOperation('preview');
-              setIsSaving(false);
-              setIsPreviewing(false);
-              setParameterSchema(schema);
-              setBars(undefined);
-              setPreview(undefined);
-              setNotice(null);
-            }}
-          />
+          <div
+            className="guidance-anchor-contents"
+            data-guidance-target="formula-parameters"
+          >
+            <ParameterPanel
+              schema={parameterSchema}
+              onChange={(schema) => {
+                draftEpochRef.current += 1;
+                cancelOperation('load');
+                cancelOperation('save');
+                cancelOperation('copy');
+                cancelOperation('preview');
+                setIsSaving(false);
+                setIsPreviewing(false);
+                setParameterSchema(schema);
+                setBars(undefined);
+                setPreview(undefined);
+                setNotice(null);
+              }}
+            />
+          </div>
           <footer className="formula-editor-actions">
             <div aria-live="polite">
               {notice ??
@@ -1026,6 +1036,7 @@ export function FormulaStudioPage({
             <button
               type="button"
               className="formula-primary-action"
+              data-guidance-target="formula-save"
               onClick={() => void saveFormula()}
               disabled={!canSave}
             >
@@ -1034,30 +1045,35 @@ export function FormulaStudioPage({
           </footer>
         </section>
 
-        <FormulaPreview
-          adjustment={adjustment}
-          bars={bars}
-          errorMessage={operationError ?? undefined}
-          isLoading={isPreviewing}
-          onAdjustmentChange={(value) => {
-            setAdjustment(value);
-            invalidatePreview();
-          }}
-          onPeriodChange={(value) => {
-            setPeriod(value);
-            invalidatePreview();
-          }}
-          onPreview={() => void runPreview()}
-          onSymbolChange={(value) => {
-            setSymbol(value);
-            invalidatePreview();
-          }}
-          period={period}
-          placement={placement}
-          preview={preview}
-          previewDisabled={!canPreview}
-          symbol={symbol}
-        />
+        <div
+          className="guidance-anchor-contents"
+          data-guidance-target="formula-preview"
+        >
+          <FormulaPreview
+            adjustment={adjustment}
+            bars={bars}
+            errorMessage={operationError ?? undefined}
+            isLoading={isPreviewing}
+            onAdjustmentChange={(value) => {
+              setAdjustment(value);
+              invalidatePreview();
+            }}
+            onPeriodChange={(value) => {
+              setPeriod(value);
+              invalidatePreview();
+            }}
+            onPreview={() => void runPreview()}
+            onSymbolChange={(value) => {
+              setSymbol(value);
+              invalidatePreview();
+            }}
+            period={period}
+            placement={placement}
+            preview={preview}
+            previewDisabled={!canPreview}
+            symbol={symbol}
+          />
+        </div>
       </div>
     </article>
   );

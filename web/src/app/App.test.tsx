@@ -961,8 +961,8 @@ it('aborts all in-flight endpoint requests after the final consumer unmounts', a
   const { fetchMock, signals } = installPendingFetch();
 
   const mounted = renderApp();
-  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(5));
-  expect(signals).toHaveLength(4);
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(6));
+  expect(signals).toHaveLength(5);
 
   mounted.unmount();
 
@@ -970,5 +970,5 @@ it('aborts all in-flight endpoint requests after the final consumer unmounts', a
     expect(signals.every((signal) => signal.aborted)).toBe(true),
   );
   await new Promise((resolve) => window.setTimeout(resolve, 20));
-  expect(fetchMock).toHaveBeenCalledTimes(5);
+  expect(fetchMock).toHaveBeenCalledTimes(6);
 });

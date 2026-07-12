@@ -271,7 +271,11 @@ export function MarketPage({
         <span className="release-badge">v0.2.0 · 行情数据</span>
       </header>
 
-      <section className="market-search-hero" aria-label="搜索并选择证券">
+      <section
+        className="market-search-hero"
+        aria-label="搜索并选择证券"
+        data-guidance-target="market-search"
+      >
         <div>
           <span className="panel-kicker">FIND INSTRUMENT</span>
           <p>输入代码、中文名或拼音，选择后立即加载真实 K 线。</p>
@@ -312,17 +316,22 @@ export function MarketPage({
         className="market-terminal-grid"
         data-market-rail-collapsed={isRailCollapsed}
       >
-        <MarketInstrumentRail
-          collapsed={isRailCollapsed}
-          onAdd={addToWatchlist}
-          onRemove={removeFromWatchlist}
-          onSelect={chooseInstrument}
-          onToggle={() => setIsRailCollapsed((collapsed) => !collapsed)}
-          recent={navigationState.recent}
-          selectedSymbol={selectedInstrument?.symbol ?? null}
-          toggleRef={marketRailToggleRef}
-          watchlist={navigationState.watchlist}
-        />
+        <div
+          className="guidance-anchor-contents"
+          data-guidance-target="market-watchlist"
+        >
+          <MarketInstrumentRail
+            collapsed={isRailCollapsed}
+            onAdd={addToWatchlist}
+            onRemove={removeFromWatchlist}
+            onSelect={chooseInstrument}
+            onToggle={() => setIsRailCollapsed((collapsed) => !collapsed)}
+            recent={navigationState.recent}
+            selectedSymbol={selectedInstrument?.symbol ?? null}
+            toggleRef={marketRailToggleRef}
+            watchlist={navigationState.watchlist}
+          />
+        </div>
 
         <section className="market-terminal-center" aria-label="行情图表工作区">
           <div className="market-command-bar">
@@ -359,6 +368,7 @@ export function MarketPage({
               </button>
               <div
                 className="period-selector"
+                data-guidance-target="market-period"
                 role="radiogroup"
                 aria-label="K 线周期"
               >
@@ -417,13 +427,18 @@ export function MarketPage({
             </div>
           </div>
 
-          <MarketChart
-            bars={bars.data?.bars}
-            isLoading={bars.isFetching && bars.data === undefined}
-            errorMessage={errorMessage}
-            initialZoom={zoom}
-            onZoomChange={setZoom}
-          />
+          <div
+            className="guidance-anchor-contents"
+            data-guidance-target="market-chart"
+          >
+            <MarketChart
+              bars={bars.data?.bars}
+              isLoading={bars.isFetching && bars.data === undefined}
+              errorMessage={errorMessage}
+              initialZoom={zoom}
+              onZoomChange={setZoom}
+            />
+          </div>
           {isCacheMiss ? (
             <div className="cache-miss-guidance" role="note">
               <p>此页面只读取本地缓存，不会在浏览时静默访问外部行情源。</p>

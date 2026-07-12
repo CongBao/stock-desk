@@ -40,6 +40,7 @@ from stock_desk.api.formulas import (
     router as formulas_router,
 )
 from stock_desk.api.health import router as health_router
+from stock_desk.api.guidance import router as guidance_router
 from stock_desk.api.market import (
     MarketServices,
     market_request_validation_handler,
@@ -67,6 +68,7 @@ from stock_desk.desktop_session import (
     DesktopSessionMiddleware,
 )
 from stock_desk.formula.repository import FormulaRepository
+from stock_desk.guidance.store import GuidancePreferencesStore
 from stock_desk.formula.service import FormulaService, FormulaServiceDatabaseMismatch
 from stock_desk.security.secrets import (
     SecretConfigurationError,
@@ -195,6 +197,8 @@ def create_app(
     workspace_service_lock = Lock()
     owned_market_navigation_service: MarketNavigationService | None = None
     market_navigation_service_lock = Lock()
+    owned_guidance_preferences_store: GuidancePreferencesStore | None = None
+    guidance_preferences_store_lock = Lock()
     shutdown_lock = Lock()
     active_lifespans = 0
     service_guard: AbstractContextManager[None] | None = None
@@ -501,6 +505,18 @@ def create_app(
                 )
             return owned_market_navigation_service
 
+    def provide_guidance_preferences_store() -> GuidancePreferencesStore:
+        nonlocal owned_guidance_preferences_store
+        with guidance_preferences_store_lock:
+            if owned_guidance_preferences_store is None:
+                data_dir = Path(
+                    os.path.abspath(os.fspath(resolved_settings.data_dir.expanduser()))
+                )
+                owned_guidance_preferences_store = GuidancePreferencesStore(
+                    data_dir / "guidance" / "preferences.json"
+                )
+            return owned_guidance_preferences_store
+
     @asynccontextmanager
     async def lifespan(_application: FastAPI) -> AsyncIterator[None]:
         nonlocal active_lifespans
@@ -521,6 +537,7 @@ def create_app(
         nonlocal owned_onboarding_service
         nonlocal owned_workspace_service
         nonlocal owned_market_navigation_service
+        nonlocal owned_guidance_preferences_store
         with shutdown_lock:
             if active_lifespans == 0:
                 candidate = service_lifecycle(
@@ -570,6 +587,7 @@ def create_app(
                 owned_onboarding_service = None
                 owned_workspace_service = None
                 owned_market_navigation_service = None
+                owned_guidance_preferences_store = None
                 closing_service_guard = service_guard
                 service_guard = None
             for resource in resources:
@@ -607,6 +625,9 @@ def create_app(
     application.state.market_navigation_service_provider = (
         provide_market_navigation_service
     )
+    application.state.guidance_preferences_store_provider = (
+        provide_guidance_preferences_store
+    )
     application.state.database_identity_provider = database_identity.current
     application.state.model_settings_cursor_key = secrets.token_bytes(32)
     application.state.analysis_cursor_key = secrets.token_bytes(32)
@@ -627,6 +648,7 @@ def create_app(
                 "/api/v1/onboarding",
                 "/api/v1/workspace",
                 "/api/v1/market/navigation",
+                "/api/v1/guidance",
             )
         ):
             return JSONResponse(status_code=422, content={"code": "invalid_request"})
@@ -673,6 +695,7 @@ def create_app(
     )
     application.include_router(health_router, prefix="/api")
     application.include_router(onboarding_router, prefix="/api")
+    application.include_router(guidance_router, prefix="/api")
     application.include_router(workspace_router, prefix="/api")
     application.include_router(market_navigation_router, prefix="/api")
     application.include_router(tasks_router, prefix="/api")
