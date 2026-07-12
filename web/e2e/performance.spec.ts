@@ -9,7 +9,7 @@ import { readFileSync } from 'node:fs';
 import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
-import { expect, test } from './fixtures';
+import { expect, installReturningUserState, test } from './fixtures';
 
 import {
   canonicalDigest as digest,
@@ -288,9 +288,14 @@ async function proveChartInteractionHandshake(
   const zoomedAt = performance.now();
 
   const beforeDrag = await zoomRange();
+  const [dragStart] = beforeDrag.split(':').map(Number);
+  const dragTargetRatio =
+    Number.isFinite(dragStart) && dragStart <= 0.001 ? 0.3 : 0.7;
   await page.mouse.move(box.x + box.width * 0.5, box.y + 120);
   await page.mouse.down();
-  await page.mouse.move(box.x + box.width * 0.7, box.y + 120, { steps: 2 });
+  await page.mouse.move(box.x + box.width * dragTargetRatio, box.y + 120, {
+    steps: 2,
+  });
   await page.mouse.up();
   await expect.poll(zoomRange, poll).not.toBe(beforeDrag);
   const draggedAt = performance.now();
@@ -315,6 +320,7 @@ async function chartAction(
     exact: true,
   });
   await expect(option).toBeVisible();
+  await page.locator('.market-chart-viewport').scrollIntoViewIfNeeded();
   const responsePromise = page.waitForResponse((response) => {
     const url = new URL(response.url());
     return (
@@ -1238,6 +1244,7 @@ test('records aggregate 2/3/5 budgets and worker-backed UI responsiveness', asyn
     readFileSync(FIXTURE_FILE ?? '', 'utf8'),
   ) as {
     content_digest: string;
+    row_count: number;
     scope_instrument_count: number;
     runnable_symbol_count: number;
   };
@@ -1245,6 +1252,10 @@ test('records aggregate 2/3/5 budgets and worker-backed UI responsiveness', asyn
     scope_instrument_count: 5_000,
     runnable_symbol_count: 40,
   });
+  const performanceWorkspaceZoom = {
+    start: Math.max(0, 100 - (160 / fixtureEvidence.row_count) * 100),
+    end: 100,
+  };
   const processEvidence = JSON.parse(
     readFileSync(PROCESS_FILE ?? '', 'utf8'),
   ) as {
@@ -1297,6 +1308,7 @@ test('records aggregate 2/3/5 budgets and worker-backed UI responsiveness', asyn
     const context = await browser.newContext();
     const network = await forbidExternalNetwork(context);
     const page = await context.newPage();
+    await installReturningUserState(page, performanceWorkspaceZoom);
     await page.goto('/market');
     chartCold.push(await chartAction(page, network, roots, rootRoles));
     await context.close();
@@ -1305,6 +1317,7 @@ test('records aggregate 2/3/5 budgets and worker-backed UI responsiveness', asyn
   let context = await browser.newContext();
   let network = await forbidExternalNetwork(context);
   let page = await context.newPage();
+  await installReturningUserState(page, performanceWorkspaceZoom);
   const chartWarm: TimedSample[] = [];
   await page.goto('/market');
   await chartAction(page, network, roots, rootRoles);
@@ -1348,6 +1361,7 @@ test('records aggregate 2/3/5 budgets and worker-backed UI responsiveness', asyn
   context = await browser.newContext();
   network = await forbidExternalNetwork(context);
   page = await context.newPage();
+  await installReturningUserState(page, performanceWorkspaceZoom);
   await page.goto('/backtests');
   await page
     .getByLabel('保存的交易公式')

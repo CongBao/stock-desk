@@ -1,4 +1,4 @@
-import { expect, test as base } from '@playwright/test';
+import { expect, test as base, type Page } from '@playwright/test';
 
 const completedOnboarding = {
   schema_version: 1,
@@ -39,7 +39,16 @@ const allowedWorkspacePages = new Set([
   '/settings',
 ]);
 
-function workspaceState(currentPage: string, revision: number) {
+type WorkspaceZoom = {
+  readonly start: number;
+  readonly end: number;
+};
+
+function workspaceState(
+  currentPage: string,
+  revision: number,
+  zoom: WorkspaceZoom,
+) {
   return {
     schema_version: 1,
     revision,
@@ -57,11 +66,44 @@ function workspaceState(currentPage: string, revision: number) {
       },
       period: '1d',
       adjustment: 'qfq',
-      zoom: { start: 0, end: 100 },
+      zoom,
       main_chart: 'candlestick',
       subchart: { kind: 'volume' },
     },
   };
+}
+
+export async function installReturningUserState(
+  page: Page,
+  zoom: WorkspaceZoom = { start: 0, end: 100 },
+): Promise<void> {
+  let revision = 1;
+  let currentPage = '/market';
+  await page.route('**/api/v1/onboarding/state', async (route) => {
+    await route.fulfill({ json: completedOnboarding });
+  });
+  await page.route('**/api/v1/workspace', async (route) => {
+    if (route.request().method() === 'PUT') {
+      const body = route.request().postDataJSON() as {
+        current_page?: string;
+      };
+      if (
+        typeof body.current_page === 'string' &&
+        allowedWorkspacePages.has(body.current_page)
+      ) {
+        currentPage = body.current_page;
+      }
+      revision += 1;
+    } else {
+      const requestedPage = new URL(page.url()).pathname;
+      currentPage = allowedWorkspacePages.has(requestedPage)
+        ? requestedPage
+        : '/market';
+    }
+    await route.fulfill({
+      json: workspaceState(currentPage, revision, zoom),
+    });
+  });
 }
 
 /**
@@ -71,31 +113,7 @@ function workspaceState(currentPage: string, revision: number) {
  */
 export const test = base.extend({
   page: async ({ page }, use) => {
-    let revision = 1;
-    let currentPage = '/market';
-    await page.route('**/api/v1/onboarding/state', async (route) => {
-      await route.fulfill({ json: completedOnboarding });
-    });
-    await page.route('**/api/v1/workspace', async (route) => {
-      if (route.request().method() === 'PUT') {
-        const body = route.request().postDataJSON() as {
-          current_page?: string;
-        };
-        if (
-          typeof body.current_page === 'string' &&
-          allowedWorkspacePages.has(body.current_page)
-        ) {
-          currentPage = body.current_page;
-        }
-        revision += 1;
-      } else {
-        const requestedPage = new URL(page.url()).pathname;
-        currentPage = allowedWorkspacePages.has(requestedPage)
-          ? requestedPage
-          : '/market';
-      }
-      await route.fulfill({ json: workspaceState(currentPage, revision) });
-    });
+    await installReturningUserState(page);
     await use(page);
   },
 });
