@@ -1,6 +1,6 @@
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { MarketChart } from './MarketChart';
 import {
@@ -10,6 +10,14 @@ import {
   type MarketPoolDetail,
 } from './marketApi';
 import { MarketOperationsPanel } from './MarketOperationsPanel';
+import { MarketInstrumentRail } from './MarketInstrumentRail';
+import {
+  marketNavigationApi,
+  prependRecentInstrument,
+  type MarketNavigationApi,
+  type MarketNavigationInstrument,
+  type MarketNavigationState,
+} from './marketNavigationApi';
 import { marketWorkflowApi, type MarketWorkflowApi } from './marketWorkflowApi';
 import {
   useMarketStore,
@@ -23,6 +31,7 @@ import { useOnboardingDemoMode } from '../onboarding/demoMode';
 
 type MarketPageProps = {
   readonly api?: MarketApi;
+  readonly navigationApi?: MarketNavigationApi;
   readonly searchDebounceMs?: number;
   readonly workflowApi?: MarketWorkflowApi;
 };
@@ -33,15 +42,52 @@ const periods: readonly { value: MarketPeriod; label: string }[] = [
   { value: '60m', label: '60 分钟' },
 ];
 
+const EMPTY_NAVIGATION: MarketNavigationState = {
+  schemaVersion: 1,
+  revision: 0,
+  watchlist: [],
+  recent: [],
+  notice: null,
+};
+
+function asNavigationInstrument(instrument: {
+  readonly symbol: string;
+  readonly name: string;
+  readonly instrumentKind?: MarketNavigationInstrument['instrumentKind'];
+}): MarketNavigationInstrument {
+  return {
+    symbol: instrument.symbol,
+    name: instrument.name,
+    instrumentKind: instrument.instrumentKind ?? 'stock',
+  };
+}
+
 export function MarketPage({
   api = marketApi,
+  navigationApi = marketNavigationApi,
   searchDebounceMs,
   workflowApi = marketWorkflowApi,
 }: MarketPageProps) {
   const readonlyDemo = useOnboardingDemoMode();
+  const queryClient = useQueryClient();
   const [selectedPool, setSelectedPool] = useState<MarketPoolDetail | null>(
     null,
   );
+  const [isPoolWorkflowOpen, setIsPoolWorkflowOpen] = useState(false);
+  const [navigationDraft, setNavigationDraft] =
+    useState<MarketNavigationState | null>(null);
+  const [navigationMessage, setNavigationMessage] = useState<string | null>(
+    null,
+  );
+  const [isNarrowRail, setIsNarrowRail] = useState(() =>
+    typeof window.matchMedia === 'function'
+      ? window.matchMedia('(max-width: 900px)').matches
+      : false,
+  );
+  const [isRailCollapsed, setIsRailCollapsed] = useState(isNarrowRail);
+  const poolWorkflowButtonRef = useRef<HTMLButtonElement>(null);
+  const poolWorkflowCloseRef = useRef<HTMLButtonElement>(null);
+  const marketRailToggleRef = useRef<HTMLButtonElement>(null);
   const selectedInstrument = useMarketStore(
     (state) => state.selectedInstrument,
   );
@@ -52,6 +98,136 @@ export function MarketPage({
   const selectPool = useMarketStore((state) => state.selectPool);
   const setPeriod = useMarketStore((state) => state.setPeriod);
   const setAdjustment = useMarketStore((state) => state.setAdjustment);
+
+  const navigation = useQuery({
+    queryKey: ['market', 'navigation'],
+    queryFn: ({ signal }) => navigationApi.get({ signal }),
+    retry: false,
+  });
+  const navigationState =
+    navigationDraft ?? navigation.data ?? EMPTY_NAVIGATION;
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return;
+    const query = window.matchMedia('(max-width: 900px)');
+    const handleChange = (event: MediaQueryListEvent) => {
+      setIsNarrowRail(event.matches);
+      if (event.matches) setIsRailCollapsed(true);
+    };
+    query.addEventListener('change', handleChange);
+    return () => query.removeEventListener('change', handleChange);
+  }, []);
+
+  useEffect(() => {
+    if (!isPoolWorkflowOpen) return;
+    poolWorkflowCloseRef.current?.focus();
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      setIsPoolWorkflowOpen(false);
+      window.setTimeout(() => poolWorkflowButtonRef.current?.focus(), 0);
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isPoolWorkflowOpen]);
+
+  useEffect(() => {
+    if (!isNarrowRail || isRailCollapsed) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setIsRailCollapsed(true);
+        window.setTimeout(() => marketRailToggleRef.current?.focus(), 0);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isNarrowRail, isRailCollapsed]);
+
+  const persistNavigation = useCallback(
+    async (
+      next: Pick<MarketNavigationState, 'watchlist' | 'recent'>,
+      expectedRevision: number,
+    ) => {
+      const optimistic: MarketNavigationState = {
+        schemaVersion: 1,
+        revision: expectedRevision,
+        watchlist: next.watchlist,
+        recent: next.recent,
+        notice: null,
+      };
+      setNavigationDraft(optimistic);
+      setNavigationMessage(null);
+      try {
+        const saved = await navigationApi.put(
+          {
+            expectedRevision,
+            watchlist: next.watchlist,
+            recent: next.recent,
+          },
+          {},
+        );
+        queryClient.setQueryData(['market', 'navigation'], saved);
+        setNavigationDraft(null);
+      } catch {
+        setNavigationMessage('自选与最近访问暂未同步，请重试。');
+      }
+    },
+    [navigationApi, queryClient],
+  );
+
+  const chooseInstrument = useCallback(
+    (instrument: MarketNavigationInstrument) => {
+      selectInstrument({
+        symbol: instrument.symbol,
+        name: instrument.name,
+        instrumentKind: instrument.instrumentKind,
+      });
+      void persistNavigation(
+        {
+          watchlist: navigationState.watchlist,
+          recent: prependRecentInstrument(navigationState.recent, instrument),
+        },
+        navigationState.revision,
+      );
+    },
+    [navigationState, persistNavigation, selectInstrument],
+  );
+
+  const addToWatchlist = useCallback(
+    (instrument: MarketNavigationInstrument) => {
+      if (
+        navigationState.watchlist.some(
+          (item) => item.symbol === instrument.symbol,
+        )
+      ) {
+        return;
+      }
+      void persistNavigation(
+        {
+          watchlist: [...navigationState.watchlist, instrument],
+          recent: navigationState.recent,
+        },
+        navigationState.revision,
+      );
+    },
+    [navigationState, persistNavigation],
+  );
+
+  const removeFromWatchlist = useCallback(
+    (instrument: MarketNavigationInstrument) => {
+      void persistNavigation(
+        {
+          watchlist: navigationState.watchlist.filter(
+            (item) => item.symbol !== instrument.symbol,
+          ),
+          recent: navigationState.recent,
+        },
+        navigationState.revision,
+      );
+    },
+    [navigationState, persistNavigation],
+  );
 
   const bars = useQuery({
     queryKey: [
@@ -93,26 +269,58 @@ export function MarketPage({
         <span className="release-badge">v0.2.0 · 行情数据</span>
       </header>
 
-      <div className="market-terminal-grid">
-        <aside className="market-terminal-left" aria-label="证券选择与股票池">
-          <StockSearch
-            api={api}
-            debounceMs={searchDebounceMs}
-            onSelect={(instrument) =>
-              selectInstrument({
-                symbol: instrument.symbol,
-                name: instrument.name,
-              })
-            }
-          />
-          <StockPoolPanel
-            api={api}
-            selectedPoolId={selectedPoolId}
-            onSelectPool={selectPool}
-            onSelectInstrument={selectInstrument}
-            onPoolDetail={setSelectedPool}
-          />
-        </aside>
+      <section className="market-search-hero" aria-label="搜索并选择证券">
+        <div>
+          <span className="panel-kicker">FIND INSTRUMENT</span>
+          <p>输入代码、中文名或拼音，选择后立即加载真实 K 线。</p>
+        </div>
+        <StockSearch
+          api={api}
+          focusOnMount
+          debounceMs={searchDebounceMs}
+          onSelect={(instrument) =>
+            chooseInstrument(asNavigationInstrument(instrument))
+          }
+        />
+      </section>
+
+      {navigation.isError || navigationMessage !== null ? (
+        <div className="market-navigation-status" role="alert">
+          <span>
+            {navigationMessage ?? '自选与最近访问暂不可用，行情查看仍可继续。'}
+          </span>
+          <button
+            type="button"
+            onClick={() => {
+              setNavigationDraft(null);
+              setNavigationMessage(null);
+              void navigation.refetch();
+            }}
+          >
+            重试同步
+          </button>
+        </div>
+      ) : navigationState.notice === null ? null : (
+        <p className="market-navigation-status" role="status">
+          已安全重置无法读取的自选与最近访问。
+        </p>
+      )}
+
+      <div
+        className="market-terminal-grid"
+        data-market-rail-collapsed={isRailCollapsed}
+      >
+        <MarketInstrumentRail
+          collapsed={isRailCollapsed}
+          onAdd={addToWatchlist}
+          onRemove={removeFromWatchlist}
+          onSelect={chooseInstrument}
+          onToggle={() => setIsRailCollapsed((collapsed) => !collapsed)}
+          recent={navigationState.recent}
+          selectedSymbol={selectedInstrument?.symbol ?? null}
+          toggleRef={marketRailToggleRef}
+          watchlist={navigationState.watchlist}
+        />
 
         <section className="market-terminal-center" aria-label="行情图表工作区">
           <div className="market-command-bar">
@@ -127,6 +335,26 @@ export function MarketPage({
               )}
             </div>
             <div className="market-control-row">
+              <button
+                ref={poolWorkflowButtonRef}
+                className="market-pool-entry"
+                type="button"
+                onClick={() => setIsPoolWorkflowOpen(true)}
+              >
+                <svg
+                  aria-hidden="true"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                >
+                  <rect x="4" y="4" width="6" height="6" rx="1" />
+                  <rect x="14" y="4" width="6" height="6" rx="1" />
+                  <rect x="4" y="14" width="6" height="6" rx="1" />
+                  <rect x="14" y="14" width="6" height="6" rx="1" />
+                </svg>
+                打开股票池
+              </button>
               <div
                 className="period-selector"
                 role="radiogroup"
@@ -158,6 +386,32 @@ export function MarketPage({
                   <option value="hfq">后复权</option>
                 </select>
               </label>
+              {selectedInstrument ===
+              null ? null : navigationState.watchlist.some(
+                  (item) => item.symbol === selectedInstrument.symbol,
+                ) ? (
+                <button
+                  className="market-watchlist-action"
+                  type="button"
+                  onClick={() =>
+                    removeFromWatchlist(
+                      asNavigationInstrument(selectedInstrument),
+                    )
+                  }
+                >
+                  移出自选
+                </button>
+              ) : (
+                <button
+                  className="market-watchlist-action"
+                  type="button"
+                  onClick={() =>
+                    addToWatchlist(asNavigationInstrument(selectedInstrument))
+                  }
+                >
+                  加入自选
+                </button>
+              )}
             </div>
           </div>
 
@@ -232,6 +486,48 @@ export function MarketPage({
           )}
         </aside>
       </div>
+
+      {isPoolWorkflowOpen ? (
+        <div className="market-pool-backdrop" role="presentation">
+          <section
+            className="market-pool-workflow"
+            role="dialog"
+            aria-modal="true"
+            aria-label="股票池独立流程"
+          >
+            <header>
+              <div>
+                <span className="panel-kicker">STOCK POOL WORKFLOW</span>
+                <h2>选择或管理股票池</h2>
+              </div>
+              <button
+                ref={poolWorkflowCloseRef}
+                type="button"
+                aria-label="关闭股票池"
+                onClick={() => {
+                  setIsPoolWorkflowOpen(false);
+                  window.setTimeout(
+                    () => poolWorkflowButtonRef.current?.focus(),
+                    0,
+                  );
+                }}
+              >
+                ×
+              </button>
+            </header>
+            <StockPoolPanel
+              api={api}
+              selectedPoolId={selectedPoolId}
+              onSelectPool={selectPool}
+              onSelectInstrument={(instrument) => {
+                chooseInstrument(asNavigationInstrument(instrument));
+                setIsPoolWorkflowOpen(false);
+              }}
+              onPoolDetail={setSelectedPool}
+            />
+          </section>
+        </div>
+      ) : null}
     </article>
   );
 }

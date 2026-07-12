@@ -138,6 +138,7 @@ it('labels preset/custom pools and selects a member from pool detail', async () 
   expect(onSelectInstrument).toHaveBeenCalledWith({
     symbol: '600000.SH',
     name: '浦发银行',
+    instrumentKind: 'stock',
   });
 });
 

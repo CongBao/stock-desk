@@ -87,7 +87,11 @@ function PoolMembers({
             <button
               type="button"
               onClick={() =>
-                onSelectInstrument({ symbol: member.symbol, name: member.name })
+                onSelectInstrument({
+                  symbol: member.symbol,
+                  name: member.name,
+                  instrumentKind: member.instrumentKind,
+                })
               }
             >
               <strong>{member.name}</strong>

@@ -7,6 +7,7 @@ export type MarketAdjustment = 'none' | 'qfq' | 'hfq';
 export type MarketInstrumentSelection = {
   readonly symbol: string;
   readonly name: string;
+  readonly instrumentKind?: 'stock' | 'index' | 'etf' | 'fund' | 'bond';
 };
 
 export type MarketState = {

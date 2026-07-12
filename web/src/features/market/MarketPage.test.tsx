@@ -10,6 +10,10 @@ import type {
   MarketInstrument,
 } from './marketApi';
 import { MarketPage } from './MarketPage';
+import type {
+  MarketNavigationApi,
+  MarketNavigationState,
+} from './marketNavigationApi';
 import {
   resetMarketStore,
   type MarketAdjustment,
@@ -155,20 +159,122 @@ function barsResponse(
   };
 }
 
-function renderPage(api: MarketApi) {
+const emptyNavigation = {
+  schemaVersion: 1,
+  revision: 0,
+  watchlist: [],
+  recent: [],
+  notice: null,
+} as const satisfies MarketNavigationState;
+
+function renderPage(
+  api: MarketApi,
+  navigationApi: MarketNavigationApi = {
+    get: vi.fn(() => Promise.resolve(emptyNavigation)),
+    put: vi.fn(() => Promise.resolve(emptyNavigation)),
+  },
+) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0 } },
   });
   return render(
     <QueryClientProvider client={client}>
       <MemoryRouter>
-        <MarketPage api={api} searchDebounceMs={10} />
+        <MarketPage
+          api={api}
+          navigationApi={navigationApi}
+          searchDebounceMs={10}
+        />
       </MemoryRouter>
     </QueryClientProvider>,
   );
 }
 
 beforeEach(() => resetMarketStore());
+
+it('focuses prominent Market search and persists recent/watchlist operations', async () => {
+  const user = userEvent.setup();
+  const api = {
+    searchInstruments: vi.fn(() => Promise.resolve([instrument])),
+    getPools: vi.fn(() => Promise.resolve({ items: [], nextCursor: null })),
+    getPool: vi.fn(),
+    getBars: vi.fn(() => Promise.resolve(barsResponse('1d', 'qfq'))),
+  } as unknown as MarketApi;
+  const put = vi.fn<MarketNavigationApi['put']>().mockImplementation((value) =>
+    Promise.resolve({
+      schemaVersion: 1,
+      revision: value.expectedRevision + 1,
+      watchlist: value.watchlist,
+      recent: value.recent,
+      notice: null,
+    }),
+  );
+  const navigationApi = {
+    get: vi.fn(() => Promise.resolve(emptyNavigation)),
+    put,
+  } satisfies MarketNavigationApi;
+  renderPage(api, navigationApi);
+
+  const search = screen.getByRole('combobox', { name: '搜索证券' });
+  expect(search).toHaveFocus();
+  await user.type(search, '浦发');
+  await user.click(
+    await screen.findByRole('option', { name: /浦发银行.*600000\.SH/u }),
+  );
+  await waitFor(() =>
+    expect(put).toHaveBeenCalledWith(
+      {
+        expectedRevision: 0,
+        watchlist: [],
+        recent: [
+          {
+            symbol: '600000.SH',
+            name: '浦发银行',
+            instrumentKind: 'stock',
+          },
+        ],
+      },
+      {},
+    ),
+  );
+
+  await user.click(screen.getByRole('button', { name: '加入自选' }));
+  await waitFor(() =>
+    expect(put).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        expectedRevision: 1,
+        watchlist: [
+          {
+            symbol: '600000.SH',
+            name: '浦发银行',
+            instrumentKind: 'stock',
+          },
+        ],
+      }),
+      {},
+    ),
+  );
+});
+
+it('opens stock pools as a separate keyboard-dismissible workflow', async () => {
+  const user = userEvent.setup();
+  const api = {
+    searchInstruments: vi.fn(() => Promise.resolve([])),
+    getPools: vi.fn(() => Promise.resolve({ items: [], nextCursor: null })),
+    getPool: vi.fn(),
+    getBars: vi.fn(),
+  } as unknown as MarketApi;
+  renderPage(api);
+
+  const open = screen.getByRole('button', { name: '打开股票池' });
+  await user.click(open);
+  expect(
+    screen.getByRole('dialog', { name: '股票池独立流程' }),
+  ).toBeInTheDocument();
+  await user.keyboard('{Escape}');
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  expect(open).toHaveFocus();
+});
 
 it('does not request bars before selection and refetches by period and adjustment', async () => {
   const user = userEvent.setup();
