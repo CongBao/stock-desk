@@ -240,3 +240,50 @@ def test_onboarding_api_can_exit_persisted_demo_into_real_setup(
     assert exited.json()["source"] is None
     assert prepared.status_code == 200
     assert prepared.json()["source"]["id"] == "akshare"
+
+
+def test_product_demo_opens_bundled_bars_read_only_then_returns_to_setup(
+    tmp_path: Path,
+) -> None:
+    settings = Settings(
+        database_url=f"sqlite:///{tmp_path / 'real.db'}",
+        data_dir=tmp_path / "v1.1",
+    )
+
+    with TestClient(create_app(settings)) as client:
+        demo = client.post("/api/v1/onboarding/actions/demo")
+        bars = client.get(
+            "/api/market/bars",
+            params={
+                "symbol": "600000.SH",
+                "period": "1d",
+                "adjustment": "none",
+            },
+        )
+        navigation_write = client.put(
+            "/api/v1/market/navigation",
+            json={"expected_revision": 0, "watchlist": [], "recent": []},
+        )
+        data_write = client.post("/api/market/catalog/updates")
+        exited = client.post("/api/v1/onboarding/actions/exit_demo")
+        state = client.get("/api/v1/onboarding/state")
+
+    assert demo.status_code == 200
+    assert demo.json()["demo_mode"] is True
+    assert demo.json()["status"] == "in_progress"
+    assert demo.json()["instrument"] == {
+        "symbol": "600000.SH",
+        "name": "Stock Desk 合成演示标的（非真实行情）",
+        "exchange": "SH",
+        "instrument_kind": "stock",
+    }
+    assert bars.status_code == 200
+    assert len(bars.json()["bars"]) >= 60
+    assert bars.json()["provenance"]["source"] == "stock_desk_demo"
+    assert navigation_write.status_code == 409
+    assert navigation_write.json() == {"code": "demo_read_only"}
+    assert data_write.status_code == 409
+    assert data_write.json() == {"code": "demo_read_only"}
+    assert exited.status_code == 200
+    assert exited.json()["demo_mode"] is False
+    assert state.json()["current_step"] == "data_preparation"

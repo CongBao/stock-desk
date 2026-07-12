@@ -90,7 +90,15 @@ function api(
     runAction: vi.fn((action) =>
       Promise.resolve(
         action === 'demo'
-          ? onboardingState('welcome', { demoMode: true })
+          ? onboardingState('welcome', {
+              demoMode: true,
+              instrument: {
+                symbol: '600000.SH',
+                name: 'Stock Desk 合成演示标的（非真实行情）',
+                exchange: 'SH',
+                instrumentKind: 'stock',
+              },
+            })
           : action === 'exit_demo'
             ? onboardingState('data_preparation', {
                 revision: 3,
@@ -206,7 +214,11 @@ it('keeps demo read-only and does not mark onboarding complete', async () => {
   await user.click(await screen.findByRole('button', { name: '先看只读演示' }));
 
   expect(await screen.findByText(/只读演示 · 设置尚未完成/u)).toBeVisible();
-  expect(screen.getByText('workspace:上证指数:000001.SS')).toBeVisible();
+  expect(
+    screen.getByText(
+      'workspace:Stock Desk 合成演示标的（非真实行情）:600000.SH',
+    ),
+  ).toBeVisible();
   expect(client.complete).not.toHaveBeenCalled();
 });
 

@@ -105,6 +105,7 @@ export function MarketPage({
     queryKey: ['market', 'navigation'],
     queryFn: ({ signal }) => navigationApi.get({ signal }),
     retry: false,
+    enabled: !readonlyDemo,
   });
   const navigationState =
     navigationDraft ?? navigation.data ?? EMPTY_NAVIGATION;
@@ -151,6 +152,7 @@ export function MarketPage({
       next: Pick<MarketNavigationState, 'watchlist' | 'recent'>,
       expectedRevision: number,
     ) => {
+      if (readonlyDemo) return;
       const optimistic: MarketNavigationState = {
         schemaVersion: 1,
         revision: expectedRevision,
@@ -175,7 +177,7 @@ export function MarketPage({
         setNavigationMessage('自选与最近访问暂未同步，请重试。');
       }
     },
-    [navigationApi, queryClient],
+    [navigationApi, queryClient, readonlyDemo],
   );
 
   const chooseInstrument = useCallback(
@@ -266,7 +268,11 @@ export function MarketPage({
           <h2 data-page-heading tabIndex={-1}>
             行情工作区
           </h2>
-          <p>搜索或从股票池选择证券，查看可追溯的本地 K 线与成交量。</p>
+          <p>
+            {readonlyDemo
+              ? '只读浏览内置合成 K 线；这些数据不是交易所真实行情。'
+              : '搜索或从股票池选择证券，查看可追溯的本地 K 线与成交量。'}
+          </p>
         </div>
         <span className="release-badge">v0.2.0 · 行情数据</span>
       </header>
@@ -277,8 +283,14 @@ export function MarketPage({
         data-guidance-target="market-search"
       >
         <div>
-          <span className="panel-kicker">FIND INSTRUMENT</span>
-          <p>输入代码、中文名或拼音，选择后立即加载真实 K 线。</p>
+          <span className="panel-kicker">
+            {readonlyDemo ? 'SYNTHETIC / NOT REAL' : 'FIND INSTRUMENT'}
+          </span>
+          <p>
+            {readonlyDemo
+              ? '只读合成演示行情'
+              : '输入代码、中文名或拼音，选择后立即加载真实 K 线。'}
+          </p>
         </div>
         <StockSearch
           api={api}
@@ -326,6 +338,7 @@ export function MarketPage({
             onRemove={removeFromWatchlist}
             onSelect={chooseInstrument}
             onToggle={() => setIsRailCollapsed((collapsed) => !collapsed)}
+            readOnly={readonlyDemo}
             recent={navigationState.recent}
             selectedSymbol={selectedInstrument?.symbol ?? null}
             toggleRef={marketRailToggleRef}
@@ -350,6 +363,8 @@ export function MarketPage({
                 ref={poolWorkflowButtonRef}
                 className="market-pool-entry"
                 type="button"
+                disabled={readonlyDemo}
+                title={readonlyDemo ? '只读演示不保存股票池' : undefined}
                 onClick={() => setIsPoolWorkflowOpen(true)}
               >
                 <svg

@@ -307,7 +307,7 @@ function OnboardingWizard({
     try {
       const next = await api.runAction(action);
       setState(next);
-      if (action === 'demo') onDemo(instrument, next);
+      if (action === 'demo') onDemo(next.instrument ?? instrument, next);
       if (action === 'advanced') onAdvanced(next);
     } catch {
       setActionError(true);

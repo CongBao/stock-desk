@@ -17,6 +17,7 @@ type MarketInstrumentRailProps = {
   readonly onRemove: (instrument: MarketNavigationInstrument) => void;
   readonly onSelect: (instrument: MarketNavigationInstrument) => void;
   readonly onToggle: () => void;
+  readonly readOnly?: boolean;
   readonly toggleRef?: RefObject<HTMLButtonElement | null>;
 };
 
@@ -109,6 +110,7 @@ export function MarketInstrumentRail({
   onRemove,
   onSelect,
   onToggle,
+  readOnly = false,
   recent,
   selectedSymbol,
   toggleRef,
@@ -147,29 +149,35 @@ export function MarketInstrumentRail({
           </h3>
           {watchlist.length === 0 ? (
             <div className="market-watchlist-empty">
-              <p>还没有自选股</p>
-              <button
-                type="button"
-                aria-label="查看上证指数 000001.SS"
-                onClick={() => onSelect(SHANGHAI_COMPOSITE)}
-              >
-                <strong>上证指数</strong>
-                <span>000001.SS</span>
-              </button>
-              <button
-                className="market-add-first"
-                type="button"
-                onClick={() => onAdd(SHANGHAI_COMPOSITE)}
-              >
-                添加第一只自选
-              </button>
+              {readOnly ? (
+                <p>只读演示不读取或保存你的自选。</p>
+              ) : (
+                <>
+                  <p>还没有自选股</p>
+                  <button
+                    type="button"
+                    aria-label="查看上证指数 000001.SS"
+                    onClick={() => onSelect(SHANGHAI_COMPOSITE)}
+                  >
+                    <strong>上证指数</strong>
+                    <span>000001.SS</span>
+                  </button>
+                  <button
+                    className="market-add-first"
+                    type="button"
+                    onClick={() => onAdd(SHANGHAI_COMPOSITE)}
+                  >
+                    添加第一只自选
+                  </button>
+                </>
+              )}
             </div>
           ) : (
             <InstrumentList
               instruments={watchlist}
               label="自选股"
               selectedSymbol={selectedSymbol}
-              onRemove={onRemove}
+              onRemove={readOnly ? undefined : onRemove}
               onSelect={onSelect}
             />
           )}

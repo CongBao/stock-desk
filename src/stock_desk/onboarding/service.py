@@ -30,8 +30,10 @@ from stock_desk.market.types import (
     Adjustment,
     BarQuery,
     CanonicalSymbol,
+    Exchange,
     FailureReason,
     Instrument,
+    InstrumentKind,
     Period,
     ProviderId,
 )
@@ -106,6 +108,7 @@ class OnboardingService:
         store: OnboardingStateStore,
         market: OnboardingMarketServices | Callable[[], OnboardingMarketServices],
         provider_factory: OnboardingProviderFactory | None = None,
+        demo_initializer: Callable[[], OnboardingInstrument] | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ) -> None:
         self._store = store
@@ -114,6 +117,7 @@ class OnboardingService:
         self._provider_factory = provider_factory or DefaultRuntimeProviderFactory(
             clock=clock
         )
+        self._demo_initializer = demo_initializer
         self._clock = clock
         self._lock = RLock()
 
@@ -124,6 +128,7 @@ class OnboardingService:
         data_dir: Path,
         market: OnboardingMarketServices | Callable[[], OnboardingMarketServices],
         provider_factory: OnboardingProviderFactory | None = None,
+        demo_initializer: Callable[[], OnboardingInstrument] | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ) -> OnboardingService:
         state_path = data_dir.resolve() / "onboarding" / "state-v1.json"
@@ -131,6 +136,7 @@ class OnboardingService:
             store=OnboardingStateStore(state_path, clock=clock),
             market=market,
             provider_factory=provider_factory,
+            demo_initializer=demo_initializer,
             clock=clock,
         )
 
@@ -448,12 +454,18 @@ class OnboardingService:
             state = self._store.load()
             if state.status is OnboardingStatus.COMPLETED:
                 return state
+            instrument = (
+                self._demo_initializer()
+                if self._demo_initializer is not None
+                else state.instrument
+            )
             return self._store.save(
                 state.evolved(
                     now=self._clock(),
                     status=OnboardingStatus.IN_PROGRESS,
                     current_step=OnboardingStep.INSTRUMENT_SELECTION,
                     source=None,
+                    instrument=instrument,
                     sync=None,
                     demo_mode=True,
                     error=OnboardingError(
@@ -475,6 +487,12 @@ class OnboardingService:
                     status=OnboardingStatus.IN_PROGRESS,
                     current_step=OnboardingStep.DATA_PREPARATION,
                     source=None,
+                    instrument=OnboardingInstrument(
+                        symbol=DEFAULT_SYMBOL,
+                        name="上证指数",
+                        exchange=Exchange.SH,
+                        instrument_kind=InstrumentKind.INDEX,
+                    ),
                     sync=None,
                     demo_mode=False,
                     error=None,

@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 
 import { ApiError } from '../../shared/api/client';
+import { OnboardingDemoContext } from '../onboarding/demoMode';
 import type {
   MarketApi,
   MarketBarsResponse,
@@ -173,6 +174,7 @@ function renderPage(
     get: vi.fn(() => Promise.resolve(emptyNavigation)),
     put: vi.fn(() => Promise.resolve(emptyNavigation)),
   },
+  readonlyDemo = false,
 ) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0 } },
@@ -180,17 +182,41 @@ function renderPage(
   return render(
     <QueryClientProvider client={client}>
       <MemoryRouter>
-        <MarketPage
-          api={api}
-          navigationApi={navigationApi}
-          searchDebounceMs={10}
-        />
+        <OnboardingDemoContext.Provider value={readonlyDemo}>
+          <MarketPage
+            api={api}
+            navigationApi={navigationApi}
+            searchDebounceMs={10}
+          />
+        </OnboardingDemoContext.Provider>
       </MemoryRouter>
     </QueryClientProvider>,
   );
 }
 
 beforeEach(() => resetMarketStore());
+
+it('keeps bundled demo navigation visibly synthetic and free of writes', async () => {
+  const api = {
+    searchInstruments: vi.fn(() => Promise.resolve([])),
+    getPools: vi.fn(() => Promise.resolve({ items: [], nextCursor: null })),
+    getPool: vi.fn(),
+    getBars: vi.fn(),
+  } as unknown as MarketApi;
+  const navigationApi = {
+    get: vi.fn(() => Promise.resolve(emptyNavigation)),
+    put: vi.fn(() => Promise.resolve(emptyNavigation)),
+  } satisfies MarketNavigationApi;
+
+  renderPage(api, navigationApi, true);
+
+  expect(await screen.findByText('只读合成演示行情')).toBeVisible();
+  expect(screen.getByText(/不是交易所真实行情/u)).toBeVisible();
+  expect(screen.getByRole('button', { name: '打开股票池' })).toBeDisabled();
+  expect(screen.queryByRole('button', { name: '添加第一只自选' })).toBeNull();
+  expect(navigationApi.get).not.toHaveBeenCalled();
+  expect(navigationApi.put).not.toHaveBeenCalled();
+});
 
 it('focuses prominent Market search and persists recent/watchlist operations', async () => {
   const user = userEvent.setup();

@@ -1,4 +1,4 @@
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AbstractContextManager, asynccontextmanager
 import os
 from pathlib import Path
@@ -77,6 +77,7 @@ from stock_desk.security.secrets import (
 )
 from stock_desk.security.persistence import StartupSecretHydrator
 from stock_desk.onboarding.service import OnboardingService
+from stock_desk.onboarding.demo_snapshot import BundledDemoMarket
 from stock_desk.market.navigation import MarketNavigationService
 from stock_desk.storage.backup import recover_interrupted_restore
 from stock_desk.storage.lifecycle import service_lifecycle
@@ -193,6 +194,8 @@ def create_app(
     owned_startup_secret_hydrator: StartupSecretHydrator | None = None
     owned_onboarding_service: OnboardingService | None = None
     onboarding_service_lock = Lock()
+    owned_demo_market: BundledDemoMarket | None = None
+    demo_market_lock = Lock()
     owned_workspace_service: WorkspaceService | None = None
     workspace_service_lock = Lock()
     owned_market_navigation_service: MarketNavigationService | None = None
@@ -469,8 +472,24 @@ def create_app(
                 owned_onboarding_service = OnboardingService.open(
                     data_dir=data_dir,
                     market=provide_market_services,
+                    demo_initializer=lambda: provide_demo_market().instrument,
                 )
             return owned_onboarding_service
+
+    def provide_demo_market() -> BundledDemoMarket:
+        nonlocal owned_demo_market
+        with demo_market_lock:
+            if owned_demo_market is None:
+                data_dir = Path(
+                    os.path.abspath(os.fspath(resolved_settings.data_dir.expanduser()))
+                )
+                owned_demo_market = BundledDemoMarket.open(data_dir)
+            return owned_demo_market
+
+    def provide_request_market_services() -> MarketServices:
+        if provide_onboarding_service().state().demo_mode:
+            return provide_demo_market().services
+        return provide_market_services()
 
     def provide_workspace_service() -> WorkspaceService:
         nonlocal owned_workspace_service
@@ -535,6 +554,7 @@ def create_app(
         nonlocal owned_analysis_preflight
         nonlocal owned_startup_secret_hydrator
         nonlocal owned_onboarding_service
+        nonlocal owned_demo_market
         nonlocal owned_workspace_service
         nonlocal owned_market_navigation_service
         nonlocal owned_guidance_preferences_store
@@ -568,11 +588,13 @@ def create_app(
                     owned_model_catalog,
                     owned_source_settings_services,
                     owned_market_services,
+                    owned_demo_market,
                     owned_repository,
                     owned_startup_secret_hydrator,
                 )
                 owned_repository = None
                 owned_market_services = None
+                owned_demo_market = None
                 owned_source_settings_services = None
                 owned_formula_service = None
                 owned_backtest_services = None
@@ -610,8 +632,23 @@ def create_app(
             DesktopSessionMiddleware,
             session=desktop_session,
         )
+
+    @application.middleware("http")
+    async def enforce_demo_read_only(
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        if request.method not in {"GET", "HEAD", "OPTIONS"}:
+            state = provide_onboarding_service().state()
+            exit_path = "/api/v1/onboarding/actions/exit_demo"
+            if state.demo_mode and request.url.path != exit_path:
+                return JSONResponse(
+                    status_code=409,
+                    content={"code": "demo_read_only"},
+                )
+        return await call_next(request)
+
     application.state.task_repository_provider = provide_task_repository
-    application.state.market_services_provider = provide_market_services
+    application.state.market_services_provider = provide_request_market_services
     application.state.source_settings_services_provider = (
         provide_source_settings_services
     )
