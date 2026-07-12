@@ -45,6 +45,7 @@ from stock_desk.api.market import (
     market_request_validation_handler,
     router as market_router,
 )
+from stock_desk.api.market_navigation import router as market_navigation_router
 from stock_desk.api.models import (
     ModelSettingsDatabaseMismatch,
     router as models_router,
@@ -74,6 +75,7 @@ from stock_desk.security.secrets import (
 )
 from stock_desk.security.persistence import StartupSecretHydrator
 from stock_desk.onboarding.service import OnboardingService
+from stock_desk.market.navigation import MarketNavigationService
 from stock_desk.storage.backup import recover_interrupted_restore
 from stock_desk.storage.lifecycle import service_lifecycle
 from stock_desk.tasks.repository import TaskRepository, TaskRepositoryError
@@ -145,6 +147,7 @@ def create_app(
     desktop_lifecycle: DesktopLifecycleController | None = None,
     onboarding_service: OnboardingService | None = None,
     workspace_service: WorkspaceService | None = None,
+    market_navigation_service: MarketNavigationService | None = None,
 ) -> FastAPI:
     resolved_settings = settings if settings is not None else get_settings()
     database_identity = _ApplicationDatabaseIdentity(
@@ -190,6 +193,8 @@ def create_app(
     onboarding_service_lock = Lock()
     owned_workspace_service: WorkspaceService | None = None
     workspace_service_lock = Lock()
+    owned_market_navigation_service: MarketNavigationService | None = None
+    market_navigation_service_lock = Lock()
     shutdown_lock = Lock()
     active_lifespans = 0
     service_guard: AbstractContextManager[None] | None = None
@@ -481,6 +486,21 @@ def create_app(
                 )
             return owned_workspace_service
 
+    def provide_market_navigation_service() -> MarketNavigationService:
+        nonlocal owned_market_navigation_service
+        if market_navigation_service is not None:
+            return market_navigation_service
+        with market_navigation_service_lock:
+            if owned_market_navigation_service is None:
+                data_dir = Path(
+                    os.path.abspath(os.fspath(resolved_settings.data_dir.expanduser()))
+                )
+                owned_market_navigation_service = MarketNavigationService.open(
+                    data_dir=data_dir,
+                    instruments=provide_market_services().instruments,
+                )
+            return owned_market_navigation_service
+
     @asynccontextmanager
     async def lifespan(_application: FastAPI) -> AsyncIterator[None]:
         nonlocal active_lifespans
@@ -500,6 +520,7 @@ def create_app(
         nonlocal owned_startup_secret_hydrator
         nonlocal owned_onboarding_service
         nonlocal owned_workspace_service
+        nonlocal owned_market_navigation_service
         with shutdown_lock:
             if active_lifespans == 0:
                 candidate = service_lifecycle(
@@ -548,6 +569,7 @@ def create_app(
                 owned_startup_secret_hydrator = None
                 owned_onboarding_service = None
                 owned_workspace_service = None
+                owned_market_navigation_service = None
                 closing_service_guard = service_guard
                 service_guard = None
             for resource in resources:
@@ -582,6 +604,9 @@ def create_app(
     application.state.analysis_preflight_provider = provide_analysis_preflight
     application.state.onboarding_service_provider = provide_onboarding_service
     application.state.workspace_service_provider = provide_workspace_service
+    application.state.market_navigation_service_provider = (
+        provide_market_navigation_service
+    )
     application.state.database_identity_provider = database_identity.current
     application.state.model_settings_cursor_key = secrets.token_bytes(32)
     application.state.analysis_cursor_key = secrets.token_bytes(32)
@@ -601,6 +626,7 @@ def create_app(
                 "/api/tasks",
                 "/api/v1/onboarding",
                 "/api/v1/workspace",
+                "/api/v1/market/navigation",
             )
         ):
             return JSONResponse(status_code=422, content={"code": "invalid_request"})
@@ -648,6 +674,7 @@ def create_app(
     application.include_router(health_router, prefix="/api")
     application.include_router(onboarding_router, prefix="/api")
     application.include_router(workspace_router, prefix="/api")
+    application.include_router(market_navigation_router, prefix="/api")
     application.include_router(tasks_router, prefix="/api")
     application.include_router(market_router, prefix="/api")
     application.include_router(settings_router, prefix="/api")
