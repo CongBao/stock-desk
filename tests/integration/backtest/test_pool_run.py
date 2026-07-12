@@ -21,7 +21,7 @@ from stock_desk.backtest.service import (
     BacktestSubmissionError,
 )
 from stock_desk.formula.repository import FormulaRepository
-from stock_desk.formula.service import FormulaService
+from stock_desk.formula.service import FormulaPreviewTimeout, FormulaService
 from stock_desk.market.execution_status_lake import (
     CatalogExecutionStatusPin,
     ExecutionStatusLake,
@@ -37,6 +37,11 @@ from tests.integration.backtest.test_single_run import MACD, _status
 from tests.integration.backtest.test_worker_recovery import _complete_status
 from tests.integration.market.lake_test_helpers import local_time, routed_daily_bars
 from tests.integration.market.task6_test_helpers import instrument, routed_instruments
+
+
+class _TimeoutExecutor:
+    def execute(self, _request: bytes) -> bytes:
+        raise FormulaPreviewTimeout("simulated cold worker timeout")
 
 
 def _pool_intent(version_id: str, pool_id: str, snapshot_id: str) -> BacktestIntent:
@@ -218,6 +223,70 @@ def test_partial_preset_freezes_runnable_and_gap_in_pool_order(tmp_path: Path) -
         assert outcomes.failed == 0
         assert outcomes.data_insufficient == 1
         assert outcomes.unprocessed == 0
+    finally:
+        engine.dispose()
+
+
+def test_formula_worker_timeout_fails_the_run_without_partial_success_report(
+    tmp_path: Path,
+) -> None:
+    (
+        engine,
+        market,
+        statuses,
+        instruments,
+        pools,
+        tasks,
+        formulas,
+        repository,
+        service,
+    ) = _services(tmp_path)
+    try:
+        instruments.ingest(routed_instruments((instrument("600000.SH", "浦发银行"),)))
+        pool = pools.publish_full_a()
+        market.write(
+            routed_daily_bars(
+                tuple(date(2024, 1, day) for day in range(2, 7)),
+                symbol="600000.SH",
+                adjustment=Adjustment.NONE,
+            )
+        )
+        statuses.write(_complete_status(date(2024, 1, 2), date(2024, 1, 7)))
+        version = formulas.create(
+            "超时策略", "trading", "BUY:C>0;SELL:C<0;", {}, placement="subchart"
+        )
+        submitted = service.submit(
+            _pool_intent(version.id, pool.pool_id, pool.snapshot_id)
+        )
+        runner = PoolBacktestRunner(
+            engine=engine,
+            tasks=tasks,
+            repository=repository,
+            market_lake=market,
+            status_lake=statuses,
+            formulas=FormulaService(
+                repository=formulas,
+                lake=market,
+                executor=_TimeoutExecutor(),
+            ),
+        )
+        claim = tasks.claim_next("timeout-worker")
+        assert isinstance(claim, TaskClaim)
+
+        with pytest.raises(FormulaPreviewTimeout, match="cold worker timeout"):
+            runner(claim)
+
+        assert tasks.get(submitted.task_id).status == "failed"
+        failed = repository.get_run(submitted.run_id)
+        assert failed.status == "failed"
+        assert failed.processed == 0
+        assert failed.failed == 0
+        report = repository.report(submitted.run_id)
+        assert report.metrics == {}
+        assert report.outcomes.succeeded == 0
+        assert report.outcomes.failed == 0
+        assert report.outcomes.data_insufficient == 0
+        assert report.outcomes.unprocessed == 1
     finally:
         engine.dispose()
 

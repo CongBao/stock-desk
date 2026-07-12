@@ -44,7 +44,7 @@ from stock_desk.backtest.repository import BacktestRepository, BacktestRunSnapsh
 from stock_desk.backtest.snapshot import reopen_symbol_input
 from stock_desk.backtest.trades import TradeSample, close_trade, mark_open_trade
 from stock_desk.backtest.types import BacktestSnapshot, FrozenSymbolGap, PinnedMarketRef
-from stock_desk.formula.service import FormulaService
+from stock_desk.formula.service import FormulaService, FormulaServiceError
 from stock_desk.market.execution_status_lake import ExecutionStatusLake
 from stock_desk.market.lake import MarketLake
 from stock_desk.tasks.models import TaskClaim
@@ -483,6 +483,11 @@ class PoolBacktestRunner:
                     parameters=parameters,
                     lookback_bars=preflight.lookback_bars,
                 )
+            except FormulaServiceError:
+                # A formula worker failure is run infrastructure failure, not a
+                # symbol-level data gap. Publishing an empty partial report here
+                # would make identical backtests produce different conclusions.
+                raise
             except Exception:
                 reason = "symbol_execution_failed"
                 self._repository.checkpoint_symbol(
