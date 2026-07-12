@@ -15,7 +15,10 @@ test.beforeEach(async ({ page }) => {
       await route.fallback();
       return;
     }
-    if (source.pathname === '/api/v1/onboarding/state') {
+    if (
+      source.pathname === '/api/v1/onboarding/state' ||
+      source.pathname === '/api/v1/workspace'
+    ) {
       await route.fallback();
       return;
     }

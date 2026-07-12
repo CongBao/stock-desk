@@ -269,7 +269,10 @@ async function installFlowStubs(page: Page) {
     }
     const pathname = decodeURIComponent(rawPathname);
     const method = request.method();
-    if (pathname === '/api/v1/onboarding/state') {
+    if (
+      pathname === '/api/v1/onboarding/state' ||
+      pathname === '/api/v1/workspace'
+    ) {
       await route.fallback();
       return;
     }

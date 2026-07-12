@@ -100,7 +100,10 @@ async function installTaskStubs(
       await route.fallback();
       return;
     }
-    if (url.pathname === '/api/v1/onboarding/state') {
+    if (
+      url.pathname === '/api/v1/onboarding/state' ||
+      url.pathname === '/api/v1/workspace'
+    ) {
       await route.fallback();
       return;
     }
