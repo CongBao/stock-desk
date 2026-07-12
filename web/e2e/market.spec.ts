@@ -100,6 +100,9 @@ test('real local market workflow stays cached, traceable, and interactive', asyn
   await expect(page.getByRole('dialog')).toHaveCount(0);
   await page.getByRole('button', { name: '打开股票池' }).click();
   await page.getByRole('button', { name: /E2E 观察池/u }).click();
+  await expect(
+    page.getByRole('heading', { name: /E2E 观察池.*成员/u }),
+  ).toBeVisible();
   await page.getByRole('button', { name: '关闭股票池' }).click();
   await page.getByRole('button', { name: '编辑当前股票池' }).click();
   await page.getByRole('button', { name: '下移 600000.SH' }).click();
@@ -132,6 +135,9 @@ test('real local market workflow stays cached, traceable, and interactive', asyn
   await expect(page.getByText(/范围快照已冻结/u)).toBeVisible();
   await page.getByRole('button', { name: '打开股票池' }).click();
   await page.getByRole('button', { name: /E2E 观察池/u }).click();
+  await expect(
+    page.getByRole('heading', { name: /E2E 观察池.*成员/u }),
+  ).toBeVisible();
   await page.getByRole('button', { name: '关闭股票池' }).click();
   await page.getByRole('button', { name: '编辑当前股票池' }).click();
   await page.getByRole('button', { name: '删除股票池' }).click();

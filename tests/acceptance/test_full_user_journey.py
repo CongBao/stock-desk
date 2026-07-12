@@ -335,6 +335,7 @@ def test_formula_signal_matches_backtest_entry(tmp_path: Path) -> None:
         signal_query = signal_pin["signal_query"]
         assert {
             "symbol": preview["symbol"],
+            "instrument_kind": "stock",
             "period": preview["period"],
             "adjustment": preview["adjustment"],
             "start": preview["query_start"],
