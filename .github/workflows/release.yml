@@ -22,7 +22,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "$GITHUB_REF_NAME" == v1.1.0-alpha.1 ]]; then
+          if [[ "$GITHUB_REF_NAME" == v1.1.0-alpha.2 ]]; then
             exit 0
           fi
           [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
@@ -613,7 +613,7 @@ jobs:
 
   alpha-verify:
     name: Verify unsigned alpha inputs from immutable main proof
-    if: github.ref_name == 'v1.1.0-alpha.1'
+    if: github.ref_name == 'v1.1.0-alpha.2'
     needs: tag-policy
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -645,7 +645,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$GITHUB_REF_TYPE" = tag
-          test "$GITHUB_REF_NAME" = v1.1.0-alpha.1
+          test "$GITHUB_REF_NAME" = v1.1.0-alpha.2
           test "$STOCK_DESK_SIGNPATH_ENABLED" = false
           git fetch --no-tags origin main:refs/remotes/origin/main
           git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main
@@ -684,6 +684,7 @@ jobs:
             e2e-evidence
             oci-image-manifest
             oci-security-evidence
+            windows-payload-comparison-manifest
           )
           mkdir -p "$PROOF_ROOT" "$EVIDENCE_ROOT"
           gh run download "$MAIN_RUN_ID" \
@@ -703,7 +704,16 @@ jobs:
             test -s "$root/$name.json"
             test -s "$root/manifest-binding.json"
           done
-          test "$(find "$EVIDENCE_ROOT" -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 9
+          candidate_root="$EVIDENCE_ROOT/windows-desktop-alpha-candidate-manifest"
+          mkdir -p "$candidate_root"
+          gh run download "$MAIN_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name "windows-desktop-alpha-candidate-$GITHUB_SHA" \
+            --dir "$candidate_root"
+          test -s "$candidate_root/windows-desktop-alpha-candidate-manifest.json"
+          test -s "$candidate_root/manifest-binding.json"
+          test -s "$candidate_root/stock-desk-1.1.0-alpha.2-unsigned-x64-setup.exe"
+          test "$(find "$EVIDENCE_ROOT" -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 11
       - name: Verify GitHub proof attestation
         shell: bash
         env:
@@ -735,6 +745,8 @@ jobs:
             e2e-evidence
             oci-image-manifest
             oci-security-evidence
+            windows-payload-comparison-manifest
+            windows-desktop-alpha-candidate-manifest
           )
           receipt_root="$RUNNER_TEMP/evidence-attestation-verification"
           mkdir -p "$receipt_root"
@@ -750,7 +762,7 @@ jobs:
               --format json > "$receipt_root/$name.json"
             jq -e 'length >= 1' "$receipt_root/$name.json" >/dev/null
           done
-          test "$(find "$receipt_root" -maxdepth 1 -type f -name '*.json' | wc -l)" -eq 9
+          test "$(find "$receipt_root" -maxdepth 1 -type f -name '*.json' | wc -l)" -eq 11
       - name: Verify proved release inputs without rebuilding or rerunning tests
         shell: bash
         run: |
@@ -765,6 +777,8 @@ jobs:
             e2e-evidence
             oci-image-manifest
             oci-security-evidence
+            windows-payload-comparison-manifest
+            windows-desktop-alpha-candidate-manifest
           )
           arguments=(
             1.1.0
@@ -795,17 +809,32 @@ jobs:
             "$asset_root/UNSIGNED-TEST-ONLY-main-proof-post-gh-verify-binding-$GITHUB_REF_NAME.json"
           cp "$PROOF_ROOT/evidence-attestation-bundle.jsonl" \
             "$asset_root/UNSIGNED-TEST-ONLY-evidence-attestation-bundle-$GITHUB_REF_NAME.jsonl"
+          candidate_root="$EVIDENCE_ROOT/windows-desktop-alpha-candidate-manifest"
+          cp "$candidate_root/stock-desk-1.1.0-alpha.2-unsigned-x64-setup.exe" "$asset_root/"
+          cp "$candidate_root/windows-desktop-alpha-candidate-manifest.json" \
+            "$asset_root/UNSIGNED-TEST-ONLY-windows-candidate-manifest-$GITHUB_REF_NAME.json"
+          cp "$candidate_root/windows-desktop-bundle.json" \
+            "$asset_root/UNSIGNED-TEST-ONLY-windows-bundle-$GITHUB_REF_NAME.json"
+          cp "$candidate_root/builder-a-provenance.json" \
+            "$asset_root/UNSIGNED-TEST-ONLY-windows-builder-provenance-$GITHUB_REF_NAME.json"
+          cp "$candidate_root/windows-payload-comparison.json" \
+            "$asset_root/UNSIGNED-TEST-ONLY-windows-payload-comparison-$GITHUB_REF_NAME.json"
           tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
             -C "$EVIDENCE_ROOT" -cf \
-            "$asset_root/UNSIGNED-TEST-ONLY-proved-artifacts-$GITHUB_REF_NAME.tar" .
-          cat > "$asset_root/UNSIGNED-TEST-ONLY-NO-INSTALLER.txt" <<'MARKER'
+            "$asset_root/UNSIGNED-TEST-ONLY-proved-artifacts-$GITHUB_REF_NAME.tar" \
+            python-evidence-unit python-evidence-integration \
+            python-evidence-acceptance-performance python-evidence-security \
+            python-evidence-aggregate web-build-manifest e2e-evidence \
+            oci-image-manifest oci-security-evidence \
+            windows-payload-comparison-manifest
+          cat > "$asset_root/UNSIGNED-TEST-ONLY-WINDOWS-INSTALLER.txt" <<'MARKER'
           UNSIGNED PRERELEASE / 未签名预发布
-          This delivery-foundation alpha contains no Windows or macOS installer.
-          It is not Authenticode signed and is not a stable or latest release.
-          此交付基础 alpha 不包含 Windows 或 macOS 安装器，不具备 Authenticode 签名，亦非稳定版或最新版。
+          This alpha contains one Windows x64 installer reused from the exact-SHA main candidate.
+          It is not Authenticode signed and is not a stable or latest release. Windows may show an unknown-publisher warning.
+          此 alpha 仅包含从同一 exact-SHA main 候选复用的 Windows x64 安装器；它没有 Authenticode 签名，不是稳定版或最新版，Windows 可能显示未知发布者警告。
           MARKER
           (cd "$asset_root" && sha256sum -- * > UNSIGNED-TEST-ONLY-SHA256SUMS)
-          cp docs/releases/v1.1.0-alpha.1.md "$asset_root/release-notes.md"
+          cp docs/releases/v1.1.0-alpha.2.md "$asset_root/release-notes.md"
       - name: Upload verified unsigned alpha assets
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -816,7 +845,7 @@ jobs:
 
   alpha-prerelease:
     name: Publish explicitly unsigned alpha prerelease
-    if: github.ref_name == 'v1.1.0-alpha.1'
+    if: github.ref_name == 'v1.1.0-alpha.2'
     needs: alpha-verify
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -835,11 +864,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          test "$GITHUB_REF_NAME" = v1.1.0-alpha.1
+          test "$GITHUB_REF_NAME" = v1.1.0-alpha.2
           test "$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_REF_NAME" --jq .sha)" = "$GITHUB_SHA"
           cd unsigned-alpha-assets
           sha256sum -c UNSIGNED-TEST-ONLY-SHA256SUMS
-          test "$(find . -maxdepth 1 -type f -name 'UNSIGNED-TEST-ONLY-*' | wc -l)" -eq 6
+          test "$(find . -maxdepth 1 -type f -name 'UNSIGNED-TEST-ONLY-*' | wc -l)" -eq 10
+          test -s stock-desk-1.1.0-alpha.2-unsigned-x64-setup.exe
       - name: Create unsigned alpha prerelease
         env:
           GH_TOKEN: ${{ github.token }}
@@ -847,7 +877,9 @@ jobs:
         run: |
           set -euo pipefail
           asset_root=unsigned-alpha-assets
-          gh release create "$GITHUB_REF_NAME" "$asset_root"/UNSIGNED-TEST-ONLY-* \
+          gh release create "$GITHUB_REF_NAME" \
+            "$asset_root"/stock-desk-1.1.0-alpha.2-unsigned-x64-setup.exe \
+            "$asset_root"/UNSIGNED-TEST-ONLY-* \
             --verify-tag \
             --prerelease \
             --latest=false \

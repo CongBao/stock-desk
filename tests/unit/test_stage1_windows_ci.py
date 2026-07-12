@@ -123,14 +123,28 @@ def test_comparison_promotes_only_a_and_main_proof_attests_both_identities() -> 
     assert isinstance(compare, dict) and isinstance(proof, dict)
     commands = _commands(compare)
     assert "python -m scripts.compare_windows_payloads" in commands
-    assert "a\\stock-desk-unsigned-nsis.exe" in commands
-    assert "b\\stock-desk-unsigned-nsis.exe" in commands
-    assert "Copy-Item (Join-Path $root 'a\\stock-desk-unsigned-nsis.exe')" in commands
     assert (
-        "Copy-Item (Join-Path $root 'b\\stock-desk-unsigned-nsis.exe')" not in commands
+        "$leftInstaller = Join-Path $leftRoot 'stock-desk-unsigned-nsis.exe'"
+        in commands
     )
+    assert (
+        "$rightInstaller = Join-Path $rightRoot 'stock-desk-unsigned-nsis.exe'"
+        in commands
+    )
+    assert "Copy-Item $leftInstaller" in commands
+    assert "Copy-Item $rightInstaller" not in commands
     assert "windows-desktop-alpha-candidate-manifest.json" in commands
     assert "windows-payload-comparison-manifest.json" in commands
+    assert "Get-ChildItem (Join-Path $root 'a') -Recurse -File" in commands
+    assert "Get-ChildItem (Join-Path $root 'b') -Recurse -File" in commands
+    assert "expected exactly one bundle manifest per downloaded candidate" in commands
+    assert "candidate companion file is missing" in commands
+    assert "a\\windows-desktop-bundle.json" not in commands
+    assert "b\\windows-desktop-bundle.json" not in commands
+    assert "manifest-binding.json" in commands
+    assert "create_attestation_binding" in commands
+    assert 'Path(r"__EVIDENCE__")' in commands
+    assert 'Path(r"__PROMOTED__")' in commands
     for critical_input in (
         "packaging/stock-desk-sidecar.spec",
         "scripts/build_windows_desktop.py",
@@ -176,3 +190,31 @@ def test_comparison_promotes_only_a_and_main_proof_attests_both_identities() -> 
         "src-tauri/Cargo.toml",
         "src-tauri/tauri.windows.conf.json",
     } <= set(main_validation_proof.CRITICAL_INPUTS)
+
+
+def test_rust_quality_gate_is_exact_sha_risk_selected_and_proved() -> None:
+    jobs = _workflow()["jobs"]
+    assert isinstance(jobs, dict)
+    rust = jobs["rust-quality"]
+    proof = jobs["validation-proof"]
+    assert isinstance(rust, dict) and isinstance(proof, dict)
+    assert rust["runs-on"] == "windows-2025"
+    assert "required_jobs" in str(rust["if"])
+    assert "rust" in str(rust["if"])
+    commands = _commands(rust)
+    assert "git rev-parse HEAD" in commands
+    assert "$env:SOURCE_SHA" in commands
+    assert "stock-desk-sidecar-x86_64-pc-windows-msvc.exe" in commands
+    assert "[IO.File]::WriteAllBytes($stub, [byte[]](0x4d, 0x5a))" in commands
+    assert "Remove-Item -LiteralPath $stub" in commands
+    assert "cargo fmt --manifest-path src-tauri/Cargo.toml -- --check" in commands
+    assert (
+        "cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings"
+        in commands
+    )
+    assert "cargo test --locked --manifest-path src-tauri/Cargo.toml" in commands
+    assert "rust-quality" in proof["needs"]
+    assert (
+        "Rust desktop quality and tests"
+        in main_validation_proof.WORKFLOW_POLICIES["CI"].required_jobs
+    )

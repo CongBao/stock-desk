@@ -32,6 +32,7 @@ ALL_GATES = (
     "codeql",
     "requirement-evidence",
     "artifact-proof",
+    "rust",
 )
 
 _PROFILE_GATES: dict[str, tuple[str, ...]] = {
@@ -65,6 +66,7 @@ _PROFILE_GATES: dict[str, tuple[str, ...]] = {
         "dependency-audit",
         "requirement-evidence",
         "artifact-proof",
+        "rust",
     ),
     FULL_PROFILE: ALL_GATES,
 }

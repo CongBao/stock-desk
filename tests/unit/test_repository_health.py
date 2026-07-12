@@ -647,7 +647,7 @@ def test_alpha_release_reuses_exact_main_evidence_without_running_stable_path() 
     tag_policy = jobs["tag-policy"]
     assert tag_policy["name"] == "Enforce supported release tag policy"
     tag_policy_command = tag_policy["steps"][0]["run"]
-    assert "v1.1.0-alpha.1" in tag_policy_command
+    assert "v1.1.0-alpha.2" in tag_policy_command
     assert "^v[0-9]+\\.[0-9]+\\.[0-9]+$" in tag_policy_command
     stable_condition = "${{ !contains(github.ref_name, '-alpha.') }}"
     for job_name in (
@@ -661,7 +661,7 @@ def test_alpha_release_reuses_exact_main_evidence_without_running_stable_path() 
         assert jobs[job_name]["if"] == stable_condition
 
     verify = jobs["alpha-verify"]
-    assert verify["if"] == "github.ref_name == 'v1.1.0-alpha.1'"
+    assert verify["if"] == "github.ref_name == 'v1.1.0-alpha.2'"
     assert verify["needs"] == "tag-policy"
     assert verify["runs-on"] == "ubuntu-latest"
     assert verify["permissions"] == {
@@ -694,7 +694,7 @@ def test_alpha_release_reuses_exact_main_evidence_without_running_stable_path() 
     assert '>> "$GITHUB_ENV"' in root_configuration
 
     publish = jobs["alpha-prerelease"]
-    assert publish["if"] == "github.ref_name == 'v1.1.0-alpha.1'"
+    assert publish["if"] == "github.ref_name == 'v1.1.0-alpha.2'"
     assert publish["needs"] == "alpha-verify"
     assert publish["permissions"] == {"actions": "read", "contents": "write"}
     assert [step.get("name") for step in publish["steps"]] == [
@@ -714,6 +714,8 @@ def test_alpha_release_reuses_exact_main_evidence_without_running_stable_path() 
         "e2e-evidence",
         "oci-image-manifest",
         "oci-security-evidence",
+        "windows-payload-comparison-manifest",
+        "windows-desktop-alpha-candidate-manifest",
     ):
         assert commands.count(artifact_name) >= 2
     for required in (
@@ -731,6 +733,9 @@ def test_alpha_release_reuses_exact_main_evidence_without_running_stable_path() 
         "--main-proof-gh-verification",
         "--artifact-attestation",
         "manifest-binding.json",
+        "windows-desktop-alpha-candidate-$GITHUB_SHA",
+        "stock-desk-1.1.0-alpha.2-unsigned-x64-setup.exe",
+        "docs/releases/v1.1.0-alpha.2.md",
         "UNSIGNED-TEST-ONLY",
         "--prerelease",
         "--latest=false",
@@ -745,6 +750,8 @@ def test_alpha_release_reuses_exact_main_evidence_without_running_stable_path() 
         "pnpm build",
         "uv build",
         "scripts.build_installer",
+        "scripts.build_windows_desktop",
+        "cargo build",
         "$root/attestation.json",
     ):
         assert forbidden not in commands
@@ -1061,6 +1068,7 @@ def test_ci_and_release_run_the_canonical_dependency_audit_gate() -> None:
         "windows-desktop-builder-a",
         "windows-desktop-builder-b",
         "windows-desktop-compare",
+        "rust-quality",
         "public-tree",
         "dependency-audit",
         "python-unit",
