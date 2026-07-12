@@ -37,7 +37,7 @@ it('shows stock-desk name version and repository in about information', async ()
       }
     >
       <MemoryRouter initialEntries={['/market']}>
-        <App />
+        <App onboardingApi={null} />
       </MemoryRouter>
     </QueryClientProvider>,
   );

@@ -1,4 +1,6 @@
-import { expect, test, type Page } from '@playwright/test';
+import type { Page } from '@playwright/test';
+
+import { expect, test } from './fixtures';
 
 const runId = '11111111-1111-1111-1111-111111111111';
 const digest = (character: string) => `sha256:${character.repeat(64)}`;
@@ -137,6 +139,13 @@ async function installStubs(page: Page) {
   await page.route('**/api/**', async (route) => {
     const { pathname } = new URL(route.request().url());
     if (!pathname.startsWith('/api/')) {
+      await route.fallback();
+      return;
+    }
+    if (
+      pathname === '/api/v1/onboarding/state' ||
+      pathname === '/api/v1/workspace'
+    ) {
       await route.fallback();
       return;
     }

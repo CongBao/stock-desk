@@ -141,6 +141,20 @@ it('builds synchronized candlestick and volume grids with explicit rise/fall enc
   expect(formatMarketTooltip(bars[0])).toContain('量 1,000');
 });
 
+it('uses an explicit readable ECharts palette for the light desktop theme', () => {
+  const option = buildMarketChartOption(bars, 'light');
+  expect(option.tooltip).toMatchObject({
+    backgroundColor: 'rgba(255, 255, 255, 0.98)',
+    borderColor: '#aab8ca',
+    textStyle: { color: '#172033' },
+  });
+  expect(option.yAxis[0]).toMatchObject({
+    axisLabel: { color: '#4b5f78' },
+    splitLine: { lineStyle: { color: '#d8e0ea' } },
+  });
+  expect(option.aria).toMatchObject({ decal: { show: true } });
+});
+
 it('keeps full market bars out of the ECharts series graph while preserving indexed tooltips', () => {
   const option = buildMarketChartOption(bars);
 
@@ -441,6 +455,39 @@ it('initializes, resizes, resets, and disposes the tree-shaken chart instance', 
   );
   expect(chartMocks.off).toHaveBeenCalledWith('dataZoom', expect.any(Function));
   expect(chartMocks.dispose).toHaveBeenCalledOnce();
+});
+
+it('restores the persisted zoom and reports later chart zoom changes', () => {
+  let dataZoomHandler: ((event: unknown) => void) | undefined;
+  chartMocks.on.mockImplementation(
+    (eventName: string, handler: (event: unknown) => void) => {
+      if (eventName === 'dataZoom') dataZoomHandler = handler;
+    },
+  );
+  const onZoomChange = vi.fn();
+  render(
+    <MarketChart
+      bars={bars}
+      initialZoom={{ start: 20, end: 80 }}
+      onZoomChange={onZoomChange}
+    />,
+  );
+
+  expect(chartMocks.setOption).toHaveBeenCalledWith(
+    expect.objectContaining({
+      dataZoom: [
+        expect.objectContaining({ start: 20, end: 80 }),
+        expect.objectContaining({ start: 20, end: 80 }),
+      ],
+    }),
+    { lazyUpdate: true, notMerge: true },
+  );
+  expect(
+    screen.getByRole('status', { name: '图表缩放范围' }),
+  ).toHaveTextContent('20%–80%');
+
+  act(() => dataZoomHandler?.({ batch: [{ start: 30, end: 70 }] }));
+  expect(onZoomChange).toHaveBeenCalledWith({ start: 30, end: 70 });
 });
 
 it('serializes delayed ECharts generations so A cannot mark queued B ready', () => {

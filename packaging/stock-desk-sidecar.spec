@@ -34,6 +34,10 @@ datas = [
         str(ROOT / "src" / "stock_desk" / "formula" / "grammar.lark"),
         "stock_desk/formula",
     ),
+    (
+        str(ROOT / "src" / "stock_desk" / "demo" / "market_snapshot.json"),
+        "stock_desk/demo",
+    ),
     (str(ROOT / "LICENSE"), "legal"),
     (str(ROOT / "packaging" / "NOTICE.txt"), "legal"),
 ]

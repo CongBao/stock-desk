@@ -1,4 +1,6 @@
-import { expect, test, type Route } from '@playwright/test';
+import type { Route } from '@playwright/test';
+
+import { expect, test } from './fixtures';
 
 const now = '2026-07-08T08:00:00Z';
 const digest = (character: string) => `sha256:${character.repeat(64)}`;

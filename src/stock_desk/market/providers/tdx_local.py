@@ -58,6 +58,7 @@ from stock_desk.market.types import (
     CapabilityState,
     Exchange,
     FailureReason,
+    InstrumentKind,
     MarketCapability,
     Period,
     Provenance,
@@ -585,6 +586,12 @@ class TdxLocalProvider:
             return _inspection_failure(error)
 
     def fetch_bars(self, query: BarQuery) -> BarFetchOutcome:
+        if query.instrument_kind is InstrumentKind.INDEX:
+            return bar_failure(
+                source=self.name,
+                query=query,
+                error=ProviderUnsupported(),
+            )
         exchange = Exchange(query.symbol[-2:])
         if (
             query.period is not Period.DAY

@@ -1,0 +1,212 @@
+schema_version: 1
+requirements:
+  - id: V11-R-001
+    category: market
+    kind: architecture
+    behavior_key: index_and_equity_identity_are_distinct
+    acceptance: "The instrument identity model distinguishes indices from listed equities across search, routing, persistence, and display; the Shanghai Composite is canonicalized as 000001.SS and is the safe default when no stock has been selected."
+    source_refs:
+      - {
+          capability: desktop-onboarding,
+          requirement: canonical-instrument-identity,
+          scenario: distinguish-index-from-equity,
+        }
+      - {
+          capability: desktop-onboarding,
+          requirement: safe-default-instrument,
+          scenario: open-without-a-selection,
+        }
+    owning_stage: 1
+    status: mapped
+    evidence:
+      - state: existing
+        runner: pytest
+        kind: acceptance
+        path: tests/acceptance/test_v11_onboarding.py
+        selector: tests/acceptance/test_v11_onboarding.py::test_index_identity_is_distinct_and_default_symbol_is_sse_composite
+        assertion: The accepted desktop contract proves that the index cannot alias an equity and that a missing selection resolves to the canonical Shanghai Composite identity.
+  - id: V11-R-002
+    category: platform
+    kind: user_visible
+    behavior_key: four_step_first_run_happy_path
+    acceptance: "First launch presents a four-step guided setup that prepares a source, selects a security, verifies daily data, and opens a usable market workspace with the Shanghai Composite immediately after completion."
+    source_refs:
+      - {
+          capability: desktop-onboarding,
+          requirement: guided-first-run-setup,
+          scenario: complete-minimum-data-configuration,
+        }
+      - {
+          capability: desktop-onboarding,
+          requirement: guided-first-run-setup,
+          scenario: continue-with-supported-deferred-choice,
+        }
+      - {
+          capability: desktop-onboarding,
+          requirement: ready-after-onboarding,
+          scenario: open-default-market-workspace,
+        }
+    owning_stage: 1
+    status: mapped
+    evidence:
+      - state: existing
+        runner: playwright
+        kind: acceptance
+        path: web/e2e/onboarding.spec.ts
+        selector: first run wizard configures data and opens a usable default market
+        assertion: The desktop browser flow completes the minimum setup without code entry and immediately reaches an interactive market chart for the Shanghai Composite.
+      - state: existing
+        runner: pytest
+        kind: integration
+        path: tests/unit/api/test_onboarding_api.py
+        selector: tests/unit/api/test_onboarding_api.py::test_onboarding_api_four_step_contract_pins_then_syncs_and_completes
+        assertion: The versioned desktop API completes preparation, selection, verified synchronization, completion, and initializes the default market workspace.
+  - id: V11-R-003
+    category: market
+    kind: architecture
+    behavior_key: whole_provider_onboarding_fallback
+    acceptance: "Automatic setup attempts AKShare and BaoStock in order as whole-provider transactions, never mixes one provider catalog with another provider bars, pins the first fully verified provider, and exposes only stable recovery actions after failure."
+    source_refs:
+      - {
+          capability: desktop-onboarding,
+          requirement: whole-provider-fallback,
+          scenario: fall-back-after-complete-provider-failure,
+        }
+      - {
+          capability: desktop-onboarding,
+          requirement: whole-provider-fallback,
+          scenario: pin-first-fully-verified-provider,
+        }
+    owning_stage: 1
+    status: mapped
+    evidence:
+      - state: existing
+        runner: pytest
+        kind: integration
+        path: tests/unit/onboarding/test_service.py
+        selector: tests/unit/onboarding/test_service.py::test_preparation_falls_back_only_after_the_whole_provider_attempt_fails
+        assertion: The first free provider fails as one attempt before the second provider supplies the complete catalog transaction and becomes the sole pinned source.
+      - state: existing
+        runner: pytest
+        kind: integration
+        path: tests/unit/onboarding/test_service.py
+        selector: tests/unit/onboarding/test_service.py::test_real_catalog_and_single_provider_daily_pin_are_required_for_completion
+        assertion: Completion binds the catalog, selected instrument, synchronized daily bars, and verified evidence to one provider identity.
+      - state: existing
+        runner: pytest
+        kind: integration
+        path: tests/unit/onboarding/test_service.py
+        selector: tests/unit/onboarding/test_service.py::test_provider_failures_expose_only_stable_recovery_codes
+        assertion: Exhausted provider attempts preserve the setup step and expose only bounded retry, switch-provider, advanced, and demo recovery actions.
+  - id: V11-R-004
+    category: platform
+    kind: user_visible
+    behavior_key: demo_isolation_and_real_setup_recovery
+    acceptance: "Read-only demo mode never completes onboarding or writes a real-data completion state; it survives restart and can be exited explicitly to resume a usable real-data setup."
+    source_refs:
+      - {
+          capability: desktop-onboarding,
+          requirement: read-only-demo-isolation,
+          scenario: do-not-complete-real-setup,
+        }
+      - {
+          capability: desktop-onboarding,
+          requirement: read-only-demo-isolation,
+          scenario: exit-demo-and-resume-real-setup,
+        }
+    owning_stage: 1
+    status: mapped
+    evidence:
+      - state: existing
+        runner: pytest
+        kind: integration
+        path: tests/unit/onboarding/test_service.py
+        selector: tests/unit/onboarding/test_service.py::test_demo_mode_never_marks_onboarding_completed
+        assertion: Demo mode remains in progress and completion is rejected until real synchronized evidence exists.
+      - state: existing
+        runner: pytest
+        kind: integration
+        path: tests/unit/onboarding/test_service.py
+        selector: tests/unit/onboarding/test_service.py::test_demo_mode_survives_restart_and_exit_can_prepare_real_data
+        assertion: A persisted demo session survives service restart and explicit exit returns to provider preparation without carrying a demo source.
+      - state: existing
+        runner: vitest
+        kind: integration
+        path: web/src/features/onboarding/OnboardingGate.test.tsx
+        selector: restores persisted demo mode and can exit into a usable real-data setup
+        assertion: The user interface labels restored demo state and provides an explicit path back to usable real-data setup.
+  - id: V11-R-005
+    category: platform
+    kind: architecture
+    behavior_key: atomic_onboarding_resume
+    acceptance: "Each committed onboarding step is persisted atomically so a restart continues from the last committed step without replaying welcome, while an interrupted write preserves the prior valid revision."
+    source_refs:
+      - {
+          capability: desktop-onboarding,
+          requirement: persistent-progress,
+          scenario: restart-from-last-committed-step,
+        }
+      - {
+          capability: desktop-onboarding,
+          requirement: persistent-progress,
+          scenario: preserve-valid-state-after-interrupted-write,
+        }
+    owning_stage: 1
+    status: mapped
+    evidence:
+      - state: existing
+        runner: pytest
+        kind: integration
+        path: tests/unit/onboarding/test_store.py
+        selector: tests/unit/onboarding/test_store.py::test_state_store_atomically_resumes_the_last_committed_revision
+        assertion: An interrupted atomic replace leaves the previous valid onboarding revision loadable after restart.
+      - state: existing
+        runner: vitest
+        kind: component
+        path: web/src/features/onboarding/OnboardingGate.test.tsx
+        selector: resumes from a persisted step without replaying welcome
+        assertion: The first-run interface resumes directly at the persisted selection step and does not replay the welcome screen.
+  - id: V11-R-006
+    category: platform
+    kind: user_visible
+    behavior_key: workspace_restore_and_safe_fallback
+    acceptance: "The versioned workspace restores valid navigation and chart preferences after restart, while missing, expired, corrupt, illegal, or unavailable state falls back to the safe Shanghai Composite market workspace with a non-blocking notice."
+    source_refs:
+      - {
+          capability: desktop-workspace,
+          requirement: versioned-workspace-restore,
+          scenario: restore-valid-session-after-restart,
+        }
+      - {
+          capability: desktop-workspace,
+          requirement: versioned-workspace-restore,
+          scenario: fall-back-from-invalid-state,
+        }
+    owning_stage: 1
+    status: mapped
+    evidence:
+      - state: existing
+        runner: pytest
+        kind: integration
+        path: tests/unit/workspace/test_workspace_service.py
+        selector: tests/unit/workspace/test_workspace_service.py::test_corrupt_and_illegal_route_states_return_specific_safe_notices
+        assertion: Corrupt persisted JSON and illegal persisted routes return bounded recovery notices instead of restoring unsafe state.
+      - state: existing
+        runner: pytest
+        kind: integration
+        path: tests/unit/workspace/test_workspace_service.py
+        selector: tests/unit/workspace/test_workspace_service.py::test_expired_or_catalog_mismatched_workspace_safely_falls_back
+        assertion: Expired or unavailable persisted instruments resolve to the canonical safe workspace without retaining invalid state.
+      - state: existing
+        runner: playwright
+        kind: acceptance
+        path: web/e2e/workspace-recovery.spec.ts
+        selector: desktop restart restores the versioned workspace and persists valid changes
+        assertion: A browser-level desktop restart restores the allowlisted route, instrument, period, adjustment, zoom, main chart, and subchart preferences.
+      - state: existing
+        runner: playwright
+        kind: acceptance
+        path: web/e2e/workspace-recovery.spec.ts
+        selector: corrupt or illegal restored state safely falls back without navigating to it
+        assertion: Browser-level corrupt and illegal workspace responses never navigate to unsafe state and visibly recover to the default market.
+non_goals: []

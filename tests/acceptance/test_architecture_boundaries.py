@@ -39,10 +39,14 @@ def test_module_inventory_and_heavy_work_use_independent_worker(
         "api",
         "backtest",
         "formula",
+        "guidance",
         "market",
+        "onboarding",
+        "demo",
         "security",
         "storage",
         "tasks",
+        "workspace",
     }
 
     forbidden_api_imports = {

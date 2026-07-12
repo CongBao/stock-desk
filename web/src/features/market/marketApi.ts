@@ -17,7 +17,7 @@ const MAX_POOL_MEMBERS = 10_000;
 const MAX_BARS = 100_000;
 const MAX_ROUTING_SOURCES = 32;
 const MAX_TEXT = 512;
-const SYMBOL_PATTERN = /^[0-9]{6}\.(?:SH|SZ|BJ)$/u;
+const SYMBOL_PATTERN = /^[0-9]{6}\.(?:SS|SH|SZ|BJ)$/u;
 const DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/u;
 const DECIMAL_PATTERN = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/u;
 
@@ -139,6 +139,7 @@ export type RoutingAttempt = {
 
 export type MarketBarsQuery = {
   readonly symbol: string;
+  readonly instrumentKind?: 'stock' | 'index' | 'etf' | 'fund' | 'bond';
   readonly period: MarketPeriod;
   readonly adjustment: MarketAdjustment;
   readonly start: string;
@@ -512,6 +513,10 @@ function routingRequestJson(manifest: RoutingManifest): JsonValue {
     return {
       query: {
         symbol: manifest.requestQuery.symbol,
+        ...(manifest.requestQuery.instrumentKind === undefined ||
+        manifest.requestQuery.instrumentKind === 'stock'
+          ? {}
+          : { instrument_kind: manifest.requestQuery.instrumentKind }),
         period: manifest.requestQuery.period,
         adjustment: manifest.requestQuery.adjustment,
         start: manifest.requestQuery.start,
@@ -1259,6 +1264,14 @@ function decodeQuery(value: JsonValue | undefined, path: string) {
   const item = record(value, path);
   const result: MarketBarsQuery = {
     symbol: symbol(item['symbol'], `${path}.symbol`),
+    instrumentKind:
+      item['instrument_kind'] === undefined
+        ? undefined
+        : enumValue(
+            item['instrument_kind'],
+            instrumentKinds,
+            `${path}.instrument_kind`,
+          ),
     period: enumValue(item['period'], periods, `${path}.period`),
     adjustment: enumValue(
       item['adjustment'],
@@ -1285,6 +1298,7 @@ type ExpectedBarsRequest = Pick<
 function sameQuery(left: MarketBarsQuery, right: MarketBarsQuery): boolean {
   return (
     left.symbol === right.symbol &&
+    left.instrumentKind === right.instrumentKind &&
     left.period === right.period &&
     left.adjustment === right.adjustment &&
     left.start === right.start &&

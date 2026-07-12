@@ -293,16 +293,21 @@ export function AnalysisPage({
         <span className="release-badge">Stage 4 · Analysis</span>
       </header>
 
-      <AnalysisRunPanel
-        api={api}
-        models={models}
-        onModelsChange={setModels}
-        history={history}
-        nextCursor={historyCursor}
-        onLoadMore={() => void loadMore()}
-        onOpenRun={openRun}
-        onStarted={openRun}
-      />
+      <div
+        className="guidance-anchor-contents"
+        data-guidance-target="analysis-run"
+      >
+        <AnalysisRunPanel
+          api={api}
+          models={models}
+          onModelsChange={setModels}
+          history={history}
+          nextCursor={historyCursor}
+          onLoadMore={() => void loadMore()}
+          onOpenRun={openRun}
+          onStarted={openRun}
+        />
+      </div>
 
       <div
         className="analysis-report-toolbar"
@@ -311,6 +316,7 @@ export function AnalysisPage({
       >
         <button
           ref={processButtonRef}
+          data-guidance-target="analysis-process"
           type="button"
           aria-expanded={drawer === 'process'}
           aria-controls="analysis-process-drawer"
@@ -330,6 +336,7 @@ export function AnalysisPage({
         ) : null}
         <button
           ref={evidenceButtonRef}
+          data-guidance-target="analysis-evidence"
           type="button"
           aria-expanded={drawer === 'evidence'}
           aria-controls="analysis-evidence-drawer"
@@ -365,14 +372,19 @@ export function AnalysisPage({
           </button>
           <ProcessRail run={run} />
         </div>
-        <ConclusionPanel
-          run={run}
-          report={report}
-          selectedClaim={selectedClaim}
-          onSelectClaim={selectClaim}
-          onRetry={(stage) => void retry(stage)}
-          retryingStage={retryingStage}
-        />
+        <div
+          className="guidance-anchor-contents"
+          data-guidance-target="analysis-conclusion"
+        >
+          <ConclusionPanel
+            run={run}
+            report={report}
+            selectedClaim={selectedClaim}
+            onSelectClaim={selectClaim}
+            onRetry={(stage) => void retry(stage)}
+            retryingStage={retryingStage}
+          />
+        </div>
         <div
           id="analysis-evidence-drawer"
           className="analysis-drawer analysis-evidence-drawer"

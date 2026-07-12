@@ -1,4 +1,6 @@
-import { expect, test, type Page, type Route } from '@playwright/test';
+import type { Page, Route } from '@playwright/test';
+
+import { expect, test } from './fixtures';
 
 const digest = (character: string) => `sha256:${character.repeat(64)}`;
 const now = '2026-07-08T08:00:00Z';
@@ -267,6 +269,13 @@ async function installFlowStubs(page: Page) {
     }
     const pathname = decodeURIComponent(rawPathname);
     const method = request.method();
+    if (
+      pathname === '/api/v1/onboarding/state' ||
+      pathname === '/api/v1/workspace'
+    ) {
+      await route.fallback();
+      return;
+    }
     if (pathname.endsWith('/health')) {
       await fulfill(route, {
         name: 'stock-desk',

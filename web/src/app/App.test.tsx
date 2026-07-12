@@ -190,7 +190,7 @@ function renderApp(
       <QueryClientProvider client={queryClient}>
         <MemoryRouter initialEntries={initialEntries}>
           {withBackControl ? <HistoryBackControl /> : null}
-          <App desktopBridge={desktopBridge} />
+          <App desktopBridge={desktopBridge} onboardingApi={null} />
         </MemoryRouter>
       </QueryClientProvider>,
     ),
@@ -283,11 +283,11 @@ it('collapses and expands the primary navigation without abbreviating link names
   );
 });
 
-it('opens on the cache-only three-column market workspace', async () => {
+it('opens on the cache-only Market workspace with dedicated navigation', async () => {
   renderApp(['/']);
 
   expect(
-    await screen.findByRole('complementary', { name: '证券选择与股票池' }),
+    await screen.findByRole('complementary', { name: '自选与最近访问' }),
   ).toBeInTheDocument();
   expect(
     screen.getByRole('region', { name: '行情图表工作区' }),
@@ -407,11 +407,8 @@ it.each(['/market/', '/MARKET'])(
   async (pathname) => {
     renderApp([pathname]);
 
-    const heading = screen.getByRole('heading', {
-      level: 2,
-      name: '行情工作区',
-    });
-    await waitFor(() => expect(heading).toHaveFocus());
+    const search = screen.getByRole('combobox', { name: '搜索证券' });
+    await waitFor(() => expect(search).toHaveFocus());
 
     expect(
       screen.getByRole('region', { name: '行情图表工作区' }),
@@ -429,11 +426,10 @@ it('updates route title, focus, announcement, scroll, and browser history', asyn
   const user = userEvent.setup();
   renderApp(['/market'], true);
 
-  const marketHeading = await screen.findByRole('heading', {
-    level: 2,
-    name: '行情工作区',
+  const marketSearch = await screen.findByRole('combobox', {
+    name: '搜索证券',
   });
-  await waitFor(() => expect(marketHeading).toHaveFocus());
+  await waitFor(() => expect(marketSearch).toHaveFocus());
   expect(document.title).toBe('行情工作区 · stock-desk');
 
   const formulaLink = screen.getByRole('link', { name: '自定义公式' });
@@ -574,7 +570,7 @@ it('uses one navigation/main landmark and named complementary work areas', () =>
     screen.getByRole('complementary', { name: '上下文状态' }),
   ).toBeInTheDocument();
   expect(
-    screen.getByRole('complementary', { name: '证券选择与股票池' }),
+    screen.getByRole('complementary', { name: '自选与最近访问' }),
   ).toBeInTheDocument();
   expect(
     screen.getByRole('complementary', { name: '数据证据与快捷操作' }),
@@ -961,12 +957,12 @@ it('shares endpoint queries between topbar and context panel consumers', async (
   ]);
 });
 
-it('aborts both in-flight endpoint requests after the final consumer unmounts', async () => {
+it('aborts all in-flight endpoint requests after the final consumer unmounts', async () => {
   const { fetchMock, signals } = installPendingFetch();
 
   const mounted = renderApp();
-  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(5));
-  expect(signals).toHaveLength(3);
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(6));
+  expect(signals).toHaveLength(5);
 
   mounted.unmount();
 
@@ -974,5 +970,5 @@ it('aborts both in-flight endpoint requests after the final consumer unmounts', 
     expect(signals.every((signal) => signal.aborted)).toBe(true),
   );
   await new Promise((resolve) => window.setTimeout(resolve, 20));
-  expect(fetchMock).toHaveBeenCalledTimes(5);
+  expect(fetchMock).toHaveBeenCalledTimes(6);
 });

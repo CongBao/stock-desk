@@ -113,7 +113,7 @@ requirements:
     owning_stage: 0
     status: mapped
     evidence:
-      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/foundation.spec.ts, selector: fresh user sees the live foundation shell and completed demo task, assertion: A fresh private user reaches the complete browser shell and worker state without an account flow.}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/foundation.spec.ts, selector: returning user sees the live foundation shell and completed demo task, assertion: A configured personal user reaches the complete browser shell and worker state without an account flow.}
       - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: /market has bounded non-overlapping layout, assertion: The market workspace remains reachable without an account and bounded at every tested ratio including both tablet orientations.}
       - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: /formulas has bounded non-overlapping layout, assertion: The formula workspace remains reachable without an account and bounded at every tested ratio including both tablet orientations.}
       - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: /backtests has bounded non-overlapping layout, assertion: The backtest workspace remains reachable without an account and bounded at every tested ratio including both tablet orientations.}
@@ -129,7 +129,7 @@ requirements:
     owning_stage: 0
     status: mapped
     evidence:
-      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/foundation.spec.ts, selector: fresh user sees the live foundation shell and completed demo task, assertion: A fresh private user reaches the complete browser shell and worker state without an account flow.}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/foundation.spec.ts, selector: returning user sees the live foundation shell and completed demo task, assertion: A configured personal user reaches the complete browser shell and worker state without an account flow.}
       - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: /market has bounded non-overlapping layout, assertion: The market workspace remains reachable without an account and bounded at every tested ratio including both tablet orientations.}
       - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: /formulas has bounded non-overlapping layout, assertion: The formula workspace remains reachable without an account and bounded at every tested ratio including both tablet orientations.}
       - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: /backtests has bounded non-overlapping layout, assertion: The backtest workspace remains reachable without an account and bounded at every tested ratio including both tablet orientations.}
@@ -305,7 +305,7 @@ requirements:
     owning_stage: 0
     status: mapped
     evidence:
-      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/foundation.spec.ts, selector: fresh user sees the live foundation shell and completed demo task, assertion: A fresh private user reaches the complete browser shell and worker state without an account flow.}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/foundation.spec.ts, selector: returning user sees the live foundation shell and completed demo task, assertion: A configured personal user reaches the complete browser shell and worker state without an account flow.}
       - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: /market has bounded non-overlapping layout, assertion: The market workspace remains reachable without an account and bounded at every tested ratio including both tablet orientations.}
       - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: /formulas has bounded non-overlapping layout, assertion: The formula workspace remains reachable without an account and bounded at every tested ratio including both tablet orientations.}
       - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: /backtests has bounded non-overlapping layout, assertion: The backtest workspace remains reachable without an account and bounded at every tested ratio including both tablet orientations.}
@@ -321,7 +321,7 @@ requirements:
     owning_stage: 0
     status: mapped
     evidence:
-      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/foundation.spec.ts, selector: fresh user sees the live foundation shell and completed demo task, assertion: A fresh private user reaches the complete browser shell and worker state without an account flow.}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/foundation.spec.ts, selector: returning user sees the live foundation shell and completed demo task, assertion: A configured personal user reaches the complete browser shell and worker state without an account flow.}
       - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: /market has bounded non-overlapping layout, assertion: The market workspace remains reachable without an account and bounded at every tested ratio including both tablet orientations.}
       - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: /formulas has bounded non-overlapping layout, assertion: The formula workspace remains reachable without an account and bounded at every tested ratio including both tablet orientations.}
       - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: /backtests has bounded non-overlapping layout, assertion: The backtest workspace remains reachable without an account and bounded at every tested ratio including both tablet orientations.}
@@ -485,7 +485,7 @@ requirements:
     evidence:
       - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/foundation.spec.ts, selector: desktop market terminal keeps all three work areas aligned without overflow, assertion: Desktop browser acceptance proves the professional three-region market layout and bounded overflow.}
       - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/market-visual-identity.spec.ts, selector: market terminal preserves navy structure and rise-fall colors with three aligned regions, assertion: 'The browser visual contract verifies the aligned three-region market terminal, exact deep-navy surface, and visible A-share red-rise and green-fall encoding.'}
-      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/foundation.spec.ts, selector: fresh user sees the live foundation shell and completed demo task, assertion: A fresh private user reaches the complete browser shell and worker state without an account flow.}
+      - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/foundation.spec.ts, selector: returning user sees the live foundation shell and completed demo task, assertion: A configured personal user reaches the complete browser shell and worker state without an account flow.}
       - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: /market has bounded non-overlapping layout, assertion: The market workspace remains reachable without an account and bounded at every tested ratio including both tablet orientations.}
       - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: /formulas has bounded non-overlapping layout, assertion: The formula workspace remains reachable without an account and bounded at every tested ratio including both tablet orientations.}
       - {state: existing, runner: playwright, kind: acceptance, path: web/e2e/responsive.spec.ts, selector: /backtests has bounded non-overlapping layout, assertion: The backtest workspace remains reachable without an account and bounded at every tested ratio including both tablet orientations.}

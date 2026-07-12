@@ -427,6 +427,7 @@ export function TaskCenterPage({
         </div>
         <button
           type="button"
+          data-guidance-target="tasks-refresh"
           onClick={() => void refresh()}
           disabled={isRefreshing}
         >
@@ -457,7 +458,11 @@ export function TaskCenterPage({
       )}
       <p className="task-action-status">{notice}</p>
 
-      <section className="task-metrics" aria-label="全部任务汇总">
+      <section
+        className="task-metrics"
+        aria-label="全部任务汇总"
+        data-guidance-target="tasks-metrics"
+      >
         <div>
           <span>全部任务</span>
           <strong>{metrics?.total ?? '—'}</strong>
@@ -480,7 +485,11 @@ export function TaskCenterPage({
         </div>
       </section>
 
-      <section className="task-filters" aria-label="最近任务筛选">
+      <section
+        className="task-filters"
+        aria-label="最近任务筛选"
+        data-guidance-target="tasks-filters"
+      >
         <p>筛选范围：最近 100 项</p>
         <label>
           状态筛选
@@ -532,6 +541,7 @@ export function TaskCenterPage({
         <div className="task-center-layout">
           <section
             className="task-recent-panel"
+            data-guidance-target="tasks-list"
             aria-labelledby="task-list-title"
           >
             <h3 id="task-list-title">最近任务</h3>

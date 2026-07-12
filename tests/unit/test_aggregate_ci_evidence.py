@@ -1089,6 +1089,112 @@ def test_requirement_cli_runs_schema_collect_then_offline_report_cross_check(
     assert json.loads(output.read_text())["schema_authority_collect"] == "passed"
 
 
+def test_requirement_cli_binds_v1_and_v11_manifests_as_one_fail_closed_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    canonical = _inventory()
+    inventory_path = tmp_path / "inventory.json"
+    inventory_path.write_bytes(inventory.canonical_json(canonical))
+    reports = _shard_evidence(tmp_path / "shards")
+    reports.append(_vitest_report())
+    reports.append(_playwright_report())
+    report_paths: list[Path] = []
+    for index, report in enumerate(reports):
+        path = tmp_path / f"report-{index}.json"
+        path.write_bytes(inventory.canonical_json(report))
+        report_paths.append(path)
+
+    paths = [tmp_path / "requirements.yml", tmp_path / "v1_1_requirements.yml"]
+    for index, path in enumerate(paths):
+        path.write_text(f"authority-{index}\n", encoding="utf-8")
+    manifests = [_requirement_manifest(), _requirement_manifest()]
+    manifests[0]["requirements"][0]["behavior_key"] = "v1_exact_behavior"
+    manifests[1]["requirements"][0]["id"] = "V11-R-001"
+    manifests[1]["requirements"][0]["behavior_key"] = "v11_exact_behavior"
+    loaded = dict(zip(paths, manifests, strict=True))
+    validated: list[Path] = []
+    monkeypatch.setattr(
+        aggregate.check_requirement_coverage,
+        "load_manifest",
+        lambda path: loaded[path],
+    )
+    monkeypatch.setattr(
+        aggregate.check_requirement_coverage,
+        "validate_authority_manifest",
+        lambda _manifest, *, manifest_path, **_kwargs: validated.append(manifest_path),
+    )
+    output = tmp_path / "requirement-output.json"
+    arguments = [
+        "requirements",
+        "--manifest",
+        str(paths[0]),
+        "--manifest",
+        str(paths[1]),
+        "--inventory",
+        str(inventory_path),
+        "--repo-root",
+        str(tmp_path),
+        "--source-sha",
+        SHA,
+        "--source-tree",
+        TREE,
+        "--output",
+        str(output),
+    ]
+    for path in report_paths:
+        arguments.extend(["--report", str(path)])
+
+    assert aggregate.main(arguments) == 0
+    payload = json.loads(output.read_text())
+    assert validated == paths
+    assert payload["schema"] == "stock-desk-requirement-evidence-v2"
+    assert [item["path"] for item in payload["requirements_manifests"]] == [
+        "requirements.yml",
+        "v1_1_requirements.yml",
+    ]
+    assert {binding["requirement_id"] for binding in payload["bindings"]} == {
+        "R-001",
+        "V11-R-001",
+    }
+
+
+def test_requirement_evidence_rejects_duplicate_ids_or_behaviors_across_authorities(
+    tmp_path: Path,
+) -> None:
+    first = _requirement_manifest()
+    first["requirements"][0]["behavior_key"] = "exact_shared_behavior"
+    duplicate = copy.deepcopy(first)
+    with pytest.raises(aggregate.EvidenceError, match="duplicate requirement id"):
+        aggregate.build_requirement_evidence(
+            manifests=[first, duplicate],
+            reports=_pytest_reports(tmp_path),
+            source_sha=SHA,
+            source_tree=TREE,
+            manifest_sha256s={
+                "requirements.yml": "a" * 64,
+                "v1_1_requirements.yml": "b" * 64,
+            },
+            inventory=_inventory(),
+            required_runners=["pytest"],
+        )
+
+    duplicate["requirements"][0]["id"] = "V11-R-001"
+    with pytest.raises(aggregate.EvidenceError, match="duplicate behavior_key"):
+        aggregate.build_requirement_evidence(
+            manifests=[first, duplicate],
+            reports=_pytest_reports(tmp_path / "behavior"),
+            source_sha=SHA,
+            source_tree=TREE,
+            manifest_sha256s={
+                "requirements.yml": "a" * 64,
+                "v1_1_requirements.yml": "b" * 64,
+            },
+            inventory=_inventory(),
+            required_runners=["pytest"],
+        )
+
+
 def test_requirement_cli_accepts_web_only_runner_scope_without_inventory(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

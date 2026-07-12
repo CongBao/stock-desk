@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { matchPath, useLocation } from 'react-router-dom';
 
 import { appRoutes } from './routes';
@@ -30,17 +30,39 @@ function getPageTitle(pathname: string): string {
 export function RouteEffects() {
   const location = useLocation();
   const pageTitle = getPageTitle(location.pathname);
+  const isMarket =
+    location.pathname.replace(/\/+$/u, '').toLowerCase() === '/market';
+  const hasFocusedMarketSearch = useRef(false);
+  const previousPathname = useRef<string | null>(null);
 
   useEffect(() => {
+    const normalizedPathname =
+      location.pathname.replace(/\/+$/u, '').toLowerCase() || '/';
+    const previousPath = previousPathname.current;
+    previousPathname.current = normalizedPathname;
     document.title = `${pageTitle} · stock-desk`;
     window.scrollTo({ behavior: 'auto', left: 0, top: 0 });
 
     const focusTimer = window.setTimeout(() => {
-      document.querySelector<HTMLElement>('[data-page-heading]')?.focus();
+      const focusMarketSearch = isMarket && !hasFocusedMarketSearch.current;
+      const focusMarketHeading =
+        isMarket &&
+        hasFocusedMarketSearch.current &&
+        previousPath !== null &&
+        previousPath !== '/market';
+      const target = focusMarketSearch
+        ? document.querySelector<HTMLElement>('[data-route-primary-focus]')
+        : !isMarket || focusMarketHeading
+          ? document.querySelector<HTMLElement>('[data-page-heading]')
+          : null;
+      target?.focus();
+      if (focusMarketSearch && target !== null) {
+        hasFocusedMarketSearch.current = true;
+      }
     }, 0);
 
     return () => window.clearTimeout(focusTimer);
-  }, [location.key, pageTitle]);
+  }, [isMarket, location.key, pageTitle]);
 
   return (
     <p className="visually-hidden" role="status" aria-live="polite">

@@ -1,5 +1,8 @@
-import { expect, test, type Page } from '@playwright/test';
+import type { Page } from '@playwright/test';
 import { readFileSync } from 'node:fs';
+
+import { expect, test } from './fixtures';
+import { mockCompletedGuidance } from './guidanceMocks';
 
 const backendBarsResponseBody = readFileSync(
   new URL(
@@ -34,6 +37,10 @@ const navigationLabels = [
   '设置',
 ] as const;
 
+test.beforeEach(async ({ page }) => {
+  await mockCompletedGuidance(page);
+});
+
 async function pageHasHorizontalOverflow(page: Page): Promise<boolean> {
   return page.evaluate(() => {
     const browserGlobal = globalThis as unknown as {
@@ -46,7 +53,7 @@ async function pageHasHorizontalOverflow(page: Page): Promise<boolean> {
   });
 }
 
-test('fresh user sees the live foundation shell and completed demo task', async ({
+test('returning user sees the live foundation shell and completed demo task', async ({
   page,
   request,
 }) => {
@@ -74,8 +81,9 @@ test('fresh user sees the live foundation shell and completed demo task', async 
     ).toBeVisible();
   }
   await expect(
-    page.getByRole('complementary', { name: '证券选择与股票池' }),
+    page.getByRole('complementary', { name: '自选与最近访问' }),
   ).toBeVisible();
+  await expect(page.getByRole('button', { name: '打开股票池' })).toBeVisible();
   await expect(
     page.getByRole('region', { name: '行情图表工作区' }),
   ).toBeVisible();
@@ -83,7 +91,7 @@ test('fresh user sees the live foundation shell and completed demo task', async 
     page.getByRole('complementary', { name: '数据证据与快捷操作' }),
   ).toBeVisible();
   await expect(
-    page.getByText('先从搜索或股票池选择证券', { exact: true }),
+    page.getByText('上证指数 · 000001.SS', { exact: true }),
   ).toBeVisible();
   await expect(
     page.getByRole('region', { name: '公式结果副图' }),
@@ -139,7 +147,9 @@ test('desktop market terminal keeps all three work areas aligned without overflo
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto('/market');
 
-  const left = page.getByRole('complementary', { name: '证券选择与股票池' });
+  const left = page.getByRole('complementary', {
+    name: '自选与最近访问',
+  });
   const center = page.getByRole('region', { name: '行情图表工作区' });
   const right = page.getByRole('complementary', {
     name: '数据证据与快捷操作',
@@ -147,6 +157,9 @@ test('desktop market terminal keeps all three work areas aligned without overflo
   await expect(left).toBeVisible();
   await expect(center).toBeVisible();
   await expect(right).toBeVisible();
+  await expect(
+    center.getByRole('button', { name: '打开股票池' }),
+  ).toBeVisible();
 
   for (const width of [1440, 1366, 1280]) {
     await page.setViewportSize({ width, height: 900 });
@@ -273,17 +286,21 @@ test('market hashes render through the bounded fallback without crypto.subtle', 
 
   await page.goto('/market');
   expect(await page.evaluate(() => globalThis.crypto.subtle)).toBeUndefined();
-  await page.getByRole('button', { name: /全量 A 股/u }).click();
-  await expect(
-    page.getByRole('button', { name: /浦发银行.*600000\.SH/u }),
-  ).toBeVisible();
-
   const search = page.getByRole('combobox', { name: '搜索证券' });
   await search.fill('浦发');
   await page
     .getByRole('option', { name: '浦发银行 600000.SH', exact: true })
     .click();
   await expect(page.locator('.market-chart-canvas canvas')).toHaveCount(1);
+
+  await page.getByRole('button', { name: '打开股票池' }).click();
+  await page.getByRole('button', { name: /全量 A 股/u }).click();
+  await expect(
+    page
+      .getByRole('list', { name: '全量 A 股成员' })
+      .getByRole('button', { name: '浦发银行 600000.SH', exact: true }),
+  ).toBeVisible();
+  await page.getByRole('button', { name: '关闭股票池' }).click();
   await expect(page.getByText('股票池暂不可用', { exact: true })).toHaveCount(
     0,
   );

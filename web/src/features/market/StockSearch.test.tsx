@@ -102,6 +102,33 @@ it('debounces search and supports keyboard combobox selection', async () => {
   expect(input).toHaveAttribute('aria-expanded', 'false');
 });
 
+it('can receive first-market focus and exposes pinyin, source, and cutoff context', async () => {
+  render(
+    <StockSearch
+      api={
+        {
+          searchInstruments: vi.fn(() => Promise.resolve([instrument])),
+        } as unknown as MarketApi
+      }
+      focusOnMount
+      debounceMs={10}
+      onSelect={vi.fn()}
+    />,
+    { wrapper },
+  );
+
+  const input = screen.getByRole('combobox', { name: '搜索证券' });
+  expect(input).toHaveFocus();
+  expect(input).toHaveAttribute('placeholder', '代码 / 中文名 / 拼音');
+  await userEvent.type(input, 'pufa');
+
+  const option = await screen.findByRole('option', {
+    name: /浦发银行.*600000\.SH/u,
+  });
+  expect(option).toHaveTextContent('来源 tushare');
+  expect(option).toHaveTextContent('截至 2024-01-03');
+});
+
 it('searches a complete six-digit A-share code without waiting for name debounce', async () => {
   const user = userEvent.setup();
   const searchInstruments = vi.fn(() => Promise.resolve([instrument]));

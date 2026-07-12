@@ -1,5 +1,7 @@
-import { expect, test, type Page } from '@playwright/test';
+import type { Page } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
+
+import { expect, test } from './fixtures';
 
 const MACD_NAME = 'Stock Desk Demo MACD (CC0 synthetic)';
 const CUSTOM_NAME = 'Stock Desk Demo custom wave (CC0 synthetic)';
@@ -116,7 +118,9 @@ test.describe.serial('Stage 3 real local backtesting', () => {
     await expect(page).toHaveURL(
       `/backtests?symbol=600000.SH&period=1d&adjustment=qfq&start=${START}&end=${END}`,
     );
-    await expect(page.getByText('600000.SH')).toBeVisible();
+    await expect(
+      page.getByLabel('当前配置摘要').getByText('600000.SH', { exact: true }),
+    ).toBeVisible();
     await expect(page.getByText(`${START} → ${END}`)).toBeVisible();
     await chooseFormula(page, MACD_NAME);
     await finishCommonSteps(page);

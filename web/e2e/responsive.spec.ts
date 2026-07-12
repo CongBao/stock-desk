@@ -1,4 +1,7 @@
-import { expect, test, type Locator, type Page } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
+
+import { expect, test } from './fixtures';
+import { mockCompletedGuidance } from './guidanceMocks';
 
 const routes = [
   '/market',
@@ -28,6 +31,10 @@ const viewports = [
     collapsed: true,
   },
 ] as const;
+
+test.beforeEach(async ({ page }) => {
+  await mockCompletedGuidance(page);
+});
 
 async function visibleBox(locator: Locator) {
   if (!(await locator.isVisible())) return null;
@@ -260,8 +267,8 @@ test('collapsed navigation renders icons without textual abbreviations', async (
   const links = page
     .getByRole('navigation', { name: '主导航' })
     .getByRole('link');
+  await expect(links).toHaveCount(routes.length);
   const count = await links.count();
-  expect(count).toBeGreaterThan(0);
   for (let index = 0; index < count; index += 1) {
     const link = links.nth(index);
     await expect(link.locator('.nav-icon svg')).toBeVisible();

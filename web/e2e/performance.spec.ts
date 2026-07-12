@@ -1,6 +1,4 @@
 import {
-  expect,
-  test,
   type BrowserContext,
   type Page,
   type Response,
@@ -10,6 +8,8 @@ import { execFile } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
+
+import { expect, installReturningUserState, test } from './fixtures';
 
 import {
   canonicalDigest as digest,
@@ -32,6 +32,12 @@ const SAMPLE_COUNT = 20;
 const RSS_SAMPLE_INTERVAL_MS = 500;
 const PROGRESS_GATE_HEADER = 'x-stock-desk-performance-window';
 let progressGateGeneration = 0;
+let backtestCorrectnessReference:
+  | {
+      correctnessHash: string;
+      componentHashes: Readonly<Record<string, string>>;
+    }
+  | undefined;
 const OUTPUT = process.env['STOCK_DESK_PERFORMANCE_RAW_OUTPUT'];
 const PROCESS_FILE = process.env['STOCK_DESK_PERFORMANCE_PROCESS_FILE'];
 const FIXTURE_FILE = process.env['STOCK_DESK_PERFORMANCE_FIXTURE'];
@@ -288,9 +294,14 @@ async function proveChartInteractionHandshake(
   const zoomedAt = performance.now();
 
   const beforeDrag = await zoomRange();
+  const [dragStart] = beforeDrag.split(':').map(Number);
+  const dragTargetRatio =
+    Number.isFinite(dragStart) && dragStart <= 0.001 ? 0.3 : 0.7;
   await page.mouse.move(box.x + box.width * 0.5, box.y + 120);
   await page.mouse.down();
-  await page.mouse.move(box.x + box.width * 0.7, box.y + 120, { steps: 2 });
+  await page.mouse.move(box.x + box.width * dragTargetRatio, box.y + 120, {
+    steps: 1,
+  });
   await page.mouse.up();
   await expect.poll(zoomRange, poll).not.toBe(beforeDrag);
   const draggedAt = performance.now();
@@ -315,6 +326,7 @@ async function chartAction(
     exact: true,
   });
   await expect(option).toBeVisible();
+  await page.locator('.market-chart-viewport').scrollIntoViewIfNeeded();
   const responsePromise = page.waitForResponse((response) => {
     const url = new URL(response.url());
     return (
@@ -578,6 +590,25 @@ async function loadPerformanceFormulaVersion(page: Page): Promise<string> {
   return versions.items[0]?.id ?? '';
 }
 
+async function navigateWithinDesktopWorkspace(
+  page: Page,
+  pathname: string,
+): Promise<void> {
+  await page.evaluate((target) => {
+    const browserGlobal = globalThis as unknown as {
+      history: { pushState(data: unknown, unused: string, url: string): void };
+      document: {
+        createEvent(type: string): { initEvent(type: string): void };
+      };
+      dispatchEvent(event: unknown): boolean;
+    };
+    const popState = browserGlobal.document.createEvent('Event');
+    popState.initEvent('popstate');
+    browserGlobal.history.pushState(null, '', target);
+    browserGlobal.dispatchEvent(popState);
+  }, pathname);
+}
+
 async function backtestAction(
   page: Page,
   versionId: string,
@@ -623,9 +654,12 @@ async function backtestAction(
       { timeout: 15_000 },
     )
     .toBe(true);
-  await page.goto(`/backtests/${submitted.run_id}`);
+  await navigateWithinDesktopWorkspace(page, `/backtests/${submitted.run_id}`);
   await expect(page.getByRole('heading', { name: '回测结论' })).toBeVisible();
   const wall = (performance.now() - started) / 1000;
+  console.log(
+    `[performance-backtest-sample] ${JSON.stringify({ wall_seconds: wall })}`,
+  );
   const rss = await sampler.finish();
   expect(network.blockedExternalRequests - blockedBefore).toBe(0);
   const symbolsResponse = await page.request.get(
@@ -682,6 +716,32 @@ async function backtestAction(
     metrics: typedReport?.metrics,
     outcomes: typedReport?.outcomes,
   };
+  const correctnessHash = digest(normalizedReport);
+  if (backtestCorrectnessReference === undefined) {
+    backtestCorrectnessReference = {
+      correctnessHash,
+      componentHashes: Object.fromEntries(
+        Object.entries(normalizedReport).map(([name, value]) => [
+          name,
+          digest(value),
+        ]),
+      ),
+    };
+  } else if (correctnessHash !== backtestCorrectnessReference.correctnessHash) {
+    console.log(
+      `[performance-backtest-correctness-drift] ${JSON.stringify({
+        expected_hash: backtestCorrectnessReference.correctnessHash,
+        actual_hash: correctnessHash,
+        expected_components: backtestCorrectnessReference.componentHashes,
+        actual_components: Object.fromEntries(
+          Object.entries(normalizedReport).map(([name, value]) => [
+            name,
+            digest(value),
+          ]),
+        ),
+      })}`,
+    );
+  }
   return {
     wall_seconds: wall,
     local_seconds: wall,
@@ -689,7 +749,7 @@ async function backtestAction(
     blocked_external_request_count:
       network.blockedExternalRequests - blockedBefore,
     ...rss,
-    correctness_hash: digest(normalizedReport),
+    correctness_hash: correctnessHash,
   } satisfies TimedSample;
 }
 
@@ -1238,6 +1298,7 @@ test('records aggregate 2/3/5 budgets and worker-backed UI responsiveness', asyn
     readFileSync(FIXTURE_FILE ?? '', 'utf8'),
   ) as {
     content_digest: string;
+    row_count: number;
     scope_instrument_count: number;
     runnable_symbol_count: number;
   };
@@ -1245,6 +1306,10 @@ test('records aggregate 2/3/5 budgets and worker-backed UI responsiveness', asyn
     scope_instrument_count: 5_000,
     runnable_symbol_count: 40,
   });
+  const performanceWorkspaceZoom = {
+    start: Math.max(0, 100 - (160 / fixtureEvidence.row_count) * 100),
+    end: 100,
+  };
   const processEvidence = JSON.parse(
     readFileSync(PROCESS_FILE ?? '', 'utf8'),
   ) as {
@@ -1297,6 +1362,7 @@ test('records aggregate 2/3/5 budgets and worker-backed UI responsiveness', asyn
     const context = await browser.newContext();
     const network = await forbidExternalNetwork(context);
     const page = await context.newPage();
+    await installReturningUserState(page, performanceWorkspaceZoom);
     await page.goto('/market');
     chartCold.push(await chartAction(page, network, roots, rootRoles));
     await context.close();
@@ -1305,6 +1371,7 @@ test('records aggregate 2/3/5 budgets and worker-backed UI responsiveness', asyn
   let context = await browser.newContext();
   let network = await forbidExternalNetwork(context);
   let page = await context.newPage();
+  await installReturningUserState(page, performanceWorkspaceZoom);
   const chartWarm: TimedSample[] = [];
   await page.goto('/market');
   await chartAction(page, network, roots, rootRoles);
@@ -1348,6 +1415,7 @@ test('records aggregate 2/3/5 budgets and worker-backed UI responsiveness', asyn
   context = await browser.newContext();
   network = await forbidExternalNetwork(context);
   page = await context.newPage();
+  await installReturningUserState(page, performanceWorkspaceZoom);
   await page.goto('/backtests');
   await page
     .getByLabel('保存的交易公式')

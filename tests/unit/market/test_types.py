@@ -32,6 +32,7 @@ from stock_desk.market.types import (
     TradingDay,
     TradingStatus,
     is_canonical_bucket_start,
+    instrument_kind_for_symbol,
 )
 
 
@@ -262,6 +263,82 @@ def test_instrument_validates_exchange_suffix_and_listing_dates() -> None:
     values.update(delisted_on=None)
     with pytest.raises(ValidationError, match="delisted"):
         Instrument.model_validate(values)
+
+
+def test_public_index_identity_is_explicit_and_restricted() -> None:
+    index = Instrument(
+        symbol="000001.SS",
+        exchange=Exchange.SH,
+        name="上证指数",
+        instrument_kind=InstrumentKind.INDEX,
+        listing_status=ListingStatus.LISTED,
+    )
+
+    assert index.symbol == "000001.SS"
+    assert index.instrument_kind is InstrumentKind.INDEX
+    assert (
+        Instrument(
+            symbol="000001.SZ",
+            exchange=Exchange.SZ,
+            name="平安银行",
+            instrument_kind=InstrumentKind.STOCK,
+            listing_status=ListingStatus.LISTED,
+        )
+        != index
+    )
+
+    for values in (
+        {
+            "symbol": "000001.SS",
+            "exchange": Exchange.SH,
+            "name": "not an index",
+            "instrument_kind": InstrumentKind.STOCK,
+            "listing_status": ListingStatus.UNKNOWN,
+        },
+        {
+            "symbol": "000002.SS",
+            "exchange": Exchange.SH,
+            "name": "unregistered namespace",
+            "instrument_kind": InstrumentKind.INDEX,
+            "listing_status": ListingStatus.UNKNOWN,
+        },
+        {
+            "symbol": "000001.SS",
+            "exchange": Exchange.SZ,
+            "name": "wrong exchange",
+            "instrument_kind": InstrumentKind.INDEX,
+            "listing_status": ListingStatus.UNKNOWN,
+        },
+    ):
+        with pytest.raises(ValidationError):
+            Instrument.model_validate(values)
+
+
+def test_bar_query_binds_index_kind_to_public_identity() -> None:
+    values = {
+        "symbol": "000001.SS",
+        "instrument_kind": InstrumentKind.INDEX,
+        "period": Period.DAY,
+        "adjustment": Adjustment.NONE,
+        "start": market_time(0),
+        "end": market_time(0) + timedelta(days=1),
+    }
+    query = BarQuery.model_validate(values)
+
+    assert query.instrument_kind is InstrumentKind.INDEX
+    assert instrument_kind_for_symbol("000001.SS") is InstrumentKind.INDEX
+    assert instrument_kind_for_symbol("000001.SZ") is InstrumentKind.STOCK
+
+    with pytest.raises(ValidationError):
+        BarQuery.model_validate({**values, "instrument_kind": InstrumentKind.STOCK})
+    with pytest.raises(ValidationError):
+        BarQuery.model_validate(
+            {
+                **values,
+                "symbol": "000001.SZ",
+                "instrument_kind": InstrumentKind.INDEX,
+            }
+        )
 
 
 def test_trading_day_includes_exchange_and_models_are_frozen() -> None:

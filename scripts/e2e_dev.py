@@ -38,6 +38,8 @@ from stock_desk.backtest.repository import BacktestRepository
 from stock_desk.backtest.service import BacktestIntent, BacktestService
 from stock_desk.formula.repository import FormulaRepository
 from stock_desk.formula.service import FormulaService
+from stock_desk.guidance.models import GuidancePage, GuidanceStatus
+from stock_desk.guidance.store import GuidancePreferencesStore
 from stock_desk.market.execution_status_lake import ExecutionStatusLake
 from stock_desk.market.lake import MarketLake
 from stock_desk.market.pools import PoolRepository
@@ -120,6 +122,17 @@ def _seed(
     performance_runnable_symbol_limit: int | None = None,
 ) -> None:
     seed_demo_data(data_dir)
+    guidance = GuidancePreferencesStore(data_dir / "guidance" / "preferences.json")
+    guidance_revision = 0
+    guidance_versions = {GuidancePage.MARKET: 2}
+    for guidance_page in GuidancePage:
+        saved_guidance = guidance.update(
+            expected_revision=guidance_revision,
+            page=guidance_page,
+            content_version=guidance_versions.get(guidance_page, 1),
+            status=GuidanceStatus.COMPLETED,
+        )
+        guidance_revision = saved_guidance.revision
     database_url = f"sqlite:///{data_dir / 'stock-desk.db'}"
     engine = create_engine_for_url(database_url)
     try:

@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test } from './fixtures';
 
 const poolName = 'E2E 跨会话观察池';
 const renamedPool = 'E2E 跨会话编辑池';
@@ -7,6 +7,7 @@ test('all-A index industry and editable custom pools show composition timestamps
   page,
 }) => {
   await page.goto('/market');
+  await page.getByRole('button', { name: '打开股票池' }).click();
 
   const presets = [
     { name: /全部A股/u, category: '全 A' },
@@ -26,6 +27,7 @@ test('all-A index industry and editable custom pools show composition timestamps
     await expect(detail).toContainText('更新于');
     await expect(detail.locator('time')).toHaveCount(2);
   }
+  await page.getByRole('button', { name: '关闭股票池' }).click();
 
   const search = page.getByRole('combobox', { name: '搜索证券' });
   await search.fill('600000');
@@ -44,8 +46,12 @@ test('all-A index industry and editable custom pools show composition timestamps
   await expect(page.getByRole('dialog')).toHaveCount(0);
 
   await page.reload();
+  await page.getByRole('button', { name: '打开股票池' }).click();
   await page.getByRole('button', { name: new RegExp(poolName, 'u') }).click();
-  await page.getByRole('button', { name: '编辑当前股票池' }).click();
+  const editCurrentPool = page.getByRole('button', { name: '编辑当前股票池' });
+  await expect(editCurrentPool).toBeVisible();
+  await page.getByRole('button', { name: '关闭股票池' }).click();
+  await editCurrentPool.click();
   const editDialog = page.getByRole('dialog', { name: '编辑自定义池' });
   await editDialog.getByLabel('股票池名称').fill(renamedPool);
   await editDialog.getByLabel('编辑池搜索证券').fill('000001');
@@ -56,6 +62,7 @@ test('all-A index industry and editable custom pools show composition timestamps
   await expect(editDialog).toHaveCount(0);
 
   await page.reload();
+  await page.getByRole('button', { name: '打开股票池' }).click();
   await page
     .getByRole('button', { name: new RegExp(renamedPool, 'u') })
     .click();
@@ -63,10 +70,12 @@ test('all-A index industry and editable custom pools show composition timestamps
   await expect(
     page.getByRole('list', { name: `${renamedPool}成员` }),
   ).toContainText('000001.SZ');
+  await page.getByRole('button', { name: '关闭股票池' }).click();
 
   await page.getByRole('button', { name: '编辑当前股票池' }).click();
   await page.getByRole('button', { name: '删除股票池' }).click();
   await page.getByRole('button', { name: '确认删除' }).click();
+  await page.getByRole('button', { name: '打开股票池' }).click();
   await expect(
     page.getByRole('button', { name: new RegExp(renamedPool, 'u') }),
   ).toHaveCount(0);

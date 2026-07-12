@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -13,8 +13,9 @@ from pathlib import Path, PurePosixPath
 import re
 import stat
 import tempfile
+import threading
 import time
-from typing import Annotated, Final, cast
+from typing import Annotated, Any, Final, cast
 from uuid import uuid4
 
 import duckdb
@@ -41,6 +42,7 @@ from stock_desk.market.provenance import (
     RoutedBarSuccess,
     RoutingManifest,
     make_routing_manifest,
+    routing_manifest_identity_payload,
 )
 from stock_desk.market.providers.normalization import (
     dataset_version as provider_dataset_version,
@@ -56,6 +58,7 @@ from stock_desk.market.types import (
     Provenance,
     ProviderId,
     TradingStatus,
+    instrument_kind_for_symbol,
 )
 from stock_desk.storage.models import (
     MarketDataset,
@@ -121,6 +124,9 @@ _OWNERSHIP_TEMP_PREFIX: Final[str] = f"{_OWNERSHIP_MARKER_NAME}.init-"
 
 
 _OWNERSHIP_TEMP_SUFFIX: Final[str] = ".tmp"
+_WINDOWS_REPARSE_POINT: Final[int] = 0x400
+_WINDOWS_INIT_LOCKS: dict[str, threading.Lock] = {}
+_WINDOWS_INIT_LOCKS_GUARD = threading.Lock()
 _SYMBOL_ADAPTER = TypeAdapter(CanonicalSymbol)
 
 
@@ -219,7 +225,7 @@ class _PublishedPartition:
 def manifest_record_id(manifest: RoutingManifest) -> str:
     canonical = RoutingManifest.model_validate(manifest.model_dump(mode="python"))
     encoded = json.dumps(
-        canonical.model_dump(mode="json"),
+        routing_manifest_identity_payload(canonical),
         ensure_ascii=True,
         separators=(",", ":"),
         sort_keys=True,
@@ -229,6 +235,611 @@ def manifest_record_id(manifest: RoutingManifest) -> str:
 
 def _lexists(path: Path) -> bool:
     return os.path.lexists(path)
+
+
+def _is_windows_reparse_point(metadata: os.stat_result) -> bool:
+    return bool(getattr(metadata, "st_file_attributes", 0) & _WINDOWS_REPARSE_POINT)
+
+
+def _windows_safe_directory_stat(path: Path) -> os.stat_result:
+    metadata = os.lstat(path)
+    if stat.S_ISLNK(metadata.st_mode) or _is_windows_reparse_point(metadata):
+        raise ValueError("market lake directory cannot be a symlink or reparse point")
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise ValueError("market lake path must be a directory")
+    return metadata
+
+
+def _windows_safe_regular_stat(path: Path) -> os.stat_result:
+    metadata = os.lstat(path)
+    if stat.S_ISLNK(metadata.st_mode) or _is_windows_reparse_point(metadata):
+        raise ValueError("market lake object cannot be a symlink or reparse point")
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+        raise ValueError("market lake object must be a single-link regular file")
+    return metadata
+
+
+def _windows_assert_safe_ancestors(path: Path) -> None:
+    current = Path(path.anchor)
+    for component in path.parts[1:]:
+        current /= component
+        if not _lexists(current):
+            break
+        _windows_safe_directory_stat(current)
+
+
+def _windows_open_directory_guard(path: Path) -> int:
+    """Hold a directory without delete sharing so its path cannot be rebound."""
+    if os.name != "nt":
+        no_follow = getattr(os, "O_NOFOLLOW", 0)
+        directory_only = getattr(os, "O_DIRECTORY", 0)
+        descriptor = os.open(path, os.O_RDONLY | no_follow | directory_only)
+    else:
+        import ctypes
+        from ctypes import wintypes
+        import msvcrt
+
+        file_read_attributes = 0x00000080
+        file_share_read = 0x00000001
+        file_share_write = 0x00000002
+        open_existing = 3
+        file_flag_backup_semantics = 0x02000000
+        file_flag_open_reparse_point = 0x00200000
+        kernel32: Any = getattr(ctypes, "WinDLL")("kernel32", use_last_error=True)
+        close_handle = kernel32.CloseHandle
+        close_handle.argtypes = (wintypes.HANDLE,)
+        close_handle.restype = wintypes.BOOL
+        create_file = kernel32.CreateFileW
+        create_file.argtypes = (
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.HANDLE,
+        )
+        create_file.restype = wintypes.HANDLE
+        handle = create_file(
+            os.fspath(path),
+            file_read_attributes,
+            file_share_read | file_share_write,
+            None,
+            open_existing,
+            file_flag_backup_semantics | file_flag_open_reparse_point,
+            None,
+        )
+        if handle == wintypes.HANDLE(-1).value:
+            error = int(getattr(ctypes, "get_last_error")())
+            raise OSError(error, "Windows market lake directory open failed", path)
+        try:
+            descriptor = cast(
+                int,
+                getattr(msvcrt, "open_osfhandle")(
+                    handle,
+                    os.O_RDONLY | getattr(os, "O_BINARY", 0),
+                ),
+            )
+        except BaseException:
+            close_handle(handle)
+            raise
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or stat.S_ISLNK(metadata.st_mode)
+            or _is_windows_reparse_point(metadata)
+        ):
+            raise ValueError(
+                "market lake directory handle is a symlink or reparse point"
+            )
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
+@contextmanager
+def _windows_guard_root(
+    root: Path,
+    *,
+    create: bool,
+) -> Iterator[tuple[os.stat_result, bool]]:
+    """Pin every ancestor while a Windows root is checked or mutated."""
+    descriptors: list[int] = []
+    created = False
+    current = Path(root.anchor)
+    try:
+        for index, component in enumerate(root.parts):
+            if index != 0:
+                current /= component
+            is_leaf = index == len(root.parts) - 1
+            try:
+                before = _windows_safe_directory_stat(current)
+            except FileNotFoundError:
+                if not create or not is_leaf:
+                    raise ValueError(
+                        "market lake root parent must already exist"
+                    ) from None
+                try:
+                    current.mkdir(mode=0o700)
+                    created = True
+                except FileExistsError:
+                    pass
+                before = _windows_safe_directory_stat(current)
+            descriptor = _windows_open_directory_guard(current)
+            descriptors.append(descriptor)
+            opened = os.fstat(descriptor)
+            after = _windows_safe_directory_stat(current)
+            if (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino) or (
+                before.st_dev,
+                before.st_ino,
+            ) != (after.st_dev, after.st_ino):
+                raise ValueError("market lake directory changed while being pinned")
+        yield os.fstat(descriptors[-1]), created
+    finally:
+        errors: list[BaseException] = []
+        for descriptor in reversed(descriptors):
+            try:
+                os.close(descriptor)
+            except BaseException as error:
+                errors.append(error)
+        _raise_collected_errors("market lake directory guard close failed", errors)
+
+
+def _windows_private_path(path: Path, *, directory: bool) -> None:
+    # Kept local to avoid a module cycle: desktop imports the lake only while
+    # constructing the runtime after this module has finished loading.
+    from stock_desk.desktop import _restrict_owner_access
+
+    _restrict_owner_access(path, directory=directory)
+
+
+def _windows_open_file(
+    path: Path,
+    *,
+    write: bool,
+    create_new: bool,
+) -> int:
+    """Open a non-following Windows handle and transfer ownership to a Python fd."""
+    if os.name != "nt":
+        no_follow = getattr(os, "O_NOFOLLOW", 0)
+        flags = (os.O_WRONLY if write else os.O_RDONLY) | no_follow
+        if create_new:
+            flags |= os.O_CREAT | os.O_EXCL
+        return os.open(path, flags, 0o600)
+
+    import ctypes
+    from ctypes import wintypes
+    import msvcrt
+
+    generic_read = 0x80000000
+    generic_write = 0x40000000
+    file_share_read = 0x00000001
+    open_existing = 3
+    create_new_disposition = 1
+    file_attribute_normal = 0x00000080
+    file_flag_open_reparse_point = 0x00200000
+    file_flag_write_through = 0x80000000
+    kernel32: Any = getattr(ctypes, "WinDLL")("kernel32", use_last_error=True)
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = (wintypes.HANDLE,)
+    close_handle.restype = wintypes.BOOL
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    )
+    create_file.restype = wintypes.HANDLE
+    access = generic_write if write else generic_read
+    share = 0 if write else file_share_read
+    disposition = create_new_disposition if create_new else open_existing
+    handle = create_file(
+        os.fspath(path),
+        access,
+        share,
+        None,
+        disposition,
+        file_attribute_normal
+        | file_flag_open_reparse_point
+        | (file_flag_write_through if write else 0),
+        None,
+    )
+    invalid_handle = wintypes.HANDLE(-1).value
+    if handle == invalid_handle:
+        error = int(getattr(ctypes, "get_last_error")())
+        if create_new and error in {80, 183}:
+            raise FileExistsError(error, "market lake object already exists", path)
+        raise OSError(error, "Windows market lake file open failed", path)
+    flags = (os.O_WRONLY if write else os.O_RDONLY) | getattr(os, "O_BINARY", 0)
+    try:
+        return cast(int, getattr(msvcrt, "open_osfhandle")(handle, flags))
+    except BaseException:
+        close_handle(handle)
+        raise
+
+
+def _windows_read_owned_file(path: Path) -> tuple[bytes, os.stat_result]:
+    before = _windows_safe_regular_stat(path)
+    descriptor = _windows_open_file(path, write=False, create_new=False)
+    try:
+        opened = os.fstat(descriptor)
+        content = b""
+        while len(content) <= len(_OWNERSHIP_MARKER_CONTENT):
+            chunk = os.read(
+                descriptor,
+                len(_OWNERSHIP_MARKER_CONTENT) + 1 - len(content),
+            )
+            if not chunk:
+                break
+            content += chunk
+        after = _windows_safe_regular_stat(path)
+    finally:
+        os.close(descriptor)
+    if (
+        not stat.S_ISREG(opened.st_mode)
+        or opened.st_nlink != 1
+        or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)
+        or (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)
+    ):
+        raise ValueError("market lake object changed during validation")
+    return content, after
+
+
+@contextmanager
+def _windows_guard_regular(
+    path: Path,
+    *,
+    allow_write_share: bool = True,
+) -> Iterator[os.stat_result]:
+    """Pin a regular file while ACL or transaction-bound checks run."""
+    before = _windows_safe_regular_stat(path)
+    if os.name != "nt":
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+        )
+    else:
+        import ctypes
+        from ctypes import wintypes
+        import msvcrt
+
+        file_read_attributes = 0x00000080
+        file_share_read = 0x00000001
+        file_share_write = 0x00000002
+        open_existing = 3
+        file_flag_open_reparse_point = 0x00200000
+        kernel32: Any = getattr(ctypes, "WinDLL")("kernel32", use_last_error=True)
+        close_handle = kernel32.CloseHandle
+        close_handle.argtypes = (wintypes.HANDLE,)
+        close_handle.restype = wintypes.BOOL
+        create_file = kernel32.CreateFileW
+        create_file.argtypes = (
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.HANDLE,
+        )
+        create_file.restype = wintypes.HANDLE
+        handle = create_file(
+            os.fspath(path),
+            file_read_attributes,
+            file_share_read | (file_share_write if allow_write_share else 0),
+            None,
+            open_existing,
+            file_flag_open_reparse_point,
+            None,
+        )
+        if handle == wintypes.HANDLE(-1).value:
+            error = int(getattr(ctypes, "get_last_error")())
+            raise OSError(error, "Windows market lake object guard failed", path)
+        try:
+            descriptor = cast(
+                int,
+                getattr(msvcrt, "open_osfhandle")(
+                    handle,
+                    os.O_RDONLY | getattr(os, "O_BINARY", 0),
+                ),
+            )
+        except BaseException:
+            close_handle(handle)
+            raise
+    try:
+        opened = os.fstat(descriptor)
+        after = _windows_safe_regular_stat(path)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
+            or _is_windows_reparse_point(opened)
+            or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)
+            or (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)
+        ):
+            raise ValueError("market lake object changed while being pinned")
+        yield opened
+    finally:
+        os.close(descriptor)
+
+
+def _windows_validate_marker(path: Path) -> os.stat_result:
+    try:
+        content, metadata = _windows_read_owned_file(path)
+    except FileNotFoundError as error:
+        raise ValueError("market lake ownership marker is missing") from error
+    if content != _OWNERSHIP_MARKER_CONTENT:
+        raise ValueError("market lake ownership marker content is invalid")
+    return metadata
+
+
+def _windows_write_marker_temp(path: Path) -> None:
+    descriptor = _windows_open_file(path, write=True, create_new=True)
+    try:
+        remaining = memoryview(_OWNERSHIP_MARKER_CONTENT)
+        while remaining:
+            written = os.write(descriptor, remaining)
+            if written <= 0:
+                raise OSError("failed to write market lake ownership marker")
+            remaining = remaining[written:]
+        os.fsync(descriptor)
+    except BaseException:
+        os.close(descriptor)
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+    os.close(descriptor)
+    expected = _windows_validate_marker(path)
+    with _windows_guard_regular(path) as pinned:
+        if (pinned.st_dev, pinned.st_ino) != (expected.st_dev, expected.st_ino):
+            raise ValueError(
+                "market lake ownership marker changed before ACL validation"
+            )
+        _windows_private_path(path, directory=False)
+        _windows_validate_marker(path)
+
+
+def _windows_move_no_replace(source: Path, destination: Path) -> None:
+    if os.name != "nt":
+        os.link(source, destination, follow_symlinks=False)
+        source.unlink()
+        return
+
+    import ctypes
+    from ctypes import wintypes
+
+    movefile_write_through = 0x00000008
+    kernel32: Any = getattr(ctypes, "WinDLL")("kernel32", use_last_error=True)
+    move_file = kernel32.MoveFileExW
+    move_file.argtypes = (wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD)
+    move_file.restype = wintypes.BOOL
+    if not move_file(
+        os.fspath(source),
+        os.fspath(destination),
+        movefile_write_through,
+    ):
+        error = int(getattr(ctypes, "get_last_error")())
+        if error in {80, 183}:
+            raise FileExistsError(
+                error, "market lake marker already exists", destination
+            )
+        raise OSError(error, "Windows market lake marker publication failed", source)
+
+
+@contextmanager
+def _windows_initialization_lock(root: Path) -> Iterator[None]:
+    identity = hashlib.sha256(os.fsencode(os.path.normcase(root))).hexdigest()
+    with _WINDOWS_INIT_LOCKS_GUARD:
+        local_lock = _WINDOWS_INIT_LOCKS.setdefault(identity, threading.Lock())
+    local_lock.acquire()
+    mutex: Any = None
+    kernel32: Any = None
+    try:
+        if os.name == "nt":
+            import ctypes
+            from ctypes import wintypes
+
+            kernel32 = getattr(ctypes, "WinDLL")("kernel32", use_last_error=True)
+            create_mutex = kernel32.CreateMutexW
+            create_mutex.argtypes = (wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR)
+            create_mutex.restype = wintypes.HANDLE
+            wait_for_single_object = kernel32.WaitForSingleObject
+            wait_for_single_object.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+            wait_for_single_object.restype = wintypes.DWORD
+            release_mutex = kernel32.ReleaseMutex
+            release_mutex.argtypes = (wintypes.HANDLE,)
+            release_mutex.restype = wintypes.BOOL
+            close_handle = kernel32.CloseHandle
+            close_handle.argtypes = (wintypes.HANDLE,)
+            close_handle.restype = wintypes.BOOL
+            mutex = create_mutex(None, False, f"Local\\StockDeskMarketLake-{identity}")
+            if not mutex:
+                error = int(getattr(ctypes, "get_last_error")())
+                raise OSError(error, "could not create market lake mutex")
+            wait_result = wait_for_single_object(mutex, 0xFFFFFFFF)
+            if wait_result not in {0, 0x80}:
+                raise OSError("could not acquire market lake initialization mutex")
+        yield
+    finally:
+        if mutex is not None and kernel32 is not None:
+            kernel32.ReleaseMutex(mutex)
+            kernel32.CloseHandle(mutex)
+        local_lock.release()
+
+
+def _initialize_windows_root(root: Path) -> tuple[tuple[int, int], tuple[int, int]]:
+    if not root.is_absolute():
+        raise ValueError("market lake root must be absolute")
+    requested = Path(os.path.abspath(os.fspath(root)))
+    if requested == Path(requested.anchor):
+        raise ValueError("market lake root must be a dedicated directory")
+    marker = requested / _OWNERSHIP_MARKER_NAME
+    with _windows_initialization_lock(requested):
+        with _windows_guard_root(requested, create=True) as (
+            root_metadata,
+            created,
+        ):
+            if _lexists(marker):
+                marker_metadata = _windows_validate_marker(marker)
+                _windows_private_path(requested, directory=True)
+                rebound_marker = _windows_validate_marker(marker)
+                if (rebound_marker.st_dev, rebound_marker.st_ino) != (
+                    marker_metadata.st_dev,
+                    marker_metadata.st_ino,
+                ):
+                    raise ValueError(
+                        "market lake ownership marker changed before ACL validation"
+                    )
+                with _windows_guard_regular(marker) as pinned_marker:
+                    if (pinned_marker.st_dev, pinned_marker.st_ino) != (
+                        rebound_marker.st_dev,
+                        rebound_marker.st_ino,
+                    ):
+                        raise ValueError(
+                            "market lake ownership marker changed before ACL update"
+                        )
+                    _windows_private_path(marker, directory=False)
+                    _windows_validate_marker(marker)
+                for temporary in tuple(
+                    entry for entry in requested.iterdir() if _is_ownership_temp(entry)
+                ):
+                    stale_metadata = _windows_validate_marker(temporary)
+                    with _windows_guard_regular(temporary) as pinned_stale:
+                        if (pinned_stale.st_dev, pinned_stale.st_ino) != (
+                            stale_metadata.st_dev,
+                            stale_metadata.st_ino,
+                        ):
+                            raise ValueError("market lake ownership temporary changed")
+                    temporary.unlink()
+                marker_metadata = _windows_validate_marker(marker)
+                identities = (
+                    (root_metadata.st_dev, root_metadata.st_ino),
+                    (marker_metadata.st_dev, marker_metadata.st_ino),
+                )
+                _validate_windows_root_binding(requested, *identities)
+                return identities
+
+            entries = tuple(requested.iterdir())
+            temporary_markers = tuple(
+                entry for entry in entries if _is_ownership_temp(entry)
+            )
+            if len(temporary_markers) != len(entries):
+                if created:
+                    raise ValueError(
+                        "new market lake root changed during initialization"
+                    )
+                raise ValueError(
+                    "existing nonempty market lake root has no ownership marker"
+                )
+            _windows_private_path(requested, directory=True)
+            temporary_identities: dict[Path, tuple[int, int]] = {}
+            for temporary in temporary_markers:
+                temporary_metadata = _windows_validate_marker(temporary)
+                temporary_identities[temporary] = (
+                    temporary_metadata.st_dev,
+                    temporary_metadata.st_ino,
+                )
+                with _windows_guard_regular(temporary) as pinned_temporary:
+                    if (
+                        pinned_temporary.st_dev,
+                        pinned_temporary.st_ino,
+                    ) != temporary_identities[temporary]:
+                        raise ValueError("market lake ownership temporary changed")
+                    _windows_private_path(temporary, directory=False)
+                    _windows_validate_marker(temporary)
+            if temporary_markers:
+                temporary = sorted(temporary_markers)[0]
+            else:
+                temporary = requested / (
+                    f"{_OWNERSHIP_TEMP_PREFIX}{uuid4().hex}{_OWNERSHIP_TEMP_SUFFIX}"
+                )
+                _windows_write_marker_temp(temporary)
+                temporary_metadata = _windows_validate_marker(temporary)
+                temporary_identities[temporary] = (
+                    temporary_metadata.st_dev,
+                    temporary_metadata.st_ino,
+                )
+            try:
+                _windows_move_no_replace(temporary, marker)
+            except FileExistsError:
+                _windows_validate_marker(marker)
+                try:
+                    temporary.unlink()
+                except FileNotFoundError:
+                    pass
+            for stale in temporary_markers:
+                if stale != temporary:
+                    stale.unlink()
+            with _windows_guard_regular(marker) as pinned_marker:
+                if (pinned_marker.st_dev, pinned_marker.st_ino) != (
+                    temporary_identities[temporary]
+                ):
+                    raise ValueError(
+                        "published market lake ownership marker identity changed"
+                    )
+                _windows_private_path(marker, directory=False)
+                _windows_validate_marker(marker)
+            marker_metadata = _windows_validate_marker(marker)
+            identities = (
+                (root_metadata.st_dev, root_metadata.st_ino),
+                (marker_metadata.st_dev, marker_metadata.st_ino),
+            )
+            _validate_windows_root_binding(requested, *identities)
+            return identities
+
+
+def _validate_windows_root_binding(
+    root: Path,
+    root_identity: tuple[int, int],
+    marker_identity: tuple[int, int],
+) -> None:
+    with _windows_guard_root(root, create=False) as (root_metadata, _created):
+        marker_metadata = _windows_validate_marker(root / _OWNERSHIP_MARKER_NAME)
+        if (root_metadata.st_dev, root_metadata.st_ino) != root_identity:
+            raise ValueError("market lake root identity changed")
+        if (marker_metadata.st_dev, marker_metadata.st_ino) != marker_identity:
+            raise ValueError("market lake ownership marker identity changed")
+
+
+@contextmanager
+def _windows_bound_operation(
+    root: Path,
+    root_identity: tuple[int, int],
+    marker_identity: tuple[int, int],
+) -> Iterator[None]:
+    """Keep the Windows ownership objects pinned through a catalog transaction."""
+    stack = ExitStack()
+    try:
+        root_metadata, _created = stack.enter_context(
+            _windows_guard_root(root, create=False)
+        )
+        marker_metadata = stack.enter_context(
+            _windows_guard_regular(
+                root / _OWNERSHIP_MARKER_NAME,
+                allow_write_share=False,
+            )
+        )
+        if (root_metadata.st_dev, root_metadata.st_ino) != root_identity:
+            raise ValueError("market lake root identity changed")
+        if (marker_metadata.st_dev, marker_metadata.st_ino) != marker_identity:
+            raise ValueError("market lake ownership marker identity changed")
+        _windows_validate_marker(root / _OWNERSHIP_MARKER_NAME)
+    except (OSError, ValueError) as error:
+        stack.close()
+        raise MarketLakeCorruptionError(
+            "market lake root failed transaction binding"
+        ) from error
+    try:
+        yield
+    finally:
+        stack.close()
 
 
 def _secure_regular_stat(path: Path) -> os.stat_result:
@@ -1467,6 +2078,11 @@ def _validate_parquet_descriptor(
 
 
 class MarketLake:
+    def __new__(cls, *, engine: Engine, root: Path) -> MarketLake:
+        if cls is MarketLake and _PLATFORM == "nt":
+            return object.__new__(SqliteMarketLake)
+        return object.__new__(cls)
+
     def __init__(self, *, engine: Engine, root: Path) -> None:
         if os.name != "posix":
             raise ValueError("market lake requires POSIX filesystem semantics")
@@ -1920,6 +2536,7 @@ class MarketLake:
                     )
                     stored_query = BarQuery(
                         symbol=symbol,
+                        instrument_kind=instrument_kind_for_symbol(symbol),
                         period=Period(cast(str, row["period"])),
                         adjustment=Adjustment(cast(str, row["adjustment"])),
                         start=_catalog_datetime(row["query_start"]),
@@ -2235,6 +2852,7 @@ class MarketLake:
             source = ProviderId(dataset["source"])
             query = BarQuery(
                 symbol=dataset["symbol"],
+                instrument_kind=instrument_kind_for_symbol(dataset["symbol"]),
                 period=Period(dataset["period"]),
                 adjustment=Adjustment(dataset["adjustment"]),
                 start=_catalog_datetime(dataset["query_start"]),
@@ -3201,6 +3819,10 @@ class SqliteMarketLake(MarketLake):
         if not resolved_root.is_absolute():
             raise ValueError("market lake root must be absolute")
         self._root = Path(os.path.abspath(os.fspath(resolved_root)))
+        if _PLATFORM == "nt":
+            self._root_identity, self._marker_identity = _initialize_windows_root(
+                self._root
+            )
         self._engine = engine
         try:
             with engine.connect() as connection:
@@ -3209,6 +3831,34 @@ class SqliteMarketLake(MarketLake):
             raise MarketLakeCorruptionError(
                 "market lake database identity could not be determined"
             ) from error
+
+    def _checked_connection(self) -> Connection:
+        if _PLATFORM == "nt":
+            try:
+                _validate_windows_root_binding(
+                    self._root,
+                    self._root_identity,
+                    self._marker_identity,
+                )
+            except (OSError, ValueError) as error:
+                raise MarketLakeCorruptionError(
+                    "market lake root failed identity validation"
+                ) from error
+        return super()._checked_connection()
+
+    @contextmanager
+    def _checked_begin(self) -> Iterator[Connection]:
+        if _PLATFORM == "nt":
+            with _windows_bound_operation(
+                self._root,
+                self._root_identity,
+                self._marker_identity,
+            ):
+                with super()._checked_begin() as connection:
+                    yield connection
+            return
+        with super()._checked_begin() as connection:
+            yield connection
 
     def _timestamp_catalog_rows(
         self,
@@ -3366,6 +4016,7 @@ class SqliteMarketLake(MarketLake):
             source = ProviderId(dataset["source"])
             query = BarQuery(
                 symbol=dataset["symbol"],
+                instrument_kind=instrument_kind_for_symbol(dataset["symbol"]),
                 period=Period(dataset["period"]),
                 adjustment=Adjustment(dataset["adjustment"]),
                 start=_catalog_datetime(dataset["query_start"]),

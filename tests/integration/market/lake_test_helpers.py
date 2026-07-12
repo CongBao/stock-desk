@@ -124,8 +124,17 @@ def routed_daily_bars(
 
 
 def expected_manifest_record_id(routed: RoutedBarSuccess) -> str:
+    payload = routed.manifest.model_dump(mode="json")
+    request = payload["request"]
+    assert isinstance(request, dict)
+    query = request["query"]
+    assert isinstance(query, dict)
+    if query.get("instrument_kind") == "stock":
+        # routing-manifest-v1 predates typed instruments, so the published
+        # identity omits only the default stock discriminator.
+        query.pop("instrument_kind")
     encoded = json.dumps(
-        routed.manifest.model_dump(mode="json"),
+        payload,
         ensure_ascii=True,
         separators=(",", ":"),
         sort_keys=True,

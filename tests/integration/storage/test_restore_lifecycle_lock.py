@@ -214,6 +214,49 @@ raise SystemExit(0)
     assert result.returncode == 23, result.stderr
 
 
+def test_peer_service_startup_waits_for_the_bounded_registration_gate(
+    tmp_path: Path,
+) -> None:
+    from stock_desk.storage.lifecycle import (
+        SERVICE_STARTUP_LOCK_TIMEOUT_SECONDS,
+        service_lifecycle,
+    )
+
+    data_dir = tmp_path / "data"
+    first_preflight_started = threading.Event()
+    release_first_preflight = threading.Event()
+
+    def hold_first_registration() -> None:
+        def preflight() -> None:
+            first_preflight_started.set()
+            assert release_first_preflight.wait(timeout=2)
+
+        with service_lifecycle(
+            data_dir,
+            role="api",
+            timeout_seconds=SERVICE_STARTUP_LOCK_TIMEOUT_SECONDS,
+            preflight=preflight,
+        ):
+            pass
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        first = executor.submit(hold_first_registration)
+        assert first_preflight_started.wait(timeout=2)
+        release = threading.Timer(0.05, release_first_preflight.set)
+        release.start()
+        try:
+            with service_lifecycle(
+                data_dir,
+                role="worker",
+                timeout_seconds=SERVICE_STARTUP_LOCK_TIMEOUT_SECONDS,
+            ):
+                pass
+            first.result(timeout=2)
+        finally:
+            release.cancel()
+            release_first_preflight.set()
+
+
 def test_live_api_lifespan_blocks_offline_restore(tmp_path: Path) -> None:
     archive = _archive(tmp_path)
     destination = tmp_path / "destination"

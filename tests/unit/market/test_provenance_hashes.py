@@ -6,6 +6,98 @@ from __future__ import annotations
 from tests.unit.market.provenance_test_helpers import *  # noqa: F403
 
 
+def _single_source_bar_manifest(query: BarQuery):
+    from stock_desk.market.provenance import BarRoutingRequest, make_routing_manifest
+
+    return make_routing_manifest(
+        category=MarketCapability.BARS,
+        request=BarRoutingRequest(query=query),
+        priority=(ProviderId.TUSHARE,),
+        attempts=(),
+        selected_source=ProviderId.TUSHARE,
+        upstream_dataset_version=DIGEST_A,
+        **upstream_fields(MarketCapability.BARS),
+    )
+
+
+def test_default_stock_query_retains_published_v1_manifest_identity() -> None:
+    from stock_desk.market.lake import manifest_record_id
+
+    manifest = _single_source_bar_manifest(QUERY)
+
+    assert (
+        manifest.model_dump(mode="json")["request"]["query"]["instrument_kind"]
+        == "stock"
+    )
+    assert (
+        manifest.route_version
+        == "sha256:a2391b572c60a8ff4b47c457298abe97799c8407965de77da3ed2f9f2518ddc8"
+    )
+    assert (
+        manifest_record_id(manifest)
+        == "sha256:fd50c060baeef0cafd14927c67011247bb43470eaf5fe07674670db8f7066890"
+    )
+
+
+def test_explicit_non_stock_query_kind_remains_identity_bound() -> None:
+    from stock_desk.market.lake import manifest_record_id
+
+    common = {
+        "symbol": "510300.SH",
+        "period": Period.DAY,
+        "adjustment": Adjustment.NONE,
+        "start": QUERY.start,
+        "end": QUERY.end,
+    }
+    stock = _single_source_bar_manifest(BarQuery(**common))
+    etf = _single_source_bar_manifest(
+        BarQuery(**common, instrument_kind=InstrumentKind.ETF)
+    )
+    index = _single_source_bar_manifest(
+        BarQuery(
+            **{**common, "symbol": "000001.SS"},
+            instrument_kind=InstrumentKind.INDEX,
+        )
+    )
+
+    assert (
+        stock.model_dump(mode="json")["request"]["query"]["instrument_kind"] == "stock"
+    )
+    assert etf.model_dump(mode="json")["request"]["query"]["instrument_kind"] == "etf"
+    assert (
+        index.model_dump(mode="json")["request"]["query"]["instrument_kind"] == "index"
+    )
+    assert stock.route_version != etf.route_version
+    assert manifest_record_id(stock) != manifest_record_id(etf)
+
+
+def test_default_stock_provider_dataset_identity_remains_published() -> None:
+    from stock_desk.market.providers.normalization import dataset_version
+
+    stock = dataset_version(
+        source=ProviderId.TUSHARE,
+        operation="bars",
+        request={"query": QUERY},
+        data_cutoff=DATA_CUTOFF,
+        items=(),
+    )
+    etf = dataset_version(
+        source=ProviderId.TUSHARE,
+        operation="bars",
+        request={
+            "query": QUERY.model_copy(update={"instrument_kind": InstrumentKind.ETF})
+        },
+        data_cutoff=DATA_CUTOFF,
+        items=(),
+    )
+
+    assert (
+        stock
+        == "sha256:36a68655d1676bdd736365ce9a883a5830cdd771b951c6d6556f8049e19d6e52"
+    )
+    assert etf != stock
+
+
 def test_route_version_changes_when_transition_semantics_change() -> None:
     from stock_desk.market.provenance import (
         BarRoutingRequest,

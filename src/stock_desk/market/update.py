@@ -30,10 +30,12 @@ from stock_desk.market.types import (
     CanonicalSymbol,
     Exchange,
     FailureReason,
+    InstrumentKind,
     MAX_MARKET_UPDATE_PERIOD_BUCKETS,
     Period,
     UtcDatetime,
     estimated_period_buckets,
+    instrument_kind_for_symbol,
 )
 from stock_desk.storage.models import MarketUpdateItem, TaskRun
 from stock_desk.tasks.models import TaskSnapshot
@@ -145,6 +147,7 @@ class MarketUpdateRequest(BaseModel):
         for symbol in self.symbols:
             BarQuery(
                 symbol=symbol,
+                instrument_kind=instrument_kind_for_symbol(symbol),
                 period=self.period,
                 adjustment=self.adjustment,
                 start=self.start,
@@ -448,12 +451,16 @@ class UpdateService:
 
             query = BarQuery(
                 symbol=symbol,
+                instrument_kind=instrument_kind_for_symbol(symbol),
                 period=request.period,
                 adjustment=request.adjustment,
                 start=request.start,
                 end=request.end,
             )
-            if self._execution_status_lake is not None:
+            if (
+                self._execution_status_lake is not None
+                and query.instrument_kind is InstrumentKind.STOCK
+            ):
                 local_start, local_end = execution_status_date_range(
                     request.start, request.end
                 )

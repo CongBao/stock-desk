@@ -22,6 +22,7 @@ from stock_desk.market.types import (
     FailureDetail,
     FailureReason,
     Instrument,
+    InstrumentKind,
     MarketCapability,
     ProviderId,
     TradingDay,
@@ -440,7 +441,7 @@ def _route_payload(
     return {
         "schema_version": ROUTING_MANIFEST_SCHEMA,
         "category": category.value,
-        "request": request.model_dump(mode="json"),
+        "request": routing_request_identity_payload(request),
         "priority": [source.value for source in priority],
         "attempts": [attempt.model_dump(mode="json") for attempt in attempts],
         "selected_source": selected_source.value
@@ -459,6 +460,31 @@ def _route_payload(
             transition.model_dump(mode="json") if transition is not None else None
         ),
     }
+
+
+def routing_request_identity_payload(request: RoutingRequest) -> dict[str, Any]:
+    """Serialize a request for the published routing-manifest-v1 identity."""
+    payload = request.model_dump(mode="json")
+    if isinstance(request, BarRoutingRequest):
+        payload["query"] = bar_query_identity_payload(request.query)
+    return payload
+
+
+def bar_query_identity_payload(query: BarQuery) -> dict[str, Any]:
+    """Serialize a bar query without changing the published v1 stock identity."""
+    payload = query.model_dump(mode="json")
+    if query.instrument_kind is InstrumentKind.STOCK:
+        # Stock was the only bar kind when v1 identities were published. Keep
+        # its canonical identity stable while binding every non-stock kind.
+        payload.pop("instrument_kind", None)
+    return payload
+
+
+def routing_manifest_identity_payload(manifest: RoutingManifest) -> dict[str, Any]:
+    """Serialize a manifest for its stable record identity, not its public API."""
+    payload = manifest.model_dump(mode="json")
+    payload["request"] = routing_request_identity_payload(manifest.request)
+    return payload
 
 
 def make_routing_manifest(

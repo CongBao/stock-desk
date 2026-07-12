@@ -219,6 +219,8 @@ def _path_domain(path: str) -> str | None:
         return "tauri"
     if path.startswith("web/"):
         return "web"
+    if path == "src/stock_desk/market/lake.py":
+        return "windows-storage"
     if path.startswith(("src/", "migrations/")):
         return "backend"
     if path.startswith("tests/"):
@@ -236,6 +238,11 @@ def _path_domain(path: str) -> str | None:
             return "delivery"
         if path.startswith(("tests/e2e/", "tests/web/")):
             return "web"
+        if path in {
+            "tests/integration/market/test_sqlite_market_lake.py",
+            "tests/integration/test_windows_runtime_acl.py",
+        }:
+            return "windows-storage"
         if name in _INSTALLER_TEST_NAMES or any(
             token in path for token in ("installer", "installed_distribution")
         ):

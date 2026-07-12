@@ -1,0 +1,28 @@
+{
+  "schema_version": "stock-desk-bundled-demo-v1",
+  "fixture_id": "stock-desk-synthetic-market-2026-07-12",
+  "label": "公开合成演示数据 · 非真实行情",
+  "english_label": "PUBLIC SYNTHETIC DEMO DATA - NOT REAL MARKET DATA",
+  "license": "CC0-1.0",
+  "source": "stock_desk_demo",
+  "synthetic": true,
+  "real_market_data": false,
+  "investment_recommendation": false,
+  "network_policy": "forbidden",
+  "generated_at": "2026-07-12T00:00:00Z",
+  "instrument": {
+    "symbol": "600000.SH",
+    "name": "Stock Desk 合成演示标的（非真实行情）",
+    "exchange": "SH",
+    "instrument_kind": "stock"
+  },
+  "series": {
+    "start": "2025-01-02",
+    "daily_rows": 180,
+    "weekly_rows": 60,
+    "minute_60_days": 90,
+    "base_price": "9.50",
+    "wave_step": "0.10",
+    "wave_length": 20
+  }
+}

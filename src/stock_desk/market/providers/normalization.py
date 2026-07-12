@@ -33,6 +33,7 @@ from stock_desk.market.types import (
     BarResult,
     Exchange,
     FailureReason,
+    InstrumentKind,
     Period,
     Provenance,
     ProviderId,
@@ -336,6 +337,13 @@ def period_bounds(
 
 
 def _jsonable(value: object) -> object:
+    if isinstance(value, BarQuery):
+        payload = value.model_dump(mode="json")
+        if value.instrument_kind is InstrumentKind.STOCK:
+            # Provider dataset v1 predates typed instruments. Preserve the
+            # published stock identity while binding every non-stock kind.
+            payload.pop("instrument_kind", None)
+        return payload
     if isinstance(value, BaseModel):
         return value.model_dump(mode="json")
     if isinstance(value, datetime):

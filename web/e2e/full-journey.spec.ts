@@ -1,4 +1,6 @@
-import { expect, test, type Page } from '@playwright/test';
+import type { Page } from '@playwright/test';
+
+import { expect, test } from './fixtures';
 
 const START = '2024-02-10';
 const END = '2024-06-28';
@@ -105,7 +107,7 @@ test('complete public demo journey uses real API worker and frozen provenance', 
       .find((signal) => signal.name === 'BUY')
       ?.values.some(Boolean),
   ).toBe(true);
-  const previewBody = await previewSavedFormula(page, CUSTOM_NAME);
+  await previewSavedFormula(page, CUSTOM_NAME);
   await expect(page.getByText(/[1-9]\d* 个买点/u)).toBeVisible();
   await expect(
     page.getByRole('img', { name: /K 线主图.*公式输出.*买卖信号/u }),
@@ -122,7 +124,7 @@ test('complete public demo journey uses real API worker and frozen provenance', 
   await page.goto(
     `/backtests?symbol=600000.SH&period=1d&adjustment=qfq&start=${START}&end=${END}`,
   );
-  await page.getByLabel('保存的交易公式').selectOption({ label: CUSTOM_NAME });
+  await page.getByLabel('保存的交易公式').selectOption({ label: MACD_NAME });
   await page.getByRole('button', { name: '下一步' }).click();
   await finishCommonBacktestSteps(page);
   await expect(page.getByLabel('服务端预检结果')).toContainText('可运行 1 / 1');
@@ -130,11 +132,41 @@ test('complete public demo journey uses real API worker and frozen provenance', 
   await expect(page).toHaveURL(/\/backtests\/[0-9a-f-]{36}$/u);
   const singleRunId = page.url().split('/').at(-1) ?? '';
   await waitForBacktestReport(page);
+  const tradesResponse = page.waitForResponse((candidate) => {
+    const url = new URL(candidate.url());
+    return (
+      url.pathname === `/api/backtests/${singleRunId}/trades` &&
+      url.searchParams.get('limit') === '100' &&
+      candidate.status() === 200
+    );
+  });
   await page.getByRole('tab', { name: '交易明细' }).click();
+  const realizedTrades = (await (await tradesResponse).json()) as {
+    readonly items: readonly unknown[];
+  };
+  if (realizedTrades.items.length === 0) {
+    const openResponse = page.waitForResponse((candidate) => {
+      const url = new URL(candidate.url());
+      return (
+        url.pathname === `/api/backtests/${singleRunId}/open` &&
+        url.searchParams.get('limit') === '100' &&
+        candidate.status() === 200
+      );
+    });
+    await page.getByRole('tab', { name: '开放仓位' }).click();
+    const openTrades = (await (await openResponse).json()) as {
+      readonly items: readonly unknown[];
+    };
+    expect(openTrades.items.length).toBeGreaterThan(0);
+  }
+  const tradeTable = page.getByRole('region', {
+    name: '可横向滚动的交易表',
+  });
+  await expect(tradeTable.locator('tbody tr')).not.toHaveCount(0);
   await expect(
-    page.getByRole('button', { name: '固定回放' }).first(),
+    tradeTable.getByRole('button', { name: '固定回放' }).first(),
   ).toBeVisible();
-  await page.getByRole('button', { name: '固定回放' }).first().click();
+  await tradeTable.getByRole('button', { name: '固定回放' }).first().click();
   await expect(page.getByRole('heading', { name: /固定回放/u })).toBeVisible();
 
   const report = (await (
@@ -157,6 +189,7 @@ test('complete public demo journey uses real API worker and frozen provenance', 
         readonly signal_route_version: string;
         readonly signal_query: {
           readonly symbol: string;
+          readonly instrument_kind: string;
           readonly period: string;
           readonly adjustment: string;
           readonly start: string;
@@ -184,44 +217,45 @@ test('complete public demo journey uses real API worker and frozen provenance', 
     readonly fill_markers: readonly { readonly signal_at: string }[];
   };
   expect(report.formula_version_id).toBe(
-    previewBody.formula.formula_version_id,
+    macdPreview.formula.formula_version_id,
   );
-  expect(report.formula_checksum).toBe(previewBody.formula.formula_checksum);
+  expect(report.formula_checksum).toBe(macdPreview.formula.formula_checksum);
   expect(replay.formula.formula_checksum).toBe(
-    previewBody.formula.formula_checksum,
+    macdPreview.formula.formula_checksum,
   );
   const symbolResult = symbols.items[0];
   expect(symbolResult?.signal_series_id).toBe(
-    previewBody.formula.signal_series_id,
+    macdPreview.formula.signal_series_id,
   );
   expect(replay.formula.signal_series_id).toBe(
-    previewBody.formula.signal_series_id,
+    macdPreview.formula.signal_series_id,
   );
   expect(symbolResult?.provenance.signal_query).toEqual({
-    symbol: previewBody.formula.symbol,
-    period: previewBody.formula.period,
-    adjustment: previewBody.formula.adjustment,
-    start: previewBody.formula.query_start,
-    end: previewBody.formula.query_end,
+    symbol: macdPreview.formula.symbol,
+    instrument_kind: 'stock',
+    period: macdPreview.formula.period,
+    adjustment: macdPreview.formula.adjustment,
+    start: macdPreview.formula.query_start,
+    end: macdPreview.formula.query_end,
   });
   expect(symbolResult?.provenance.signal_manifest_record_id).toBe(
-    previewBody.formula.manifest_record_id,
+    macdPreview.formula.manifest_record_id,
   );
   expect(symbolResult?.provenance.signal_dataset_version).toBe(
-    previewBody.formula.dataset_version,
+    macdPreview.formula.dataset_version,
   );
   expect(symbolResult?.provenance.signal_route_version).toBe(
-    previewBody.formula.route_version,
+    macdPreview.formula.route_version,
   );
-  expect(report.formula_parameters).toEqual(previewBody.formula.parameters);
+  expect(report.formula_parameters).toEqual(macdPreview.formula.parameters);
   const previewOrdinals = new Map(
-    previewBody.formula.timestamps.map((timestamp, index) => [
+    macdPreview.formula.timestamps.map((timestamp, index) => [
       timestamp,
       index,
     ]),
   );
   for (const replaySignal of replay.formula.signals) {
-    const previewSignal = previewBody.formula.signals.find(
+    const previewSignal = macdPreview.formula.signals.find(
       (item) => item.name === replaySignal.name,
     );
     expect(previewSignal).toBeDefined();
@@ -234,8 +268,8 @@ test('complete public demo journey uses real API worker and frozen provenance', 
     );
   }
   expect(replay.snapshot_id).toBe(report.overview.snapshot_id);
-  const buy = previewBody.formula.signals.find((item) => item.name === 'BUY');
-  const firstEligibleBuy = previewBody.formula.timestamps.find(
+  const buy = macdPreview.formula.signals.find((item) => item.name === 'BUY');
+  const firstEligibleBuy = macdPreview.formula.timestamps.find(
     (timestamp, index) =>
       buy?.values[index] === true &&
       Date.parse(timestamp) >= Date.parse(`${START}T00:00:00+08:00`),

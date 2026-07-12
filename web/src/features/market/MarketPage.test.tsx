@@ -4,12 +4,17 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 
 import { ApiError } from '../../shared/api/client';
+import { OnboardingDemoContext } from '../onboarding/demoMode';
 import type {
   MarketApi,
   MarketBarsResponse,
   MarketInstrument,
 } from './marketApi';
 import { MarketPage } from './MarketPage';
+import type {
+  MarketNavigationApi,
+  MarketNavigationState,
+} from './marketNavigationApi';
 import {
   resetMarketStore,
   type MarketAdjustment,
@@ -155,20 +160,147 @@ function barsResponse(
   };
 }
 
-function renderPage(api: MarketApi) {
+const emptyNavigation = {
+  schemaVersion: 1,
+  revision: 0,
+  watchlist: [],
+  recent: [],
+  notice: null,
+} as const satisfies MarketNavigationState;
+
+function renderPage(
+  api: MarketApi,
+  navigationApi: MarketNavigationApi = {
+    get: vi.fn(() => Promise.resolve(emptyNavigation)),
+    put: vi.fn(() => Promise.resolve(emptyNavigation)),
+  },
+  readonlyDemo = false,
+) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0 } },
   });
   return render(
     <QueryClientProvider client={client}>
       <MemoryRouter>
-        <MarketPage api={api} searchDebounceMs={10} />
+        <OnboardingDemoContext.Provider value={readonlyDemo}>
+          <MarketPage
+            api={api}
+            navigationApi={navigationApi}
+            searchDebounceMs={10}
+          />
+        </OnboardingDemoContext.Provider>
       </MemoryRouter>
     </QueryClientProvider>,
   );
 }
 
 beforeEach(() => resetMarketStore());
+
+it('keeps bundled demo navigation visibly synthetic and free of writes', async () => {
+  const api = {
+    searchInstruments: vi.fn(() => Promise.resolve([])),
+    getPools: vi.fn(() => Promise.resolve({ items: [], nextCursor: null })),
+    getPool: vi.fn(),
+    getBars: vi.fn(),
+  } as unknown as MarketApi;
+  const navigationApi = {
+    get: vi.fn(() => Promise.resolve(emptyNavigation)),
+    put: vi.fn(() => Promise.resolve(emptyNavigation)),
+  } satisfies MarketNavigationApi;
+
+  renderPage(api, navigationApi, true);
+
+  expect(await screen.findByText('只读合成演示行情')).toBeVisible();
+  expect(screen.getByText(/不是交易所真实行情/u)).toBeVisible();
+  expect(screen.getByRole('button', { name: '打开股票池' })).toBeDisabled();
+  expect(screen.queryByRole('button', { name: '添加第一只自选' })).toBeNull();
+  expect(navigationApi.get).not.toHaveBeenCalled();
+  expect(navigationApi.put).not.toHaveBeenCalled();
+});
+
+it('focuses prominent Market search and persists recent/watchlist operations', async () => {
+  const user = userEvent.setup();
+  const api = {
+    searchInstruments: vi.fn(() => Promise.resolve([instrument])),
+    getPools: vi.fn(() => Promise.resolve({ items: [], nextCursor: null })),
+    getPool: vi.fn(),
+    getBars: vi.fn(() => Promise.resolve(barsResponse('1d', 'qfq'))),
+  } as unknown as MarketApi;
+  const put = vi.fn<MarketNavigationApi['put']>().mockImplementation((value) =>
+    Promise.resolve({
+      schemaVersion: 1,
+      revision: value.expectedRevision + 1,
+      watchlist: value.watchlist,
+      recent: value.recent,
+      notice: null,
+    }),
+  );
+  const navigationApi = {
+    get: vi.fn(() => Promise.resolve(emptyNavigation)),
+    put,
+  } satisfies MarketNavigationApi;
+  renderPage(api, navigationApi);
+
+  const search = screen.getByRole('combobox', { name: '搜索证券' });
+  expect(search).toHaveFocus();
+  await user.type(search, '浦发');
+  await user.click(
+    await screen.findByRole('option', { name: /浦发银行.*600000\.SH/u }),
+  );
+  await waitFor(() =>
+    expect(put).toHaveBeenCalledWith(
+      {
+        expectedRevision: 0,
+        watchlist: [],
+        recent: [
+          {
+            symbol: '600000.SH',
+            name: '浦发银行',
+            instrumentKind: 'stock',
+          },
+        ],
+      },
+      {},
+    ),
+  );
+
+  await user.click(screen.getByRole('button', { name: '加入自选' }));
+  await waitFor(() =>
+    expect(put).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        expectedRevision: 1,
+        watchlist: [
+          {
+            symbol: '600000.SH',
+            name: '浦发银行',
+            instrumentKind: 'stock',
+          },
+        ],
+      }),
+      {},
+    ),
+  );
+});
+
+it('opens stock pools as a separate keyboard-dismissible workflow', async () => {
+  const user = userEvent.setup();
+  const api = {
+    searchInstruments: vi.fn(() => Promise.resolve([])),
+    getPools: vi.fn(() => Promise.resolve({ items: [], nextCursor: null })),
+    getPool: vi.fn(),
+    getBars: vi.fn(),
+  } as unknown as MarketApi;
+  renderPage(api);
+
+  const open = screen.getByRole('button', { name: '打开股票池' });
+  await user.click(open);
+  expect(
+    screen.getByRole('dialog', { name: '股票池独立流程' }),
+  ).toBeInTheDocument();
+  await user.keyboard('{Escape}');
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  expect(open).toHaveFocus();
+});
 
 it('does not request bars before selection and refetches by period and adjustment', async () => {
   const user = userEvent.setup();

@@ -745,7 +745,7 @@ def test_release_acceptance_and_final_audit_manual_reviews_are_complete(
     )
 
 
-def test_release_mode_accepts_completed_post_release_evidence() -> None:
+def test_release_mode_accepts_the_delivered_v11_increment() -> None:
     result = subprocess.run(
         [sys.executable, str(SCRIPT), "--mode", "release"],
         cwd=ROOT,
@@ -755,8 +755,8 @@ def test_release_mode_accepts_completed_post_release_evidence() -> None:
     )
 
     assert result.returncode == 0, result.stderr
-    assert "82/82 requirements mapped" in result.stdout
     assert "0 planned" in result.stdout
+    assert "V11-R-001" not in result.stderr
 
 
 def test_duplicate_yaml_keys_are_rejected(checker: ModuleType, tmp_path: Path) -> None:
@@ -1237,7 +1237,7 @@ def test_selector_collection_timeout_is_bounded_and_deterministic(
     selector = {
         "pytest": f"{path}::test_frontend_listings_require_an_exact_test_title",
         "vitest": "shows the product identity and all primary navigation items",
-        "playwright": "fresh user sees the live foundation shell and completed demo task",
+        "playwright": "returning user sees the live foundation shell and completed demo task",
     }[runner]
     item = {
         "evidence": [

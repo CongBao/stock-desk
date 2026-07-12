@@ -256,6 +256,24 @@ class FakeAkShareClient(FixtureClient):
             raise self.instrument_exception
         return self._table(list(self.fixture["instruments"]))
 
+    def stock_zh_index_spot_sina(self) -> object:
+        self.calls.append(("stock_zh_index_spot_sina", {}))
+        if self.instrument_exception is not None:
+            raise self.instrument_exception
+        return self._table(list(self.fixture["indices"]))
+
+    def stock_zh_index_daily(self, **kwargs: object) -> object:
+        coverage_start = kwargs.pop("_coverage_start")
+        coverage_end = kwargs.pop("_coverage_end")
+        assert isinstance(coverage_start, datetime)
+        assert isinstance(coverage_end, datetime)
+        self.calls.append(("stock_zh_index_daily", kwargs))
+        return self._bar_response(
+            self._table(list(self.fixture["index_bars"])),
+            coverage_start=coverage_start,
+            coverage_end=coverage_end,
+        )
+
     def tool_trade_date_hist_sina(self, **kwargs: object) -> object:
         self.calls.append(("tool_trade_date_hist_sina", kwargs))
         if self.calendar_exception is not None:

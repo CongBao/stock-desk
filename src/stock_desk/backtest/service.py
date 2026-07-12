@@ -42,7 +42,13 @@ from stock_desk.market.execution_status_lake import ExecutionStatusLake
 from stock_desk.market.instruments import InstrumentRepository
 from stock_desk.market.lake import CatalogBarPin, MarketLake
 from stock_desk.market.pools import PoolRepository
-from stock_desk.market.types import Adjustment, BarQuery, Exchange, Period
+from stock_desk.market.types import (
+    Adjustment,
+    BarQuery,
+    Exchange,
+    Period,
+    instrument_kind_for_symbol,
+)
 from stock_desk.storage.database import DatabaseIdentity, connection_database_identity
 from stock_desk.storage.models import (
     ExecutionStatusRoutingManifest,
@@ -675,6 +681,7 @@ class BacktestService:
             desired_signal = tuple(
                 BarQuery(
                     symbol=symbol,
+                    instrument_kind=instrument_kind_for_symbol(symbol),
                     period=intent.period,
                     adjustment=intent.adjustment,
                     start=intent.scoring_start,
@@ -688,6 +695,7 @@ class BacktestService:
             desired_execution = tuple(
                 BarQuery(
                     symbol=symbol,
+                    instrument_kind=instrument_kind_for_symbol(symbol),
                     period=execution_period,
                     adjustment=intent.adjustment,
                     start=intent.scoring_start,

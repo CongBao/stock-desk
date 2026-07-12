@@ -5,12 +5,14 @@ import { marketApi, type MarketApi, type MarketInstrument } from './marketApi';
 
 type StockSearchProps = {
   readonly api?: MarketApi;
+  readonly focusOnMount?: boolean;
   readonly debounceMs?: number;
   readonly onSelect: (instrument: MarketInstrument) => void;
 };
 
 export function StockSearch({
   api = marketApi,
+  focusOnMount = false,
   debounceMs = 250,
   onSelect,
 }: StockSearchProps) {
@@ -20,6 +22,7 @@ export function StockSearch({
   const [activeIndex, setActiveIndex] = useState(-1);
   const [isOpen, setIsOpen] = useState(false);
   const blurTimerRef = useRef<number | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
   const normalizedInput = inputValue.trim();
 
   useEffect(() => {
@@ -37,6 +40,10 @@ export function StockSearch({
     },
     [],
   );
+
+  useEffect(() => {
+    if (focusOnMount) inputRef.current?.focus();
+  }, [focusOnMount]);
 
   const result = useQuery({
     queryKey: ['market', 'instrument-search', debouncedQuery],
@@ -93,6 +100,7 @@ export function StockSearch({
       <div className="stock-search-field">
         <span aria-hidden="true">⌕</span>
         <input
+          ref={inputRef}
           id={`${listboxId}-input`}
           role="combobox"
           aria-autocomplete="list"
@@ -103,8 +111,9 @@ export function StockSearch({
               ? `${listboxId}-option-${String(activeIndex)}`
               : undefined
           }
+          data-route-primary-focus
           autoComplete="off"
-          placeholder="代码 / 名称"
+          placeholder="代码 / 中文名 / 拼音"
           value={inputValue}
           onBlur={() => {
             blurTimerRef.current = window.setTimeout(() => {
@@ -137,6 +146,8 @@ export function StockSearch({
                   key={instrument.symbol}
                   role="option"
                   tabIndex={-1}
+                  aria-label={`${instrument.name} ${instrument.symbol}`}
+                  aria-describedby={`${listboxId}-option-${String(index)}-meta`}
                   aria-selected={activeIndex === index}
                   onMouseDown={(event) => {
                     event.preventDefault();
@@ -146,8 +157,14 @@ export function StockSearch({
                     if (event.key === 'Enter') choose(instrument);
                   }}
                 >
-                  <strong>{instrument.name}</strong>
-                  <span>{instrument.symbol}</span>
+                  <span className="stock-search-identity">
+                    <strong>{instrument.name}</strong>
+                    <span>{instrument.symbol}</span>
+                  </span>
+                  <small id={`${listboxId}-option-${String(index)}-meta`}>
+                    来源 {instrument.provenance.source} · 截至{' '}
+                    {instrument.provenance.dataCutoff.slice(0, 10)}
+                  </small>
                 </li>
               ))}
             </ul>

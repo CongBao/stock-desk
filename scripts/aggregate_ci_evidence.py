@@ -31,7 +31,7 @@ from scripts.ci_test_inventory import (
 SHARD_SCHEMA: Final = "stock-desk-python-shard-evidence-v1"
 AGGREGATE_SCHEMA: Final = "stock-desk-python-evidence-aggregate-v1"
 TEST_REPORT_SCHEMA: Final = "stock-desk-test-report-v1"
-REQUIREMENT_SCHEMA: Final = "stock-desk-requirement-evidence-v1"
+REQUIREMENT_SCHEMA: Final = "stock-desk-requirement-evidence-v2"
 MAX_REPORT_BYTES: Final = 64_000_000
 MINIMUM_COVERAGE: Final = 85.0
 MINIMUM_PRECISION: Final = 2
@@ -645,16 +645,61 @@ def validate_test_report(
 
 def build_requirement_evidence(
     *,
-    manifest: Mapping[str, Any],
+    manifest: Mapping[str, Any] | None = None,
+    manifests: Sequence[Mapping[str, Any]] | None = None,
     reports: Iterable[object],
     source_sha: str,
     source_tree: str,
-    manifest_sha256: str,
+    manifest_sha256: str | None = None,
+    manifest_sha256s: Mapping[str, str] | None = None,
     inventory: Mapping[str, Any] | None = None,
     required_runners: Iterable[str] | None = None,
 ) -> dict[str, Any]:
     sha = _expect_git_oid(source_sha, "source_sha")
     tree = _expect_git_oid(source_tree, "source_tree")
+    if (manifest is None) == (manifests is None):
+        raise EvidenceError("exactly one manifest or manifests collection is required")
+    authorities = [manifest] if manifest is not None else list(manifests or ())
+    if not authorities:
+        raise EvidenceError("requirement authority collection cannot be empty")
+    if manifest_sha256s is None:
+        if manifest_sha256 is None:
+            raise EvidenceError("requirement manifest digest is required")
+        manifest_digests = {"requirements.yml": manifest_sha256}
+    else:
+        if manifest_sha256 is not None:
+            raise EvidenceError("single and multi-manifest digests cannot be combined")
+        manifest_digests = dict(manifest_sha256s)
+    if (
+        len(manifest_digests) != len(authorities)
+        or any(Path(path).name != path for path in manifest_digests)
+        or any(
+            not isinstance(digest, str)
+            or len(digest) != 64
+            or any(character not in "0123456789abcdef" for character in digest)
+            for digest in manifest_digests.values()
+        )
+    ):
+        raise EvidenceError("requirement manifest digests are incomplete or invalid")
+    items: list[Mapping[str, Any]] = []
+    ids: set[str] = set()
+    behaviors: set[str] = set()
+    for authority in authorities:
+        for item in [*authority["requirements"], *authority["non_goals"]]:
+            item_id = item["id"]
+            behavior = item.get("behavior_key")
+            if item_id in ids:
+                raise EvidenceError(
+                    f"duplicate requirement id across authorities: {item_id}"
+                )
+            if isinstance(behavior, str) and behavior in behaviors:
+                raise EvidenceError(
+                    f"duplicate behavior_key across authorities: {behavior}"
+                )
+            ids.add(item_id)
+            if isinstance(behavior, str):
+                behaviors.add(behavior)
+            items.append(item)
     requested = list(
         REQUIREMENT_RUNNERS if required_runners is None else required_runners
     )
@@ -731,7 +776,6 @@ def build_requirement_evidence(
             f"required runner reports are missing: {', '.join(missing_runners)}"
         )
     bindings: list[dict[str, str]] = []
-    items = [*manifest["requirements"], *manifest["non_goals"]]
     for item in items:
         for evidence in item["evidence"]:
             if evidence.get("state") != "existing":
@@ -792,7 +836,10 @@ def build_requirement_evidence(
         "schema": REQUIREMENT_SCHEMA,
         "source_sha": sha,
         "source_tree": tree,
-        "requirements_manifest_sha256": manifest_sha256,
+        "requirements_manifests": [
+            {"path": path, "sha256": digest}
+            for path, digest in sorted(manifest_digests.items())
+        ],
         "required_runners": list(scope),
         "report_sha256": sorted(report_digests),
         "binding_count": len(bindings),
@@ -899,7 +946,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     normalize.add_argument("--output", type=Path, required=True)
 
     requirements = subparsers.add_parser("requirements")
-    requirements.add_argument("--manifest", type=Path, required=True)
+    requirements.add_argument("--manifest", type=Path, action="append", required=True)
     requirements.add_argument("--inventory", type=Path)
     requirements.add_argument("--repo-root", type=Path, default=Path.cwd())
     requirements.add_argument("--report", type=Path, action="append", required=True)
@@ -973,20 +1020,39 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         else:
             repo_root = args.repo_root.resolve()
-            manifest = check_requirement_coverage.load_manifest(args.manifest)
+            manifest_paths = list(args.manifest)
+            if len({path.name for path in manifest_paths}) != len(manifest_paths):
+                raise EvidenceError("requirement manifest paths must be unique")
+            requirement_manifests = [
+                check_requirement_coverage.load_manifest(path)
+                for path in manifest_paths
+            ]
             # This performs schema, frozen authority, public-boundary and collect
-            # validation.  It never executes the selected tests.
-            check_requirement_coverage.validate_manifest(
-                manifest,
-                repo_root=repo_root,
-                mode="pre-publish",
-                verify_selectors=True,
-                selector_runners=(
-                    frozenset(args.required_runners)
-                    if args.required_runners is not None
-                    else None
-                ),
-            )
+            # validation. It never executes the selected tests.
+            for manifest_path, manifest in zip(
+                manifest_paths, requirement_manifests, strict=True
+            ):
+                check_requirement_coverage.validate_authority_manifest(
+                    manifest,
+                    manifest_path=manifest_path,
+                    repo_root=repo_root,
+                    mode="pre-publish",
+                    verify_selectors=True,
+                    selector_runners=(
+                        frozenset(args.required_runners)
+                        if args.required_runners is not None
+                        else None
+                    ),
+                )
+            if len(requirement_manifests) > 1:
+                check_requirement_coverage._validate_cross_authority_uniqueness(
+                    {
+                        manifest_path.name: manifest
+                        for manifest_path, manifest in zip(
+                            manifest_paths, requirement_manifests, strict=True
+                        )
+                    }
+                )
             reports = [_load_json(path) for path in args.report]
             inventory = (
                 _load_json(args.inventory) if args.inventory is not None else None
@@ -994,11 +1060,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             if inventory is not None and not isinstance(inventory, dict):
                 raise EvidenceError("inventory must be a JSON object")
             payload = build_requirement_evidence(
-                manifest=manifest,
+                manifests=requirement_manifests,
                 reports=reports,
                 source_sha=args.source_sha,
                 source_tree=args.source_tree,
-                manifest_sha256=_sha256_file(args.manifest),
+                manifest_sha256s={
+                    path.name: _sha256_file(path) for path in manifest_paths
+                },
                 inventory=inventory,
                 required_runners=args.required_runners,
             )

@@ -208,3 +208,12 @@ def test_artifact_inventory_allows_locked_provider_runtime_python_data(
         )
         == expected
     )
+
+
+def test_sidecar_spec_bundles_the_public_synthetic_demo_snapshot() -> None:
+    spec = (
+        Path(__file__).resolve().parents[2] / "packaging" / "stock-desk-sidecar.spec"
+    ).read_text(encoding="utf-8")
+
+    assert '"src" / "stock_desk" / "demo" / "market_snapshot.json"' in spec
+    assert '"stock_desk/demo"' in spec

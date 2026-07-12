@@ -529,6 +529,7 @@ def compute_fixture_hashes(repo: Path) -> dict[str, str]:
         "--",
         "tests/fixtures",
         "tests/acceptance/requirements.yml",
+        "tests/acceptance/v1_1_requirements.yml",
     )
     hashes: dict[str, str] = {}
     for raw_path in sorted(paths):

@@ -22,6 +22,11 @@ import { DataSourcesPage } from '../features/settings/DataSourcesPage';
 import { TaskCenterPage } from '../features/tasks/TaskCenterPage';
 import { DesktopStartup } from '../features/desktop/DesktopStartup';
 import { DesktopExitGuard } from '../features/desktop/DesktopExitGuard';
+import { OnboardingGate } from '../features/onboarding/OnboardingGate';
+import { useOnboardingDemoMode } from '../features/onboarding/demoMode';
+import { useMarketStore } from '../features/market/marketStore';
+import { ContextualGuidance } from '../features/guidance/ContextualGuidance';
+import type { OnboardingApi } from '../features/onboarding/onboardingApi';
 import { useSystemStatus } from '../shared/api/useSystemStatus';
 import type { WorkerState } from '../shared/api/useSystemStatus';
 import { ContextPanel } from './ContextPanel';
@@ -31,8 +36,11 @@ import { RouteEffects } from './RouteEffects';
 import { appRoutes } from './routes';
 import { useWorkspaceStore } from './store';
 import { WorkspaceStoreProvider } from './WorkspaceStoreProvider';
+import { WorkspacePersistenceGate } from './WorkspacePersistenceGate';
+import type { WorkspaceApi } from './workspaceApi';
 import { createDesktopBridge, type DesktopBridge } from './desktopBridge';
 import { createTauriAdapter } from './tauriAdapter';
+import { ThemeSelector } from './ThemeProvider';
 
 const tauriAdapter = createTauriAdapter();
 const defaultDesktopBridge: DesktopBridge =
@@ -74,9 +82,14 @@ const productIdentity = {
 type NavigationRailProps = {
   readonly collapsed: boolean;
   readonly onToggle: () => void;
+  readonly readonlyDemo: boolean;
 };
 
-function NavigationRail({ collapsed, onToggle }: NavigationRailProps) {
+function NavigationRail({
+  collapsed,
+  onToggle,
+  readonlyDemo,
+}: NavigationRailProps) {
   return (
     <div className="navigation-rail">
       <div className="brand-lockup">
@@ -121,16 +134,22 @@ function NavigationRail({ collapsed, onToggle }: NavigationRailProps) {
       >
         <p className="nav-section-label">工作区</p>
         <ul>
-          {appRoutes.map((route) => (
-            <li key={route.path}>
-              <NavLink className="nav-link" to={route.path} title={route.label}>
-                <span className="nav-icon" aria-hidden="true">
-                  <AppIcon name={route.icon} />
-                </span>
-                <span className="nav-label">{route.label}</span>
-              </NavLink>
-            </li>
-          ))}
+          {appRoutes
+            .filter((route) => !readonlyDemo || route.path === '/market')
+            .map((route) => (
+              <li key={route.path}>
+                <NavLink
+                  className="nav-link"
+                  to={route.path}
+                  title={route.label}
+                >
+                  <span className="nav-icon" aria-hidden="true">
+                    <AppIcon name={route.icon} />
+                  </span>
+                  <span className="nav-label">{route.label}</span>
+                </NavLink>
+              </li>
+            ))}
         </ul>
       </nav>
 
@@ -282,6 +301,15 @@ const WorkspaceRoutes = memo(function WorkspaceRoutes() {
 
 function WorkspaceShell() {
   const location = useLocation();
+  const readonlyDemo = useOnboardingDemoMode();
+  const selectedInstrument = useMarketStore(
+    (state) => state.selectedInstrument,
+  );
+  const period = useMarketStore((state) => state.period);
+  const adjustment = useMarketStore((state) => state.adjustment);
+  const zoom = useMarketStore((state) => state.zoom);
+  const mainChart = useMarketStore((state) => state.mainChart);
+  const subchart = useMarketStore((state) => state.subchart);
   const isContextOpen = useWorkspaceStore((state) => state.isContextOpen);
   const openContext = useWorkspaceStore((state) => state.openContext);
   const closeContext = useWorkspaceStore((state) => state.closeContext);
@@ -328,6 +356,13 @@ function WorkspaceShell() {
       <div
         className="app-shell"
         data-navigation-collapsed={isNavigationCollapsed}
+        data-workspace-symbol={selectedInstrument?.symbol ?? ''}
+        data-workspace-period={period}
+        data-workspace-adjustment={adjustment}
+        data-workspace-zoom-start={zoom.start}
+        data-workspace-zoom-end={zoom.end}
+        data-workspace-main-chart={mainChart}
+        data-workspace-subchart={subchart.kind}
         data-workspace={
           location.pathname === '/formulas'
             ? 'formulas'
@@ -343,6 +378,7 @@ function WorkspaceShell() {
         <NavigationRail
           collapsed={isNavigationCollapsed}
           onToggle={() => setIsNavigationCollapsed((collapsed) => !collapsed)}
+          readonlyDemo={readonlyDemo}
         />
 
         <main id="main-content" className="workspace" tabIndex={-1}>
@@ -366,6 +402,7 @@ function WorkspaceShell() {
               </span>
             </div>
             <div className="topbar-actions">
+              <ContextualGuidance />
               <button
                 ref={aboutToggleRef}
                 className="about-toggle"
@@ -409,16 +446,45 @@ function WorkspaceShell() {
 
 export function App({
   desktopBridge = defaultDesktopBridge,
+  onboardingApi,
+  workspaceApi,
 }: {
   readonly desktopBridge?: DesktopBridge;
+  readonly onboardingApi?: OnboardingApi | null;
+  readonly workspaceApi?: WorkspaceApi;
 }) {
+  const shell = (
+    <WorkspaceStoreProvider>
+      <WorkspaceShell />
+    </WorkspaceStoreProvider>
+  );
+  const workspace =
+    onboardingApi === null ? (
+      shell
+    ) : (
+      <WorkspacePersistenceGate api={workspaceApi}>
+        {shell}
+      </WorkspacePersistenceGate>
+    );
   return (
-    <DesktopExitGuard bridge={desktopBridge}>
-      <DesktopStartup bridge={desktopBridge}>
-        <WorkspaceStoreProvider>
-          <WorkspaceShell />
-        </WorkspaceStoreProvider>
-      </DesktopStartup>
-    </DesktopExitGuard>
+    <>
+      <div className="global-theme-control">
+        <ThemeSelector />
+      </div>
+      <DesktopExitGuard bridge={desktopBridge}>
+        <DesktopStartup bridge={desktopBridge}>
+          {onboardingApi === null ? (
+            workspace
+          ) : (
+            <OnboardingGate
+              api={onboardingApi}
+              onDiagnostics={() => void desktopBridge.openDiagnostics()}
+            >
+              {workspace}
+            </OnboardingGate>
+          )}
+        </DesktopStartup>
+      </DesktopExitGuard>
+    </>
   );
 }

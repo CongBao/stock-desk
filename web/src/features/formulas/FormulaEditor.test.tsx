@@ -3,11 +3,18 @@ import type { ReactNode } from 'react';
 
 import { FormulaEditor } from './FormulaEditor';
 import type { TdxDocumentationEntry } from './tdxLanguage';
+import { ThemeProvider } from '../../app/ThemeProvider';
 
 const monacoHarness = vi.hoisted((): { editor: unknown; monaco: unknown } => ({
   editor: null,
   monaco: null,
 }));
+
+const editorProps = vi.hoisted(
+  (): { current: Record<string, unknown> | null } => ({
+    current: null,
+  }),
+);
 
 vi.mock('./monacoSetup', () => ({}));
 
@@ -18,11 +25,13 @@ vi.mock('@monaco-editor/react', async () => {
     default: ({
       beforeMount,
       onMount,
+      ...props
     }: {
       readonly beforeMount?: (monaco: unknown) => void;
       readonly onMount?: (editor: unknown, monaco: unknown) => void;
       readonly children?: ReactNode;
     }) => {
+      editorProps.current = props;
       const mounted = useRef(false);
       useEffect(() => {
         if (mounted.current) return;
@@ -77,7 +86,11 @@ function createHarness() {
     KeyMod: { CtrlCmd: 1 },
     KeyCode: { Enter: 2 },
     Range: class {},
-    editor: { setModelMarkers: vi.fn() },
+    editor: {
+      defineTheme: vi.fn(),
+      setModelMarkers: vi.fn(),
+      setTheme: vi.fn(),
+    },
     languages: {
       CompletionItemKind: { Function: 1, Field: 2 },
       CompletionItemInsertTextRule: { InsertAsSnippet: 4 },
@@ -153,6 +166,7 @@ it('refreshes Monaco providers when async documentation arrives without leaking 
       onValidate={firstValidate}
       source=""
     />,
+    { wrapper: ThemeProvider },
   );
 
   expect(harness.providers).toHaveLength(1);
@@ -209,4 +223,29 @@ it('refreshes Monaco providers when async documentation arrives without leaking 
   act(() => harness.runCommand());
   expect(firstValidate).not.toHaveBeenCalled();
   expect(latestValidate).toHaveBeenCalledTimes(1);
+});
+
+it('applies the explicit shared Monaco theme and accessible high-scale editor options', () => {
+  const harness = createHarness();
+  monacoHarness.monaco = harness.monaco;
+  monacoHarness.editor = harness.editor;
+  localStorage.setItem('stock-desk.preferences.v1.1.theme', 'dark');
+  render(
+    <FormulaEditor
+      diagnostics={[]}
+      documentation={[]}
+      onChange={vi.fn()}
+      onValidate={vi.fn()}
+      source="CLOSE;"
+    />,
+    { wrapper: ThemeProvider },
+  );
+
+  expect(editorProps.current?.['theme']).toBe('stock-desk-dark');
+  expect(editorProps.current?.['options']).toMatchObject({
+    ariaLabel: '通达信公式代码',
+    automaticLayout: true,
+    fontSize: 14,
+    lineHeight: 24,
+  });
 });

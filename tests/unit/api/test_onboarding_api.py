@@ -1,0 +1,406 @@
+from pathlib import Path
+
+from fastapi.testclient import TestClient
+import pytest
+
+from stock_desk.api.market import MarketServices
+from stock_desk.config import Settings
+from stock_desk.desktop_session import DesktopSession, TAURI_WINDOWS_ORIGIN
+from stock_desk.main import create_app
+from stock_desk.onboarding.service import OnboardingService
+from stock_desk.onboarding.store import OnboardingStateStore
+from tests.unit.onboarding.test_service import _service
+
+
+def test_welcome_state_does_not_eagerly_open_market_storage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fail_if_opened(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("market storage must remain lazy on the welcome step")
+
+    monkeypatch.setattr(MarketServices, "open", fail_if_opened)
+    settings = Settings(
+        database_url=f"sqlite:///{tmp_path / 'lazy.db'}",
+        data_dir=tmp_path / "data",
+    )
+
+    with TestClient(create_app(settings)) as client:
+        response = client.get("/api/v1/onboarding/state")
+
+    assert response.status_code == 200
+    assert response.json()["current_step"] == "welcome"
+
+
+def test_onboarding_api_uses_existing_desktop_origin_and_bearer_authority(
+    tmp_path: Path,
+) -> None:
+    database_url = f"sqlite:///{tmp_path / 'api.db'}"
+    settings = Settings(database_url=database_url, data_dir=tmp_path / "data")
+    market = MarketServices.open(
+        database_url=database_url,
+        lake_root=(tmp_path / "market").resolve(),
+    )
+    service = OnboardingService(
+        store=OnboardingStateStore((tmp_path / "state-v1.json").resolve()),
+        market=market,
+    )
+    secret = "desktop-session-secret-that-is-long-enough"
+    session = DesktopSession(
+        origin=TAURI_WINDOWS_ORIGIN,
+        secret=secret,
+        host_version="1.1.0",
+        frontend_version="1.1.0",
+        sidecar_version="1.1.0",
+        source_revision="a" * 40,
+    )
+    app = create_app(
+        settings,
+        market_services=market,
+        onboarding_service=service,
+        desktop_session=session,
+    )
+    try:
+        with TestClient(app) as client:
+            unauthorized = client.get("/api/v1/onboarding/state")
+            forbidden = client.get(
+                "/api/v1/onboarding/state",
+                headers={"Authorization": f"Bearer {secret}"},
+            )
+            headers = {
+                "Origin": TAURI_WINDOWS_ORIGIN,
+                "Authorization": f"Bearer {secret}",
+            }
+            state = client.get("/api/v1/onboarding/state", headers=headers)
+            sources = client.get("/api/v1/onboarding/sources", headers=headers)
+    finally:
+        market.close()
+
+    assert unauthorized.status_code == 403
+    assert unauthorized.json() == {"code": "desktop_origin_forbidden"}
+    assert forbidden.status_code == 403
+    assert state.status_code == 200
+    assert state.json()["instrument"]["symbol"] == "000001.SS"
+    assert sources.status_code == 200
+    assert sources.json() == {
+        "items": [
+            {
+                "id": "akshare",
+                "label": "AKShare",
+                "description": "免 Token 的 A 股公开数据源",
+                "requires_token": False,
+                "recommended": True,
+                "status": "ready",
+                "data_cutoff": None,
+            },
+            {
+                "id": "baostock",
+                "label": "BaoStock",
+                "description": "免 Token 的 A 股公开数据源",
+                "requires_token": False,
+                "recommended": False,
+                "status": "ready",
+                "data_cutoff": None,
+            },
+        ]
+    }
+
+
+def test_onboarding_api_four_step_contract_pins_then_syncs_and_completes(
+    tmp_path: Path,
+) -> None:
+    service, market = _service(tmp_path)
+    settings = Settings(
+        database_url=f"sqlite:///{tmp_path / 'onboarding.db'}",
+        data_dir=tmp_path / "data",
+    )
+    app = create_app(
+        settings,
+        market_services=market,
+        onboarding_service=service,
+    )
+    try:
+        with TestClient(app) as client:
+            preparation = client.put(
+                "/api/v1/onboarding/progress",
+                json={"current_step": "data_preparation"},
+            )
+            catalog = client.put(
+                "/api/v1/onboarding/progress",
+                json={
+                    "current_step": "instrument_selection",
+                    "source_id": "akshare",
+                },
+            )
+            instruments = client.get(
+                "/api/v1/onboarding/instruments",
+                params={"q": "shangzheng", "limit": 20},
+            )
+            synchronized = client.post(
+                "/api/v1/onboarding/sync",
+                json={"source_id": "akshare", "symbol": "000001.SS"},
+            )
+            completed = client.post(
+                "/api/v1/onboarding/complete",
+                json={"symbol": "000001.SS"},
+            )
+            workspace = client.get("/api/v1/workspace")
+    finally:
+        market.close()
+
+    assert preparation.status_code == 200
+    assert preparation.json()["current_step"] == "data_preparation"
+    assert preparation.json()["source"] is None
+    assert catalog.status_code == 200
+    assert catalog.json()["current_step"] == "instrument_selection"
+    assert catalog.json()["source"]["id"] == "akshare"
+    assert instruments.json()["items"] == [
+        {
+            "symbol": "000001.SS",
+            "name": "上证指数",
+            "exchange": "SH",
+            "instrument_kind": "index",
+        }
+    ]
+    assert synchronized.status_code == 200
+    assert synchronized.json()["current_step"] == "synchronization"
+    assert synchronized.json()["sync"]["status"] == "verified"
+    assert synchronized.json()["sync"]["provider_id"] == "akshare"
+    assert completed.status_code == 200
+    assert completed.json()["status"] == "completed"
+    assert completed.json()["current_step"] == "completed"
+    assert workspace.status_code == 200
+    assert workspace.json()["restored"] is True
+    assert workspace.json()["revision"] == 1
+    assert workspace.json()["workspace"]["instrument"] == {
+        "symbol": "000001.SS",
+        "name": "上证指数",
+        "exchange": "SH",
+        "kind": "index",
+    }
+
+
+def test_onboarding_validation_failures_use_a_stable_error_code(tmp_path: Path) -> None:
+    service, market = _service(tmp_path)
+    settings = Settings(
+        database_url=f"sqlite:///{tmp_path / 'onboarding.db'}",
+        data_dir=tmp_path / "data",
+    )
+    try:
+        with TestClient(
+            create_app(
+                settings,
+                market_services=market,
+                onboarding_service=service,
+            )
+        ) as client:
+            invalid = client.post(
+                "/api/v1/onboarding/sync",
+                json={"source_id": "not-a-provider", "symbol": "000001.SS"},
+            )
+    finally:
+        market.close()
+
+    assert invalid.status_code == 422
+    assert invalid.json() == {"code": "invalid_request"}
+
+
+def test_onboarding_api_rejects_out_of_order_steps_and_recovers_in_place(
+    tmp_path: Path,
+) -> None:
+    service, market = _service(tmp_path)
+    settings = Settings(
+        database_url=f"sqlite:///{tmp_path / 'onboarding.db'}",
+        data_dir=tmp_path / "data",
+    )
+    try:
+        with TestClient(
+            create_app(
+                settings,
+                market_services=market,
+                onboarding_service=service,
+            )
+        ) as client:
+            welcome = client.put(
+                "/api/v1/onboarding/progress",
+                json={"current_step": "welcome"},
+            )
+            unavailable_search = client.get(
+                "/api/v1/onboarding/instruments", params={"q": ""}
+            )
+            missing_source = client.put(
+                "/api/v1/onboarding/progress",
+                json={"current_step": "instrument_selection"},
+            )
+            missing_symbol = client.put(
+                "/api/v1/onboarding/progress",
+                json={"current_step": "synchronization"},
+            )
+            invalid_transition = client.put(
+                "/api/v1/onboarding/progress",
+                json={"current_step": "completed"},
+            )
+            premature_complete = client.post(
+                "/api/v1/onboarding/complete", json={"symbol": "000001.SS"}
+            )
+            advanced = client.post("/api/v1/onboarding/actions/advanced")
+            retried = client.post("/api/v1/onboarding/actions/retry")
+            missing_instrument = client.put(
+                "/api/v1/onboarding/progress",
+                json={
+                    "current_step": "synchronization",
+                    "symbol": "999999.SH",
+                },
+            )
+            switched = client.post("/api/v1/onboarding/actions/switch_provider")
+    finally:
+        market.close()
+
+    assert welcome.status_code == 200
+    assert welcome.json()["current_step"] == "welcome"
+    assert unavailable_search.status_code == 409
+    assert unavailable_search.json() == {"code": "catalog_not_ready"}
+    assert missing_source.status_code == 409
+    assert missing_source.json() == {"code": "onboarding_source_required"}
+    assert missing_symbol.status_code == 422
+    assert missing_symbol.json() == {"code": "invalid_request"}
+    assert invalid_transition.status_code == 409
+    assert invalid_transition.json() == {"code": "invalid_onboarding_transition"}
+    assert premature_complete.status_code == 409
+    assert premature_complete.json() == {"code": "synchronization_not_verified"}
+    assert advanced.status_code == 200
+    assert advanced.json()["error"]["code"] == "advanced_configuration_required"
+    assert retried.status_code == 200
+    assert retried.json()["source"]["id"] == "akshare"
+    assert missing_instrument.status_code == 409
+    assert missing_instrument.json() == {"code": "instrument_not_found"}
+    assert switched.status_code == 200
+    assert switched.json()["source"]["id"] == "baostock"
+
+
+def test_corrupt_onboarding_state_fails_closed_across_every_mutating_route(
+    tmp_path: Path,
+) -> None:
+    service, market = _service(tmp_path)
+    (tmp_path / "state-v1.json").write_text("{not-json", encoding="utf-8")
+    settings = Settings(
+        database_url=f"sqlite:///{tmp_path / 'onboarding.db'}",
+        data_dir=tmp_path / "data",
+    )
+    try:
+        with TestClient(
+            create_app(
+                settings,
+                market_services=market,
+                onboarding_service=service,
+            )
+        ) as client:
+            responses = (
+                client.get("/api/v1/onboarding/state"),
+                client.get("/api/v1/onboarding/sources"),
+                client.get("/api/v1/onboarding/instruments", params={"q": "000001"}),
+                client.put(
+                    "/api/v1/onboarding/progress",
+                    json={"current_step": "data_preparation"},
+                ),
+                client.post(
+                    "/api/v1/onboarding/sync",
+                    json={"source_id": "akshare", "symbol": "000001.SS"},
+                ),
+                client.post(
+                    "/api/v1/onboarding/complete", json={"symbol": "000001.SS"}
+                ),
+                client.post("/api/v1/onboarding/actions/retry"),
+            )
+    finally:
+        market.close()
+
+    assert all(response.status_code == 503 for response in responses)
+    assert all(
+        response.json() == {"code": "onboarding_state_unavailable"}
+        for response in responses
+    )
+
+
+def test_onboarding_api_can_exit_persisted_demo_into_real_setup(
+    tmp_path: Path,
+) -> None:
+    service, market = _service(tmp_path)
+    settings = Settings(
+        database_url=f"sqlite:///{tmp_path / 'onboarding.db'}",
+        data_dir=tmp_path / "data",
+    )
+    try:
+        with TestClient(
+            create_app(
+                settings,
+                market_services=market,
+                onboarding_service=service,
+            )
+        ) as client:
+            demo = client.post("/api/v1/onboarding/actions/demo")
+            exited = client.post("/api/v1/onboarding/actions/exit_demo")
+            prepared = client.put(
+                "/api/v1/onboarding/progress",
+                json={
+                    "current_step": "instrument_selection",
+                    "source_id": "akshare",
+                },
+            )
+    finally:
+        market.close()
+
+    assert demo.status_code == 200
+    assert demo.json()["demo_mode"] is True
+    assert exited.status_code == 200
+    assert exited.json()["demo_mode"] is False
+    assert exited.json()["current_step"] == "data_preparation"
+    assert exited.json()["source"] is None
+    assert prepared.status_code == 200
+    assert prepared.json()["source"]["id"] == "akshare"
+
+
+def test_product_demo_opens_bundled_bars_read_only_then_returns_to_setup(
+    tmp_path: Path,
+) -> None:
+    settings = Settings(
+        database_url=f"sqlite:///{tmp_path / 'real.db'}",
+        data_dir=tmp_path / "v1.1",
+    )
+
+    with TestClient(create_app(settings)) as client:
+        demo = client.post("/api/v1/onboarding/actions/demo")
+        bars = client.get(
+            "/api/market/bars",
+            params={
+                "symbol": "600000.SH",
+                "period": "1d",
+                "adjustment": "none",
+            },
+        )
+        navigation_write = client.put(
+            "/api/v1/market/navigation",
+            json={"expected_revision": 0, "watchlist": [], "recent": []},
+        )
+        data_write = client.post("/api/market/catalog/updates")
+        exited = client.post("/api/v1/onboarding/actions/exit_demo")
+        state = client.get("/api/v1/onboarding/state")
+
+    assert demo.status_code == 200
+    assert demo.json()["demo_mode"] is True
+    assert demo.json()["status"] == "in_progress"
+    assert demo.json()["instrument"] == {
+        "symbol": "600000.SH",
+        "name": "Stock Desk 合成演示标的（非真实行情）",
+        "exchange": "SH",
+        "instrument_kind": "stock",
+    }
+    assert bars.status_code == 200
+    assert len(bars.json()["bars"]) >= 60
+    assert bars.json()["provenance"]["source"] == "stock_desk_demo"
+    assert navigation_write.status_code == 409
+    assert navigation_write.json() == {"code": "demo_read_only"}
+    assert data_write.status_code == 409
+    assert data_write.json() == {"code": "demo_read_only"}
+    assert exited.status_code == 200
+    assert exited.json()["demo_mode"] is False
+    assert state.json()["current_step"] == "data_preparation"

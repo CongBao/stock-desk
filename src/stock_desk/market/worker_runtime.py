@@ -63,7 +63,10 @@ from stock_desk.security.redaction import scoped_log_redaction
 from stock_desk.security.secrets import SecretConfigurationError, SecretStore
 from stock_desk.storage.backup import recover_interrupted_restore
 from stock_desk.storage.database import create_engine_for_url, migrate
-from stock_desk.storage.lifecycle import service_lifecycle
+from stock_desk.storage.lifecycle import (
+    SERVICE_STARTUP_LOCK_TIMEOUT_SECONDS,
+    service_lifecycle,
+)
 from stock_desk.tasks.models import TaskSnapshot
 from stock_desk.tasks.repository import TaskRepository
 from stock_desk.tasks.worker import ClaimedTaskHandler, TaskWorker, demo_double
@@ -311,6 +314,7 @@ class ProductionMarketWorker:
         lifecycle_guard = service_lifecycle(
             data_dir,
             role="worker",
+            timeout_seconds=SERVICE_STARTUP_LOCK_TIMEOUT_SECONDS,
             preflight=lambda: recover_interrupted_restore(
                 data_dir=data_dir,
                 _lifecycle_held=True,

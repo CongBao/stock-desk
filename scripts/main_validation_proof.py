@@ -78,6 +78,7 @@ CRITICAL_INPUTS: Final = LEGACY_CRITICAL_INPUTS + (
     "src-tauri/tauri.windows.conf.json",
     "rust-toolchain.toml",
     "tests/acceptance/requirements.yml",
+    "tests/acceptance/v1_1_requirements.yml",
     "web/vite.config.ts",
 )
 
@@ -444,6 +445,7 @@ def fixture_hashes(repo_root: Path) -> dict[str, str]:
                 "--",
                 "tests/fixtures",
                 "tests/acceptance/requirements.yml",
+                "tests/acceptance/v1_1_requirements.yml",
             ),
             check=True,
             capture_output=True,

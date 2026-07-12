@@ -21,6 +21,7 @@ import {
 import { CanvasRenderer } from 'echarts/renderers';
 import { useEffect, useRef, useState } from 'react';
 
+import { useTheme, type ResolvedTheme } from '../../app/themePreference';
 import type { MarketBar } from './marketApi';
 
 use([
@@ -40,6 +41,28 @@ use([
 const RISE_COLOR = '#ef4444';
 const FALL_COLOR = '#22c55e';
 const FLAT_COLOR = '#94a3b8';
+const CHART_THEMES = {
+  dark: {
+    tooltipBackground: 'rgba(7, 17, 31, 0.96)',
+    tooltipBorder: '#27415f',
+    tooltipText: '#dbeafe',
+    axis: '#29425e',
+    axisText: '#71849c',
+    split: '#1e3550',
+    legend: '#8296ae',
+    linePalette: ['#38bdf8', '#f59e0b', '#a78bfa', '#fb7185', '#2dd4bf'],
+  },
+  light: {
+    tooltipBackground: 'rgba(255, 255, 255, 0.98)',
+    tooltipBorder: '#aab8ca',
+    tooltipText: '#172033',
+    axis: '#98a7ba',
+    axisText: '#4b5f78',
+    split: '#d8e0ea',
+    legend: '#52657d',
+    linePalette: ['#0369a1', '#b54708', '#6941c6', '#c11574', '#087e8b'],
+  },
+} as const;
 const valueFormatter = new Intl.NumberFormat('zh-CN', {
   maximumFractionDigits: 8,
 });
@@ -82,13 +105,13 @@ export type MarketChartOption = {
       readonly moveOnMouseMove: true;
       readonly moveOnMouseWheel: false;
       readonly start: number;
-      readonly end: 100;
+      readonly end: number;
     },
     {
       readonly type: 'slider';
       readonly xAxisIndex: readonly [0, 1];
       readonly start: number;
-      readonly end: 100;
+      readonly end: number;
       readonly bottom: number;
       readonly height: number;
     },
@@ -303,10 +326,18 @@ function signalMarkerOffset(bar: MarketBar): number {
 // eslint-disable-next-line react-refresh/only-export-components
 export function buildMarketChartOption(
   bars: readonly MarketBar[],
+  themeOrZoom: ResolvedTheme | ZoomRange = 'dark',
+  requestedZoom?: ZoomRange,
 ): MarketChartOption {
+  const theme = typeof themeOrZoom === 'string' ? themeOrZoom : 'dark';
+  const effectiveZoom =
+    typeof themeOrZoom === 'string' ? requestedZoom : themeOrZoom;
+  const colors = CHART_THEMES[theme];
   const categories = bars.map((bar) => bar.timestamp);
   const visibleStart =
-    bars.length > 160 ? Math.max(0, 100 - (160 / bars.length) * 100) : 0;
+    effectiveZoom?.start ??
+    (bars.length > 160 ? Math.max(0, 100 - (160 / bars.length) * 100) : 0);
+  const visibleEnd = effectiveZoom?.end ?? 100;
   return {
     animation: false,
     aria: {
@@ -321,9 +352,9 @@ export function buildMarketChartOption(
       confine: true,
       axisPointer: { type: 'cross', snap: true },
       formatter: tooltipFormatter(bars),
-      backgroundColor: 'rgba(7, 17, 31, 0.96)',
-      borderColor: '#27415f',
-      textStyle: { color: '#dbeafe', fontSize: 12 },
+      backgroundColor: colors.tooltipBackground,
+      borderColor: colors.tooltipBorder,
+      textStyle: { color: colors.tooltipText, fontSize: 12 },
     },
     grid: [
       { left: 62, right: 24, top: 26, height: '55%' },
@@ -335,7 +366,7 @@ export function buildMarketChartOption(
         data: categories,
         gridIndex: 0,
         boundaryGap: true,
-        axisLine: { lineStyle: { color: '#29425e' } },
+        axisLine: { lineStyle: { color: colors.axis } },
         axisLabel: {
           show: false,
           formatter: (value: string) => formatTime(value),
@@ -349,9 +380,9 @@ export function buildMarketChartOption(
         data: categories,
         gridIndex: 1,
         boundaryGap: true,
-        axisLine: { lineStyle: { color: '#29425e' } },
+        axisLine: { lineStyle: { color: colors.axis } },
         axisLabel: {
-          color: '#71849c',
+          color: colors.axisText,
           hideOverlap: true,
           formatter: (value: string) => formatTime(value),
         },
@@ -365,16 +396,16 @@ export function buildMarketChartOption(
         scale: true,
         gridIndex: 0,
         position: 'right',
-        axisLabel: { color: '#71849c' },
-        splitLine: { lineStyle: { color: '#1e3550' } },
+        axisLabel: { color: colors.axisText },
+        splitLine: { lineStyle: { color: colors.split } },
       },
       {
         scale: true,
         gridIndex: 1,
         position: 'right',
-        axisLabel: { color: '#71849c', formatter: '{value}' },
+        axisLabel: { color: colors.axisText, formatter: '{value}' },
         splitNumber: 2,
-        splitLine: { lineStyle: { color: '#1e3550' } },
+        splitLine: { lineStyle: { color: colors.split } },
       },
     ],
     dataZoom: [
@@ -382,7 +413,7 @@ export function buildMarketChartOption(
         type: 'inside',
         xAxisIndex: [0, 1],
         start: visibleStart,
-        end: 100,
+        end: visibleEnd,
         zoomOnMouseWheel: true,
         moveOnMouseMove: true,
         moveOnMouseWheel: false,
@@ -391,7 +422,7 @@ export function buildMarketChartOption(
         type: 'slider',
         xAxisIndex: [0, 1],
         start: visibleStart,
-        end: 100,
+        end: visibleEnd,
         bottom: 8,
         height: 18,
       },
@@ -423,8 +454,14 @@ export function buildMarketChartOption(
 export function buildFormulaMarketChartOption(
   bars: readonly MarketBar[],
   formula: FormulaChartLayer,
+  themeOrZoom: ResolvedTheme | ZoomRange = 'dark',
+  requestedZoom?: ZoomRange,
 ): EChartsCoreOption {
-  const base = buildMarketChartOption(bars);
+  const theme = typeof themeOrZoom === 'string' ? themeOrZoom : 'dark';
+  const effectiveZoom =
+    typeof themeOrZoom === 'string' ? requestedZoom : themeOrZoom;
+  const colors = CHART_THEMES[theme];
+  const base = buildMarketChartOption(bars, theme, effectiveZoom);
   const byTimestamp = new Map(
     formula.timestamps.map((timestamp, index) => [timestamp, index] as const),
   );
@@ -450,9 +487,9 @@ export function buildFormulaMarketChartOption(
           data: bars.map((bar) => bar.timestamp),
           gridIndex: 2,
           boundaryGap: true,
-          axisLine: { lineStyle: { color: '#29425e' } },
+          axisLine: { lineStyle: { color: colors.axis } },
           axisLabel: {
-            color: '#71849c',
+            color: colors.axisText,
             hideOverlap: true,
             formatter: (value: string) => formatTime(value),
           },
@@ -467,13 +504,13 @@ export function buildFormulaMarketChartOption(
           scale: true,
           gridIndex: 2,
           position: 'right',
-          axisLabel: { color: '#71849c' },
+          axisLabel: { color: colors.axisText },
           splitNumber: 3,
-          splitLine: { lineStyle: { color: '#1e3550' } },
+          splitLine: { lineStyle: { color: colors.split } },
         },
       ]
     : base.yAxis;
-  const palette = ['#38bdf8', '#f59e0b', '#a78bfa', '#fb7185', '#2dd4bf'];
+  const palette = colors.linePalette;
   const formulaSeries = formula.numericOutputs.map((output, outputIndex) => ({
     name: output.name,
     type: 'line' as const,
@@ -520,7 +557,7 @@ export function buildFormulaMarketChartOption(
     legend: {
       top: 5,
       right: 24,
-      textStyle: { color: '#8296ae', fontSize: 9 },
+      textStyle: { color: colors.legend, fontSize: 9 },
       data: [
         ...formula.numericOutputs.map((output) => output.name),
         'BUY 买点',
@@ -554,6 +591,8 @@ type MarketChartProps = {
   readonly formulaEmptyMessage?: string;
   readonly formulaEmptyPlacement?: FormulaChartLayer['placement'];
   readonly isLoading?: boolean;
+  readonly initialZoom?: ZoomRange;
+  readonly onZoomChange?: (zoom: ZoomRange) => void;
 };
 
 type RenderGeneration = {
@@ -570,7 +609,10 @@ export function MarketChart({
   formulaEmptyMessage,
   formulaEmptyPlacement = 'subchart',
   isLoading = false,
+  initialZoom = { start: 0, end: 100 },
+  onZoomChange,
 }: MarketChartProps) {
+  const { resolvedTheme } = useTheme();
   const containerRef = useRef<HTMLDivElement>(null);
   const instanceRef = useRef<EChartsType | null>(null);
   const barsRef = useRef(bars);
@@ -589,7 +631,10 @@ export function MarketChart({
     readonly bars: readonly MarketBar[];
     readonly index: number;
   } | null>(null);
-  const [zoom, setZoom] = useState<ZoomRange>({ start: 0, end: 100 });
+  const [zoom, setZoom] = useState<ZoomRange>(initialZoom);
+  const zoomRef = useRef<ZoomRange>(initialZoom);
+  const onZoomChangeRef = useRef(onZoomChange);
+  onZoomChangeRef.current = onZoomChange;
   barsRef.current = bars;
   const hasBars = bars !== undefined && bars.length > 0;
   const isReady =
@@ -617,7 +662,11 @@ export function MarketChart({
     };
     const handleDataZoom = (event: unknown) => {
       const next = dataZoomRange(event);
-      if (next !== null) setZoom(next);
+      if (next !== null) {
+        zoomRef.current = next;
+        setZoom(next);
+        onZoomChangeRef.current?.(next);
+      }
     };
     const issueRender = (render: RenderGeneration) => {
       activeRenderRef.current = render;
@@ -667,6 +716,22 @@ export function MarketChart({
   }, [hasBars]);
 
   useEffect(() => {
+    if (
+      zoomRef.current.start === initialZoom.start &&
+      zoomRef.current.end === initialZoom.end
+    ) {
+      return;
+    }
+    zoomRef.current = initialZoom;
+    setZoom(initialZoom);
+    instanceRef.current?.dispatchAction({
+      type: 'dataZoom',
+      start: initialZoom.start,
+      end: initialZoom.end,
+    });
+  }, [initialZoom.end, initialZoom.start]);
+
+  useEffect(() => {
     if (!hasBars || instanceRef.current === null || bars === undefined) {
       queuedRenderRef.current = null;
       setFinishedFor(null);
@@ -674,8 +739,13 @@ export function MarketChart({
     }
     const option =
       formula === undefined
-        ? buildMarketChartOption(bars)
-        : buildFormulaMarketChartOption(bars, formula);
+        ? buildMarketChartOption(bars, resolvedTheme, zoomRef.current)
+        : buildFormulaMarketChartOption(
+            bars,
+            formula,
+            resolvedTheme,
+            zoomRef.current,
+          );
     const render: RenderGeneration = {
       generation: nextGenerationRef.current + 1,
       bars,
@@ -685,7 +755,7 @@ export function MarketChart({
     nextGenerationRef.current = render.generation;
     if (activeRenderRef.current === null) issueRenderRef.current?.(render);
     else queuedRenderRef.current = render;
-  }, [bars, formula, hasBars]);
+  }, [bars, formula, hasBars, resolvedTheme]);
 
   return (
     <div className="market-chart-stack">
@@ -732,6 +802,8 @@ export function MarketChart({
                   end: 100,
                 });
                 setZoom({ start: 0, end: 100 });
+                zoomRef.current = { start: 0, end: 100 };
+                onZoomChangeRef.current?.({ start: 0, end: 100 });
               }}
             >
               重置视图

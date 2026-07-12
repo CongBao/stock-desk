@@ -1,4 +1,6 @@
-import { expect, test, type Page } from '@playwright/test';
+import type { Page } from '@playwright/test';
+
+import { expect, test } from './fixtures';
 
 function waitForBars(page: Page, period: string, adjustment: string) {
   return page.waitForResponse(
@@ -56,13 +58,18 @@ test('real local market workflow stays cached, traceable, and interactive', asyn
   ]);
 
   const canvas = page.locator('.market-chart-canvas canvas');
+  await expect(page.locator('.market-chart-canvas')).toHaveAttribute(
+    'aria-busy',
+    'false',
+  );
   const zoomState = page.getByRole('status', { name: '图表缩放范围' });
   const initialZoomState = await zoomState.textContent();
   const previousReadout = await ohlcv.textContent();
+  await canvas.scrollIntoViewIfNeeded();
   const box = await canvas.boundingBox();
   expect(box).not.toBeNull();
   if (box) {
-    await page.mouse.move(box.x + 80, box.y + 100);
+    await page.mouse.move(box.x + box.width * 0.25, box.y + box.height * 0.3);
     await expect.poll(() => ohlcv.textContent()).not.toBe(previousReadout);
     await page.mouse.wheel(0, -600);
     await expect.poll(() => zoomState.textContent()).not.toBe(initialZoomState);
@@ -74,12 +81,14 @@ test('real local market workflow stays cached, traceable, and interactive', asyn
   await page.getByRole('button', { name: '重置图表缩放' }).click();
   await expect(zoomState).toContainText('0%–100%');
 
+  await page.getByRole('button', { name: '打开股票池' }).click();
   await expect(
     page.getByRole('button', { name: /Stock Desk Synthetic Demo Index/u }),
   ).toBeVisible();
   await expect(
     page.getByRole('button', { name: /Stock Desk Synthetic Demo Industry/u }),
   ).toBeVisible();
+  await page.getByRole('button', { name: '关闭股票池' }).click();
 
   await page.getByRole('button', { name: '新建自定义池' }).click();
   await page.getByRole('textbox', { name: '股票池名称' }).fill('E2E 观察池');
@@ -94,7 +103,12 @@ test('real local market workflow stays cached, traceable, and interactive', asyn
     .click();
   await page.getByRole('button', { name: '创建股票池' }).click();
   await expect(page.getByRole('dialog')).toHaveCount(0);
+  await page.getByRole('button', { name: '打开股票池' }).click();
   await page.getByRole('button', { name: /E2E 观察池/u }).click();
+  await expect(
+    page.getByRole('heading', { name: /E2E 观察池.*成员/u }),
+  ).toBeVisible();
+  await page.getByRole('button', { name: '关闭股票池' }).click();
   await page.getByRole('button', { name: '编辑当前股票池' }).click();
   await page.getByRole('button', { name: '下移 600000.SH' }).click();
   await page.getByRole('button', { name: '保存股票池' }).click();
@@ -113,10 +127,28 @@ test('real local market workflow stays cached, traceable, and interactive', asyn
   await expect(page.getByRole('region', { name: '更新进度' })).toBeVisible();
   const cancel = page.getByRole('button', { name: '取消更新' });
   await expect(cancel).toBeVisible();
-  await cancel.click();
-  await expect(page.getByText(/已取消|已请求取消/u).first()).toBeVisible({
-    timeout: 15_000,
+  const cancelResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return (
+      response.request().method() === 'POST' &&
+      /^\/api\/tasks\/[^/]+\/cancel$/u.test(url.pathname)
+    );
   });
+  await cancel.click();
+  const cancellation = await cancelResponse;
+  expect([200, 409]).toContain(cancellation.status());
+  if (cancellation.status() === 200) {
+    await expect(page.getByText(/已取消|已请求取消/u).first()).toBeVisible({
+      timeout: 15_000,
+    });
+  } else {
+    // The worker may finish this two-symbol fixture between rendering the
+    // cancel button and accepting the request. A 409 is the canonical race
+    // outcome; the UI must refresh to the durable terminal state.
+    await expect(page.getByText(/已完成|更新失败/u).first()).toBeVisible({
+      timeout: 15_000,
+    });
+  }
 
   await page.getByRole('checkbox', { name: '启用每日更新' }).check();
   await page.getByLabel('每日更新时间').fill('18:30');
@@ -124,14 +156,21 @@ test('real local market workflow stays cached, traceable, and interactive', asyn
   await expect(page.getByText(/范围快照已冻结/u)).toBeVisible();
   await page.reload();
   await expect(page.getByText(/范围快照已冻结/u)).toBeVisible();
+  await page.getByRole('button', { name: '打开股票池' }).click();
   await page.getByRole('button', { name: /E2E 观察池/u }).click();
+  await expect(
+    page.getByRole('heading', { name: /E2E 观察池.*成员/u }),
+  ).toBeVisible();
+  await page.getByRole('button', { name: '关闭股票池' }).click();
   await page.getByRole('button', { name: '编辑当前股票池' }).click();
   await page.getByRole('button', { name: '删除股票池' }).click();
   await expect(page.getByRole('alert')).toContainText('删除后无法撤销');
   await page.getByRole('button', { name: '确认删除' }).click();
+  await page.getByRole('button', { name: '打开股票池' }).click();
   await expect(page.getByRole('button', { name: /E2E 观察池/u })).toHaveCount(
     0,
   );
+  await page.getByRole('button', { name: '关闭股票池' }).click();
 
   await expect(page.getByRole('button', { name: /实时行情/u })).toHaveCount(0);
   await expect(page.getByRole('link', { name: /动态选股/u })).toHaveCount(0);

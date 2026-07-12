@@ -1,4 +1,4 @@
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AbstractContextManager, asynccontextmanager
 import os
 from pathlib import Path
@@ -40,15 +40,18 @@ from stock_desk.api.formulas import (
     router as formulas_router,
 )
 from stock_desk.api.health import router as health_router
+from stock_desk.api.guidance import router as guidance_router
 from stock_desk.api.market import (
     MarketServices,
     market_request_validation_handler,
     router as market_router,
 )
+from stock_desk.api.market_navigation import router as market_navigation_router
 from stock_desk.api.models import (
     ModelSettingsDatabaseMismatch,
     router as models_router,
 )
+from stock_desk.api.onboarding import router as onboarding_router
 from stock_desk.api.settings import (
     SourceSettingsServices,
     SourceSettingsStorageError,
@@ -56,6 +59,7 @@ from stock_desk.api.settings import (
     source_settings_storage_exception_handler,
 )
 from stock_desk.api.tasks import router as tasks_router
+from stock_desk.api.workspace import router as workspace_router
 from stock_desk.config import Settings, get_settings
 from stock_desk.desktop_session import (
     DesktopHandshake,
@@ -64,6 +68,7 @@ from stock_desk.desktop_session import (
     DesktopSessionMiddleware,
 )
 from stock_desk.formula.repository import FormulaRepository
+from stock_desk.guidance.store import GuidancePreferencesStore
 from stock_desk.formula.service import FormulaService, FormulaServiceDatabaseMismatch
 from stock_desk.security.secrets import (
     SecretConfigurationError,
@@ -71,10 +76,18 @@ from stock_desk.security.secrets import (
     SecretStoreError,
 )
 from stock_desk.security.persistence import StartupSecretHydrator
+from stock_desk.onboarding.service import OnboardingService
+from stock_desk.onboarding.demo_snapshot import BundledDemoMarket
+from stock_desk.onboarding.store import OnboardingStateStorageError
+from stock_desk.market.navigation import MarketNavigationService
 from stock_desk.storage.backup import recover_interrupted_restore
-from stock_desk.storage.lifecycle import service_lifecycle
+from stock_desk.storage.lifecycle import (
+    SERVICE_STARTUP_LOCK_TIMEOUT_SECONDS,
+    service_lifecycle,
+)
 from stock_desk.tasks.repository import TaskRepository, TaskRepositoryError
 from stock_desk.web import install_web_routes
+from stock_desk.workspace.service import WorkspaceService
 
 
 class _ApplicationDatabaseMismatch(RuntimeError):
@@ -139,6 +152,9 @@ def create_app(
     analysis_preflight_service: AnalysisPreflightService | None = None,
     desktop_session: DesktopSession | None = None,
     desktop_lifecycle: DesktopLifecycleController | None = None,
+    onboarding_service: OnboardingService | None = None,
+    workspace_service: WorkspaceService | None = None,
+    market_navigation_service: MarketNavigationService | None = None,
 ) -> FastAPI:
     resolved_settings = settings if settings is not None else get_settings()
     database_identity = _ApplicationDatabaseIdentity(
@@ -180,6 +196,16 @@ def create_app(
     owned_analysis_preflight: AnalysisPreflightService | None = None
     analysis_preflight_lock = Lock()
     owned_startup_secret_hydrator: StartupSecretHydrator | None = None
+    owned_onboarding_service: OnboardingService | None = None
+    onboarding_service_lock = Lock()
+    owned_demo_market: BundledDemoMarket | None = None
+    demo_market_lock = Lock()
+    owned_workspace_service: WorkspaceService | None = None
+    workspace_service_lock = Lock()
+    owned_market_navigation_service: MarketNavigationService | None = None
+    market_navigation_service_lock = Lock()
+    owned_guidance_preferences_store: GuidancePreferencesStore | None = None
+    guidance_preferences_store_lock = Lock()
     shutdown_lock = Lock()
     active_lifespans = 0
     service_guard: AbstractContextManager[None] | None = None
@@ -438,6 +464,82 @@ def create_app(
                 raise AnalysisDatabaseMismatch() from None
             return owned_analysis_preflight
 
+    def provide_onboarding_service() -> OnboardingService:
+        nonlocal owned_onboarding_service
+        if onboarding_service is not None:
+            return onboarding_service
+        with onboarding_service_lock:
+            if owned_onboarding_service is None:
+                data_dir = Path(
+                    os.path.abspath(os.fspath(resolved_settings.data_dir.expanduser()))
+                )
+                owned_onboarding_service = OnboardingService.open(
+                    data_dir=data_dir,
+                    market=provide_market_services,
+                    demo_initializer=lambda: provide_demo_market().instrument,
+                )
+            return owned_onboarding_service
+
+    def provide_demo_market() -> BundledDemoMarket:
+        nonlocal owned_demo_market
+        with demo_market_lock:
+            if owned_demo_market is None:
+                data_dir = Path(
+                    os.path.abspath(os.fspath(resolved_settings.data_dir.expanduser()))
+                )
+                owned_demo_market = BundledDemoMarket.open(data_dir)
+            return owned_demo_market
+
+    def provide_request_market_services() -> MarketServices:
+        if provide_onboarding_service().state().demo_mode:
+            return provide_demo_market().services
+        return provide_market_services()
+
+    def provide_workspace_service() -> WorkspaceService:
+        nonlocal owned_workspace_service
+        if workspace_service is not None:
+            return workspace_service
+        with workspace_service_lock:
+            if owned_workspace_service is None:
+                data_dir = Path(
+                    os.path.abspath(os.fspath(resolved_settings.data_dir.expanduser()))
+                )
+                owned_workspace_service = WorkspaceService.open(
+                    data_dir=data_dir,
+                    market=provide_market_services,
+                    formula_repository=lambda: FormulaRepository(
+                        provide_market_services().engine
+                    ),
+                )
+            return owned_workspace_service
+
+    def provide_market_navigation_service() -> MarketNavigationService:
+        nonlocal owned_market_navigation_service
+        if market_navigation_service is not None:
+            return market_navigation_service
+        with market_navigation_service_lock:
+            if owned_market_navigation_service is None:
+                data_dir = Path(
+                    os.path.abspath(os.fspath(resolved_settings.data_dir.expanduser()))
+                )
+                owned_market_navigation_service = MarketNavigationService.open(
+                    data_dir=data_dir,
+                    instruments=provide_market_services().instruments,
+                )
+            return owned_market_navigation_service
+
+    def provide_guidance_preferences_store() -> GuidancePreferencesStore:
+        nonlocal owned_guidance_preferences_store
+        with guidance_preferences_store_lock:
+            if owned_guidance_preferences_store is None:
+                data_dir = Path(
+                    os.path.abspath(os.fspath(resolved_settings.data_dir.expanduser()))
+                )
+                owned_guidance_preferences_store = GuidancePreferencesStore(
+                    data_dir / "guidance" / "preferences.json"
+                )
+            return owned_guidance_preferences_store
+
     @asynccontextmanager
     async def lifespan(_application: FastAPI) -> AsyncIterator[None]:
         nonlocal active_lifespans
@@ -455,11 +557,17 @@ def create_app(
         nonlocal owned_analysis_service
         nonlocal owned_analysis_preflight
         nonlocal owned_startup_secret_hydrator
+        nonlocal owned_onboarding_service
+        nonlocal owned_demo_market
+        nonlocal owned_workspace_service
+        nonlocal owned_market_navigation_service
+        nonlocal owned_guidance_preferences_store
         with shutdown_lock:
             if active_lifespans == 0:
                 candidate = service_lifecycle(
                     resolved_settings.data_dir,
                     role="api",
+                    timeout_seconds=SERVICE_STARTUP_LOCK_TIMEOUT_SECONDS,
                     preflight=lambda: recover_interrupted_restore(
                         data_dir=resolved_settings.data_dir,
                         _lifecycle_held=True,
@@ -485,11 +593,13 @@ def create_app(
                     owned_model_catalog,
                     owned_source_settings_services,
                     owned_market_services,
+                    owned_demo_market,
                     owned_repository,
                     owned_startup_secret_hydrator,
                 )
                 owned_repository = None
                 owned_market_services = None
+                owned_demo_market = None
                 owned_source_settings_services = None
                 owned_formula_service = None
                 owned_backtest_services = None
@@ -501,6 +611,10 @@ def create_app(
                 owned_analysis_service = None
                 owned_analysis_preflight = None
                 owned_startup_secret_hydrator = None
+                owned_onboarding_service = None
+                owned_workspace_service = None
+                owned_market_navigation_service = None
+                owned_guidance_preferences_store = None
                 closing_service_guard = service_guard
                 service_guard = None
             for resource in resources:
@@ -523,8 +637,29 @@ def create_app(
             DesktopSessionMiddleware,
             session=desktop_session,
         )
+
+    @application.middleware("http")
+    async def enforce_demo_read_only(
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        if request.method not in {"GET", "HEAD", "OPTIONS"}:
+            try:
+                state = provide_onboarding_service().state()
+            except OnboardingStateStorageError:
+                return JSONResponse(
+                    status_code=503,
+                    content={"code": "onboarding_state_unavailable"},
+                )
+            exit_path = "/api/v1/onboarding/actions/exit_demo"
+            if state.demo_mode and request.url.path != exit_path:
+                return JSONResponse(
+                    status_code=409,
+                    content={"code": "demo_read_only"},
+                )
+        return await call_next(request)
+
     application.state.task_repository_provider = provide_task_repository
-    application.state.market_services_provider = provide_market_services
+    application.state.market_services_provider = provide_request_market_services
     application.state.source_settings_services_provider = (
         provide_source_settings_services
     )
@@ -533,6 +668,14 @@ def create_app(
     application.state.model_settings_services_provider = provide_model_settings_services
     application.state.analysis_services_provider = provide_analysis_services
     application.state.analysis_preflight_provider = provide_analysis_preflight
+    application.state.onboarding_service_provider = provide_onboarding_service
+    application.state.workspace_service_provider = provide_workspace_service
+    application.state.market_navigation_service_provider = (
+        provide_market_navigation_service
+    )
+    application.state.guidance_preferences_store_provider = (
+        provide_guidance_preferences_store
+    )
     application.state.database_identity_provider = database_identity.current
     application.state.model_settings_cursor_key = secrets.token_bytes(32)
     application.state.analysis_cursor_key = secrets.token_bytes(32)
@@ -550,6 +693,10 @@ def create_app(
                 "/api/settings/models",
                 "/api/analysis",
                 "/api/tasks",
+                "/api/v1/onboarding",
+                "/api/v1/workspace",
+                "/api/v1/market/navigation",
+                "/api/v1/guidance",
             )
         ):
             return JSONResponse(status_code=422, content={"code": "invalid_request"})
@@ -595,6 +742,10 @@ def create_app(
         application_database_mismatch_handler,
     )
     application.include_router(health_router, prefix="/api")
+    application.include_router(onboarding_router, prefix="/api")
+    application.include_router(guidance_router, prefix="/api")
+    application.include_router(workspace_router, prefix="/api")
+    application.include_router(market_navigation_router, prefix="/api")
     application.include_router(tasks_router, prefix="/api")
     application.include_router(market_router, prefix="/api")
     application.include_router(settings_router, prefix="/api")
