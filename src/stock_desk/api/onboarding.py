@@ -238,7 +238,10 @@ def complete(
 
 @router.post("/actions/{action}", response_model=OnboardingState)
 def action(
-    action: Annotated[Literal["retry", "switch_provider", "advanced", "demo"], Path()],
+    action: Annotated[
+        Literal["retry", "switch_provider", "advanced", "demo", "exit_demo"],
+        Path(),
+    ],
     service: OnboardingServiceDependency,
 ) -> OnboardingState | JSONResponse:
     try:
@@ -247,6 +250,7 @@ def action(
             "switch_provider": service.switch_provider,
             "advanced": service.advanced,
             "demo": service.demo,
+            "exit_demo": service.exit_demo,
         }
         return handlers[action]()
     except OnboardingConflict as error:

@@ -7,7 +7,7 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 
 import { useMarketStore } from '../market/marketStore';
 import {
@@ -236,7 +236,11 @@ type WizardProps = {
   readonly api: OnboardingApi;
   readonly initialState: OnboardingState;
   readonly onCompleted: (instrument: OnboardingInstrument) => void;
-  readonly onDemo: (instrument: OnboardingInstrument) => void;
+  readonly onDemo: (
+    instrument: OnboardingInstrument,
+    state: OnboardingState,
+  ) => void;
+  readonly onAdvanced: (state: OnboardingState) => void;
 };
 
 function OnboardingWizard({
@@ -244,6 +248,7 @@ function OnboardingWizard({
   initialState,
   onCompleted,
   onDemo,
+  onAdvanced,
 }: WizardProps) {
   const [state, setState] = useState(initialState);
   const [sources, setSources] = useState<readonly OnboardingSource[]>([]);
@@ -302,7 +307,8 @@ function OnboardingWizard({
     try {
       const next = await api.runAction(action);
       setState(next);
-      if (action === 'demo') onDemo(instrument);
+      if (action === 'demo') onDemo(instrument, next);
+      if (action === 'advanced') onAdvanced(next);
     } catch {
       setActionError(true);
     } finally {
@@ -599,11 +605,13 @@ export function OnboardingGate({
   readonly onDiagnostics?: () => void;
 }) {
   const navigate = useNavigate();
+  const location = useLocation();
   const selectInstrument = useMarketStore((state) => state.selectInstrument);
   const [state, setState] = useState<OnboardingState | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadFailed, setLoadFailed] = useState(false);
-  const [demoMode, setDemoMode] = useState(false);
+  const [recoveryBusy, setRecoveryBusy] = useState(false);
+  const [recoveryFailed, setRecoveryFailed] = useState(false);
   const requestIdRef = useRef(0);
 
   const load = useCallback(() => {
@@ -631,7 +639,10 @@ export function OnboardingGate({
   useEffect(() => load(), [load]);
 
   useEffect(() => {
-    if (state?.status === 'completed' && state.instrument !== null) {
+    if (
+      (state?.status === 'completed' || state?.demoMode === true) &&
+      state.instrument !== null
+    ) {
       selectInstrument({
         symbol: state.instrument.symbol,
         name: state.instrument.name,
@@ -661,16 +672,73 @@ export function OnboardingGate({
       />
     );
   }
+  const advancedMode =
+    location.pathname === '/settings' &&
+    state.error?.code === 'advanced_configuration_required';
+  if (advancedMode) {
+    return (
+      <OnboardingDemoContext.Provider value={false}>
+        <div className="onboarding-demo-banner" role="status">
+          <span>
+            高级数据设置 · 可在此配置 Tushare Token 或通达信本地 vipdoc 目录
+          </span>
+          <button
+            type="button"
+            disabled={recoveryBusy}
+            onClick={() => {
+              setRecoveryBusy(true);
+              setRecoveryFailed(false);
+              void api
+                .saveProgress({ currentStep: 'data_preparation' })
+                .then((next) => {
+                  setState(next);
+                  void navigate('/market', { replace: true });
+                })
+                .catch(() => setRecoveryFailed(true))
+                .finally(() => setRecoveryBusy(false));
+            }}
+          >
+            返回首次设置
+          </button>
+          {recoveryFailed ? (
+            <span role="alert">暂时无法返回，请重试。</span>
+          ) : null}
+        </div>
+        {children}
+      </OnboardingDemoContext.Provider>
+    );
+  }
   if (
     state.status === 'completed' ||
     state.currentStep === 'completed' ||
-    demoMode
+    state.demoMode
   ) {
     return (
-      <OnboardingDemoContext.Provider value={demoMode}>
-        {demoMode ? (
+      <OnboardingDemoContext.Provider value={state.demoMode}>
+        {state.demoMode ? (
           <div className="onboarding-demo-banner" role="status">
-            只读演示 · 设置尚未完成，重新启动后会继续首次向导
+            <span>只读演示 · 设置尚未完成，重新启动后仍保持只读演示</span>
+            <button
+              type="button"
+              disabled={recoveryBusy}
+              onClick={() => {
+                setRecoveryBusy(true);
+                setRecoveryFailed(false);
+                void api
+                  .runAction('exit_demo')
+                  .then((next) => {
+                    setState(next);
+                    void navigate('/market', { replace: true });
+                  })
+                  .catch(() => setRecoveryFailed(true))
+                  .finally(() => setRecoveryBusy(false));
+              }}
+            >
+              退出演示并配置真实数据
+            </button>
+            {recoveryFailed ? (
+              <span role="alert">退出演示失败，请重试。</span>
+            ) : null}
           </div>
         ) : null}
         {children}
@@ -695,9 +763,13 @@ export function OnboardingGate({
               },
         );
       }}
-      onDemo={(instrument) => {
+      onDemo={(instrument, next) => {
+        setState(next);
         openMarket(instrument);
-        setDemoMode(true);
+      }}
+      onAdvanced={(next) => {
+        setState(next);
+        void navigate('/settings?focus=data-sources');
       }}
     />
   );

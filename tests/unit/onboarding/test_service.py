@@ -258,6 +258,39 @@ def test_demo_mode_never_marks_onboarding_completed(tmp_path: Path) -> None:
         market.close()
 
 
+def test_demo_mode_survives_restart_and_exit_can_prepare_real_data(
+    tmp_path: Path,
+) -> None:
+    service, market = _service(tmp_path)
+    state_path = tmp_path / "state-v1.json"
+    try:
+        service.demo()
+        restarted = OnboardingService(
+            store=OnboardingStateStore(state_path, clock=lambda: NOW),
+            market=market,
+            provider_factory=_Factory(),
+            clock=lambda: NOW,
+        )
+
+        restored = restarted.state()
+        assert restored.demo_mode is True
+        assert restored.source is None
+
+        exited = restarted.exit_demo()
+        assert exited.demo_mode is False
+        assert exited.current_step is OnboardingStep.DATA_PREPARATION
+        assert exited.source is None
+        assert exited.error is None
+
+        prepared = restarted.prepare()
+        assert prepared.demo_mode is False
+        assert prepared.current_step is OnboardingStep.INSTRUMENT_SELECTION
+        assert prepared.source is not None
+        assert prepared.source.id is ProviderId.AKSHARE
+    finally:
+        market.close()
+
+
 def test_provider_failures_expose_only_stable_recovery_codes(tmp_path: Path) -> None:
     _unused_service, market = _service(tmp_path)
     unavailable = OnboardingService(

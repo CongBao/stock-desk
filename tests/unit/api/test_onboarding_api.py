@@ -202,3 +202,41 @@ def test_onboarding_validation_failures_use_a_stable_error_code(tmp_path: Path) 
 
     assert invalid.status_code == 422
     assert invalid.json() == {"code": "invalid_request"}
+
+
+def test_onboarding_api_can_exit_persisted_demo_into_real_setup(
+    tmp_path: Path,
+) -> None:
+    service, market = _service(tmp_path)
+    settings = Settings(
+        database_url=f"sqlite:///{tmp_path / 'onboarding.db'}",
+        data_dir=tmp_path / "data",
+    )
+    try:
+        with TestClient(
+            create_app(
+                settings,
+                market_services=market,
+                onboarding_service=service,
+            )
+        ) as client:
+            demo = client.post("/api/v1/onboarding/actions/demo")
+            exited = client.post("/api/v1/onboarding/actions/exit_demo")
+            prepared = client.put(
+                "/api/v1/onboarding/progress",
+                json={
+                    "current_step": "instrument_selection",
+                    "source_id": "akshare",
+                },
+            )
+    finally:
+        market.close()
+
+    assert demo.status_code == 200
+    assert demo.json()["demo_mode"] is True
+    assert exited.status_code == 200
+    assert exited.json()["demo_mode"] is False
+    assert exited.json()["current_step"] == "data_preparation"
+    assert exited.json()["source"] is None
+    assert prepared.status_code == 200
+    assert prepared.json()["source"]["id"] == "akshare"

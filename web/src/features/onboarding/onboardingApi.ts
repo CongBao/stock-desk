@@ -57,7 +57,7 @@ export type OnboardingState = {
 };
 
 export type OnboardingAction =
-  'retry' | 'switch_provider' | 'advanced' | 'demo';
+  'retry' | 'switch_provider' | 'advanced' | 'demo' | 'exit_demo';
 
 export type OnboardingApi = {
   readonly getState: (signal?: AbortSignal) => Promise<OnboardingState>;
@@ -131,6 +131,7 @@ const actions: readonly OnboardingAction[] = [
   'switch_provider',
   'advanced',
   'demo',
+  'exit_demo',
 ];
 const instrumentKinds = ['index', 'stock', 'etf', 'fund', 'bond'] as const;
 

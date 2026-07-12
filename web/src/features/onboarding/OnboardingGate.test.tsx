@@ -1,6 +1,6 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 
 import { resetMarketStore, useMarketStore } from '../market/marketStore';
 import { OnboardingGate } from './OnboardingGate';
@@ -91,7 +91,21 @@ function api(
       Promise.resolve(
         action === 'demo'
           ? onboardingState('welcome', { demoMode: true })
-          : onboardingState('data_preparation'),
+          : action === 'exit_demo'
+            ? onboardingState('data_preparation', {
+                revision: 3,
+                demoMode: false,
+                source: null,
+              })
+            : action === 'advanced'
+              ? onboardingState('data_preparation', {
+                  revision: 3,
+                  error: {
+                    code: 'advanced_configuration_required',
+                    actions: ['retry', 'switch_provider', 'advanced', 'demo'],
+                  },
+                })
+              : onboardingState('data_preparation'),
       ),
     ),
   };
@@ -104,6 +118,11 @@ function SelectedInstrument() {
       workspace:{selected?.name}:{selected?.symbol}
     </p>
   );
+}
+
+function CurrentLocation() {
+  const location = useLocation();
+  return <p>location:{location.pathname + location.search}</p>;
 }
 
 function renderGate(client: OnboardingApi) {
@@ -189,6 +208,54 @@ it('keeps demo read-only and does not mark onboarding complete', async () => {
   expect(await screen.findByText(/只读演示 · 设置尚未完成/u)).toBeVisible();
   expect(screen.getByText('workspace:上证指数:000001.SS')).toBeVisible();
   expect(client.complete).not.toHaveBeenCalled();
+});
+
+it('restores persisted demo mode and can exit into a usable real-data setup', async () => {
+  const client = api(
+    onboardingState('instrument_selection', {
+      demoMode: true,
+      source: null,
+      error: {
+        code: 'demo_read_only',
+        actions: ['retry', 'switch_provider', 'advanced'],
+      },
+    }),
+  );
+  const user = userEvent.setup();
+  renderGate(client);
+
+  expect(await screen.findByText(/只读演示 · 设置尚未完成/u)).toBeVisible();
+  await user.click(
+    screen.getByRole('button', { name: '退出演示并配置真实数据' }),
+  );
+
+  expect(
+    await screen.findByRole('heading', { name: '准备行情数据' }),
+  ).toBeVisible();
+  expect(
+    screen.getByRole('button', { name: '使用此来源并继续' }),
+  ).toBeEnabled();
+  expect(client.runAction).toHaveBeenCalledWith('exit_demo');
+});
+
+it('opens the real Tushare and local TDX settings from advanced setup', async () => {
+  const client = api(onboardingState('data_preparation'));
+  const user = userEvent.setup();
+  render(
+    <MemoryRouter initialEntries={['/market']}>
+      <OnboardingGate api={client}>
+        <CurrentLocation />
+      </OnboardingGate>
+    </MemoryRouter>,
+  );
+
+  await user.click(await screen.findByRole('button', { name: '高级数据设置' }));
+
+  expect(
+    await screen.findByText('location:/settings?focus=data-sources'),
+  ).toBeVisible();
+  expect(screen.getByRole('button', { name: '返回首次设置' })).toBeEnabled();
+  expect(client.runAction).toHaveBeenCalledWith('advanced');
 });
 
 it('shows a recoverable safe error without rendering exception details', async () => {

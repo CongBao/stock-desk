@@ -463,6 +463,24 @@ class OnboardingService:
                 )
             )
 
+    def exit_demo(self) -> OnboardingState:
+        """Leave the persisted read-only demo without retaining a dead source."""
+        with self._lock:
+            state = self._store.load()
+            if state.status is OnboardingStatus.COMPLETED:
+                return state
+            return self._store.save(
+                state.evolved(
+                    now=self._clock(),
+                    status=OnboardingStatus.IN_PROGRESS,
+                    current_step=OnboardingStep.DATA_PREPARATION,
+                    source=None,
+                    sync=None,
+                    demo_mode=False,
+                    error=None,
+                )
+            )
+
     def _fetch_catalog(
         self, source: ProviderId
     ) -> tuple[RoutedInstrumentSuccess | RoutedInstrumentFailure, MarketDataProvider]:

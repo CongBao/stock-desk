@@ -1170,6 +1170,11 @@ a {
 .onboarding-demo-banner {
   position: fixed;
   z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 12px;
   right: 16px;
   bottom: 16px;
   max-width: min(420px, calc(100vw - 32px));
@@ -1180,6 +1185,26 @@ a {
   background: rgba(69, 43, 9, 0.96);
   box-shadow: 0 12px 36px rgba(0, 0, 0, 0.4);
   font-size: 12px;
+}
+
+.onboarding-demo-banner button {
+  min-height: 36px;
+  padding: 7px 11px;
+  border: 1px solid rgba(253, 230, 138, 0.55);
+  border-radius: 7px;
+  color: #fffbeb;
+  background: rgba(146, 64, 14, 0.72);
+  cursor: pointer;
+}
+
+.onboarding-demo-banner button:focus-visible {
+  outline: 3px solid #67e8f9;
+  outline-offset: 2px;
+}
+
+.onboarding-demo-banner button:disabled {
+  cursor: wait;
+  opacity: 0.65;
 }
 
 @media (max-width: 620px) {
