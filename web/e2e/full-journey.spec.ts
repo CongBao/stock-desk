@@ -141,7 +141,24 @@ test('complete public demo journey uses real API worker and frozen provenance', 
     );
   });
   await page.getByRole('tab', { name: '交易明细' }).click();
-  await tradesResponse;
+  const realizedTrades = (await (await tradesResponse).json()) as {
+    readonly items: readonly unknown[];
+  };
+  if (realizedTrades.items.length === 0) {
+    const openResponse = page.waitForResponse((candidate) => {
+      const url = new URL(candidate.url());
+      return (
+        url.pathname === `/api/backtests/${singleRunId}/open` &&
+        url.searchParams.get('limit') === '100' &&
+        candidate.status() === 200
+      );
+    });
+    await page.getByRole('tab', { name: '开放仓位' }).click();
+    const openTrades = (await (await openResponse).json()) as {
+      readonly items: readonly unknown[];
+    };
+    expect(openTrades.items.length).toBeGreaterThan(0);
+  }
   const tradeTable = page.getByRole('region', {
     name: '可横向滚动的交易表',
   });
