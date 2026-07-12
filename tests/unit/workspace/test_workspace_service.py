@@ -193,3 +193,57 @@ def test_onboarding_initialization_replaces_an_expired_workspace(
     assert initialized.restored is True
     assert initialized.notice is None
     assert initialized.revision == 5
+
+
+def test_future_workspace_is_rejected_and_valid_initialization_is_idempotent(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    service.store.save(
+        WorkspaceState(
+            revision=2,
+            updated_at=NOW + timedelta(minutes=6),
+            preferences=WorkspacePreferences.safe_default(),
+        )
+    )
+    assert service.restore().notice == "workspace_corrupt"
+
+    service.store.save(
+        WorkspaceState(
+            revision=3,
+            updated_at=NOW,
+            preferences=WorkspacePreferences.safe_default(),
+        )
+    )
+    initialized = service.initialize(WorkspaceInstrument.default())
+    assert initialized.restored is True
+    assert initialized.revision == 3
+
+
+def test_workspace_update_and_initialization_reject_missing_instruments(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    missing = WorkspaceInstrument(
+        symbol="999999.SH",
+        name="不存在标的",
+        exchange=Exchange.SH,
+        kind=InstrumentKind.STOCK,
+    )
+    request = WorkspacePut(
+        expected_revision=0,
+        current_page="/market",
+        instrument=missing,
+        period="1d",
+        adjustment="none",
+        zoom={"start": 0.0, "end": 100.0},
+        main_chart="candlestick",
+        subchart={"kind": "volume"},
+    )
+
+    with pytest.raises(WorkspaceConflict, match="workspace_instrument_unavailable"):
+        service.update(request)
+
+    initialized = service.initialize(missing)
+    assert initialized.restored is True
+    assert initialized.workspace.instrument == WorkspaceInstrument.default()

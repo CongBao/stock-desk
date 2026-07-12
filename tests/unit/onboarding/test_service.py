@@ -311,6 +311,64 @@ def test_search_rejects_invalid_queries(tmp_path: Path, query: str) -> None:
         market.close()
 
 
+def test_selection_and_sync_reject_stale_or_unknown_user_choices(
+    tmp_path: Path,
+) -> None:
+    service, market = _service(tmp_path)
+    try:
+        with pytest.raises(OnboardingConflict) as unsupported:
+            service.prepare(ProviderId.TDX_LOCAL)
+        assert unsupported.value.code == "unsupported_onboarding_source"
+
+        with pytest.raises(OnboardingConflict) as catalog_missing:
+            service.select("000001.SS")
+        assert catalog_missing.value.code == "catalog_not_ready"
+
+        prepared = service.begin_preparation()
+        with pytest.raises(OnboardingConflict) as instrument_missing:
+            service.select("999999.SH")
+        assert instrument_missing.value.code == "instrument_not_found"
+
+        with pytest.raises(OnboardingConflict) as wrong_provider:
+            service.synchronize(
+                source_id=ProviderId.BAOSTOCK,
+                symbol=prepared.instrument.symbol,
+            )
+        assert wrong_provider.value.code == "onboarding_selection_changed"
+
+        with pytest.raises(OnboardingConflict) as wrong_symbol:
+            service.synchronize(
+                source_id=ProviderId.AKSHARE,
+                symbol="000001.SZ",
+            )
+        assert wrong_symbol.value.code == "onboarding_selection_changed"
+    finally:
+        market.close()
+
+
+def test_retry_and_provider_switch_follow_the_persisted_step(tmp_path: Path) -> None:
+    service, market = _service(tmp_path)
+    try:
+        prepared = service.begin_preparation()
+        assert service.retry() == prepared
+
+        selected = service.select(prepared.instrument.symbol)
+        retried = service.retry()
+        assert retried.current_step is OnboardingStep.SYNCHRONIZATION
+        assert retried.sync is not None
+        assert retried.sync.status.value == "verified"
+
+        switched_to_bao = service.switch_provider()
+        assert switched_to_bao.source is not None
+        assert switched_to_bao.source.id is ProviderId.BAOSTOCK
+        switched_back = service.switch_provider()
+        assert switched_back.source is not None
+        assert switched_back.source.id is ProviderId.AKSHARE
+        assert selected.instrument == switched_back.instrument
+    finally:
+        market.close()
+
+
 def test_preparation_falls_back_only_after_the_whole_provider_attempt_fails(
     tmp_path: Path,
 ) -> None:

@@ -6,6 +6,7 @@ from stock_desk.guidance.models import GuidancePage, GuidanceStatus
 from stock_desk.guidance.store import (
     GuidancePreferencesConflict,
     GuidancePreferencesStore,
+    GuidancePreferencesStorageError,
 )
 
 
@@ -59,3 +60,18 @@ def test_content_version_is_scoped_to_one_page(tmp_path: Path) -> None:
 
     assert second.pages[GuidancePage.MARKET].content_version == 1
     assert second.pages[GuidancePage.FORMULA].content_version == 2
+
+
+def test_preferences_path_and_persisted_payload_fail_closed(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="must be absolute"):
+        GuidancePreferencesStore(Path("relative/preferences.json"))
+
+    path = tmp_path / "preferences.json"
+    store = GuidancePreferencesStore(path)
+    path.write_text("{not-json", encoding="utf-8")
+    with pytest.raises(GuidancePreferencesStorageError):
+        store.load()
+
+    path.write_bytes(b"x" * (64 * 1024 + 1))
+    with pytest.raises(GuidancePreferencesStorageError):
+        store.load()
