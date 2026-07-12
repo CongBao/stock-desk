@@ -122,10 +122,28 @@ test('real local market workflow stays cached, traceable, and interactive', asyn
   await expect(page.getByRole('region', { name: '更新进度' })).toBeVisible();
   const cancel = page.getByRole('button', { name: '取消更新' });
   await expect(cancel).toBeVisible();
-  await cancel.click();
-  await expect(page.getByText(/已取消|已请求取消/u).first()).toBeVisible({
-    timeout: 15_000,
+  const cancelResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return (
+      response.request().method() === 'POST' &&
+      /^\/api\/tasks\/[^/]+\/cancel$/u.test(url.pathname)
+    );
   });
+  await cancel.click();
+  const cancellation = await cancelResponse;
+  expect([200, 409]).toContain(cancellation.status());
+  if (cancellation.status() === 200) {
+    await expect(page.getByText(/已取消|已请求取消/u).first()).toBeVisible({
+      timeout: 15_000,
+    });
+  } else {
+    // The worker may finish this two-symbol fixture between rendering the
+    // cancel button and accepting the request. A 409 is the canonical race
+    // outcome; the UI must refresh to the durable terminal state.
+    await expect(page.getByText(/已完成|更新失败/u).first()).toBeVisible({
+      timeout: 15_000,
+    });
+  }
 
   await page.getByRole('checkbox', { name: '启用每日更新' }).check();
   await page.getByLabel('每日更新时间').fill('18:30');

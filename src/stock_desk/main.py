@@ -80,7 +80,10 @@ from stock_desk.onboarding.service import OnboardingService
 from stock_desk.onboarding.demo_snapshot import BundledDemoMarket
 from stock_desk.market.navigation import MarketNavigationService
 from stock_desk.storage.backup import recover_interrupted_restore
-from stock_desk.storage.lifecycle import service_lifecycle
+from stock_desk.storage.lifecycle import (
+    SERVICE_STARTUP_LOCK_TIMEOUT_SECONDS,
+    service_lifecycle,
+)
 from stock_desk.tasks.repository import TaskRepository, TaskRepositoryError
 from stock_desk.web import install_web_routes
 from stock_desk.workspace.service import WorkspaceService
@@ -563,6 +566,7 @@ def create_app(
                 candidate = service_lifecycle(
                     resolved_settings.data_dir,
                     role="api",
+                    timeout_seconds=SERVICE_STARTUP_LOCK_TIMEOUT_SECONDS,
                     preflight=lambda: recover_interrupted_restore(
                         data_dir=resolved_settings.data_dir,
                         _lifecycle_held=True,

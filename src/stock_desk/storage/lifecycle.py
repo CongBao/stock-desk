@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import stat
 from uuid import uuid4
+from typing import Final
 
 from filelock import FileLock, Timeout as FileLockTimeout
 
@@ -18,6 +19,7 @@ _SERVICE_DIRECTORY = ".stock-desk-services"
 _REPARSE_POINT = 0x400
 _ROLE_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 _PLATFORM = os.name
+SERVICE_STARTUP_LOCK_TIMEOUT_SECONDS: Final = 5.0
 
 
 class LifecycleBusyError(RuntimeError):

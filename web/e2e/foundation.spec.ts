@@ -286,19 +286,21 @@ test('market hashes render through the bounded fallback without crypto.subtle', 
 
   await page.goto('/market');
   expect(await page.evaluate(() => globalThis.crypto.subtle)).toBeUndefined();
-  await page.getByRole('button', { name: '打开股票池' }).click();
-  await page.getByRole('button', { name: /全量 A 股/u }).click();
-  await expect(
-    page.getByRole('button', { name: /浦发银行.*600000\.SH/u }),
-  ).toBeVisible();
-  await page.getByRole('button', { name: '关闭股票池' }).click();
-
   const search = page.getByRole('combobox', { name: '搜索证券' });
   await search.fill('浦发');
   await page
     .getByRole('option', { name: '浦发银行 600000.SH', exact: true })
     .click();
   await expect(page.locator('.market-chart-canvas canvas')).toHaveCount(1);
+
+  await page.getByRole('button', { name: '打开股票池' }).click();
+  await page.getByRole('button', { name: /全量 A 股/u }).click();
+  await expect(
+    page
+      .getByRole('list', { name: '全量 A 股成员' })
+      .getByRole('button', { name: '浦发银行 600000.SH', exact: true }),
+  ).toBeVisible();
+  await page.getByRole('button', { name: '关闭股票池' }).click();
   await expect(page.getByText('股票池暂不可用', { exact: true })).toHaveCount(
     0,
   );
