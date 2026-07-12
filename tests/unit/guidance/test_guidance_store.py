@@ -71,7 +71,70 @@ def test_preferences_path_and_persisted_payload_fail_closed(tmp_path: Path) -> N
     path.write_text("{not-json", encoding="utf-8")
     with pytest.raises(GuidancePreferencesStorageError):
         store.load()
-
     path.write_bytes(b"x" * (64 * 1024 + 1))
     with pytest.raises(GuidancePreferencesStorageError):
         store.load()
+
+
+def test_preference_write_and_cleanup_failures_remain_storage_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = GuidancePreferencesStore(tmp_path / "replace-failure.json")
+
+    def fail_replace(_source: Path, _target: Path) -> None:
+        raise OSError("simulated replace failure")
+
+    monkeypatch.setattr("stock_desk.guidance.store.os.replace", fail_replace)
+    with pytest.raises(GuidancePreferencesStorageError):
+        store.update(
+            expected_revision=0,
+            page=GuidancePage.MARKET,
+            content_version=1,
+            status=GuidanceStatus.COMPLETED,
+        )
+    assert not tuple(tmp_path.glob(".replace-failure.json.*.tmp"))
+
+
+def test_cleanup_failure_does_not_leak_raw_os_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = GuidancePreferencesStore(tmp_path / "open-failure.json")
+
+    def fail_open(*_args: object, **_kwargs: object) -> int:
+        raise OSError("simulated open failure")
+
+    def fail_unlink(
+        _path: Path,
+        missing_ok: bool = False,
+    ) -> None:
+        del missing_ok
+        raise OSError("simulated cleanup failure")
+
+    monkeypatch.setattr("stock_desk.guidance.store.os.open", fail_open)
+    monkeypatch.setattr(Path, "unlink", fail_unlink)
+    with pytest.raises(GuidancePreferencesStorageError):
+        store.update(
+            expected_revision=0,
+            page=GuidancePage.MARKET,
+            content_version=1,
+            status=GuidanceStatus.COMPLETED,
+        )
+
+
+def test_open_descriptor_is_closed_when_file_handle_creation_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = GuidancePreferencesStore(tmp_path / "fdopen-failure.json")
+
+    def fail_fdopen(*_args: object, **_kwargs: object) -> None:
+        raise OSError("simulated fdopen failure")
+
+    monkeypatch.setattr("stock_desk.guidance.store.os.fdopen", fail_fdopen)
+    with pytest.raises(GuidancePreferencesStorageError):
+        store.update(
+            expected_revision=0,
+            page=GuidancePage.MARKET,
+            content_version=1,
+            status=GuidanceStatus.COMPLETED,
+        )
+    assert not tuple(tmp_path.glob(".fdopen-failure.json.*.tmp"))

@@ -34,6 +34,16 @@ class _Market:
         self.instruments = _Instruments(items)
 
 
+class _Formulas:
+    def __init__(self, placement: str | None) -> None:
+        self.placement = placement
+
+    def get_version(self, _version_id: str):
+        if self.placement is None:
+            raise LookupError
+        return type("Formula", (), {"placement": self.placement})()
+
+
 PUDONG = Instrument(
     symbol="600000.SH",
     exchange=Exchange.SH,
@@ -247,3 +257,87 @@ def test_workspace_update_and_initialization_reject_missing_instruments(
     initialized = service.initialize(missing)
     assert initialized.restored is True
     assert initialized.workspace.instrument == WorkspaceInstrument.default()
+
+
+def test_corrupt_storage_is_replaced_by_update_and_initialization(
+    tmp_path: Path,
+) -> None:
+    update_service = _service(tmp_path / "update")
+    update_service.store.path.parent.mkdir(parents=True)
+    update_service.store.path.write_text("not-json", encoding="utf-8")
+    saved = update_service.update(
+        WorkspacePut(
+            expected_revision=0,
+            current_page="/market",
+            instrument=WorkspaceInstrument.default(),
+            period="1d",
+            adjustment="none",
+            zoom={"start": 0.0, "end": 100.0},
+            main_chart="candlestick",
+            subchart={"kind": "volume"},
+        )
+    )
+    assert saved.revision == 1
+
+    initialize_service = _service(tmp_path / "initialize")
+    initialize_service.store.path.parent.mkdir(parents=True)
+    initialize_service.store.path.write_text("not-json", encoding="utf-8")
+    initialized = initialize_service.initialize(WorkspaceInstrument.default())
+    assert initialized.revision == 1
+
+
+def test_formula_subchart_requires_a_resolved_subchart_formula(tmp_path: Path) -> None:
+    formula_version_id = "00000000-0000-4000-8000-000000000001"
+    state = WorkspaceState(
+        revision=1,
+        updated_at=NOW,
+        preferences=WorkspacePreferences(
+            instrument=WorkspaceInstrument.default(),
+            subchart={
+                "kind": "formula",
+                "formula_version_id": formula_version_id,
+            },
+        ),
+    )
+    store = WorkspaceStateStore(tmp_path / "state-v1.json")
+    store.save(state)
+
+    available = WorkspaceService(
+        store=store,
+        market=_Market((PUDONG,)),
+        formula_repository=_Formulas("subchart"),  # type: ignore[arg-type]
+        clock=lambda: NOW,
+    )
+    assert available.restore().restored is True
+
+    wrong_placement = WorkspaceService(
+        store=store,
+        market=_Market((PUDONG,)),
+        formula_repository=_Formulas("main"),  # type: ignore[arg-type]
+        clock=lambda: NOW,
+    )
+    assert wrong_placement.restore().notice == "workspace_chart_unavailable"
+    with pytest.raises(WorkspaceConflict, match="workspace_chart_unavailable"):
+        wrong_placement.update(
+            WorkspacePut(
+                expected_revision=1,
+                current_page="/market",
+                instrument=WorkspaceInstrument.default(),
+                period="1d",
+                adjustment="none",
+                zoom={"start": 0.0, "end": 100.0},
+                main_chart="candlestick",
+                subchart={
+                    "kind": "formula",
+                    "formula_version_id": formula_version_id,
+                },
+            )
+        )
+
+    missing_formula = WorkspaceService(
+        store=store,
+        market=_Market((PUDONG,)),
+        formula_repository=_Formulas(None),  # type: ignore[arg-type]
+        clock=lambda: NOW,
+    )
+    assert missing_formula.restore().notice == "workspace_chart_unavailable"

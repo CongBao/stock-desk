@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
@@ -13,6 +14,7 @@ from stock_desk.market.providers.base import (
     CalendarFetchOutcome,
     InstrumentFetchOutcome,
     MarketDataProvider,
+    ProviderClientError,
     ProviderOperation,
     ProviderUnavailable,
 )
@@ -39,7 +41,11 @@ from stock_desk.market.types import (
     ProviderId,
     TradingStatus,
 )
-from stock_desk.onboarding.models import OnboardingStatus, OnboardingStep
+from stock_desk.onboarding.models import (
+    OnboardingStatus,
+    OnboardingStep,
+    SynchronizationStatus,
+)
 from stock_desk.onboarding.service import OnboardingConflict, OnboardingService
 from stock_desk.onboarding.store import OnboardingStateStore
 
@@ -209,6 +215,103 @@ class _FallbackFactory:
         if source is ProviderId.AKSHARE:
             raise ProviderUnavailable()
         return _Provider(source)
+
+
+class _TimeoutProvider(_Provider):
+    def __init__(
+        self,
+        source: ProviderId,
+        *,
+        fail_catalog: bool,
+        fail_bars: bool,
+    ) -> None:
+        super().__init__(source)
+        self.fail_catalog = fail_catalog
+        self.fail_bars = fail_bars
+        self.close_count = 0
+
+    def fetch_instruments(self) -> InstrumentFetchOutcome:
+        if self.fail_catalog:
+            raise TimeoutError
+        return super().fetch_instruments()
+
+    def fetch_bars(self, query: BarQuery) -> BarFetchOutcome:
+        if self.fail_bars:
+            raise TimeoutError
+        return super().fetch_bars(query)
+
+    def close(self) -> None:
+        self.close_count += 1
+        raise RuntimeError("simulated SDK close failure")
+
+
+class _TimeoutFactory:
+    def __init__(self, *, fail_catalog: bool, fail_bars: bool) -> None:
+        self.fail_catalog = fail_catalog
+        self.fail_bars = fail_bars
+        self.providers: list[_TimeoutProvider] = []
+
+    def create(
+        self,
+        source: ProviderId,
+        *,
+        token: str | None,
+        tdx_path: Path | None,
+    ) -> MarketDataProvider:
+        assert token is None
+        assert tdx_path is None
+        provider = _TimeoutProvider(
+            source,
+            fail_catalog=self.fail_catalog,
+            fail_bars=self.fail_bars,
+        )
+        self.providers.append(provider)
+        return provider
+
+
+class _WrongSourceProvider(_Provider):
+    def fetch_instruments(self) -> InstrumentFetchOutcome:
+        other = (
+            ProviderId.BAOSTOCK
+            if self.name is ProviderId.AKSHARE
+            else ProviderId.AKSHARE
+        )
+        return _Provider(other).fetch_instruments()
+
+
+class _InvalidDefaultProvider(_Provider):
+    def fetch_instruments(self) -> InstrumentFetchOutcome:
+        original = super().fetch_instruments()
+        assert not isinstance(original, tuple)
+        return cast(
+            InstrumentFetchOutcome,
+            make_batch(
+                source=self.name,
+                operation=ProviderOperation.INSTRUMENTS,
+                request={},
+                items=tuple(
+                    item for item in original.items if item.symbol != "000001.SS"
+                ),
+                data_cutoff=NOW,
+                observed_at=NOW,
+            ),
+        )
+
+
+class _CatalogVariantFactory:
+    def __init__(self, provider_type: type[_Provider]) -> None:
+        self.provider_type = provider_type
+
+    def create(
+        self,
+        source: ProviderId,
+        *,
+        token: str | None,
+        tdx_path: Path | None,
+    ) -> MarketDataProvider:
+        assert token is None
+        assert tdx_path is None
+        return self.provider_type(source)
 
 
 def _service(tmp_path: Path) -> tuple[OnboardingService, MarketServices]:
@@ -463,5 +566,178 @@ def test_provider_failures_expose_only_stable_recovery_codes(tmp_path: Path) -> 
             "demo",
         )
         assert "ProviderUnavailable" not in failed.model_dump_json()
+    finally:
+        market.close()
+
+
+def test_provider_timeouts_remain_primary_when_sdk_cleanup_also_fails(
+    tmp_path: Path,
+) -> None:
+    _unused_service, market = _service(tmp_path)
+    catalog_factory = _TimeoutFactory(fail_catalog=True, fail_bars=False)
+    catalog_service = OnboardingService(
+        store=OnboardingStateStore(
+            tmp_path / "catalog-timeout-state-v1.json", clock=lambda: NOW
+        ),
+        market=market,
+        provider_factory=catalog_factory,
+        clock=lambda: NOW,
+    )
+    bars_factory = _TimeoutFactory(fail_catalog=False, fail_bars=True)
+    bars_service = OnboardingService(
+        store=OnboardingStateStore(
+            tmp_path / "bars-timeout-state-v1.json", clock=lambda: NOW
+        ),
+        market=market,
+        provider_factory=bars_factory,
+        clock=lambda: NOW,
+    )
+    try:
+        catalog_failed = catalog_service.begin_preparation()
+        assert catalog_failed.error is not None
+        assert catalog_failed.error.code == "provider_timeout"
+        assert len(catalog_factory.providers) == 2
+        assert all(item.close_count == 1 for item in catalog_factory.providers)
+
+        prepared = bars_service.begin_preparation()
+        bars_service.select(prepared.instrument.symbol)
+        bars_failed = bars_service.synchronize(
+            source_id=ProviderId.AKSHARE,
+            symbol=prepared.instrument.symbol,
+        )
+        assert bars_failed.error is not None
+        assert bars_failed.error.code == "provider_timeout"
+        assert bars_failed.sync is not None
+        assert bars_failed.sync.status is SynchronizationStatus.FAILED
+        assert len(bars_factory.providers) == 2
+        assert all(item.close_count == 1 for item in bars_factory.providers)
+    finally:
+        market.close()
+
+
+@pytest.mark.parametrize(
+    ("provider_type", "expected_code"),
+    [
+        (_WrongSourceProvider, "provider_invalid_response"),
+        (_InvalidDefaultProvider, "catalog_verification_failed"),
+    ],
+)
+def test_catalog_identity_failures_never_commit_partial_provider_data(
+    tmp_path: Path,
+    provider_type: type[_Provider],
+    expected_code: str,
+) -> None:
+    _unused_service, market = _service(tmp_path)
+    service = OnboardingService(
+        store=OnboardingStateStore(
+            tmp_path / f"{provider_type.__name__}-state-v1.json", clock=lambda: NOW
+        ),
+        market=market,
+        provider_factory=_CatalogVariantFactory(provider_type),
+        clock=lambda: NOW,
+    )
+    try:
+        failed = service.begin_preparation()
+        assert failed.source is None
+        assert failed.error is not None
+        assert failed.error.code == expected_code
+    finally:
+        market.close()
+
+
+def test_internal_provider_error_classification_is_stable_and_exhaustive() -> None:
+    assert (
+        OnboardingService._exception_code(ProviderClientError("unsafe detail"))
+        == "provider_invalid_response"
+    )
+
+    class _UnknownProviderError(ProviderClientError):
+        reason = "unexpected"
+
+    assert (
+        OnboardingService._exception_code(_UnknownProviderError())
+        == "provider_unavailable"
+    )
+
+
+def test_persisted_catalog_references_are_revalidated_before_search(
+    tmp_path: Path,
+) -> None:
+    service, market = _service(tmp_path)
+    store = OnboardingStateStore(tmp_path / "state-v1.json", clock=lambda: NOW)
+    try:
+        prepared = service.begin_preparation()
+        assert prepared.source is not None
+
+        missing_reference = prepared.source.model_copy(
+            update={"catalog_manifest_record_id": "sha256:" + "0" * 64}
+        )
+        store.save(prepared.model_copy(update={"source": missing_reference}))
+        with pytest.raises(OnboardingConflict) as missing:
+            service.search("000001", limit=20)
+        assert missing.value.code == "catalog_verification_failed"
+
+        mismatched_version = prepared.source.model_copy(
+            update={"catalog_dataset_version": "sha256:" + "f" * 64}
+        )
+        store.save(prepared.model_copy(update={"source": mismatched_version}))
+        with pytest.raises(OnboardingConflict) as mismatched:
+            service.search("000001", limit=20)
+        assert mismatched.value.code == "catalog_verification_failed"
+    finally:
+        market.close()
+    no_attempts = SimpleNamespace(audit=SimpleNamespace(attempts=()))
+    assert (
+        OnboardingService._failure_code(no_attempts)  # type: ignore[arg-type]
+        == "provider_unavailable"
+    )
+
+
+def test_bar_evidence_must_be_complete_sorted_and_identity_matched(
+    tmp_path: Path,
+) -> None:
+    service, market = _service(tmp_path)
+    try:
+        prepared = service.begin_preparation()
+        instrument = market.instruments.get(prepared.instrument.symbol).instrument
+        query = service._daily_query(instrument)
+        routed, _provider = service._fetch_bars(ProviderId.AKSHARE, query)
+
+        incomplete = routed.model_copy(
+            update={
+                "result": routed.result.model_copy(
+                    update={"coverage_start": query.start + timedelta(days=1)}
+                )
+            }
+        )
+        with pytest.raises(ValueError, match="bar evidence is incomplete"):
+            service._validate_bar_result(incomplete, ProviderId.AKSHARE, query)
+
+        unsorted = routed.model_copy(
+            update={
+                "result": routed.result.model_copy(
+                    update={"bars": tuple(reversed(routed.result.bars))}
+                )
+            }
+        )
+        with pytest.raises(ValueError, match="bars are not strictly sorted"):
+            service._validate_bar_result(unsorted, ProviderId.AKSHARE, query)
+
+        mismatched = routed.model_copy(
+            update={
+                "result": routed.result.model_copy(
+                    update={
+                        "bars": (
+                            routed.result.bars[0].model_copy(
+                                update={"symbol": "000001.SZ"}
+                            ),
+                            *routed.result.bars[1:],
+                        )
+                    }
+                )
+            }
+        )
+        with pytest.raises(ValueError, match="bar identity mismatch"):
+            service._validate_bar_result(mismatched, ProviderId.AKSHARE, query)
     finally:
         market.close()

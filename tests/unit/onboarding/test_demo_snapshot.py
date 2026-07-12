@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 
 import pytest
 
-from stock_desk.onboarding.demo_snapshot import BundledDemoMarket
+from stock_desk.onboarding import demo_snapshot
+from stock_desk.onboarding.demo_snapshot import (
+    BundledDemoManifest,
+    BundledDemoMarket,
+    load_bundled_demo_manifest,
+)
 from stock_desk.market.types import Adjustment, Period, ProviderId
 
 
@@ -66,3 +72,29 @@ def test_bundled_demo_snapshot_rejects_incomplete_or_tampered_storage(
     marker.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(ValueError, match="storage identity mismatch"):
         BundledDemoMarket.open(tampered_data)
+
+
+def test_bundled_demo_manifest_requires_an_aware_generation_time() -> None:
+    payload = load_bundled_demo_manifest().model_dump(mode="python")
+    generated_at = payload["generated_at"]
+    assert isinstance(generated_at, datetime)
+    payload["generated_at"] = generated_at.replace(tzinfo=None)
+
+    with pytest.raises(ValueError, match="timezone-aware"):
+        BundledDemoManifest.model_validate(payload)
+
+
+def test_bundled_demo_seed_failure_removes_staging_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data_dir = tmp_path / "failed-seed"
+
+    def fail_seed(_root: Path, _manifest: BundledDemoManifest) -> None:
+        raise RuntimeError("simulated seed failure")
+
+    monkeypatch.setattr(demo_snapshot, "_seed", fail_seed)
+    with pytest.raises(RuntimeError, match="simulated seed failure"):
+        BundledDemoMarket.open(data_dir)
+
+    assert not (data_dir / "demo-market").exists()
+    assert not tuple(data_dir.glob(".demo-market-staging-*"))
