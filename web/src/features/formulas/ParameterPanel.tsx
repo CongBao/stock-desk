@@ -162,6 +162,7 @@ export function ParameterPanel({ onChange, schema }: ParameterPanelProps) {
     <section
       className="formula-parameters"
       aria-labelledby="formula-parameters-title"
+      data-guidance-target="formula-parameters"
     >
       <header>
         <div>

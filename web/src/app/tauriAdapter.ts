@@ -15,7 +15,7 @@ const commands = {
 
 const runtimeStateEvent = 'desktop-runtime-state';
 const exitStateEvent = 'desktop-exit-state';
-const MAX_PROXY_RESPONSE_BYTES = 4 * 1_048_576;
+export const MAX_DESKTOP_API_RESPONSE_BYTES = 192 * 1_048_576;
 
 type DesktopApiResponse = {
   readonly body: string;
@@ -43,11 +43,21 @@ function decodeApiResponse(value: unknown): DesktopApiResponse {
     value.content_type.length > 256 ||
     /[\r\n]/u.test(value.content_type) ||
     typeof value.body !== 'string' ||
-    new TextEncoder().encode(value.body).byteLength > MAX_PROXY_RESPONSE_BYTES
+    !isDesktopApiResponseSizeAllowed(
+      new TextEncoder().encode(value.body).byteLength,
+    )
   ) {
     throw new TypeError('Invalid desktop API response');
   }
   return value as DesktopApiResponse;
+}
+
+export function isDesktopApiResponseSizeAllowed(byteLength: number): boolean {
+  return (
+    Number.isSafeInteger(byteLength) &&
+    byteLength >= 0 &&
+    byteLength <= MAX_DESKTOP_API_RESPONSE_BYTES
+  );
 }
 
 function asError(value: unknown): Error {

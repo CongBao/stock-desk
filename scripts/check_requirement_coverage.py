@@ -361,6 +361,62 @@ V11_CANONICAL_REQUIREMENTS: dict[str, dict[str, Any]] = {
             "fall-back-from-invalid-state",
         ),
     ),
+    "V11-R-007": _authority(
+        "formula",
+        "user_visible",
+        "formula_studio_desktop_accessibility",
+        2,
+        "67572b08f996785f17d109d2ebd5af4211847aaa13eee49f4632718992649be9",
+        (
+            "desktop-user-experience",
+            "responsive-desktop-layout",
+            "high-display-scaling",
+        ),
+        (
+            "desktop-user-experience",
+            "system-theme-and-non-color-expression",
+            "follow-system-theme-changes",
+        ),
+        (
+            "desktop-user-experience",
+            "keyboard-and-focus-usability",
+            "complete-primary-journey-with-keyboard",
+        ),
+        (
+            "desktop-onboarding",
+            "core-flow-contextual-guidance",
+            "first-visit-core-page",
+        ),
+    ),
+    "V11-R-008": _authority(
+        "formula",
+        "security",
+        "authenticated_desktop_formula_boundary",
+        2,
+        "05aa28c981bf359f2b3dec01f0c46f0664bab6710152c05a78285d8464e2f757",
+        (
+            "windows-desktop-shell",
+            "sidecar-lifecycle-and-session-security",
+            "unauthorized-local-request",
+        ),
+        (
+            "windows-desktop-shell",
+            "core-capability-compatibility-baseline",
+            "use-existing-core-capability-after-desktopization",
+        ),
+    ),
+    "V11-R-009": _authority(
+        "formula",
+        "architecture",
+        "desktop_formula_semantic_identity",
+        2,
+        "690bcc22a624a7c2b0a658baa378ba7ea55bdaeaf06b5d056c2b3989388e36a5",
+        (
+            "windows-desktop-shell",
+            "core-capability-compatibility-baseline",
+            "use-existing-core-capability-after-desktopization",
+        ),
+    ),
 }
 
 AUTHORITATIVE_BEHAVIOR_KEYS: dict[str, str] = {
@@ -1259,25 +1315,25 @@ def validate_v11_manifest(
         raise ValidationError("v1.1 schema_version must be integer 1")
     requirements = _expect_list(matrix["requirements"], "v1.1 requirements")
     non_goals = _expect_list(matrix["non_goals"], "v1.1 non_goals")
-    expected = [f"V11-R-{index:03d}" for index in range(1, 7)]
+    expected = [f"V11-R-{index:03d}" for index in range(1, 10)]
     if [
         item.get("id") if isinstance(item, dict) else None for item in requirements
     ] != expected:
         raise ValidationError(
-            "v1.1 requirements must contain exactly V11-R-001 through V11-R-006"
+            "v1.1 requirements must contain exactly V11-R-001 through V11-R-009"
         )
     if non_goals:
         raise ValidationError("v1.1 non_goals must be empty for the frozen increment")
     if list(V11_CANONICAL_REQUIREMENTS) != expected:
         raise ValidationError(
-            "v1.1 canonical registry must contain exactly V11-R-001 through V11-R-006"
+            "v1.1 canonical registry must contain exactly V11-R-001 through V11-R-009"
         )
     if (
         list(V11_AUTHORITATIVE_BEHAVIOR_KEYS) != expected
         or list(V11_AUTHORITATIVE_ACCEPTANCE_SHA256) != expected
     ):
         raise ValidationError(
-            "v1.1 authoritative contract must contain exactly V11-R-001 through V11-R-006"
+            "v1.1 authoritative contract must contain exactly V11-R-001 through V11-R-009"
         )
     tracked_paths = _tracked_paths(repo_root)
     behavior_keys: set[str] = set()
