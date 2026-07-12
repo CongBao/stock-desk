@@ -118,7 +118,9 @@ test.describe.serial('Stage 3 real local backtesting', () => {
     await expect(page).toHaveURL(
       `/backtests?symbol=600000.SH&period=1d&adjustment=qfq&start=${START}&end=${END}`,
     );
-    await expect(page.getByText('600000.SH')).toBeVisible();
+    await expect(
+      page.getByLabel('当前配置摘要').getByText('600000.SH', { exact: true }),
+    ).toBeVisible();
     await expect(page.getByText(`${START} → ${END}`)).toBeVisible();
     await chooseFormula(page, MACD_NAME);
     await finishCommonSteps(page);

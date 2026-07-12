@@ -132,11 +132,24 @@ test('complete public demo journey uses real API worker and frozen provenance', 
   await expect(page).toHaveURL(/\/backtests\/[0-9a-f-]{36}$/u);
   const singleRunId = page.url().split('/').at(-1) ?? '';
   await waitForBacktestReport(page);
+  const tradesResponse = page.waitForResponse((candidate) => {
+    const url = new URL(candidate.url());
+    return (
+      url.pathname === `/api/backtests/${singleRunId}/trades` &&
+      url.searchParams.get('limit') === '100' &&
+      candidate.status() === 200
+    );
+  });
   await page.getByRole('tab', { name: '交易明细' }).click();
+  await tradesResponse;
+  const tradeTable = page.getByRole('region', {
+    name: '可横向滚动的交易表',
+  });
+  await expect(tradeTable.locator('tbody tr')).not.toHaveCount(0);
   await expect(
-    page.getByRole('button', { name: '固定回放' }).first(),
+    tradeTable.getByRole('button', { name: '固定回放' }).first(),
   ).toBeVisible();
-  await page.getByRole('button', { name: '固定回放' }).first().click();
+  await tradeTable.getByRole('button', { name: '固定回放' }).first().click();
   await expect(page.getByRole('heading', { name: /固定回放/u })).toBeVisible();
 
   const report = (await (

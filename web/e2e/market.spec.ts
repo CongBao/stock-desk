@@ -58,13 +58,18 @@ test('real local market workflow stays cached, traceable, and interactive', asyn
   ]);
 
   const canvas = page.locator('.market-chart-canvas canvas');
+  await expect(page.locator('.market-chart-canvas')).toHaveAttribute(
+    'aria-busy',
+    'false',
+  );
   const zoomState = page.getByRole('status', { name: '图表缩放范围' });
   const initialZoomState = await zoomState.textContent();
   const previousReadout = await ohlcv.textContent();
+  await canvas.scrollIntoViewIfNeeded();
   const box = await canvas.boundingBox();
   expect(box).not.toBeNull();
   if (box) {
-    await page.mouse.move(box.x + 80, box.y + 100);
+    await page.mouse.move(box.x + box.width * 0.25, box.y + box.height * 0.3);
     await expect.poll(() => ohlcv.textContent()).not.toBe(previousReadout);
     await page.mouse.wheel(0, -600);
     await expect.poll(() => zoomState.textContent()).not.toBe(initialZoomState);
