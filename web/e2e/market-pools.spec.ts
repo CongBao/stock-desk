@@ -48,8 +48,10 @@ test('all-A index industry and editable custom pools show composition timestamps
   await page.reload();
   await page.getByRole('button', { name: '打开股票池' }).click();
   await page.getByRole('button', { name: new RegExp(poolName, 'u') }).click();
+  const editCurrentPool = page.getByRole('button', { name: '编辑当前股票池' });
+  await expect(editCurrentPool).toBeVisible();
   await page.getByRole('button', { name: '关闭股票池' }).click();
-  await page.getByRole('button', { name: '编辑当前股票池' }).click();
+  await editCurrentPool.click();
   const editDialog = page.getByRole('dialog', { name: '编辑自定义池' });
   await editDialog.getByLabel('股票池名称').fill(renamedPool);
   await editDialog.getByLabel('编辑池搜索证券').fill('000001');

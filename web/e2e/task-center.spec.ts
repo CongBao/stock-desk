@@ -388,6 +388,9 @@ test('Chromium page scale changes the visual viewport while controls remain reac
   await page.setViewportSize({ width: 800, height: 450 });
   await installTaskStubs(page, { lifecycle: { completed: true } });
   await page.goto('/tasks');
+  await expect(
+    page.locator('.task-detail-panel .task-status-badge'),
+  ).toHaveText('已完成');
   const before = await page.evaluate(() => {
     const browserGlobal = globalThis as unknown as {
       visualViewport?: { scale: number; width: number; height: number };
@@ -428,6 +431,7 @@ test('Chromium page scale changes the visual viewport while controls remain reac
     });
   const refresh = page.getByRole('button', { name: '刷新任务' });
   const analysis = page.getByRole('button', { name: /智能分析/u });
+  await page.bringToFront();
   await expect(refresh).toBeVisible();
   await refresh.focus();
   await expect(refresh).toBeFocused();
