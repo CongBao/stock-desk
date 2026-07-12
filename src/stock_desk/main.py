@@ -78,6 +78,7 @@ from stock_desk.security.secrets import (
 from stock_desk.security.persistence import StartupSecretHydrator
 from stock_desk.onboarding.service import OnboardingService
 from stock_desk.onboarding.demo_snapshot import BundledDemoMarket
+from stock_desk.onboarding.store import OnboardingStateStorageError
 from stock_desk.market.navigation import MarketNavigationService
 from stock_desk.storage.backup import recover_interrupted_restore
 from stock_desk.storage.lifecycle import (
@@ -642,7 +643,13 @@ def create_app(
         request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
         if request.method not in {"GET", "HEAD", "OPTIONS"}:
-            state = provide_onboarding_service().state()
+            try:
+                state = provide_onboarding_service().state()
+            except OnboardingStateStorageError:
+                return JSONResponse(
+                    status_code=503,
+                    content={"code": "onboarding_state_unavailable"},
+                )
             exit_path = "/api/v1/onboarding/actions/exit_demo"
             if state.demo_mode and request.url.path != exit_path:
                 return JSONResponse(

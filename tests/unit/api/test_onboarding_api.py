@@ -204,6 +204,123 @@ def test_onboarding_validation_failures_use_a_stable_error_code(tmp_path: Path) 
     assert invalid.json() == {"code": "invalid_request"}
 
 
+def test_onboarding_api_rejects_out_of_order_steps_and_recovers_in_place(
+    tmp_path: Path,
+) -> None:
+    service, market = _service(tmp_path)
+    settings = Settings(
+        database_url=f"sqlite:///{tmp_path / 'onboarding.db'}",
+        data_dir=tmp_path / "data",
+    )
+    try:
+        with TestClient(
+            create_app(
+                settings,
+                market_services=market,
+                onboarding_service=service,
+            )
+        ) as client:
+            welcome = client.put(
+                "/api/v1/onboarding/progress",
+                json={"current_step": "welcome"},
+            )
+            unavailable_search = client.get(
+                "/api/v1/onboarding/instruments", params={"q": ""}
+            )
+            missing_source = client.put(
+                "/api/v1/onboarding/progress",
+                json={"current_step": "instrument_selection"},
+            )
+            missing_symbol = client.put(
+                "/api/v1/onboarding/progress",
+                json={"current_step": "synchronization"},
+            )
+            invalid_transition = client.put(
+                "/api/v1/onboarding/progress",
+                json={"current_step": "completed"},
+            )
+            premature_complete = client.post(
+                "/api/v1/onboarding/complete", json={"symbol": "000001.SS"}
+            )
+            advanced = client.post("/api/v1/onboarding/actions/advanced")
+            retried = client.post("/api/v1/onboarding/actions/retry")
+            missing_instrument = client.put(
+                "/api/v1/onboarding/progress",
+                json={
+                    "current_step": "synchronization",
+                    "symbol": "999999.SH",
+                },
+            )
+            switched = client.post("/api/v1/onboarding/actions/switch_provider")
+    finally:
+        market.close()
+
+    assert welcome.status_code == 200
+    assert welcome.json()["current_step"] == "welcome"
+    assert unavailable_search.status_code == 409
+    assert unavailable_search.json() == {"code": "catalog_not_ready"}
+    assert missing_source.status_code == 409
+    assert missing_source.json() == {"code": "onboarding_source_required"}
+    assert missing_symbol.status_code == 422
+    assert missing_symbol.json() == {"code": "invalid_request"}
+    assert invalid_transition.status_code == 409
+    assert invalid_transition.json() == {"code": "invalid_onboarding_transition"}
+    assert premature_complete.status_code == 409
+    assert premature_complete.json() == {"code": "synchronization_not_verified"}
+    assert advanced.status_code == 200
+    assert advanced.json()["error"]["code"] == "advanced_configuration_required"
+    assert retried.status_code == 200
+    assert retried.json()["source"]["id"] == "akshare"
+    assert missing_instrument.status_code == 409
+    assert missing_instrument.json() == {"code": "instrument_not_found"}
+    assert switched.status_code == 200
+    assert switched.json()["source"]["id"] == "baostock"
+
+
+def test_corrupt_onboarding_state_fails_closed_across_every_mutating_route(
+    tmp_path: Path,
+) -> None:
+    service, market = _service(tmp_path)
+    (tmp_path / "state-v1.json").write_text("{not-json", encoding="utf-8")
+    settings = Settings(
+        database_url=f"sqlite:///{tmp_path / 'onboarding.db'}",
+        data_dir=tmp_path / "data",
+    )
+    try:
+        with TestClient(
+            create_app(
+                settings,
+                market_services=market,
+                onboarding_service=service,
+            )
+        ) as client:
+            responses = (
+                client.get("/api/v1/onboarding/state"),
+                client.get("/api/v1/onboarding/sources"),
+                client.get("/api/v1/onboarding/instruments", params={"q": "000001"}),
+                client.put(
+                    "/api/v1/onboarding/progress",
+                    json={"current_step": "data_preparation"},
+                ),
+                client.post(
+                    "/api/v1/onboarding/sync",
+                    json={"source_id": "akshare", "symbol": "000001.SS"},
+                ),
+                client.post(
+                    "/api/v1/onboarding/complete", json={"symbol": "000001.SS"}
+                ),
+                client.post("/api/v1/onboarding/actions/retry"),
+            )
+    finally:
+        market.close()
+
+    assert all(response.status_code == 503 for response in responses)
+    assert all(
+        response.json() == {"code": "onboarding_state_unavailable"}
+        for response in responses
+    )
+
+
 def test_onboarding_api_can_exit_persisted_demo_into_real_setup(
     tmp_path: Path,
 ) -> None:

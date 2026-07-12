@@ -263,6 +263,54 @@ def test_real_catalog_and_single_provider_daily_pin_are_required_for_completion(
         market.close()
 
 
+def test_completed_onboarding_is_idempotent_and_cannot_change_selection(
+    tmp_path: Path,
+) -> None:
+    service, market = _service(tmp_path)
+    try:
+        prepared = service.begin_preparation()
+        service.select(prepared.instrument.symbol)
+        service.synchronize(
+            source_id=ProviderId.AKSHARE,
+            symbol=prepared.instrument.symbol,
+        )
+        completed = service.complete(prepared.instrument.symbol)
+
+        assert service.prepare() == completed
+        assert service.begin_preparation() == completed
+        assert service.enter_data_preparation() == completed
+        assert service.demo() == completed
+        assert service.exit_demo() == completed
+        assert service.complete(prepared.instrument.symbol) == completed
+        with pytest.raises(OnboardingConflict) as caught:
+            service.complete("000001.SZ")
+        assert caught.value.code == "onboarding_selection_changed"
+    finally:
+        market.close()
+
+
+@pytest.mark.parametrize("limit", [0, 101])
+def test_search_rejects_out_of_range_limits(tmp_path: Path, limit: int) -> None:
+    service, market = _service(tmp_path)
+    try:
+        with pytest.raises(OnboardingConflict) as caught:
+            service.search("000001", limit=limit)
+        assert caught.value.code == "invalid_request"
+    finally:
+        market.close()
+
+
+@pytest.mark.parametrize("query", ["   ", "x" * 65])
+def test_search_rejects_invalid_queries(tmp_path: Path, query: str) -> None:
+    service, market = _service(tmp_path)
+    try:
+        with pytest.raises(OnboardingConflict) as caught:
+            service.search(query, limit=20)
+        assert caught.value.code == "invalid_request"
+    finally:
+        market.close()
+
+
 def test_preparation_falls_back_only_after_the_whole_provider_attempt_fails(
     tmp_path: Path,
 ) -> None:
