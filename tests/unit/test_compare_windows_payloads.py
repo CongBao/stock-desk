@@ -25,6 +25,19 @@ def _pe_x64(*, timestamp: int, checksum: int, content: int = 0) -> bytes:
     return bytes(payload)
 
 
+def _pe_x86(*, timestamp: int, checksum: int) -> bytes:
+    payload = bytearray(512)
+    payload[:2] = b"MZ"
+    struct.pack_into("<I", payload, 0x3C, 128)
+    payload[128:132] = b"PE\0\0"
+    struct.pack_into("<H", payload, 132, verifier.PE_X86_MACHINE)
+    struct.pack_into("<I", payload, 136, timestamp)
+    struct.pack_into("<H", payload, 148, 0xE0)
+    struct.pack_into("<H", payload, 152, 0x10B)
+    struct.pack_into("<I", payload, 216, checksum)
+    return bytes(payload)
+
+
 def _manifest() -> dict[str, object]:
     raw: dict[str, object] = {
         "schema_version": 1,
@@ -107,6 +120,20 @@ def test_nsis_only_allows_named_pe_timestamp_and_checksum_differences(
     right_path = tmp_path / "b.exe"
     left_path.write_bytes(_pe_x64(timestamp=1, checksum=2))
     right_path.write_bytes(_pe_x64(timestamp=3, checksum=4))
+
+    result = comparer.compare_nsis_installers(left_path, right_path)
+
+    assert result["equivalent"] is True
+    assert result["allowed_differences"] == ["pe-checksum", "pe-timestamp"]
+
+
+def test_nsis_comparison_accepts_the_verified_x86_launcher_architecture(
+    tmp_path: Path,
+) -> None:
+    left_path = tmp_path / "a.exe"
+    right_path = tmp_path / "b.exe"
+    left_path.write_bytes(_pe_x86(timestamp=1, checksum=2))
+    right_path.write_bytes(_pe_x86(timestamp=3, checksum=4))
 
     result = comparer.compare_nsis_installers(left_path, right_path)
 
