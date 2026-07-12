@@ -1,13 +1,21 @@
 import { expect, test } from './fixtures';
+import { mockCompletedGuidance } from './guidanceMocks';
+
+test.beforeEach(async ({ page }) => {
+  await mockCompletedGuidance(page);
+});
 
 test('market terminal preserves navy structure and rise-fall colors with three aligned regions', async ({
   page,
 }) => {
   await page.setViewportSize({ width: 1440, height: 960 });
   await page.goto('/market');
+  const theme = page.getByRole('combobox', { name: '界面主题' });
+  await theme.selectOption({ label: '深色' });
+  await expect(theme).toHaveValue('dark');
 
   const left = page.getByRole('complementary', {
-    name: '证券选择与股票池',
+    name: '自选与最近访问',
   });
   const center = page.getByRole('region', { name: '行情图表工作区' });
   const right = page.getByRole('complementary', {
@@ -16,6 +24,9 @@ test('market terminal preserves navy structure and rise-fall colors with three a
   await expect(left).toBeVisible();
   await expect(center).toBeVisible();
   await expect(right).toBeVisible();
+  await expect(
+    center.getByRole('button', { name: '打开股票池' }),
+  ).toBeVisible();
 
   const [leftBox, centerBox, rightBox] = await Promise.all([
     left.boundingBox(),
