@@ -20,6 +20,28 @@ class PayloadComparisonError(ValueError):
     """Two desktop builds do not have the same trusted inputs and payload."""
 
 
+def _file_difference_summary(
+    left: Sequence[Mapping[str, object]],
+    right: Sequence[Mapping[str, object]],
+) -> str:
+    differences: list[str] = []
+    if len(left) != len(right):
+        differences.append("inventory.count")
+    for left_record, right_record in zip(left, right):
+        left_role = left_record.get("role")
+        right_role = right_record.get("role")
+        label = (
+            left_role
+            if left_role == right_role and isinstance(left_role, str)
+            else "record"
+        )
+        for field in ("path", "size", "sha256", "role"):
+            if left_record.get(field) != right_record.get(field):
+                differences.append(f"{label}.{field}")
+    bounded = sorted(set(differences))[:8]
+    return ",".join(bounded) if bounded else "inventory.order"
+
+
 def compare_nsis_installers(left: Path, right: Path) -> dict[str, object]:
     try:
         left_payload = left.read_bytes()
@@ -94,7 +116,10 @@ def compare_manifests(
         record for record in right_files if record["role"] != "nsis-installer"
     ]
     if left_payload != right_payload:
-        raise PayloadComparisonError("desktop manifests differ in files")
+        raise PayloadComparisonError(
+            "desktop manifests differ in files: "
+            f"{_file_difference_summary(left_payload, right_payload)}"
+        )
     left_nsis = [record for record in left_files if record["role"] == "nsis-installer"]
     right_nsis = [
         record for record in right_files if record["role"] == "nsis-installer"
