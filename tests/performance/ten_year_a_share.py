@@ -382,7 +382,8 @@ def _validate_timed_metric(name: str, value: object) -> None:
             )
         if sample["correctness_hash"] != correctness:
             raise PerformanceGateError(
-                f"{name} correctness hash changed across samples"
+                f"{name} correctness hash changed across samples: "
+                f"expected {correctness}, got {sample['correctness_hash']}"
             )
         walls.append(wall)
     expected_mean = sum(walls) / len(walls)

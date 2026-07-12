@@ -710,6 +710,18 @@ async function backtestAction(
     metrics: typedReport?.metrics,
     outcomes: typedReport?.outcomes,
   };
+  const correctnessHash = digest(normalizedReport);
+  console.log(
+    `[performance-backtest-correctness] ${JSON.stringify({
+      correctness_hash: correctnessHash,
+      component_hashes: Object.fromEntries(
+        Object.entries(normalizedReport).map(([name, value]) => [
+          name,
+          digest(value),
+        ]),
+      ),
+    })}`,
+  );
   return {
     wall_seconds: wall,
     local_seconds: wall,
@@ -717,7 +729,7 @@ async function backtestAction(
     blocked_external_request_count:
       network.blockedExternalRequests - blockedBefore,
     ...rss,
-    correctness_hash: digest(normalizedReport),
+    correctness_hash: correctnessHash,
   } satisfies TimedSample;
 }
 
