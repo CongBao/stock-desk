@@ -11,7 +11,7 @@ from collections.abc import Mapping, Sequence
 from scripts.verify_windows_desktop_bundle import (
     BundleVerificationError,
     canonical_json,
-    parse_pe_x64,
+    parse_pe,
     validate_manifest,
 )
 
@@ -49,8 +49,8 @@ def compare_nsis_installers(left: Path, right: Path) -> dict[str, object]:
     except OSError as error:
         raise PayloadComparisonError("cannot read NSIS installer") from error
     try:
-        left_pe = parse_pe_x64(left_payload, label="left NSIS installer")
-        right_pe = parse_pe_x64(right_payload, label="right NSIS installer")
+        left_pe = parse_pe(left_payload, label="left NSIS installer", allow_x86=True)
+        right_pe = parse_pe(right_payload, label="right NSIS installer", allow_x86=True)
     except BundleVerificationError as error:
         raise PayloadComparisonError(str(error)) from error
     if left_pe.signed or right_pe.signed:
