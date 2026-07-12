@@ -217,13 +217,20 @@ jobs:
           $uvLock = (Get-FileHash uv.lock -Algorithm SHA256).Hash.ToLowerInvariant()
           $pnpmLock = (Get-FileHash pnpm-lock.yaml -Algorithm SHA256).Hash.ToLowerInvariant()
           $cargoLock = (Get-FileHash src-tauri\Cargo.lock -Algorithm SHA256).Hash.ToLowerInvariant()
-          uv run --frozen python scripts/verify_windows_desktop_bundle.py $payload `
+          $python = Join-Path $PWD '.venv\Scripts\python.exe'
+          $manifestOutput = Join-Path $out 'windows-desktop-bundle.json'
+          if (-not (Test-Path -LiteralPath $python -PathType Leaf)) { throw 'locked Python environment is missing' }
+          & $python scripts/verify_windows_desktop_bundle.py $payload `
             --version 1.1.0-alpha.2 --source-sha $env:SOURCE_SHA `
             --toolchain "python=$env:PYTHON_VERSION" --toolchain "node=$env:NODE_VERSION" `
             --toolchain "pnpm=$env:PNPM_VERSION" --toolchain "rust=$env:RUST_VERSION" `
-            --lock "uv.lock=$uvLock" --lock "pnpm-lock.yaml=$pnpmLock" --lock "src-tauri/Cargo.lock=$cargoLock" `
+            --lock "uv.lock=$uvLock" --lock "pnpm-lock.yaml=$pnpmLock" --lock "Cargo.lock=$cargoLock" `
             --installer (Join-Path $payload 'stock-desk-unsigned-nsis.exe') --sidecar $sidecar[0].FullName `
-            --output (Join-Path $out 'windows-desktop-bundle.json')
+            --output $manifestOutput
+          if ($LASTEXITCODE -ne 0) { throw 'Windows bundle verifier failed' }
+          if (-not (Test-Path -LiteralPath $manifestOutput -PathType Leaf) -or (Get-Item -LiteralPath $manifestOutput).Length -le 0) { throw 'Windows bundle manifest was not created' }
+          $manifest = Get-Content -LiteralPath $manifestOutput -Raw | ConvertFrom-Json
+          if ($manifest.artifact -ne 'windows-desktop-bundle' -or $manifest.source_sha -ne $env:SOURCE_SHA -or $manifest.release.version -ne '1.1.0-alpha.2') { throw 'Windows bundle manifest identity is invalid' }
           Copy-Item $installers[0].FullName (Join-Path $out 'stock-desk-unsigned-nsis.exe')
           [ordered]@{schema_version=1;builder='A';source_sha=$env:SOURCE_SHA;source_tree=(git rev-parse 'HEAD^{tree}');runner_os=$env:RUNNER_OS;runner_arch=$env:RUNNER_ARCH;run_id=$env:GITHUB_RUN_ID;run_attempt=$env:GITHUB_RUN_ATTEMPT;job_id=$env:GITHUB_JOB} | ConvertTo-Json -Compress | Set-Content -Encoding utf8NoBOM (Join-Path $out 'provenance.json')
       - name: Upload source-free candidate A
@@ -358,7 +365,13 @@ jobs:
           Copy-Item $webview[0].FullName (Join-Path $payload $webview[0].Name); Copy-Item $installers[0].FullName (Join-Path $payload 'stock-desk-unsigned-nsis.exe')
           $sidecar = @(Get-ChildItem $payload -Recurse -File -Filter 'stock-desk-sidecar.exe'); if ($sidecar.Count -ne 1) { throw 'expected exactly one packaged sidecar' }
           $uvLock=(Get-FileHash uv.lock -Algorithm SHA256).Hash.ToLowerInvariant(); $pnpmLock=(Get-FileHash pnpm-lock.yaml -Algorithm SHA256).Hash.ToLowerInvariant(); $cargoLock=(Get-FileHash src-tauri\Cargo.lock -Algorithm SHA256).Hash.ToLowerInvariant()
-          uv run --frozen python scripts/verify_windows_desktop_bundle.py $payload --version 1.1.0-alpha.2 --source-sha $env:SOURCE_SHA --toolchain "python=$env:PYTHON_VERSION" --toolchain "node=$env:NODE_VERSION" --toolchain "pnpm=$env:PNPM_VERSION" --toolchain "rust=$env:RUST_VERSION" --lock "uv.lock=$uvLock" --lock "pnpm-lock.yaml=$pnpmLock" --lock "src-tauri/Cargo.lock=$cargoLock" --installer (Join-Path $payload 'stock-desk-unsigned-nsis.exe') --sidecar $sidecar[0].FullName --output (Join-Path $out 'windows-desktop-bundle.json')
+          $python=Join-Path $PWD '.venv\Scripts\python.exe'; $manifestOutput=Join-Path $out 'windows-desktop-bundle.json'
+          if (-not (Test-Path -LiteralPath $python -PathType Leaf)) { throw 'locked Python environment is missing' }
+          & $python scripts/verify_windows_desktop_bundle.py $payload --version 1.1.0-alpha.2 --source-sha $env:SOURCE_SHA --toolchain "python=$env:PYTHON_VERSION" --toolchain "node=$env:NODE_VERSION" --toolchain "pnpm=$env:PNPM_VERSION" --toolchain "rust=$env:RUST_VERSION" --lock "uv.lock=$uvLock" --lock "pnpm-lock.yaml=$pnpmLock" --lock "Cargo.lock=$cargoLock" --installer (Join-Path $payload 'stock-desk-unsigned-nsis.exe') --sidecar $sidecar[0].FullName --output $manifestOutput
+          if ($LASTEXITCODE -ne 0) { throw 'Windows bundle verifier failed' }
+          if (-not (Test-Path -LiteralPath $manifestOutput -PathType Leaf) -or (Get-Item -LiteralPath $manifestOutput).Length -le 0) { throw 'Windows bundle manifest was not created' }
+          $manifest=Get-Content -LiteralPath $manifestOutput -Raw | ConvertFrom-Json
+          if ($manifest.artifact -ne 'windows-desktop-bundle' -or $manifest.source_sha -ne $env:SOURCE_SHA -or $manifest.release.version -ne '1.1.0-alpha.2') { throw 'Windows bundle manifest identity is invalid' }
           Copy-Item $installers[0].FullName (Join-Path $out 'stock-desk-unsigned-nsis.exe')
           [ordered]@{schema_version=1;builder='B';source_sha=$env:SOURCE_SHA;source_tree=(git rev-parse 'HEAD^{tree}');runner_os=$env:RUNNER_OS;runner_arch=$env:RUNNER_ARCH;run_id=$env:GITHUB_RUN_ID;run_attempt=$env:GITHUB_RUN_ATTEMPT;job_id=$env:GITHUB_JOB} | ConvertTo-Json -Compress | Set-Content -Encoding utf8NoBOM (Join-Path $out 'provenance.json')
       - name: Upload source-free candidate B
