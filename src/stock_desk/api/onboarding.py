@@ -16,6 +16,9 @@ from stock_desk.market.types import (
 from stock_desk.onboarding.models import OnboardingState, OnboardingStep
 from stock_desk.onboarding.service import OnboardingConflict, OnboardingService
 from stock_desk.onboarding.store import OnboardingStateStorageError
+from stock_desk.workspace.models import WorkspaceInstrument
+from stock_desk.workspace.service import WorkspaceService
+from stock_desk.workspace.store import WorkspaceStateStorageError
 
 
 class _RequestModel(BaseModel):
@@ -86,6 +89,16 @@ def get_onboarding_service(request: Request) -> OnboardingService:
 OnboardingServiceDependency = Annotated[
     OnboardingService, Depends(get_onboarding_service)
 ]
+
+
+def get_workspace_service(request: Request) -> WorkspaceService:
+    provider = cast(
+        Callable[[], WorkspaceService], request.app.state.workspace_service_provider
+    )
+    return provider()
+
+
+WorkspaceServiceDependency = Annotated[WorkspaceService, Depends(get_workspace_service)]
 
 
 router = APIRouter(prefix="/v1/onboarding", tags=["onboarding"])
@@ -198,14 +211,28 @@ def synchronize(
 def complete(
     body: CompleteRequest,
     service: OnboardingServiceDependency,
+    workspace: WorkspaceServiceDependency,
 ) -> OnboardingState | JSONResponse:
     try:
-        return service.complete(body.symbol)
+        state = service.complete(body.symbol)
+        workspace.initialize(
+            WorkspaceInstrument(
+                symbol=state.instrument.symbol,
+                name=state.instrument.name,
+                exchange=state.instrument.exchange,
+                kind=state.instrument.instrument_kind,
+            )
+        )
+        return state
     except OnboardingConflict as error:
         return _error(error.code, status.HTTP_409_CONFLICT)
     except OnboardingStateStorageError:
         return _error(
             "onboarding_state_unavailable", status.HTTP_503_SERVICE_UNAVAILABLE
+        )
+    except WorkspaceStateStorageError:
+        return _error(
+            "workspace_storage_unavailable", status.HTTP_503_SERVICE_UNAVAILABLE
         )
 
 

@@ -44,6 +44,7 @@ def test_module_inventory_and_heavy_work_use_independent_worker(
         "security",
         "storage",
         "tasks",
+        "workspace",
     }
 
     forbidden_api_imports = {

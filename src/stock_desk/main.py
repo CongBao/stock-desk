@@ -57,6 +57,7 @@ from stock_desk.api.settings import (
     source_settings_storage_exception_handler,
 )
 from stock_desk.api.tasks import router as tasks_router
+from stock_desk.api.workspace import router as workspace_router
 from stock_desk.config import Settings, get_settings
 from stock_desk.desktop_session import (
     DesktopHandshake,
@@ -77,6 +78,7 @@ from stock_desk.storage.backup import recover_interrupted_restore
 from stock_desk.storage.lifecycle import service_lifecycle
 from stock_desk.tasks.repository import TaskRepository, TaskRepositoryError
 from stock_desk.web import install_web_routes
+from stock_desk.workspace.service import WorkspaceService
 
 
 class _ApplicationDatabaseMismatch(RuntimeError):
@@ -142,6 +144,7 @@ def create_app(
     desktop_session: DesktopSession | None = None,
     desktop_lifecycle: DesktopLifecycleController | None = None,
     onboarding_service: OnboardingService | None = None,
+    workspace_service: WorkspaceService | None = None,
 ) -> FastAPI:
     resolved_settings = settings if settings is not None else get_settings()
     database_identity = _ApplicationDatabaseIdentity(
@@ -185,6 +188,8 @@ def create_app(
     owned_startup_secret_hydrator: StartupSecretHydrator | None = None
     owned_onboarding_service: OnboardingService | None = None
     onboarding_service_lock = Lock()
+    owned_workspace_service: WorkspaceService | None = None
+    workspace_service_lock = Lock()
     shutdown_lock = Lock()
     active_lifespans = 0
     service_guard: AbstractContextManager[None] | None = None
@@ -458,6 +463,24 @@ def create_app(
                 )
             return owned_onboarding_service
 
+    def provide_workspace_service() -> WorkspaceService:
+        nonlocal owned_workspace_service
+        if workspace_service is not None:
+            return workspace_service
+        with workspace_service_lock:
+            if owned_workspace_service is None:
+                data_dir = Path(
+                    os.path.abspath(os.fspath(resolved_settings.data_dir.expanduser()))
+                )
+                owned_workspace_service = WorkspaceService.open(
+                    data_dir=data_dir,
+                    market=provide_market_services,
+                    formula_repository=lambda: FormulaRepository(
+                        provide_market_services().engine
+                    ),
+                )
+            return owned_workspace_service
+
     @asynccontextmanager
     async def lifespan(_application: FastAPI) -> AsyncIterator[None]:
         nonlocal active_lifespans
@@ -476,6 +499,7 @@ def create_app(
         nonlocal owned_analysis_preflight
         nonlocal owned_startup_secret_hydrator
         nonlocal owned_onboarding_service
+        nonlocal owned_workspace_service
         with shutdown_lock:
             if active_lifespans == 0:
                 candidate = service_lifecycle(
@@ -523,6 +547,7 @@ def create_app(
                 owned_analysis_preflight = None
                 owned_startup_secret_hydrator = None
                 owned_onboarding_service = None
+                owned_workspace_service = None
                 closing_service_guard = service_guard
                 service_guard = None
             for resource in resources:
@@ -556,6 +581,7 @@ def create_app(
     application.state.analysis_services_provider = provide_analysis_services
     application.state.analysis_preflight_provider = provide_analysis_preflight
     application.state.onboarding_service_provider = provide_onboarding_service
+    application.state.workspace_service_provider = provide_workspace_service
     application.state.database_identity_provider = database_identity.current
     application.state.model_settings_cursor_key = secrets.token_bytes(32)
     application.state.analysis_cursor_key = secrets.token_bytes(32)
@@ -574,6 +600,7 @@ def create_app(
                 "/api/analysis",
                 "/api/tasks",
                 "/api/v1/onboarding",
+                "/api/v1/workspace",
             )
         ):
             return JSONResponse(status_code=422, content={"code": "invalid_request"})
@@ -620,6 +647,7 @@ def create_app(
     )
     application.include_router(health_router, prefix="/api")
     application.include_router(onboarding_router, prefix="/api")
+    application.include_router(workspace_router, prefix="/api")
     application.include_router(tasks_router, prefix="/api")
     application.include_router(market_router, prefix="/api")
     application.include_router(settings_router, prefix="/api")

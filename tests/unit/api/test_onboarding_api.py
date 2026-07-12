@@ -143,6 +143,7 @@ def test_onboarding_api_four_step_contract_pins_then_syncs_and_completes(
                 "/api/v1/onboarding/complete",
                 json={"symbol": "000001.SS"},
             )
+            workspace = client.get("/api/v1/workspace")
     finally:
         market.close()
 
@@ -167,6 +168,15 @@ def test_onboarding_api_four_step_contract_pins_then_syncs_and_completes(
     assert completed.status_code == 200
     assert completed.json()["status"] == "completed"
     assert completed.json()["current_step"] == "completed"
+    assert workspace.status_code == 200
+    assert workspace.json()["restored"] is True
+    assert workspace.json()["revision"] == 1
+    assert workspace.json()["workspace"]["instrument"] == {
+        "symbol": "000001.SS",
+        "name": "上证指数",
+        "exchange": "SH",
+        "kind": "index",
+    }
 
 
 def test_onboarding_validation_failures_use_a_stable_error_code(tmp_path: Path) -> None:
