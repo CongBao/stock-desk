@@ -315,3 +315,30 @@ def test_production_worker_registers_catalog_refresh_and_persists_full_a(
         ]
     finally:
         engine.dispose()
+
+
+def test_production_worker_gives_backtest_formula_cold_start_a_bounded_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    observed: list[float] = []
+
+    class RecordingExecutor:
+        def __init__(self, *, timeout_seconds: float) -> None:
+            observed.append(timeout_seconds)
+
+        def execute(self, _request: bytes) -> bytes:
+            raise AssertionError("executor should not run during composition")
+
+    monkeypatch.setattr(worker_runtime, "IsolatedFormulaExecutor", RecordingExecutor)
+    runtime = ProductionMarketWorker.open(
+        Settings(
+            database_url=f"sqlite:///{tmp_path / 'formula-timeout.db'}",
+            data_dir=tmp_path,
+        ),
+        worker_id="formula-timeout-test",
+    )
+    try:
+        assert observed == [10.0]
+        assert "backtest.run" in runtime.worker.registered_claimed_kinds
+    finally:
+        runtime.close()

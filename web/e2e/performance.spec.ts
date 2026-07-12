@@ -59,6 +59,65 @@ type TimedSample = {
   correctness_hash: string;
 };
 
+type BacktestReportPayload = {
+  overview?: {
+    status?: unknown;
+    total?: unknown;
+    processed?: unknown;
+    failed?: unknown;
+  };
+  formula_checksum?: unknown;
+  formula_engine_version?: unknown;
+  compatibility_version?: unknown;
+  backtest_engine_version?: unknown;
+  provenance?: unknown;
+  period?: unknown;
+  adjustment?: unknown;
+  quantity_shares?: unknown;
+  costs?: unknown;
+  execution_rules_version?: unknown;
+  cost_model_version?: unknown;
+  sizing_version?: unknown;
+  warmup_policy_version?: unknown;
+  metrics?: unknown;
+  outcomes?: {
+    total?: unknown;
+    succeeded?: unknown;
+    failed?: unknown;
+    data_insufficient?: unknown;
+    unprocessed?: unknown;
+  };
+};
+
+function backtestCorrectness(report: BacktestReportPayload) {
+  const normalizedReport = {
+    formula_checksum: report.formula_checksum,
+    formula_engine_version: report.formula_engine_version,
+    compatibility_version: report.compatibility_version,
+    backtest_engine_version: report.backtest_engine_version,
+    provenance: report.provenance,
+    period: report.period,
+    adjustment: report.adjustment,
+    quantity_shares: report.quantity_shares,
+    costs: report.costs,
+    execution_rules_version: report.execution_rules_version,
+    cost_model_version: report.cost_model_version,
+    sizing_version: report.sizing_version,
+    warmup_policy_version: report.warmup_policy_version,
+    metrics: report.metrics,
+    outcomes: report.outcomes,
+  };
+  return {
+    correctnessHash: digest(normalizedReport),
+    componentHashes: Object.fromEntries(
+      Object.entries(normalizedReport).map(([name, value]) => [
+        name,
+        digest(value),
+      ]),
+    ),
+  };
+}
+
 function processRoles(commands: readonly string[]): string[] {
   const roles = new Set<string>();
   for (const command of commands) {
@@ -609,19 +668,7 @@ async function navigateWithinDesktopWorkspace(
   }, pathname);
 }
 
-async function backtestAction(
-  page: Page,
-  versionId: string,
-  network: { blockedExternalRequests: number },
-  roots: readonly number[],
-  rootRoles: ReadonlyMap<number, RootExpectation>,
-  cachedManifest: RoutingManifest,
-  cachedManifestId: string,
-) {
-  const blockedBefore = network.blockedExternalRequests;
-  const sampler = await RssSampler.create(roots, rootRoles);
-  const started = performance.now();
-  sampler.begin();
+async function submitBacktestReport(page: Page, versionId: string) {
   const submission = await page.request.post('/api/backtests', {
     data: {
       scope: { kind: 'single', symbol: '600000.SH' },
@@ -640,7 +687,7 @@ async function backtestAction(
   });
   expect(submission.status()).toBe(202);
   const submitted = (await submission.json()) as { run_id: string };
-  let report: Record<string, unknown> | undefined;
+  let report: BacktestReportPayload | undefined;
   await expect
     .poll(
       async () => {
@@ -648,13 +695,31 @@ async function backtestAction(
           `/api/backtests/${submitted.run_id}/report`,
         );
         if (!response.ok()) return false;
-        report = (await response.json()) as Record<string, unknown>;
+        report = (await response.json()) as BacktestReportPayload;
         return true;
       },
       { timeout: 15_000 },
     )
     .toBe(true);
-  await navigateWithinDesktopWorkspace(page, `/backtests/${submitted.run_id}`);
+  expect(report).toBeDefined();
+  return { runId: submitted.run_id, report: report ?? {} };
+}
+
+async function backtestAction(
+  page: Page,
+  versionId: string,
+  network: { blockedExternalRequests: number },
+  roots: readonly number[],
+  rootRoles: ReadonlyMap<number, RootExpectation>,
+  cachedManifest: RoutingManifest,
+  cachedManifestId: string,
+) {
+  const blockedBefore = network.blockedExternalRequests;
+  const sampler = await RssSampler.create(roots, rootRoles);
+  const started = performance.now();
+  sampler.begin();
+  const submitted = await submitBacktestReport(page, versionId);
+  await navigateWithinDesktopWorkspace(page, `/backtests/${submitted.runId}`);
   await expect(page.getByRole('heading', { name: '回测结论' })).toBeVisible();
   const wall = (performance.now() - started) / 1000;
   console.log(
@@ -663,7 +728,7 @@ async function backtestAction(
   const rss = await sampler.finish();
   expect(network.blockedExternalRequests - blockedBefore).toBe(0);
   const symbolsResponse = await page.request.get(
-    `/api/backtests/${submitted.run_id}/symbols?limit=100`,
+    `/api/backtests/${submitted.runId}/symbols?limit=100`,
   );
   const symbols = (await symbolsResponse.json()) as {
     items: readonly {
@@ -680,65 +745,17 @@ async function backtestAction(
     cachedManifestId,
   );
   const provider = providerEvidence(cachedManifest);
-  const typedReport = report as
-    | {
-        formula_checksum?: unknown;
-        formula_engine_version?: unknown;
-        compatibility_version?: unknown;
-        backtest_engine_version?: unknown;
-        provenance?: unknown;
-        period?: unknown;
-        adjustment?: unknown;
-        quantity_shares?: unknown;
-        costs?: unknown;
-        execution_rules_version?: unknown;
-        cost_model_version?: unknown;
-        sizing_version?: unknown;
-        warmup_policy_version?: unknown;
-        metrics?: unknown;
-        outcomes?: unknown;
-      }
-    | undefined;
-  const normalizedReport = {
-    formula_checksum: typedReport?.formula_checksum,
-    formula_engine_version: typedReport?.formula_engine_version,
-    compatibility_version: typedReport?.compatibility_version,
-    backtest_engine_version: typedReport?.backtest_engine_version,
-    provenance: typedReport?.provenance,
-    period: typedReport?.period,
-    adjustment: typedReport?.adjustment,
-    quantity_shares: typedReport?.quantity_shares,
-    costs: typedReport?.costs,
-    execution_rules_version: typedReport?.execution_rules_version,
-    cost_model_version: typedReport?.cost_model_version,
-    sizing_version: typedReport?.sizing_version,
-    warmup_policy_version: typedReport?.warmup_policy_version,
-    metrics: typedReport?.metrics,
-    outcomes: typedReport?.outcomes,
-  };
-  const correctnessHash = digest(normalizedReport);
+  const correctness = backtestCorrectness(submitted.report);
+  const correctnessHash = correctness.correctnessHash;
   if (backtestCorrectnessReference === undefined) {
-    backtestCorrectnessReference = {
-      correctnessHash,
-      componentHashes: Object.fromEntries(
-        Object.entries(normalizedReport).map(([name, value]) => [
-          name,
-          digest(value),
-        ]),
-      ),
-    };
+    backtestCorrectnessReference = correctness;
   } else if (correctnessHash !== backtestCorrectnessReference.correctnessHash) {
     console.log(
       `[performance-backtest-correctness-drift] ${JSON.stringify({
         expected_hash: backtestCorrectnessReference.correctnessHash,
         actual_hash: correctnessHash,
         expected_components: backtestCorrectnessReference.componentHashes,
-        actual_components: Object.fromEntries(
-          Object.entries(normalizedReport).map(([name, value]) => [
-            name,
-            digest(value),
-          ]),
-        ),
+        actual_components: correctness.componentHashes,
       })}`,
     );
   }
@@ -1393,6 +1410,21 @@ test('records aggregate 2/3/5 budgets and worker-backed UI responsiveness', asyn
     manifest_record_id: string;
     routing_manifest: RoutingManifest;
   };
+  const backtestWarmup = await submitBacktestReport(page, versionId);
+  expect(backtestWarmup.report.overview).toMatchObject({
+    status: 'succeeded',
+    total: 1,
+    processed: 1,
+    failed: 0,
+  });
+  expect(backtestWarmup.report.outcomes).toEqual({
+    total: 1,
+    succeeded: 1,
+    failed: 0,
+    data_insufficient: 0,
+    unprocessed: 0,
+  });
+  backtestCorrectnessReference = backtestCorrectness(backtestWarmup.report);
   const backtestSamples: TimedSample[] = [];
   for (let index = 0; index < SAMPLE_COUNT; index += 1) {
     backtestSamples.push(

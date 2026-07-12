@@ -32,7 +32,7 @@ from stock_desk.backtest.repository import BacktestRepository
 from stock_desk.api.settings import SourceSettingsServices
 from stock_desk.config import Settings
 from stock_desk.formula.repository import FormulaRepository
-from stock_desk.formula.service import FormulaService
+from stock_desk.formula.service import FormulaService, IsolatedFormulaExecutor
 from stock_desk.market.compositions import (
     AkShareCompositionProvider,
     CompositionProvider,
@@ -74,6 +74,7 @@ from stock_desk.tasks.worker import ClaimedTaskHandler, TaskWorker, demo_double
 
 _IDLE_TASK_POLL_SECONDS = 0.1
 _SCHEDULE_POLL_SECONDS = 1.0
+_BACKTEST_FORMULA_TIMEOUT_SECONDS = 10.0
 
 
 def _utc_now() -> datetime:
@@ -372,6 +373,9 @@ class ProductionMarketWorker:
             formula_service = FormulaService(
                 repository=FormulaRepository(engine),
                 lake=lake,
+                executor=IsolatedFormulaExecutor(
+                    timeout_seconds=_BACKTEST_FORMULA_TIMEOUT_SECONDS
+                ),
             )
             backtests = BacktestRepository(engine)
             task_worker.register_claimed(
