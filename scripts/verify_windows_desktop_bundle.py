@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 import hashlib
@@ -34,9 +35,18 @@ WEBVIEW2_INSTALLERS: Final = frozenset(
 )
 FILE_ATTRIBUTE_REPARSE_POINT: Final = 0x400
 PE_X64_MACHINE: Final = 0x8664
+PE_X86_MACHINE: Final = 0x014C
 HEX_40: Final = re.compile(r"[0-9a-f]{40}")
 HEX_64: Final = re.compile(r"[0-9a-f]{64}")
 PUBLIC_KEY: Final = re.compile(r"[A-Za-z0-9_.-]+")
+AUTHENTICODE_STATUS_CODES: Final = {
+    0: "UnknownError",
+    1: "Valid",
+    2: "NotSigned",
+    3: "HashMismatch",
+    4: "NotTrusted",
+    5: "NotSupported",
+}
 FORBIDDEN_COMPONENTS: Final = frozenset(
     {
         ".git",
@@ -139,7 +149,7 @@ def is_reparse_point(metadata: object) -> bool:
 
 def _stat_identity(metadata: os.stat_result) -> tuple[int, int, int, int, int, int]:
     return (
-        metadata.st_mode,
+        stat.S_IFMT(metadata.st_mode),
         metadata.st_dev,
         metadata.st_ino,
         metadata.st_size,
@@ -182,27 +192,33 @@ def hash_regular_file(path: Path, *, expected_lstat: os.stat_result) -> tuple[st
         os.close(descriptor)
 
 
-def parse_pe_x64(payload: bytes, *, label: str) -> PeMetadata:
+def parse_pe(payload: bytes, *, label: str, allow_x86: bool = False) -> PeMetadata:
+    invalid = f"{label} is not a valid {'PE binary' if allow_x86 else 'PE x64 binary'}"
     try:
         if len(payload) < 64 or payload[:2] != b"MZ":
-            raise BundleVerificationError(f"{label} is not a valid PE x64 binary")
+            raise BundleVerificationError(invalid)
         pe_offset = struct.unpack_from("<I", payload, 0x3C)[0]
         if pe_offset < 64 or pe_offset + 24 > len(payload):
-            raise BundleVerificationError(f"{label} is not a valid PE x64 binary")
+            raise BundleVerificationError(invalid)
         if payload[pe_offset : pe_offset + 4] != b"PE\0\0":
-            raise BundleVerificationError(f"{label} is not a valid PE x64 binary")
+            raise BundleVerificationError(invalid)
         machine = struct.unpack_from("<H", payload, pe_offset + 4)[0]
         optional_size = struct.unpack_from("<H", payload, pe_offset + 20)[0]
         optional = pe_offset + 24
-        if machine != PE_X64_MACHINE or optional_size < 152:
-            raise BundleVerificationError(f"{label} is not a valid PE x64 binary")
         if optional + optional_size > len(payload):
             raise BundleVerificationError(f"{label} has a truncated PE optional header")
-        if struct.unpack_from("<H", payload, optional)[0] != 0x20B:
-            raise BundleVerificationError(f"{label} is not a valid PE x64 binary")
+        magic = struct.unpack_from("<H", payload, optional)[0]
+        if machine == PE_X64_MACHINE and magic == 0x20B:
+            data_directory = optional + 112
+        elif allow_x86 and machine == PE_X86_MACHINE and magic == 0x10B:
+            data_directory = optional + 96
+        else:
+            raise BundleVerificationError(invalid)
+        security_directory = data_directory + (4 * 8)
+        if security_directory + 8 > optional + optional_size:
+            raise BundleVerificationError(f"{label} has a truncated PE optional header")
         timestamp_offset = pe_offset + 8
         checksum_offset = optional + 64
-        security_directory = optional + 112 + (4 * 8)
         certificate_offset, certificate_size = struct.unpack_from(
             "<II", payload, security_directory
         )
@@ -221,9 +237,11 @@ def parse_pe_x64(payload: bytes, *, label: str) -> PeMetadata:
             signed=signed,
         )
     except struct.error as error:
-        raise BundleVerificationError(
-            f"{label} is not a valid PE x64 binary"
-        ) from error
+        raise BundleVerificationError(invalid) from error
+
+
+def parse_pe_x64(payload: bytes, *, label: str) -> PeMetadata:
+    return parse_pe(payload, label=label)
 
 
 def _validate_certificate_table(
@@ -271,23 +289,34 @@ def verify_windows_authenticode(path: Path) -> SignatureIdentity:
         raise BundleVerificationError(
             "Authenticode verification requires Windows or an injected verifier"
         )
-    powershell = shutil.which("powershell.exe")
+    powershell = shutil.which("pwsh.exe") or shutil.which("powershell.exe")
     if powershell is None:
         raise BundleVerificationError("Windows Authenticode verifier is unavailable")
+    path_token = base64.b64encode(os.fspath(path).encode("utf-8")).decode("ascii")
     script = (
-        "$s=Get-AuthenticodeSignature -LiteralPath $args[0];"
-        "[pscustomobject]@{status=[string]$s.Status;"
-        "subject=[string]$s.SignerCertificate.Subject}|ConvertTo-Json -Compress"
+        "try{"
+        "$ErrorActionPreference='Stop';"
+        "$path=[Text.Encoding]::UTF8.GetString("
+        f"[Convert]::FromBase64String('{path_token}'));"
+        "if(-not (Test-Path -LiteralPath $path -PathType Leaf)){throw 'missing verification path'};"
+        "$s=Get-AuthenticodeSignature -LiteralPath $path -ErrorAction Stop;"
+        "if($null -eq $s){throw 'missing signature result'};"
+        "[pscustomobject]@{status_code=[int]($s.Status);"
+        "status=[string]($s.Status);"
+        "subject=[string]($s.SignerCertificate.Subject)}|ConvertTo-Json -Compress"
+        "}catch{"
+        "[pscustomobject]@{error_type=$_.Exception.GetType().Name}|ConvertTo-Json -Compress"
+        "}"
     )
+    encoded_script = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
     try:
         completed = subprocess.run(  # noqa: S603
             [
                 powershell,
                 "-NoProfile",
                 "-NonInteractive",
-                "-Command",
-                script,
-                os.fspath(path),
+                "-EncodedCommand",
+                encoded_script,
             ],
             check=True,
             capture_output=True,
@@ -306,11 +335,80 @@ def verify_windows_authenticode(path: Path) -> SignatureIdentity:
         ) from error
     if not isinstance(result, dict):
         raise BundleVerificationError("Windows Authenticode returned an invalid result")
+    error_type = result.get("error_type")
+    if isinstance(error_type, str):
+        safe_error = error_type if PUBLIC_KEY.fullmatch(error_type) else "invalid-error"
+        raise BundleVerificationError(
+            f"Windows Authenticode command error: {safe_error}"
+        )
     status = result.get("status")
+    status_code = result.get("status_code")
     subject = result.get("subject")
-    if not isinstance(status, str) or not isinstance(subject, str):
+    if (
+        not isinstance(status_code, int)
+        or isinstance(status_code, bool)
+        or not isinstance(status, str)
+        or not isinstance(subject, str)
+    ):
         raise BundleVerificationError("Windows Authenticode returned an invalid result")
-    return SignatureIdentity(valid=status == "Valid", subject=subject)
+    safe_status = AUTHENTICODE_STATUS_CODES.get(status_code, "invalid-status")
+    if safe_status != "Valid":
+        signer = "microsoft" if is_microsoft_signer_subject(subject) else "other"
+        if safe_status == "UnknownError" and signer == "microsoft":
+            verify_windows_signtool(path)
+            return SignatureIdentity(valid=True, subject=subject)
+        raise BundleVerificationError(
+            "Windows Authenticode trust status is not valid: "
+            f"{safe_status}; signer={signer}"
+        )
+    return SignatureIdentity(valid=True, subject=subject)
+
+
+def _find_signtool() -> Path | None:
+    direct = shutil.which("signtool.exe")
+    if direct is not None:
+        return Path(direct)
+    program_files = os.environ.get("ProgramFiles(x86)")
+    if not program_files:
+        return None
+    root = Path(program_files) / "Windows Kits" / "10" / "bin"
+    candidates = sorted(root.glob("*/x64/signtool.exe"), reverse=True)
+    return candidates[0] if candidates else None
+
+
+def verify_windows_signtool(path: Path) -> None:
+    signtool = _find_signtool()
+    if signtool is None:
+        raise BundleVerificationError("Windows signtool verifier is unavailable")
+    try:
+        completed = subprocess.run(  # noqa: S603
+            [os.fspath(signtool), "verify", "/pa", os.fspath(path)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise BundleVerificationError(
+            "Windows signtool trust verification failed"
+        ) from error
+    if completed.returncode == 0:
+        return
+    output = f"{completed.stdout}\n{completed.stderr}".casefold()
+    wintrust = re.search(r"0x[0-9a-f]{8}", output)
+    if wintrust is not None:
+        reason = f"winverifytrust-{wintrust.group(0)}"
+    elif "no signature found" in output:
+        reason = "no-signature"
+    elif "not trusted" in output:
+        reason = "not-trusted"
+    elif "did not verify" in output:
+        reason = "did-not-verify"
+    else:
+        reason = "unknown-error"
+    raise BundleVerificationError(
+        f"Windows signtool trust verification failed: {reason}"
+    )
 
 
 def is_microsoft_signer_subject(subject: str) -> bool:
@@ -324,8 +422,8 @@ def is_microsoft_signer_subject(subject: str) -> bool:
     return False
 
 
-def read_pe_x64(
-    path: Path, *, label: str, expected_sha256: str
+def read_pe(
+    path: Path, *, label: str, expected_sha256: str, allow_x86: bool = False
 ) -> tuple[bytes, PeMetadata]:
     try:
         payload = path.read_bytes()
@@ -333,7 +431,7 @@ def read_pe_x64(
         raise BundleVerificationError(f"cannot read {label}") from error
     if hashlib.sha256(payload).hexdigest() != expected_sha256:
         raise BundleVerificationError(f"payload changed after hashing: {path.name}")
-    return payload, parse_pe_x64(payload, label=label)
+    return payload, parse_pe(payload, label=label, allow_x86=allow_x86)
 
 
 def _relative_path(root: Path, path: Path) -> str:
@@ -503,7 +601,17 @@ def verify_bundle(
     records: list[dict[str, object]] = []
     total_size = 0
     roles: list[str] = []
-    for path, metadata in files:
+    for path, _discovered_metadata in files:
+        try:
+            # DirEntry.stat() may be cached by Windows while a freshly copied,
+            # large installer is still settling. Refresh immediately before
+            # opening so the descriptor comparison remains a real TOCTOU check
+            # instead of comparing against stale discovery metadata.
+            metadata = path.lstat()
+        except OSError as error:
+            raise BundleVerificationError(
+                f"cannot refresh payload identity: {path.name}"
+            ) from error
         relative = _relative_path(root, path)
         _assert_safe_relative(relative)
         role = _role(relative, installer_relative=installer_relative)
@@ -521,7 +629,12 @@ def verify_bundle(
             "webview2-offline-installer",
             "nsis-installer",
         }:
-            pe_payload, pe = read_pe_x64(path, label=role, expected_sha256=digest)
+            pe_payload, pe = read_pe(
+                path,
+                label=role,
+                expected_sha256=digest,
+                allow_x86=role in {"webview2-offline-installer", "nsis-installer"},
+            )
             if role == "webview2-offline-installer":
                 if not pe.signed:
                     raise BundleVerificationError(
@@ -749,7 +862,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--lock", action="append", type=_key_value, required=True)
     parser.add_argument("--installer", type=Path)
     parser.add_argument("--sidecar", type=Path)
-    parser.add_argument("--output", type=Path)
+    parser.add_argument("--output", type=Path, required=True)
     arguments = parser.parse_args(argv)
     try:
         manifest = verify_bundle(
@@ -762,10 +875,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             sidecar=arguments.sidecar,
         )
         output = canonical_json(manifest)
-        if arguments.output is None:
-            sys.stdout.buffer.write(output)
-        else:
-            arguments.output.write_bytes(output)
+        arguments.output.write_bytes(output)
     except (BundleVerificationError, OSError) as error:
         print(f"windows bundle verification failed: {error}", file=sys.stderr)
         return 1

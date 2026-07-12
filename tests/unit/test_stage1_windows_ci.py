@@ -92,6 +92,38 @@ def test_builders_use_exact_source_frozen_inputs_and_preserve_acl_contracts() ->
     assert "nested payload" not in both
 
 
+def test_builders_fail_closed_when_bundle_manifest_is_not_materialized() -> None:
+    jobs = _workflow()["jobs"]
+    assert isinstance(jobs, dict)
+    for job_name in (
+        "windows-desktop-builder-a",
+        "windows-desktop-builder-b",
+    ):
+        builder = jobs[job_name]
+        assert isinstance(builder, dict)
+        commands = _commands(builder)
+        verifier = commands.index("scripts/verify_windows_desktop_bundle.py")
+        manifest_path = commands.index(
+            "$manifestOutput", commands.index(".venv\\Scripts\\python.exe")
+        )
+        existence_gate = commands.index(
+            "Test-Path -LiteralPath $manifestOutput -PathType Leaf", verifier
+        )
+        identity_gate = commands.index(
+            "$manifest.artifact -ne 'windows-desktop-bundle'", existence_gate
+        )
+        provenance = commands.index("provenance.json", identity_gate)
+        assert manifest_path < verifier < existence_gate < identity_gate < provenance
+        assert "--output $manifestOutput" in commands
+        assert '--lock "Cargo.lock=$cargoLock"' in commands
+        assert '--lock "src-tauri/Cargo.lock=$cargoLock"' not in commands
+        assert "(Get-Item -LiteralPath $manifestOutput).Length -le 0" in commands
+        assert "$manifest.source_sha -ne $env:SOURCE_SHA" in commands
+        assert "$manifest.release.version -ne '1.1.0-alpha.2'" in commands
+        assert "Windows bundle manifest was not created" in commands
+        assert "Windows bundle manifest identity is invalid" in commands
+
+
 def test_windows_cache_and_cleanup_boundaries_fail_closed() -> None:
     assert verify_workflow_cache_policy([CI_PATH]) > 0
     jobs = _workflow()["jobs"]
