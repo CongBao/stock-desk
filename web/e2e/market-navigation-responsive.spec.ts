@@ -67,6 +67,43 @@ async function mockNavigation(page: Page) {
       body: JSON.stringify(navigationState),
     });
   });
+  await page.route('**/api/v1/guidance/preferences', async (route: Route) => {
+    await route.fulfill({
+      json: {
+        schema_version: 1,
+        revision: 1,
+        pages: {
+          market: { content_version: 2, status: 'completed' },
+        },
+      },
+    });
+  });
+  await page.route('**/api/v1/workspace', async (route: Route) => {
+    await route.fulfill({
+      json: {
+        schema_version: 1,
+        revision: 1,
+        updated_at: '2026-07-12T06:00:00Z',
+        expires_at: '2027-01-08T06:00:00Z',
+        restored: true,
+        notice: null,
+        workspace: {
+          current_page: '/market',
+          instrument: {
+            symbol: '000001.SS',
+            name: '上证指数',
+            exchange: 'SH',
+            kind: 'index',
+          },
+          period: '1d',
+          adjustment: 'qfq',
+          zoom: { start: 0, end: 100 },
+          main_chart: 'candlestick',
+          subchart: { kind: 'volume' },
+        },
+      },
+    });
+  });
 }
 
 async function expectNoHorizontalOverflow(page: Page) {

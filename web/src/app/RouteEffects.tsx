@@ -33,21 +33,32 @@ export function RouteEffects() {
   const isMarket =
     location.pathname.replace(/\/+$/u, '').toLowerCase() === '/market';
   const hasFocusedMarketSearch = useRef(false);
+  const previousPathname = useRef<string | null>(null);
 
   useEffect(() => {
+    const normalizedPathname =
+      location.pathname.replace(/\/+$/u, '').toLowerCase() || '/';
+    const previousPath = previousPathname.current;
+    previousPathname.current = normalizedPathname;
     document.title = `${pageTitle} · stock-desk`;
     window.scrollTo({ behavior: 'auto', left: 0, top: 0 });
 
     const focusTimer = window.setTimeout(() => {
       const focusMarketSearch = isMarket && !hasFocusedMarketSearch.current;
-      if (focusMarketSearch) hasFocusedMarketSearch.current = true;
-      document
-        .querySelector<HTMLElement>(
-          focusMarketSearch
-            ? '[data-route-primary-focus]'
-            : '[data-page-heading]',
-        )
-        ?.focus();
+      const focusMarketHeading =
+        isMarket &&
+        hasFocusedMarketSearch.current &&
+        previousPath !== null &&
+        previousPath !== '/market';
+      const target = focusMarketSearch
+        ? document.querySelector<HTMLElement>('[data-route-primary-focus]')
+        : !isMarket || focusMarketHeading
+          ? document.querySelector<HTMLElement>('[data-page-heading]')
+          : null;
+      target?.focus();
+      if (focusMarketSearch && target !== null) {
+        hasFocusedMarketSearch.current = true;
+      }
     }, 0);
 
     return () => window.clearTimeout(focusTimer);
