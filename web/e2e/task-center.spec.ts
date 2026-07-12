@@ -237,11 +237,13 @@ test('keyboard selection and cancellation send one POST and announce reflection'
   await page.goto('/tasks');
   const analysis = page.getByRole('button', { name: /智能分析/u });
   await analysis.focus();
-  await page.keyboard.press('Enter');
+  await expect(analysis).toBeFocused();
+  await analysis.press('Enter');
   await expect(analysis).toHaveAttribute('aria-current', 'true');
   const backtest = page.getByRole('button', { name: /股票池回测/u }).first();
   await backtest.focus();
-  await page.keyboard.press('Enter');
+  await expect(backtest).toBeFocused();
+  await backtest.press('Enter');
   await page.getByRole('button', { name: '取消任务' }).click();
   await expect(page.getByRole('button', { name: '已请求取消' })).toBeDisabled();
   await page.waitForTimeout(2_500);
@@ -388,7 +390,7 @@ test('Chromium page scale changes the visual viewport while controls remain reac
   page,
 }) => {
   await page.setViewportSize({ width: 800, height: 450 });
-  await installTaskStubs(page);
+  await installTaskStubs(page, { lifecycle: { completed: true } });
   await page.goto('/tasks');
   const before = await page.evaluate(() => {
     const browserGlobal = globalThis as unknown as {
@@ -429,12 +431,12 @@ test('Chromium page scale changes the visual viewport while controls remain reac
       height: before.height / 2,
     });
   const refresh = page.getByRole('button', { name: '刷新任务' });
-  const cancel = page.getByRole('button', { name: '取消任务' });
+  const analysis = page.getByRole('button', { name: /智能分析/u });
   await expect(refresh).toBeVisible();
   await refresh.focus();
   await expect(refresh).toBeFocused();
-  await expect(cancel).toBeVisible();
-  await cancel.focus();
-  await expect(cancel).toBeFocused();
+  await expect(analysis).toBeVisible();
+  await analysis.focus();
+  await expect(analysis).toBeFocused();
   await noHorizontalOverflow(page);
 });
