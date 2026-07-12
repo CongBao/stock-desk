@@ -584,6 +584,25 @@ async function loadPerformanceFormulaVersion(page: Page): Promise<string> {
   return versions.items[0]?.id ?? '';
 }
 
+async function navigateWithinDesktopWorkspace(
+  page: Page,
+  pathname: string,
+): Promise<void> {
+  await page.evaluate((target) => {
+    const browserGlobal = globalThis as unknown as {
+      history: { pushState(data: unknown, unused: string, url: string): void };
+      document: {
+        createEvent(type: string): { initEvent(type: string): void };
+      };
+      dispatchEvent(event: unknown): boolean;
+    };
+    const popState = browserGlobal.document.createEvent('Event');
+    popState.initEvent('popstate');
+    browserGlobal.history.pushState(null, '', target);
+    browserGlobal.dispatchEvent(popState);
+  }, pathname);
+}
+
 async function backtestAction(
   page: Page,
   versionId: string,
@@ -629,9 +648,12 @@ async function backtestAction(
       { timeout: 15_000 },
     )
     .toBe(true);
-  await page.goto(`/backtests/${submitted.run_id}`);
+  await navigateWithinDesktopWorkspace(page, `/backtests/${submitted.run_id}`);
   await expect(page.getByRole('heading', { name: '回测结论' })).toBeVisible();
   const wall = (performance.now() - started) / 1000;
+  console.log(
+    `[performance-backtest-sample] ${JSON.stringify({ wall_seconds: wall })}`,
+  );
   const rss = await sampler.finish();
   expect(network.blockedExternalRequests - blockedBefore).toBe(0);
   const symbolsResponse = await page.request.get(
