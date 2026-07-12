@@ -36,9 +36,7 @@ class SynchronizationStatus(StrEnum):
     FAILED = "failed"
 
 
-OnboardingAction = Literal[
-    "retry", "switch_provider", "advanced", "demo", "exit_demo"
-]
+OnboardingAction = Literal["retry", "switch_provider", "advanced", "demo", "exit_demo"]
 FREE_PROVIDER_IDS = (ProviderId.AKSHARE, ProviderId.BAOSTOCK)
 DEFAULT_SYMBOL: CanonicalSymbol = "000001.SS"
 
