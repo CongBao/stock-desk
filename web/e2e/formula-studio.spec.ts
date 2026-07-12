@@ -1,4 +1,6 @@
-import { expect, test, type Page } from '@playwright/test';
+import type { Page } from '@playwright/test';
+
+import { expect, test } from './fixtures';
 
 const macdSource =
   'DIF:EMA(C,12)-EMA(C,26);DEA:EMA(DIF,9);MACD:(DIF-DEA)*2;BUY:CROSS(DIF,DEA);SELL:CROSS(DEA,DIF);';
@@ -10,6 +12,10 @@ test.beforeEach(async ({ page }) => {
   await page.route('**/*', async (route) => {
     const source = new URL(route.request().url());
     if (!source.pathname.startsWith('/api/')) {
+      await route.fallback();
+      return;
+    }
+    if (source.pathname === '/api/v1/onboarding/state') {
       await route.fallback();
       return;
     }

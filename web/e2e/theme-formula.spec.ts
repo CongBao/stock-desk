@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test } from './fixtures';
 
 test('Formula Studio keeps theme, focus and layout usable through 200% scaling', async ({
   page,

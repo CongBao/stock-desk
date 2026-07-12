@@ -1,5 +1,7 @@
-import { expect, test, type Page } from '@playwright/test';
+import type { Page } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
+
+import { expect, test } from './fixtures';
 
 const MACD_NAME = 'Stock Desk Demo MACD (CC0 synthetic)';
 const CUSTOM_NAME = 'Stock Desk Demo custom wave (CC0 synthetic)';

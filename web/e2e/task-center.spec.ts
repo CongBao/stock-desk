@@ -1,4 +1,6 @@
-import { expect, test, type Page, type Route } from '@playwright/test';
+import type { Page, Route } from '@playwright/test';
+
+import { expect, test } from './fixtures';
 
 const taskId = '11111111-1111-4111-8111-111111111111';
 const secondTaskId = '22222222-2222-4222-8222-222222222222';
@@ -95,6 +97,10 @@ async function installTaskStubs(
     const request = route.request();
     const url = new URL(request.url());
     if (!url.pathname.startsWith('/api/')) {
+      await route.fallback();
+      return;
+    }
+    if (url.pathname === '/api/v1/onboarding/state') {
       await route.fallback();
       return;
     }

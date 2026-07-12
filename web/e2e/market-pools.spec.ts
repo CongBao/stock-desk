@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test } from './fixtures';
 
 const poolName = 'E2E 跨会话观察池';
 const renamedPool = 'E2E 跨会话编辑池';

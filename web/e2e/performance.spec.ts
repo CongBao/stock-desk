@@ -1,6 +1,4 @@
 import {
-  expect,
-  test,
   type BrowserContext,
   type Page,
   type Response,
@@ -10,6 +8,8 @@ import { execFile } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
+
+import { expect, test } from './fixtures';
 
 import {
   canonicalDigest as digest,

@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test } from './fixtures';
 
 test('market terminal preserves navy structure and rise-fall colors with three aligned regions', async ({
   page,
