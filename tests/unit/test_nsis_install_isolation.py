@@ -13,6 +13,11 @@ UPSTREAM_INSTALL_LINE = b'      StrCpy $INSTDIR "$LOCALAPPDATA\\${PRODUCTNAME}"\
 LOCAL_INSTALL_LINE = (
     b'      StrCpy $INSTDIR "$LOCALAPPDATA\\Programs\\${PRODUCTNAME}"\n'
 )
+LOCAL_REPRODUCIBLE_TIMESTAMP_PATCH = (
+    b"; Independent CI runners check out identical bytes with different mtimes.\n"
+    b"; Do not serialize those host timestamps into the otherwise identical payload.\n"
+    b"SetDateSave off\n\n"
+)
 USER_DATA_ROOT = r"$LOCALAPPDATA\Stock Desk\v1.1"
 LEGACY_DATA_ROOT = r"$LOCALAPPDATA\stock-desk"
 
@@ -21,12 +26,15 @@ def _config() -> dict[str, object]:
     return json.loads(TAURI_CONFIG.read_text(encoding="utf-8"))
 
 
-def test_custom_nsis_template_is_one_auditable_upstream_line_patch() -> None:
+def test_custom_nsis_template_has_only_the_two_auditable_local_patches() -> None:
     local = NSIS_TEMPLATE.read_bytes()
 
     assert local.count(LOCAL_INSTALL_LINE) == 1
     assert UPSTREAM_INSTALL_LINE not in local
-    reconstructed = local.replace(LOCAL_INSTALL_LINE, UPSTREAM_INSTALL_LINE)
+    assert local.count(LOCAL_REPRODUCIBLE_TIMESTAMP_PATCH) == 1
+    reconstructed = local.replace(LOCAL_REPRODUCIBLE_TIMESTAMP_PATCH, b"").replace(
+        LOCAL_INSTALL_LINE, UPSTREAM_INSTALL_LINE
+    )
     assert hashlib.sha256(reconstructed).hexdigest() == UPSTREAM_SHA256
 
     notice = NSIS_NOTICE.read_text(encoding="utf-8")
@@ -35,6 +43,7 @@ def test_custom_nsis_template_is_one_auditable_upstream_line_patch() -> None:
     assert hashlib.sha256(local).hexdigest() in notice
     assert UPSTREAM_INSTALL_LINE.decode().strip() in notice
     assert LOCAL_INSTALL_LINE.decode().strip() in notice
+    assert "SetDateSave off" in notice
 
 
 def test_nsis_configuration_has_no_reachable_admin_install_mode() -> None:
