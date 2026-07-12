@@ -247,9 +247,9 @@ def test_heartbeat_death_before_readiness_settles_delayed_error_payload(
         database_url=database_url,
         worker_id="delayed-before-ready-error",
         interval=0.01,
-        # Match the production startup allowance: process spawn can exceed one
-        # second on a saturated CI runner before the child can publish failure.
-        start_timeout=5.0,
+        # Match the production startup allowance: process spawn can be slow on
+        # saturated or low-spec desktop systems before the child publishes.
+        start_timeout=worker_module._DEFAULT_HEARTBEAT_START_TIMEOUT_SECONDS,
         stop_timeout=0.3,
         io_timeout=0.05,
     )
@@ -283,7 +283,7 @@ def test_running_heartbeat_death_joins_before_consuming_delayed_error_payload(
         interval=0.01,
         # Match the production startup allowance so this test isolates the
         # post-readiness settlement race instead of runner spawn latency.
-        start_timeout=5.0,
+        start_timeout=worker_module._DEFAULT_HEARTBEAT_START_TIMEOUT_SECONDS,
         stop_timeout=0.3,
         io_timeout=0.05,
     )
@@ -1450,6 +1450,18 @@ def test_worker_rejects_invalid_heartbeat_process_timeout(
                 worker_id="worker",
                 **{field: value},
             )
+    finally:
+        repository.close()
+
+
+def test_default_heartbeat_startup_budget_tolerates_saturated_desktop_spawn(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    try:
+        worker = TaskWorker(repository, worker_id="worker")
+
+        assert worker._heartbeat_start_timeout == 15.0  # noqa: SLF001
     finally:
         repository.close()
 
