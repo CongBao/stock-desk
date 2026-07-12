@@ -127,14 +127,24 @@ def test_runner_persists_complete_deferred_constraint_and_cancellation_chains(
         assert events[14]["payload_json"]["filled_at"] == _utc_text(timestamps[17])
 
 
+@pytest.mark.parametrize(
+    ("formula_name", "source"),
+    (
+        ("自定义波段", WAVE_FORMULA),
+        ("MACD 金叉死叉", MACD_TEMPLATE_SOURCE),
+    ),
+    ids=("custom", "macd"),
+)
 def test_custom_saved_formula_persists_the_exact_computed_signal_series(
     tmp_path: Path,
+    formula_name: str,
+    source: str,
 ) -> None:
     with BacktestHarness.create(tmp_path) as harness:
         days = weekday_range(date(2024, 1, 1), date(2024, 5, 1))
         harness.seed_instruments("600000.SH")
         harness.seed_symbol("600000.SH", Period.DAY, days)
-        version = harness.create_formula("自定义波段", WAVE_FORMULA)
+        version = harness.create_formula(formula_name, source)
 
         completed = harness.run_single(
             version.id,
@@ -159,6 +169,14 @@ def test_custom_saved_formula_persists_the_exact_computed_signal_series(
         assert completed.run.symbols[0].signal_series_id == expected.signal_series_id
         assert completed.run.snapshot.formula_version_id == expected.formula_version_id
         assert completed.run.snapshot.formula_checksum == expected.formula_checksum
+        assert completed.run.snapshot.formula_engine_version == expected.engine_version
+        assert (
+            completed.run.snapshot.compatibility_version
+            == expected.compatibility_version
+        )
+        assert reference.signal_dataset_version == expected.dataset_version
+        assert reference.signal_route_version == expected.route_version
+        assert reference.signal_manifest_record_id == expected.manifest_record_id
         assert completed.report.metrics["realized_count"] > 0
 
 

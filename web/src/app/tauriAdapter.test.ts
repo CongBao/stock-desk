@@ -1,7 +1,13 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen, type EventCallback } from '@tauri-apps/api/event';
 
-import { createTauriAdapter, createTauriApiTransport } from './tauriAdapter';
+import { createApiClient } from '../shared/api/client';
+import {
+  createTauriAdapter,
+  createTauriApiTransport,
+  isDesktopApiResponseSizeAllowed,
+  MAX_DESKTOP_API_RESPONSE_BYTES,
+} from './tauriAdapter';
 
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn(),
@@ -121,6 +127,77 @@ it('proxies only the closed API request and validates the host response', async 
   await expect(
     transport({ method: 'GET', path: '/api/health' }),
   ).rejects.toThrow('Invalid desktop API response');
+});
+
+it('keeps the desktop response budget aligned above the public formula payload', () => {
+  expect(MAX_DESKTOP_API_RESPONSE_BYTES).toBe(192 * 1_048_576);
+  expect(isDesktopApiResponseSizeAllowed(128 * 1_048_576)).toBe(true);
+  expect(isDesktopApiResponseSizeAllowed(MAX_DESKTOP_API_RESPONSE_BYTES)).toBe(
+    true,
+  );
+  expect(
+    isDesktopApiResponseSizeAllowed(MAX_DESKTOP_API_RESPONSE_BYTES + 1),
+  ).toBe(false);
+  expect(isDesktopApiResponseSizeAllowed(Number.MAX_SAFE_INTEGER + 1)).toBe(
+    false,
+  );
+});
+
+it('routes every Formula Studio operation through the host without exposing session authority', async () => {
+  vi.mocked(isTauri).mockReturnValue(true);
+  vi.mocked(invoke).mockClear();
+  vi.mocked(invoke).mockResolvedValue({
+    body: '{"ok":true}',
+    content_type: 'application/json',
+    status: 200,
+  });
+  const transport = createTauriApiTransport();
+  if (transport === undefined) throw new Error('transport was not created');
+  const client = createApiClient('/api', transport);
+  const browserFetch = vi.spyOn(globalThis, 'fetch');
+
+  await client.get('/formulas/templates');
+  await client.post('/formulas/validate', {
+    body: { source: 'X:C;', parameter_schema: {}, formula_type: 'indicator' },
+  });
+  await client.post('/formulas', {
+    body: {
+      name: 'Desktop formula',
+      source: 'X:C;',
+      parameter_schema: {},
+      formula_type: 'indicator',
+      placement: 'subchart',
+    },
+  });
+  await client.post('/formulas/version-1/preview', {
+    body: {
+      symbol: '000001.SS',
+      period: '1d',
+      adjustment: 'qfq',
+      start: '2026-01-01T00:00:00Z',
+      end: '2026-07-01T00:00:00Z',
+      parameters: {},
+    },
+  });
+
+  expect(browserFetch).not.toHaveBeenCalled();
+  const requests = vi.mocked(invoke).mock.calls.map(([, payload]) => payload);
+  expect(requests).toHaveLength(4);
+  expect(requests[0]).toEqual({
+    request: { method: 'GET', path: '/api/formulas/templates' },
+  });
+  const serializedRequests = JSON.stringify(requests);
+  for (const path of [
+    '/api/formulas/validate',
+    '/api/formulas',
+    '/api/formulas/version-1/preview',
+  ]) {
+    expect(serializedRequests).toContain(`"path":"${path}"`);
+  }
+  expect(serializedRequests).not.toMatch(
+    /authorization|bearer|127\.0\.0\.1|localhost|port/iu,
+  );
+  browserFetch.mockRestore();
 });
 
 it('rejects an aborted desktop API request without exposing its late result', async () => {

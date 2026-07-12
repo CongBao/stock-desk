@@ -56,7 +56,11 @@ export function FormulaPreview({
           signals: preview.signals,
         };
   return (
-    <section className="formula-preview-panel" aria-label="公式图表预览">
+    <section
+      className="formula-preview-panel"
+      aria-label="公式图表预览"
+      data-guidance-target="formula-preview"
+    >
       <header className="formula-panel-heading formula-preview-heading">
         <div>
           <span className="panel-kicker">PREVIEW / SAVED REVISION</span>

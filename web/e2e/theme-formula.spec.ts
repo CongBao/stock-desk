@@ -10,6 +10,11 @@ test('Formula Studio keeps theme, focus and layout usable through 200% scaling',
   const theme = page.getByRole('combobox', { name: '界面主题' });
   await expect(theme).toHaveValue('system');
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+  await expect(page.locator('.monaco-editor').first()).toHaveClass(/\bvs\b/u);
+  await expect(page.locator('.monaco-editor').first()).toHaveCSS(
+    'background-color',
+    'rgb(255, 255, 255)',
+  );
 
   await theme.selectOption('light');
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
@@ -20,14 +25,25 @@ test('Formula Studio keeps theme, focus and layout usable through 200% scaling',
 
   await theme.selectOption('dark');
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  await expect(page.locator('.monaco-editor').first()).toHaveClass(
+    /\bvs-dark\b/u,
+  );
+  await expect(page.locator('.monaco-editor').first()).toHaveCSS(
+    'background-color',
+    'rgb(7, 17, 31)',
+  );
   await page.reload();
   await expect(theme).toHaveValue('dark');
+  await expect(page.locator('.monaco-editor').first()).toHaveClass(
+    /\bvs-dark\b/u,
+  );
 
   await theme.selectOption('system');
   await page.emulateMedia({ colorScheme: 'dark' });
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
   await page.emulateMedia({ colorScheme: 'light' });
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+  await expect(page.locator('.monaco-editor').first()).toHaveClass(/\bvs\b/u);
 
   const demo = page.getByRole('button', { name: '先看只读演示' });
   if (await demo.isVisible()) await demo.click();

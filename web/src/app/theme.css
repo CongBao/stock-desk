@@ -3718,8 +3718,8 @@ a {
   overflow: hidden;
   border: 1px solid var(--border);
   border-radius: 9px;
-  background: rgba(9, 21, 36, 0.88);
-  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.12);
+  background: var(--panel-translucent);
+  box-shadow: 0 14px 36px var(--shadow-color);
 }
 
 .formula-library {
@@ -3816,7 +3816,7 @@ a {
 
 .formula-library-section + .formula-library-section {
   padding-top: 10px;
-  border-top: 1px solid rgba(30, 53, 80, 0.65);
+  border-top: 1px solid var(--border);
 }
 
 .formula-library-section h4 {
@@ -3844,7 +3844,7 @@ a {
   border: 1px solid transparent;
   border-radius: 6px;
   color: var(--text-secondary);
-  background: rgba(7, 17, 31, 0.62);
+  background: var(--surface-0);
   text-align: left;
   cursor: pointer;
 }
@@ -3981,7 +3981,7 @@ a {
   max-height: 130px;
   overflow-y: auto;
   border-bottom: 1px solid var(--border);
-  background: rgba(7, 17, 31, 0.62);
+  background: var(--surface-0);
 }
 
 .formula-diagnostic-panel p {
@@ -4045,7 +4045,7 @@ a {
   padding: 7px;
   border: 1px solid var(--border);
   border-radius: 6px;
-  background: rgba(7, 17, 31, 0.5);
+  background: var(--surface-0);
 }
 
 .formula-parameter-grid label > span {
@@ -4134,7 +4134,7 @@ a {
   padding: 7px 11px;
   border-bottom: 1px solid var(--border);
   color: var(--text-muted);
-  background: rgba(56, 189, 248, 0.035);
+  background: var(--accent-soft);
   font-size: 8px;
   line-height: 1.5;
 }
@@ -6606,11 +6606,7 @@ a {
   }
 }
 /* Contextual tours stay inside the desktop viewport and move away from the
-   highlighted control.  `display: contents` preserves existing grid layouts. */
-.guidance-anchor-contents {
-  display: contents;
-}
-
+   highlighted control. */
 .guidance-help {
   position: relative;
 }
@@ -6690,7 +6686,10 @@ a {
 
 [data-guidance-active='true'] {
   position: relative;
-  z-index: 75;
+  /* The dialog is rendered from the top bar's z-index:5 stacking context.
+     Keep highlighted workspace controls below it so they cannot intercept the
+     tour actions while retaining a visible outline. */
+  z-index: 4;
   outline: 3px solid #2f7ae5;
   outline-offset: 4px;
   border-radius: 6px;

@@ -153,7 +153,7 @@ export const FormulaEditor = forwardRef<
   );
 
   return (
-    <div className="formula-monaco-shell">
+    <div className="formula-monaco-shell" data-guidance-target="formula-editor">
       <Editor
         height="100%"
         language={TDX_LANGUAGE_ID}

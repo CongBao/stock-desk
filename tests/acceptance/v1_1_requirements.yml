@@ -209,4 +209,114 @@ requirements:
         path: web/e2e/workspace-recovery.spec.ts
         selector: corrupt or illegal restored state safely falls back without navigating to it
         assertion: Browser-level corrupt and illegal workspace responses never navigate to unsafe state and visibly recover to the default market.
+  - id: V11-R-007
+    category: formula
+    kind: user_visible
+    behavior_key: formula_studio_desktop_accessibility
+    acceptance: "Formula Studio remains operable inside the Windows desktop shell across System, Light, and Dark themes, supported narrow layouts, 200% effective scaling, keyboard focus, and its first-visit contextual guidance."
+    source_refs:
+      - {
+          capability: desktop-user-experience,
+          requirement: responsive-desktop-layout,
+          scenario: high-display-scaling,
+        }
+      - {
+          capability: desktop-user-experience,
+          requirement: system-theme-and-non-color-expression,
+          scenario: follow-system-theme-changes,
+        }
+      - {
+          capability: desktop-user-experience,
+          requirement: keyboard-and-focus-usability,
+          scenario: complete-primary-journey-with-keyboard,
+        }
+      - {
+          capability: desktop-onboarding,
+          requirement: core-flow-contextual-guidance,
+          scenario: first-visit-core-page,
+        }
+    owning_stage: 2
+    status: mapped
+    evidence:
+      - state: existing
+        runner: playwright
+        kind: acceptance
+        path: web/e2e/theme-formula.spec.ts
+        selector: Formula Studio keeps theme, focus and layout usable through 200% scaling
+        assertion: The Formula Studio browser contract switches the actual Monaco theme, persists explicit preferences, keeps visible focus, and remains horizontally bounded at the 200 percent effective viewport.
+      - state: existing
+        runner: playwright
+        kind: acceptance
+        path: web/e2e/contextual-guidance.spec.ts
+        selector: Formula Studio guidance anchors have real geometry at 200 percent effective width
+        assertion: Every Formula Studio tour step targets a non-zero drawable control while the dialog retains a trapped keyboard focus sequence and safe Escape dismissal.
+      - state: existing
+        runner: pytest
+        kind: contract
+        path: tests/acceptance/test_tauri_desktop_shell.py
+        selector: tests/acceptance/test_tauri_desktop_shell.py::test_tauri_shell_is_windows_only_single_window_and_uses_bundled_assets
+        assertion: The packaged Windows desktop contract exposes one Tauri window that loads the same React asset tree containing Formula Studio without an external browser surface.
+  - id: V11-R-008
+    category: formula
+    kind: security
+    behavior_key: authenticated_desktop_formula_boundary
+    acceptance: "Every Formula Studio API operation uses the authenticated Tauri host proxy without exposing session authority to React, while the desktop transport preserves the complete bounded v1 formula response and the sidecar retains parsing, future-data rejection, isolated execution, immutable versions, and provenance."
+    source_refs:
+      - {
+          capability: windows-desktop-shell,
+          requirement: sidecar-lifecycle-and-session-security,
+          scenario: unauthorized-local-request,
+        }
+      - {
+          capability: windows-desktop-shell,
+          requirement: core-capability-compatibility-baseline,
+          scenario: use-existing-core-capability-after-desktopization,
+        }
+    owning_stage: 2
+    status: mapped
+    evidence:
+      - state: existing
+        runner: pytest
+        kind: integration
+        path: tests/integration/test_sidecar_session.py
+        selector: tests/integration/test_sidecar_session.py::test_formula_studio_requires_desktop_authority_and_preserves_provenance
+        assertion: Formula template, validation, creation, and preview endpoints reject unauthenticated desktop traffic while an exact origin and bearer session preserves immutable formula and market provenance.
+      - state: existing
+        runner: vitest
+        kind: integration
+        path: web/src/app/tauriAdapter.test.ts
+        selector: routes every Formula Studio operation through the host without exposing session authority
+        assertion: Formula Studio operations use only the closed desktop_api_request command, never browser fetch, and expose neither bearer authority nor sidecar network coordinates to React.
+      - state: existing
+        runner: pytest
+        kind: security
+        path: tests/acceptance/test_formula_safety_boundary.py
+        selector: tests/acceptance/test_formula_safety_boundary.py::test_future_or_repainting_formula_cannot_be_saved_or_backtested
+        assertion: Future-looking and repainting drafts remain blocked from save, preview, and backtest without mutating the last valid immutable version.
+  - id: V11-R-009
+    category: formula
+    kind: architecture
+    behavior_key: desktop_formula_semantic_identity
+    acceptance: "Desktop Formula Studio preserves v1 formula semantics: built-in MACD and a user-defined trading formula can be saved and previewed as subcharts with BUY and SELL signals, and backtesting consumes the exact same frozen formula version, checksum, engine, compatibility, dataset, route, manifest, and SignalSeries identity."
+    source_refs:
+      - {
+          capability: windows-desktop-shell,
+          requirement: core-capability-compatibility-baseline,
+          scenario: use-existing-core-capability-after-desktopization,
+        }
+    owning_stage: 2
+    status: mapped
+    evidence:
+      - state: existing
+        runner: pytest
+        kind: acceptance
+        path: tests/acceptance/test_backtest_semantics.py
+        selector: tests/acceptance/test_backtest_semantics.py::test_custom_saved_formula_persists_the_exact_computed_signal_series
+        assertion: Built-in MACD and a custom trading formula each produce the exact SignalSeries and frozen provenance identity later consumed by the backtest engine.
+      - state: existing
+        runner: playwright
+        kind: acceptance
+        path: web/e2e/formula-studio.spec.ts
+        selector: desktop MACD flow is atomic, versioned, parameterized, and safe
+        assertion: Formula Studio saves and previews the built-in MACD as a subchart with numeric outputs and explicit BUY and SELL signals while unsupported or future-looking source remains blocked.
 non_goals: []

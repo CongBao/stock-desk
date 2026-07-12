@@ -5,7 +5,10 @@ use crate::app::DesktopRuntime;
 
 const MAX_PATH_BYTES: usize = 4 * 1024;
 const MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024;
-const MAX_RESPONSE_BODY_BYTES: usize = 4 * 1024 * 1024;
+// The public formula contract permits a 128 MiB SignalSeries. Market chart
+// responses can carry that series together with up to 100,000 bars, so the
+// desktop proxy needs bounded headroom without narrowing the v1 API contract.
+const MAX_RESPONSE_BODY_BYTES: usize = 192 * 1024 * 1024;
 const MAX_CONTENT_TYPE_BYTES: usize = 128;
 
 #[derive(Debug, Deserialize)]
@@ -217,11 +220,15 @@ async fn read_bounded_body(mut response: reqwest::Response) -> Result<String, St
 }
 
 fn append_bounded(body: &mut Vec<u8>, chunk: &[u8]) -> Result<(), String> {
-    if body.len().saturating_add(chunk.len()) > MAX_RESPONSE_BODY_BYTES {
+    if response_body_would_exceed_limit(body.len(), chunk.len()) {
         return Err("desktop_proxy_response_too_large".to_owned());
     }
     body.extend_from_slice(chunk);
     Ok(())
+}
+
+fn response_body_would_exceed_limit(current: usize, incoming: usize) -> bool {
+    current.saturating_add(incoming) > MAX_RESPONSE_BODY_BYTES
 }
 
 #[cfg(test)]
@@ -336,12 +343,16 @@ mod tests {
 
     #[test]
     fn response_accumulation_stops_at_the_hard_limit() {
-        let mut body = vec![0; MAX_RESPONSE_BODY_BYTES];
-        assert_eq!(
-            append_bounded(&mut body, b"x"),
-            Err("desktop_proxy_response_too_large".to_owned())
-        );
-        assert_eq!(body.len(), MAX_RESPONSE_BODY_BYTES);
+        assert!(!response_body_would_exceed_limit(
+            MAX_RESPONSE_BODY_BYTES - 1,
+            1
+        ));
+        assert!(response_body_would_exceed_limit(MAX_RESPONSE_BODY_BYTES, 1));
+        assert!(response_body_would_exceed_limit(usize::MAX, 1));
+
+        let mut body = b"bounded".to_vec();
+        append_bounded(&mut body, b" response").unwrap();
+        assert_eq!(body, b"bounded response");
     }
 
     #[test]

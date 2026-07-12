@@ -1,15 +1,20 @@
 import secrets
+from datetime import date
 from pathlib import Path
 import threading
 
 from fastapi.testclient import TestClient
 import pytest
 
+from stock_desk.api.market import MarketServices
+from stock_desk.config import Settings
 from stock_desk.desktop_session import DesktopLifecycleController, DesktopSession
+from stock_desk.formula.service import MACD_TEMPLATE_SOURCE
 from stock_desk.main import create_app
 from stock_desk.storage.database import create_engine_for_url, migrate
 from stock_desk.tasks.repository import TaskRepository
 from stock_desk.tasks.worker import TaskWorker
+from tests.integration.market.lake_test_helpers import routed_daily_bars
 
 
 TAURI_ORIGIN = "http://tauri.localhost"
@@ -74,6 +79,91 @@ def test_desktop_session_rejects_missing_and_wrong_credentials_without_leaking()
     assert session.secret_for_host() not in serialized
     assert "evil.invalid" not in serialized
     assert "traceback" not in serialized.casefold()
+
+
+def test_formula_studio_requires_desktop_authority_and_preserves_provenance(
+    tmp_path: Path,
+) -> None:
+    session = _session()
+    database_url = f"sqlite:///{tmp_path / 'desktop-formula.db'}"
+    migrate(database_url)
+    services = MarketServices(
+        engine=create_engine_for_url(database_url),
+        lake_root=(tmp_path / "market").resolve(),
+    )
+    routed = routed_daily_bars((date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4)))
+    stored = services.lake.write(routed)
+    settings = Settings(database_url=database_url, data_dir=tmp_path)
+    preview_path = "/api/formulas/not-authorized/preview"
+    try:
+        with TestClient(
+            create_app(
+                settings,
+                market_services=services,
+                desktop_session=session,
+            )
+        ) as client:
+            unauthenticated = (
+                client.get("/api/formulas/templates"),
+                client.post("/api/formulas/validate", json={}),
+                client.post("/api/formulas", json={}),
+                client.post(preview_path, json={}),
+            )
+            assert [item.status_code for item in unauthenticated] == [403] * 4
+
+            headers = _headers(session)
+            validated = client.post(
+                "/api/formulas/validate",
+                headers=headers,
+                json={
+                    "source": MACD_TEMPLATE_SOURCE,
+                    "parameter_schema": {},
+                    "formula_type": "trading",
+                },
+            )
+            assert validated.status_code == 200
+            assert validated.json() == {"valid": True, "diagnostics": []}
+
+            created = client.post(
+                "/api/formulas",
+                headers=headers,
+                json={
+                    "name": "Desktop authenticated MACD",
+                    "formula_type": "trading",
+                    "placement": "subchart",
+                    "source": MACD_TEMPLATE_SOURCE,
+                    "parameter_schema": {},
+                },
+            )
+            assert created.status_code == 201
+            version_id = created.json()["draft"]["executable_version_id"]
+            query = routed.result.query
+            preview = client.post(
+                f"/api/formulas/{version_id}/preview",
+                headers=headers,
+                json={
+                    "symbol": query.symbol,
+                    "period": query.period.value,
+                    "adjustment": query.adjustment.value,
+                    "start": query.start.isoformat(),
+                    "end": query.end.isoformat(),
+                    "parameters": {},
+                },
+            )
+    finally:
+        services.close()
+
+    assert preview.status_code == 200
+    payload = preview.json()
+    assert payload["formula_version_id"] == version_id
+    assert payload["formula_checksum"].startswith("sha256:")
+    assert payload["engine_version"]
+    assert payload["compatibility_version"]
+    assert payload["source"] == routed.result.provenance.source.value
+    assert payload["dataset_version"] == routed.result.provenance.dataset_version
+    assert payload["route_version"] == routed.manifest.route_version
+    assert payload["manifest_record_id"] == stored.manifest_record_id
+    assert session.secret_for_host() not in preview.text
 
 
 def test_desktop_session_preflight_is_exact_and_rejects_header_expansion() -> None:
