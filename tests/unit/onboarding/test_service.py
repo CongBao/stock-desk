@@ -192,6 +192,25 @@ class _UnavailableFactory:
         raise ProviderUnavailable()
 
 
+class _FallbackFactory:
+    def __init__(self) -> None:
+        self.attempted: list[ProviderId] = []
+
+    def create(
+        self,
+        source: ProviderId,
+        *,
+        token: str | None,
+        tdx_path: Path | None,
+    ) -> MarketDataProvider:
+        assert token is None
+        assert tdx_path is None
+        self.attempted.append(source)
+        if source is ProviderId.AKSHARE:
+            raise ProviderUnavailable()
+        return _Provider(source)
+
+
 def _service(tmp_path: Path) -> tuple[OnboardingService, MarketServices]:
     database_url = f"sqlite:///{tmp_path / 'onboarding.db'}"
     market = MarketServices.open(
@@ -240,6 +259,31 @@ def test_real_catalog_and_single_provider_daily_pin_are_required_for_completion(
         assert completed.status is OnboardingStatus.COMPLETED
         assert completed.current_step is OnboardingStep.COMPLETED
         assert completed.demo_mode is False
+    finally:
+        market.close()
+
+
+def test_preparation_falls_back_only_after_the_whole_provider_attempt_fails(
+    tmp_path: Path,
+) -> None:
+    _unused_service, market = _service(tmp_path)
+    factory = _FallbackFactory()
+    service = OnboardingService(
+        store=OnboardingStateStore(
+            tmp_path / "fallback-state-v1.json", clock=lambda: NOW
+        ),
+        market=market,
+        provider_factory=factory,
+        clock=lambda: NOW,
+    )
+    try:
+        prepared = service.begin_preparation()
+
+        assert factory.attempted == [ProviderId.AKSHARE, ProviderId.BAOSTOCK]
+        assert prepared.current_step is OnboardingStep.INSTRUMENT_SELECTION
+        assert prepared.source is not None
+        assert prepared.source.id is ProviderId.BAOSTOCK
+        assert prepared.instrument.symbol == "000001.SS"
     finally:
         market.close()
 

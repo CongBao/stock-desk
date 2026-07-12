@@ -274,9 +274,9 @@ V11_CANONICAL_REQUIREMENTS: dict[str, dict[str, Any]] = {
     "V11-R-002": _authority(
         "platform",
         "user_visible",
-        "first_run_data_setup_wizard",
+        "four_step_first_run_happy_path",
         1,
-        "6c78f78a0b3c1489a2df1dfa709f01f487d1f7e3cb1444a5efd191bf8910f008",
+        "05cc8d9d6f2657756c7d9d6d030270097c0b7b55d6943622eedea54851e1014e",
         (
             "desktop-onboarding",
             "guided-first-run-setup",
@@ -291,6 +291,74 @@ V11_CANONICAL_REQUIREMENTS: dict[str, dict[str, Any]] = {
             "desktop-onboarding",
             "ready-after-onboarding",
             "open-default-market-workspace",
+        ),
+    ),
+    "V11-R-003": _authority(
+        "market",
+        "architecture",
+        "whole_provider_onboarding_fallback",
+        1,
+        "0eeb8d67f4a675a0521740fe1e1e206b32b63327a823ffb1575797837f29ff13",
+        (
+            "desktop-onboarding",
+            "whole-provider-fallback",
+            "fall-back-after-complete-provider-failure",
+        ),
+        (
+            "desktop-onboarding",
+            "whole-provider-fallback",
+            "pin-first-fully-verified-provider",
+        ),
+    ),
+    "V11-R-004": _authority(
+        "platform",
+        "user_visible",
+        "demo_isolation_and_real_setup_recovery",
+        1,
+        "d73f6d196ef8acffa1a4c76ce4431a412a6a70f7802571ba3df90ac87b19fe1b",
+        (
+            "desktop-onboarding",
+            "read-only-demo-isolation",
+            "do-not-complete-real-setup",
+        ),
+        (
+            "desktop-onboarding",
+            "read-only-demo-isolation",
+            "exit-demo-and-resume-real-setup",
+        ),
+    ),
+    "V11-R-005": _authority(
+        "platform",
+        "architecture",
+        "atomic_onboarding_resume",
+        1,
+        "1937f177014a519150c59bb375ee73a49fb13b4aaa97621638ece3d113628499",
+        (
+            "desktop-onboarding",
+            "persistent-progress",
+            "restart-from-last-committed-step",
+        ),
+        (
+            "desktop-onboarding",
+            "persistent-progress",
+            "preserve-valid-state-after-interrupted-write",
+        ),
+    ),
+    "V11-R-006": _authority(
+        "platform",
+        "user_visible",
+        "workspace_restore_and_safe_fallback",
+        1,
+        "0f3bb3cf8e1dced951cff965d00cd6635abdd07b3790e8a89e7f8977de93c730",
+        (
+            "desktop-workspace",
+            "versioned-workspace-restore",
+            "restore-valid-session-after-restart",
+        ),
+        (
+            "desktop-workspace",
+            "versioned-workspace-restore",
+            "fall-back-from-invalid-state",
         ),
     ),
 }
@@ -1191,25 +1259,25 @@ def validate_v11_manifest(
         raise ValidationError("v1.1 schema_version must be integer 1")
     requirements = _expect_list(matrix["requirements"], "v1.1 requirements")
     non_goals = _expect_list(matrix["non_goals"], "v1.1 non_goals")
-    expected = ["V11-R-001", "V11-R-002"]
+    expected = [f"V11-R-{index:03d}" for index in range(1, 7)]
     if [
         item.get("id") if isinstance(item, dict) else None for item in requirements
     ] != expected:
         raise ValidationError(
-            "v1.1 requirements must contain exactly V11-R-001 through V11-R-002"
+            "v1.1 requirements must contain exactly V11-R-001 through V11-R-006"
         )
     if non_goals:
         raise ValidationError("v1.1 non_goals must be empty for the frozen increment")
     if list(V11_CANONICAL_REQUIREMENTS) != expected:
         raise ValidationError(
-            "v1.1 canonical registry must contain exactly V11-R-001 through V11-R-002"
+            "v1.1 canonical registry must contain exactly V11-R-001 through V11-R-006"
         )
     if (
         list(V11_AUTHORITATIVE_BEHAVIOR_KEYS) != expected
         or list(V11_AUTHORITATIVE_ACCEPTANCE_SHA256) != expected
     ):
         raise ValidationError(
-            "v1.1 authoritative contract must contain exactly V11-R-001 through V11-R-002"
+            "v1.1 authoritative contract must contain exactly V11-R-001 through V11-R-006"
         )
     tracked_paths = _tracked_paths(repo_root)
     behavior_keys: set[str] = set()
