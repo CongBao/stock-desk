@@ -1237,7 +1237,7 @@ def test_selector_collection_timeout_is_bounded_and_deterministic(
     selector = {
         "pytest": f"{path}::test_frontend_listings_require_an_exact_test_title",
         "vitest": "shows the product identity and all primary navigation items",
-        "playwright": "fresh user sees the live foundation shell and completed demo task",
+        "playwright": "returning user sees the live foundation shell and completed demo task",
     }[runner]
     item = {
         "evidence": [
