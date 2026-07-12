@@ -513,7 +513,8 @@ function routingRequestJson(manifest: RoutingManifest): JsonValue {
     return {
       query: {
         symbol: manifest.requestQuery.symbol,
-        ...(manifest.requestQuery.instrumentKind === undefined
+        ...(manifest.requestQuery.instrumentKind === undefined ||
+        manifest.requestQuery.instrumentKind === 'stock'
           ? {}
           : { instrument_kind: manifest.requestQuery.instrumentKind }),
         period: manifest.requestQuery.period,

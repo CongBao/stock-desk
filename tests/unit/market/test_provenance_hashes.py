@@ -25,7 +25,10 @@ def test_default_stock_query_retains_published_v1_manifest_identity() -> None:
 
     manifest = _single_source_bar_manifest(QUERY)
 
-    assert "instrument_kind" not in manifest.model_dump(mode="json")["request"]["query"]
+    assert (
+        manifest.model_dump(mode="json")["request"]["query"]["instrument_kind"]
+        == "stock"
+    )
     assert (
         manifest.route_version
         == "sha256:a2391b572c60a8ff4b47c457298abe97799c8407965de77da3ed2f9f2518ddc8"
@@ -57,13 +60,42 @@ def test_explicit_non_stock_query_kind_remains_identity_bound() -> None:
         )
     )
 
-    assert "instrument_kind" not in stock.model_dump(mode="json")["request"]["query"]
+    assert (
+        stock.model_dump(mode="json")["request"]["query"]["instrument_kind"] == "stock"
+    )
     assert etf.model_dump(mode="json")["request"]["query"]["instrument_kind"] == "etf"
     assert (
         index.model_dump(mode="json")["request"]["query"]["instrument_kind"] == "index"
     )
     assert stock.route_version != etf.route_version
     assert manifest_record_id(stock) != manifest_record_id(etf)
+
+
+def test_default_stock_provider_dataset_identity_remains_published() -> None:
+    from stock_desk.market.providers.normalization import dataset_version
+
+    stock = dataset_version(
+        source=ProviderId.TUSHARE,
+        operation="bars",
+        request={"query": QUERY},
+        data_cutoff=DATA_CUTOFF,
+        items=(),
+    )
+    etf = dataset_version(
+        source=ProviderId.TUSHARE,
+        operation="bars",
+        request={
+            "query": QUERY.model_copy(update={"instrument_kind": InstrumentKind.ETF})
+        },
+        data_cutoff=DATA_CUTOFF,
+        items=(),
+    )
+
+    assert (
+        stock
+        == "sha256:36a68655d1676bdd736365ce9a883a5830cdd771b951c6d6556f8049e19d6e52"
+    )
+    assert etf != stock
 
 
 def test_route_version_changes_when_transition_semantics_change() -> None:

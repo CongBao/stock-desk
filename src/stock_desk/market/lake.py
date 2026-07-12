@@ -42,6 +42,7 @@ from stock_desk.market.provenance import (
     RoutedBarSuccess,
     RoutingManifest,
     make_routing_manifest,
+    routing_manifest_identity_payload,
 )
 from stock_desk.market.providers.normalization import (
     dataset_version as provider_dataset_version,
@@ -224,7 +225,7 @@ class _PublishedPartition:
 def manifest_record_id(manifest: RoutingManifest) -> str:
     canonical = RoutingManifest.model_validate(manifest.model_dump(mode="python"))
     encoded = json.dumps(
-        canonical.model_dump(mode="json"),
+        routing_manifest_identity_payload(canonical),
         ensure_ascii=True,
         separators=(",", ":"),
         sort_keys=True,
