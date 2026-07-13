@@ -26,8 +26,9 @@ function isSameExitState(
 ): boolean {
   return (
     current.state === next.state &&
-    (current.state !== 'blocked' ||
-      (next.state === 'blocked' &&
+    ((current.state !== 'blocked' &&
+      current.state !== 'checkpoint_timed_out') ||
+      (next.state === current.state &&
         current.queued === next.queued &&
         current.running === next.running))
   );
@@ -42,6 +43,7 @@ function TauriDesktopExitGuard({
 }) {
   const [exitState, setExitState] = useState<DesktopExitState>(idleExitState);
   const [actionPending, setActionPending] = useState(false);
+  const [checkpointing, setCheckpointing] = useState(false);
   const dialogRef = useRef<HTMLDialogElement>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
 
@@ -54,6 +56,7 @@ function TauriDesktopExitGuard({
         (next) => {
           if (!active) return;
           setActionPending(false);
+          if (next.state !== 'checking') setCheckpointing(false);
           setExitState((current) =>
             isSameExitState(current, next) ? current : next,
           );
@@ -82,7 +85,11 @@ function TauriDesktopExitGuard({
   }, [bridge]);
 
   useEffect(() => {
-    if (exitState.state === 'confirm' || exitState.state === 'blocked') {
+    if (
+      exitState.state === 'confirm' ||
+      exitState.state === 'blocked' ||
+      exitState.state === 'checkpoint_timed_out'
+    ) {
       cancelRef.current?.focus();
     }
   }, [exitState]);
@@ -103,8 +110,15 @@ function TauriDesktopExitGuard({
   }, [actionPending, bridge, exitState.state]);
 
   const confirmExit = useCallback(async () => {
-    if (actionPending || exitState.state !== 'confirm') return;
+    if (
+      actionPending ||
+      (exitState.state !== 'confirm' &&
+        exitState.state !== 'blocked' &&
+        exitState.state !== 'checkpoint_timed_out')
+    )
+      return;
     setActionPending(true);
+    setCheckpointing(exitState.state !== 'confirm');
     setExitState({ state: 'checking' });
     try {
       await bridge.confirmExit();
@@ -120,7 +134,9 @@ function TauriDesktopExitGuard({
     if (event.key === 'Escape') {
       if (
         !actionPending &&
-        (exitState.state === 'confirm' || exitState.state === 'blocked')
+        (exitState.state === 'confirm' ||
+          exitState.state === 'blocked' ||
+          exitState.state === 'checkpoint_timed_out')
       ) {
         event.preventDefault();
         void cancelExit();
@@ -166,18 +182,27 @@ function TauriDesktopExitGuard({
           >
             <span className="panel-kicker">STOCK DESK / SAFE EXIT</span>
             <h2 id="desktop-exit-title">
-              {exitState.state === 'blocked'
-                ? '后台任务仍在运行'
-                : exitState.state === 'confirm'
-                  ? '确认退出 Stock Desk？'
-                  : exitState.state === 'checking'
-                    ? '正在检查后台任务'
-                    : '正在安全退出'}
+              {exitState.state === 'checkpoint_timed_out'
+                ? '尚未到达安全检查点'
+                : exitState.state === 'blocked'
+                  ? '后台任务仍在运行'
+                  : exitState.state === 'confirm'
+                    ? '确认退出 Stock Desk？'
+                    : exitState.state === 'checking'
+                      ? checkpointing
+                        ? '正在保存安全检查点'
+                        : '正在检查后台任务'
+                      : '正在安全退出'}
             </h2>
             <div id="desktop-exit-description" className="desktop-exit-copy">
-              {exitState.state === 'blocked' ? (
+              {exitState.state === 'blocked' ||
+              exitState.state === 'checkpoint_timed_out' ? (
                 <>
-                  <p>任务安全退出将在后续阶段完成。</p>
+                  <p>
+                    {exitState.state === 'checkpoint_timed_out'
+                      ? '当前任务在 10 秒内未到达安全位置，应用仍保持运行。可稍后重试或打开诊断。'
+                      : '确认后将停止领取新任务，最多等待 10 秒保存安全检查点；下次启动可选择继续或取消。'}
+                  </p>
                   <dl className="desktop-exit-counts">
                     <div>
                       <dt>排队任务</dt>
@@ -194,13 +219,16 @@ function TauriDesktopExitGuard({
               ) : (
                 <p aria-live="polite">
                   {exitState.state === 'checking'
-                    ? '请稍候，正在确认是否可以安全退出。'
+                    ? checkpointing
+                      ? '请稍候，正在等待当前任务到达可恢复的安全位置。'
+                      : '请稍候，正在确认是否可以安全退出。'
                     : '正在关闭本地服务并保存应用状态。'}
                 </p>
               )}
             </div>
             <div className="desktop-exit-actions">
-              {exitState.state === 'blocked' ? (
+              {exitState.state === 'blocked' ||
+              exitState.state === 'checkpoint_timed_out' ? (
                 <>
                   <button
                     ref={cancelRef}
@@ -222,6 +250,16 @@ function TauriDesktopExitGuard({
                     }}
                   >
                     打开诊断
+                  </button>
+                  <button
+                    className="desktop-exit-primary"
+                    type="button"
+                    disabled={actionPending}
+                    onClick={() => void confirmExit()}
+                  >
+                    {exitState.state === 'checkpoint_timed_out'
+                      ? '重试保存检查点'
+                      : '保存检查点并退出'}
                   </button>
                 </>
               ) : (

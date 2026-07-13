@@ -113,8 +113,10 @@ it('treats duplicate events idempotently and disables repeated confirmation', as
   act(() => resolveConfirm?.());
 });
 
-it('shows blocked counts with only return and diagnostics actions', async () => {
-  const fixture = installExitEmitter();
+it('shows blocked counts and requires a second explicit checkpoint confirmation', async () => {
+  const user = userEvent.setup();
+  const confirmExit = vi.fn(() => Promise.resolve());
+  const fixture = installExitEmitter({ confirmExit });
   render(
     <DesktopExitGuard bridge={createDesktopBridge(fixture.desktopAdapter)}>
       <p>workspace</p>
@@ -125,14 +127,38 @@ it('shows blocked counts with only return and diagnostics actions', async () => 
   );
   act(() => fixture.emit({ state: 'blocked', queued: 2, running: 1 }));
 
-  expect(
-    screen.getByText('任务安全退出将在后续阶段完成。'),
-  ).toBeInTheDocument();
+  expect(screen.getByText(/最多等待 10 秒/u)).toBeInTheDocument();
   expect(screen.getByText('排队任务').nextSibling).toHaveTextContent('2');
   expect(screen.getByText('运行任务').nextSibling).toHaveTextContent('1');
   expect(screen.getByRole('button', { name: '返回应用' })).toHaveFocus();
   expect(screen.getByRole('button', { name: '打开诊断' })).toBeEnabled();
-  expect(screen.queryByRole('button', { name: '退出应用' })).toBeNull();
+  await user.click(screen.getByRole('button', { name: '保存检查点并退出' }));
+  expect(confirmExit).toHaveBeenCalledOnce();
+  expect(screen.getByRole('heading')).toHaveTextContent('正在保存安全检查点');
+});
+
+it('keeps the app open after checkpoint timeout and offers an explicit retry', async () => {
+  const user = userEvent.setup();
+  const confirmExit = vi.fn(() => Promise.resolve());
+  const fixture = installExitEmitter({ confirmExit });
+  render(
+    <DesktopExitGuard bridge={createDesktopBridge(fixture.desktopAdapter)}>
+      <p>workspace</p>
+    </DesktopExitGuard>,
+  );
+  await waitFor(() =>
+    expect(fixture.desktopAdapter.subscribeExit).toHaveBeenCalled(),
+  );
+  act(() =>
+    fixture.emit({ state: 'checkpoint_timed_out', queued: 1, running: 1 }),
+  );
+
+  expect(screen.getByRole('heading')).toHaveTextContent('尚未到达安全检查点');
+  expect(screen.getByText(/应用仍保持运行/u)).toBeVisible();
+  expect(screen.getByRole('button', { name: '返回应用' })).toHaveFocus();
+  await user.click(screen.getByRole('button', { name: '重试保存检查点' }));
+  expect(confirmExit).toHaveBeenCalledOnce();
+  expect(screen.getByRole('heading')).toHaveTextContent('正在保存安全检查点');
 });
 
 it('fails closed to no exit for expanded payloads without leaking values', async () => {

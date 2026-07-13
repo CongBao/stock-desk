@@ -2514,13 +2514,14 @@ REQUIRED_PUBLIC_SNIPPETS = {
     "README.md": ("https://github.com/CongBao/stock-desk/releases/latest",),
     "README.en.md": ("https://github.com/CongBao/stock-desk/releases/latest",),
     "docs/architecture.md": (
-        "Native installer topology",
+        "v1.1 Windows desktop topology",
         "Source development topology",
         "Container topology",
-        "parent launcher",
+        "Tauri v2 host",
         "127.0.0.1",
         "random",
-        "user-writable install location",
+        r"%LOCALAPPDATA%\Stock Desk\v1.1",
+        "safe checkpoint",
     ),
     "docs/backup-and-restore.md": (
         "Compose image digest",

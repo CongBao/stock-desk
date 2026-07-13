@@ -3,38 +3,53 @@
 Stock Desk is a local-first modular monolith: one Python package owns the HTTP
 API, migrations, durable tasks, market storage, formula engine, backtest engine,
 analysis workflow, configuration, and security utilities; React supplies the
-browser workspace. Process and configuration topology differ by deployment.
+shared interface used by the WebView2 desktop and by browser-based source and
+container profiles. Process and configuration topology differ by deployment.
 
 ## Deployment model
 
-### Native installer topology
+### v1.1 Windows desktop topology
 
-The source-free Windows executable and macOS application contain Python, locked
-runtime dependencies, migrations, provider adapters, and compiled web assets.
-One frozen parent launcher owns the application lifecycle:
+The source-free v1.1 Windows package uses a Tauri v2 host as the only desktop
+entry point. WebView2 loads the bundled React assets inside the main window;
+normal desktop operation does not open or depend on an external browser. The
+package also contains the locked Python runtime, migrations, provider adapters,
+and one frozen sidecar external binary:
 
 ```text
-frozen parent launcher
-  ├─ generated private settings and single-instance lock
-  ├─ API child ── random 127.0.0.1 port ── browser
-  └─ worker child
-           │
-           v
-  per-user SQLite database and market lake
+Tauri v2 host ── bundled assets ── WebView2 / React main window
+  ├─ single-instance window and Windows Job Object
+  ├─ exact-origin, session-authenticated host proxy
+  └─ controlled frozen Python sidecar ── random 127.0.0.1 port
+       ├─ FastAPI application
+       ├─ joined durable task worker
+       └─ per-user SQLite database and market storage
 ```
 
-Before spawning children, the parent creates the OS-private data tree, generates
-or loads `config/master.key`, migrates SQLite, and reserves the listening socket
-without a port-selection race. It then uses multiprocessing `spawn` for one API
-child and one worker child. Both receive the same in-memory settings payload and
-write to the same log. The parent waits for worker readiness and API health,
-records the selected random port, opens the browser, and coordinates shutdown.
+Before the product workspace becomes available, the host creates the new
+per-user v1.1 data tree, generates a high-entropy session authority, starts the
+sidecar on a random loopback port, and verifies its health, versions, and source
+revision. React can reach the API only through the closed Tauri command; the
+sidecar port and authority are not exposed to product code in the WebView.
+Unexpected host termination is bounded by the Job Object, while a normal exit
+uses the cooperative protocol described below.
 
-Native state lives at `%LOCALAPPDATA%\stock-desk` on Windows and
-`~/Library/Application Support/stock-desk` on macOS. It does not use the source
-development `.env` contract. The native packaged runtime does not self-mutate,
-but its user-writable install location can be replaced or altered by the
-operating user; it is not a read-only container filesystem.
+The current-user installer places program files under
+`%LOCALAPPDATA%\Programs\Stock Desk`. The packaged application treats that tree
+as read-only. All v1.1 mutable state lives under
+`%LOCALAPPDATA%\Stock Desk\v1.1` (or an explicitly bounded user temporary
+location). The desktop runtime does not use the source-development `.env`
+contract and does not read, migrate, modify, or delete the old
+`%LOCALAPPDATA%\stock-desk` v1 data tree.
+
+Closing the main window, `Alt+F4`, and the application exit command enter one
+confirmation state with Cancel as the safe default. After explicit confirmation,
+the API closes the task-claim gate and accepts shutdown only when work is already
+durably queued or running handlers have acknowledged a safe checkpoint. A missed
+ten-second checkpoint deadline keeps the application open and restores claiming;
+it does not force-kill a healthy sidecar. The next launch offers explicit resume
+or cancel choices for incomplete work, and analysis resume requires a separate
+model-cost confirmation.
 
 Market payload storage follows the host's verified filesystem capabilities.
 POSIX deployments use immutable, content-addressed Parquet partitions plus the
@@ -61,7 +76,8 @@ default. The runtime image is immutable except for the mounted data boundary and
 does not include source-tree operator scripts.
 
 Across all profiles, SQLite is the durable coordination boundary. Tasks are
-committed before workers claim them, and state transitions are transactional; a
+committed before workers claim them, state transitions are transactional, and
+desktop checkpoint requests are persisted at handler-defined safe points; a
 network queue is not required for the supported single-host deployment.
 
 ## Modules and boundaries
@@ -95,8 +111,8 @@ API and worker must resolve one database and data directory. The writable
 boundary contains SQLite, encrypted provider credentials, immutable market
 objects, routing manifests, task history, reports, and exports. In the container
 profile, code, dependencies, and compiled assets remain read-only in the runtime
-image. Native installation files are user-writable even though the application
-does not modify its own packaged code.
+image. The v1.1 desktop application likewise treats installed program files as
+read-only and routes every mutable object to its per-user data root.
 
 Each backtest freezes its formula version, parameters, scope, period, adjustment,
 dates, costs, and signal/execution/status manifests. Each analysis freezes
@@ -111,16 +127,19 @@ container image. See [backup and restore](backup-and-restore.md).
 
 ## Trust and security
 
-The supported threat model is one trusted operator on one trusted host. Stock
-Desk has no authentication, authorization, multi-user isolation, or TLS. Keep it
-on loopback; a remote or shared deployment needs a different security design.
+The supported threat model is one trusted operator on one trusted host. Source
+and container profiles have no product accounts, remote authorization, multi-user
+isolation, or TLS and must remain on loopback. The v1.1 desktop boundary adds an
+ephemeral exact-origin and bearer session between the Tauri host and sidecar so
+unrelated local processes cannot invoke desktop APIs; it does not turn Stock
+Desk into a remotely accessible multi-user service.
 
-The browser, API, worker, configuration, master key, database, and market lake
-are inside the local trust boundary. Market/model providers, provider responses,
-external research text, archives, and pasted formulas are untrusted. Inputs are
-bounded, formula execution is constrained, model endpoints are validated,
-external text is treated as potential prompt injection, and mixed or corrupt
-provenance fails closed.
+The Tauri host, WebView, sidecar, worker, configuration, master key, database,
+and market storage are inside the local trust boundary. Market/model providers,
+provider responses, external research text, archives, and pasted formulas are
+untrusted. Inputs are bounded, formula execution is constrained, model endpoints
+are validated, external text is treated as potential prompt injection, and mixed
+or corrupt provenance fails closed.
 
 Native installers generate and restrict a per-user key. Source and container
 operators provide `STOCK_DESK_MASTER_KEY` outside source control. In either case,

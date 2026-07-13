@@ -17,6 +17,7 @@ from stock_desk.config import get_settings
 from stock_desk.diagnostics.models import DiagnosticEventCode, DiagnosticEventSink
 from stock_desk.tasks.models import TaskClaim, TaskSnapshot
 from stock_desk.tasks.repository import (
+    DesktopCheckpointPause,
     TaskConflict,
     TaskRepository,
     TaskValidationError,
@@ -393,6 +394,8 @@ class TaskWorker:
                 if isinstance(claimed, TaskClaim)
                 else invoke_legacy(task)
             )
+        except DesktopCheckpointPause:
+            return self._repository.get(task.id)
         except Exception as error:
             self._log_handler_failure(task, error)
             self._record_task_failure()

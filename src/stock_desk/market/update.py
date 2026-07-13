@@ -433,7 +433,21 @@ class UpdateService:
         failed = 0
         cancelled = 0
 
+        persisted = {item.ordinal: item for item in self._items.list_for_task(task.id)}
+        for ordinal, item in persisted.items():
+            if ordinal >= total or request.symbols[ordinal] != item.symbol:
+                raise MarketUpdateItemConflict(
+                    "Market update checkpoint does not match the frozen request"
+                )
+            processed += 1
+            succeeded += int(item.status == "succeeded")
+            failed += int(item.status == "failed")
+            cancelled += int(item.status == "cancelled")
+
         for ordinal, symbol in enumerate(request.symbols):
+            if ordinal in persisted:
+                self._tasks.pause_at_desktop_checkpoint(task.id)
+                continue
             current = self._tasks.get(task.id)
             if current.cancel_requested:
                 for remaining_ordinal, remaining_symbol in enumerate(
@@ -517,6 +531,7 @@ class UpdateService:
                 )
                 processed += 1
                 failed += 1
+                self._tasks.pause_at_desktop_checkpoint(task.id)
                 continue
             if not isinstance(routed, RoutedBarSuccess):
                 raise TypeError("market router returned an invalid bars outcome")
@@ -543,6 +558,7 @@ class UpdateService:
             )
             processed += 1
             succeeded += 1
+            self._tasks.pause_at_desktop_checkpoint(task.id)
 
         self._tasks.set_progress(
             task.id,

@@ -3,14 +3,23 @@ import multiprocessing
 import sqlite3
 import threading
 import time
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-from stock_desk.market.worker_runtime import ProductionMarketWorker
+import stock_desk.market.worker_runtime as worker_runtime
+from stock_desk.market.instruments import InstrumentNotFound
+from stock_desk.market.update import MARKET_CATALOG_UPDATE_TASK_KIND
+from stock_desk.market.worker_runtime import (
+    ProductionMarketWorker,
+    SettingsBackedCatalogUpdateHandler,
+)
 from stock_desk.storage.database import create_engine_for_url, migrate
-from stock_desk.tasks.repository import TaskRepository
+from stock_desk.tasks.models import TaskSnapshot
+from stock_desk.tasks.repository import DesktopCheckpointPause, TaskRepository
 from stock_desk.tasks.worker import TaskWorker
+from tests.integration.market.task6_test_helpers import instrument, routed_instruments
 
 
 class _Scheduler:
@@ -143,6 +152,82 @@ def test_production_worker_heartbeat_advances_during_long_task(
         release.set()
         stop_event.set()
         runner.join(timeout=2)
+        repository.close()
+
+
+def test_catalog_worker_acknowledges_checkpoint_after_manifest_persistence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = _repository(tmp_path)
+    identity = repository.database_identity
+    routed = routed_instruments((instrument("600000.SH", "浦发银行"),))
+    ingested: list[object] = []
+    runtime_closed: list[bool] = []
+
+    class SourceSettings:
+        database_identity = identity
+
+        @staticmethod
+        def runtime_snapshot() -> object:
+            return SimpleNamespace(
+                configuration_fingerprint="fixture-fingerprint",
+                redaction_values=lambda: (),
+            )
+
+    class Instruments:
+        database_identity = identity
+
+        @staticmethod
+        def current_manifest() -> object:
+            raise InstrumentNotFound("no current catalog")
+
+        @staticmethod
+        def ingest(outcome: object) -> object:
+            ingested.append(outcome)
+            return routed.manifest
+
+    class Pools:
+        database_identity = identity
+
+    runtime = SimpleNamespace(
+        router=SimpleNamespace(
+            fetch_instruments=lambda *, previous_manifest: (
+                routed
+                if previous_manifest is None
+                else pytest.fail("unexpected manifest")
+            )
+        ),
+        close=lambda: runtime_closed.append(True),
+    )
+    monkeypatch.setattr(
+        worker_runtime.MarketProviderRuntime,
+        "build",
+        staticmethod(lambda _snapshot, *, factory: runtime),
+    )
+    handler = SettingsBackedCatalogUpdateHandler(
+        source_settings=SourceSettings(),  # type: ignore[arg-type]
+        instruments=Instruments(),  # type: ignore[arg-type]
+        pools=Pools(),  # type: ignore[arg-type]
+        tasks=repository,
+        provider_factory=object(),  # type: ignore[arg-type]
+    )
+    task = repository.create(MARKET_CATALOG_UPDATE_TASK_KIND, {})
+    claimed = repository.claim_next("catalog-checkpoint-worker")
+    assert isinstance(claimed, TaskSnapshot)
+    assert claimed.id == task.id
+    repository.request_desktop_checkpoint()
+    try:
+        with pytest.raises(DesktopCheckpointPause):
+            handler(claimed)
+
+        assert ingested == [routed]
+        assert runtime_closed == [True]
+        assert any(
+            event.event_name == "task.desktop_checkpointed"
+            for event in repository.list_events(task.id)
+        )
+    finally:
         repository.close()
 
 

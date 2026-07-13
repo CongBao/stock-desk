@@ -468,6 +468,67 @@ V11_CANONICAL_REQUIREMENTS: dict[str, dict[str, Any]] = {
             "high-display-scaling",
         ),
     ),
+    "V11-R-013": _authority(
+        "platform",
+        "user_visible",
+        "checkpointed_desktop_exit_and_explicit_recovery",
+        4,
+        "e5c38ced7c8493a1cc7562851715ffde662afaa033f189fc9b1485ab6a73705c",
+        (
+            "windows-desktop-shell",
+            "safe-exit-confirmation",
+            "confirm-exit",
+        ),
+        (
+            "windows-desktop-shell",
+            "task-checkpoint-and-recovery-choice",
+            "active-tasks-on-confirmed-exit",
+        ),
+        (
+            "windows-desktop-shell",
+            "task-checkpoint-and-recovery-choice",
+            "checkpoint-exceeds-ten-seconds",
+        ),
+        (
+            "windows-desktop-shell",
+            "task-checkpoint-and-recovery-choice",
+            "next-start-handles-incomplete-tasks",
+        ),
+    ),
+    "V11-R-014": _authority(
+        "platform",
+        "security",
+        "authenticated_desktop_core_vertical_slice",
+        4,
+        "cf0d87d285007b906d5ec52621c4ed3f8653b63827b8baf4011c16579e8af533",
+        (
+            "windows-desktop-shell",
+            "sidecar-lifecycle-and-session-security",
+            "unauthorized-local-request",
+        ),
+        (
+            "windows-desktop-shell",
+            "core-capability-compatibility-baseline",
+            "use-existing-core-capability-after-desktopization",
+        ),
+    ),
+    "V11-R-015": _authority(
+        "publication",
+        "publication",
+        "unsigned_prerelease_exact_proof_reuse",
+        4,
+        "0aac23d06ff6a1cbfa7f70e966bbf0e843fd922b0eb72a0cff73852e416c8e08",
+        (
+            "trusted-windows-distribution",
+            "independent-candidate-build-and-no-duplicate-release",
+            "release-consumes-main-proof",
+        ),
+        (
+            "trusted-windows-distribution",
+            "trusted-code-signing-and-smartscreen-gate",
+            "publish-unsigned-test-package",
+        ),
+    ),
 }
 
 AUTHORITATIVE_BEHAVIOR_KEYS: dict[str, str] = {
@@ -1366,25 +1427,25 @@ def validate_v11_manifest(
         raise ValidationError("v1.1 schema_version must be integer 1")
     requirements = _expect_list(matrix["requirements"], "v1.1 requirements")
     non_goals = _expect_list(matrix["non_goals"], "v1.1 non_goals")
-    expected = [f"V11-R-{index:03d}" for index in range(1, 13)]
+    expected = [f"V11-R-{index:03d}" for index in range(1, 16)]
     if [
         item.get("id") if isinstance(item, dict) else None for item in requirements
     ] != expected:
         raise ValidationError(
-            "v1.1 requirements must contain exactly V11-R-001 through V11-R-012"
+            "v1.1 requirements must contain exactly V11-R-001 through V11-R-015"
         )
     if non_goals:
         raise ValidationError("v1.1 non_goals must be empty for the frozen increment")
     if list(V11_CANONICAL_REQUIREMENTS) != expected:
         raise ValidationError(
-            "v1.1 canonical registry must contain exactly V11-R-001 through V11-R-012"
+            "v1.1 canonical registry must contain exactly V11-R-001 through V11-R-015"
         )
     if (
         list(V11_AUTHORITATIVE_BEHAVIOR_KEYS) != expected
         or list(V11_AUTHORITATIVE_ACCEPTANCE_SHA256) != expected
     ):
         raise ValidationError(
-            "v1.1 authoritative contract must contain exactly V11-R-001 through V11-R-012"
+            "v1.1 authoritative contract must contain exactly V11-R-001 through V11-R-015"
         )
     tracked_paths = _tracked_paths(repo_root)
     behavior_keys: set[str] = set()

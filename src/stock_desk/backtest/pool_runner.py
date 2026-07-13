@@ -49,6 +49,7 @@ from stock_desk.market.execution_status_lake import ExecutionStatusLake
 from stock_desk.market.lake import MarketLake
 from stock_desk.tasks.models import TaskClaim
 from stock_desk.tasks.repository import (
+    DesktopCheckpointPause,
     TaskConflict,
     TaskRepository,
     validate_lease_duration,
@@ -369,6 +370,8 @@ class PoolBacktestRunner:
     def __call__(self, claim: TaskClaim) -> Mapping[str, Any]:
         try:
             return self._execute_claim(claim)
+        except DesktopCheckpointPause:
+            raise
         except Exception:
             try:
                 run = self._repository.get_run_by_task(claim.snapshot.id)
@@ -475,6 +478,7 @@ class PoolBacktestRunner:
                     failure_reason=reference.reason,
                     now=_utc_now(),
                 )
+                self._tasks.pause_at_desktop_checkpoint(claim.snapshot.id)
                 continue
             try:
                 samples, events, signal_series_id, warmup_start = self._run_symbol(
@@ -501,6 +505,7 @@ class PoolBacktestRunner:
                     failure_reason=reason,
                     now=_utc_now(),
                 )
+                self._tasks.pause_at_desktop_checkpoint(claim.snapshot.id)
                 continue
             self._repository.checkpoint_symbol(
                 claim,
@@ -518,6 +523,7 @@ class PoolBacktestRunner:
                 warmup_start=warmup_start,
                 now=_utc_now(),
             )
+            self._tasks.pause_at_desktop_checkpoint(claim.snapshot.id)
 
         current_task = self._tasks.get(claim.snapshot.id)
         if current_task.cancel_requested:

@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- Desktop shutdown now asks for confirmation, checkpoints active market,
+  backtest, and analysis work at durable safe points, waits at most ten seconds
+  for acknowledgement, and keeps the application open with actionable recovery
+  when a safe checkpoint cannot be confirmed.
+- Interrupted desktop work is summarized on the next launch and can be resumed
+  or cancelled explicitly; analysis resumption requires a separate model-cost
+  confirmation and defaults keyboard focus to the safer cancel action.
+- Formula, backtest, analysis, and task APIs now have an authenticated desktop
+  integration slice, while the v1.1 prerelease workflow publishes only the
+  exact version-bound unsigned Windows candidate already proved by main CI.
 - `v1.1.0-beta.2` completes the desktop UX stage with searchable/restorable
   workspaces, responsive themes and guidance, bounded sidecar recovery,
   local-only redacted diagnostics, unified Windows icons, and exact-SHA

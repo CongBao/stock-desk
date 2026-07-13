@@ -13,7 +13,7 @@ from stock_desk.desktop_session import DesktopLifecycleController, DesktopSessio
 from stock_desk.formula.service import MACD_TEMPLATE_SOURCE
 from stock_desk.main import create_app
 from stock_desk.storage.database import create_engine_for_url, migrate
-from stock_desk.tasks.repository import TaskRepository
+from stock_desk.tasks.repository import DesktopCheckpointPause, TaskRepository
 from stock_desk.tasks.worker import TaskWorker
 from tests.integration.market.lake_test_helpers import routed_daily_bars
 
@@ -295,6 +295,258 @@ def test_desktop_shutdown_rechecks_storage_and_refuses_active_tasks(
         repository.close()
 
 
+def test_desktop_shutdown_timeout_is_actionable_and_resumes_claims(
+    tmp_path: Path,
+) -> None:
+    session = _session()
+    repository = _repository(tmp_path)
+    lifecycle = DesktopLifecycleController()
+    queued = repository.create("demo.double", {"value": 1})
+    running = repository.create("demo.double", {"value": 2})
+    claimed = repository.claim_next("desktop-test-worker")
+    assert claimed is not None and claimed.id == queued.id
+    try:
+        with TestClient(
+            create_app(
+                task_repository=repository,
+                desktop_session=session,
+                desktop_lifecycle=lifecycle,
+                desktop_shutdown_timeout_seconds=0,
+            )
+        ) as client:
+            response = client.post(
+                "/api/desktop/shutdown",
+                headers=_headers(session),
+                json={"checkpoint_active": True},
+            )
+
+        assert response.status_code == 409
+        assert response.json() == {
+            "code": "desktop_checkpoint_timeout",
+            "queued": 1,
+            "running": 1,
+            "retryable": True,
+        }
+        assert lifecycle.shutdown_prepared is False
+        assert lifecycle.claim_stop_event.is_set() is False
+        assert lifecycle.shutdown_requested is False
+        assert running.id not in response.text
+    finally:
+        repository.close()
+
+
+def test_desktop_shutdown_accepts_only_after_durable_checkpoint_ack(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    session = _session()
+    repository = _repository(tmp_path)
+    lifecycle = DesktopLifecycleController()
+    task = repository.create("demo.double", {"value": 1})
+    claimed = repository.claim_next("desktop-test-worker")
+    assert claimed is not None and claimed.id == task.id
+
+    def acknowledge(_timeout_seconds: float) -> bool:
+        with pytest.raises(DesktopCheckpointPause):
+            repository.pause_at_desktop_checkpoint(task.id)
+        return True
+
+    monkeypatch.setattr(repository, "wait_for_desktop_checkpoint", acknowledge)
+    try:
+        with TestClient(
+            create_app(
+                task_repository=repository,
+                desktop_session=session,
+                desktop_lifecycle=lifecycle,
+            )
+        ) as client:
+            response = client.post(
+                "/api/desktop/shutdown",
+                headers=_headers(session),
+                json={"checkpoint_active": True},
+            )
+
+        assert response.status_code == 202
+        assert response.json() == {
+            "status": "shutdown_requested",
+            "queued": 0,
+            "running": 1,
+            "recovery_required": True,
+        }
+        assert lifecycle.shutdown_prepared is True
+        assert lifecycle.claim_stop_event.is_set() is True
+        assert any(
+            event.event_name == "task.desktop_checkpointed"
+            for event in repository.list_events(task.id)
+        )
+    finally:
+        repository.close()
+
+
+def test_desktop_shutdown_prepare_prevents_any_new_task_claim(
+    tmp_path: Path,
+) -> None:
+    session = _session()
+    repository = _repository(tmp_path)
+    lifecycle = DesktopLifecycleController()
+    task = repository.create("demo.double", {"value": 1})
+    worker = TaskWorker(repository, worker_id="desktop-test-worker")
+    try:
+        with TestClient(
+            create_app(
+                task_repository=repository,
+                desktop_session=session,
+                desktop_lifecycle=lifecycle,
+            )
+        ) as client:
+            response = client.post(
+                "/api/desktop/shutdown",
+                headers=_headers(session),
+                json={"checkpoint_active": True},
+            )
+
+        assert response.status_code == 202
+        assert lifecycle.claim_stop_event.is_set() is True
+        assert worker.run_once(stop_event=lifecycle.claim_stop_event) is None
+        assert repository.get(task.id).status == "queued"
+    finally:
+        repository.close()
+
+
+def test_desktop_startup_recovery_requires_explicit_resume_or_cancel(
+    tmp_path: Path,
+) -> None:
+    session = _session()
+    repository = _repository(tmp_path)
+    lifecycle = DesktopLifecycleController()
+    queued = repository.create("demo.double", {"value": 1})
+    running = repository.create("demo.double", {"value": 2})
+    claimed = repository.claim_next("previous-desktop-worker")
+    assert claimed is not None and claimed.id == queued.id
+    lifecycle.initialize_startup_recovery(queued=1, running=1)
+    try:
+        with TestClient(
+            create_app(
+                task_repository=repository,
+                desktop_session=session,
+                desktop_lifecycle=lifecycle,
+            )
+        ) as client:
+            status = client.get("/api/desktop/recovery", headers=_headers(session))
+            resumed = client.post(
+                "/api/desktop/recovery/resume", headers=_headers(session)
+            )
+            after_resume = client.get(
+                "/api/desktop/recovery", headers=_headers(session)
+            )
+
+        assert status.status_code == 200
+        assert status.json() == {
+            "required": True,
+            "queued": 1,
+            "running": 1,
+            "analysis": 0,
+            "backtest": 0,
+            "market": 0,
+            "other": 2,
+        }
+        assert resumed.status_code == 200
+        assert resumed.json() == {"status": "resumed", "queued": 2}
+        assert after_resume.json() == {
+            "required": False,
+            "queued": 0,
+            "running": 0,
+            "analysis": 0,
+            "backtest": 0,
+            "market": 0,
+            "other": 0,
+        }
+        assert lifecycle.claim_stop_event.is_set() is False
+        assert repository.get(queued.id).status == "queued"
+        assert repository.get(running.id).status == "queued"
+    finally:
+        repository.close()
+
+
+def test_desktop_startup_recovery_cancel_terminalizes_all_incomplete_tasks(
+    tmp_path: Path,
+) -> None:
+    session = _session()
+    repository = _repository(tmp_path)
+    lifecycle = DesktopLifecycleController()
+    first = repository.create("demo.double", {"value": 1})
+    second = repository.create("demo.double", {"value": 2})
+    claimed = repository.claim_next("previous-desktop-worker")
+    assert claimed is not None and claimed.id == first.id
+    lifecycle.initialize_startup_recovery(queued=1, running=1)
+    try:
+        with TestClient(
+            create_app(
+                task_repository=repository,
+                desktop_session=session,
+                desktop_lifecycle=lifecycle,
+            )
+        ) as client:
+            cancelled = client.post(
+                "/api/desktop/recovery/cancel", headers=_headers(session)
+            )
+            cancelled_again = client.post(
+                "/api/desktop/recovery/cancel", headers=_headers(session)
+            )
+
+        assert cancelled.status_code == 200
+        assert cancelled.json() == {"status": "cancelled", "cancelled": 2}
+        assert cancelled_again.json() == {"status": "cancelled", "cancelled": 0}
+        assert repository.get(first.id).status == "cancelled"
+        assert repository.get(second.id).status == "cancelled"
+        assert lifecycle.claim_stop_event.is_set() is False
+    finally:
+        repository.close()
+
+
+def test_analysis_recovery_requires_explicit_cost_confirmation_and_is_idempotent(
+    tmp_path: Path,
+) -> None:
+    session = _session()
+    repository = _repository(tmp_path)
+    lifecycle = DesktopLifecycleController()
+    analysis = repository.create("analysis.run", {"analysis_run_id": "opaque"})
+    lifecycle.initialize_startup_recovery(queued=1, running=0)
+    try:
+        with TestClient(
+            create_app(
+                task_repository=repository,
+                desktop_session=session,
+                desktop_lifecycle=lifecycle,
+            )
+        ) as client:
+            blocked = client.post(
+                "/api/desktop/recovery/resume", headers=_headers(session)
+            )
+            resumed = client.post(
+                "/api/desktop/recovery/resume",
+                headers=_headers(session),
+                json={"confirm_analysis_cost": True},
+            )
+            resumed_again = client.post(
+                "/api/desktop/recovery/resume",
+                headers=_headers(session),
+                json={"confirm_analysis_cost": True},
+            )
+
+        assert blocked.status_code == 409
+        assert blocked.json() == {
+            "code": "desktop_analysis_resume_confirmation_required",
+            "analysis": 1,
+        }
+        assert lifecycle.claim_stop_event.is_set() is False
+        assert resumed.json() == {"status": "resumed", "queued": 1}
+        assert resumed_again.json() == {"status": "resumed", "queued": 1}
+        assert repository.get(analysis.id).status == "queued"
+    finally:
+        repository.close()
+
+
 def test_desktop_shutdown_accepts_only_terminal_storage_and_signals_lifecycle(
     tmp_path: Path,
 ) -> None:
@@ -326,7 +578,12 @@ def test_desktop_shutdown_accepts_only_terminal_storage_and_signals_lifecycle(
             )
 
         assert response.status_code == 202
-        assert response.json() == {"status": "shutdown_requested"}
+        assert response.json() == {
+            "status": "shutdown_requested",
+            "queued": 0,
+            "running": 0,
+            "recovery_required": False,
+        }
         assert committed.status_code == 202
         assert committed.json() == {"status": "shutdown_committed"}
         assert lifecycle.shutdown_requested is True
@@ -387,7 +644,12 @@ def test_desktop_shutdown_remains_available_in_read_only_demo_mode(
         assert unauthorized.status_code == 403
         assert unauthorized.json() == {"code": "desktop_origin_forbidden"}
         assert prepared.status_code == 202
-        assert prepared.json() == {"status": "shutdown_requested"}
+        assert prepared.json() == {
+            "status": "shutdown_requested",
+            "queued": 0,
+            "running": 0,
+            "recovery_required": False,
+        }
         assert committed.status_code == 202
         assert committed.json() == {"status": "shutdown_committed"}
         assert lifecycle.shutdown_requested is True

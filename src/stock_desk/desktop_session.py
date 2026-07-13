@@ -86,6 +86,7 @@ class DesktopLifecycleController:
         self._server: _CooperativeServer | None = None
         self._shutdown_prepared = False
         self._server_exit_requested = False
+        self._startup_recovery: tuple[int, int] | None = None
 
     @property
     def stop_event(self) -> Event:
@@ -108,6 +109,35 @@ class DesktopLifecycleController:
         with self._lock:
             self._shutdown_prepared = True
             self._claim_stop_event.set()
+
+    def cancel_prepared_shutdown(self) -> None:
+        """Resume normal work after a checkpoint deadline is missed."""
+        with self._lock:
+            if self._stop_event.is_set():
+                return
+            self._shutdown_prepared = False
+            if self._startup_recovery is None:
+                self._claim_stop_event.clear()
+
+    def initialize_startup_recovery(self, *, queued: int, running: int) -> None:
+        if queued < 0 or running < 0:
+            raise ValueError("desktop recovery counts must be nonnegative")
+        with self._lock:
+            if queued + running == 0:
+                self._startup_recovery = None
+                return
+            self._startup_recovery = (queued, running)
+            self._claim_stop_event.set()
+
+    def startup_recovery(self) -> tuple[int, int] | None:
+        with self._lock:
+            return self._startup_recovery
+
+    def complete_startup_recovery(self) -> None:
+        with self._lock:
+            self._startup_recovery = None
+            if not self._shutdown_prepared:
+                self._claim_stop_event.clear()
 
     def bind_server(self, server: _CooperativeServer) -> None:
         with self._lock:

@@ -132,6 +132,12 @@ def run_sidecar(config: SidecarLaunchConfig) -> int:
     except BaseException:
         diagnostic_events.emit(DiagnosticEventCode.WORKER_STARTUP_FAILED)
         raise
+    if hasattr(worker, "tasks"):
+        startup_metrics = worker.tasks.metrics()
+        lifecycle.initialize_startup_recovery(
+            queued=startup_metrics.by_status["queued"],
+            running=startup_metrics.by_status["running"],
+        )
 
     def run_worker() -> None:
         try:
@@ -168,6 +174,7 @@ def run_sidecar(config: SidecarLaunchConfig) -> int:
 
         application = create_app(
             settings,
+            task_repository=getattr(worker, "tasks", None),
             desktop_session=config.session,
             desktop_lifecycle=lifecycle,
             diagnostic_event_sink=diagnostic_events,

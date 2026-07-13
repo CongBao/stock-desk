@@ -454,4 +454,155 @@ requirements:
         path: tests/unit/test_windows_desktop_evidence_contract.py
         selector: tests/unit/test_windows_desktop_evidence_contract.py::test_packaged_webview_matrix_is_explicitly_equivalent_not_real_os_dpi
         assertion: The automated matrix covers 100 through 200 percent effective viewports while explicitly separating CDP evidence from the remaining real Windows 10 and 11 DPI confirmation.
+  - id: V11-R-013
+    category: platform
+    kind: user_visible
+    behavior_key: checkpointed_desktop_exit_and_explicit_recovery
+    acceptance: "Confirmed desktop exit stops new claims, discloses active work, and accepts shutdown only after queued-only durable state or an acknowledged safe checkpoint; timeout keeps the app open and claims resumable, while next startup focuses cancellation as the safe default without acting until an explicit choice and requires separate model-cost confirmation before resuming analysis."
+    source_refs:
+      - {
+          capability: windows-desktop-shell,
+          requirement: safe-exit-confirmation,
+          scenario: confirm-exit,
+        }
+      - {
+          capability: windows-desktop-shell,
+          requirement: task-checkpoint-and-recovery-choice,
+          scenario: active-tasks-on-confirmed-exit,
+        }
+      - {
+          capability: windows-desktop-shell,
+          requirement: task-checkpoint-and-recovery-choice,
+          scenario: checkpoint-exceeds-ten-seconds,
+        }
+      - {
+          capability: windows-desktop-shell,
+          requirement: task-checkpoint-and-recovery-choice,
+          scenario: next-start-handles-incomplete-tasks,
+        }
+    owning_stage: 4
+    status: mapped
+    evidence:
+      - state: existing
+        runner: pytest
+        kind: integration
+        path: tests/integration/test_sidecar_session.py
+        selector: tests/integration/test_sidecar_session.py::test_desktop_shutdown_timeout_is_actionable_and_resumes_claims
+        assertion: A missed checkpoint deadline returns an actionable retry response, cancels the pending checkpoint request, and reopens task claiming without terminating the sidecar.
+      - state: existing
+        runner: pytest
+        kind: integration
+        path: tests/integration/test_sidecar_session.py
+        selector: tests/integration/test_sidecar_session.py::test_desktop_shutdown_accepts_only_after_durable_checkpoint_ack
+        assertion: Active work can reach a durable desktop checkpoint before shutdown is accepted, with a persisted checkpoint event and no new claims.
+      - state: existing
+        runner: pytest
+        kind: integration
+        path: tests/integration/test_sidecar_session.py
+        selector: tests/integration/test_sidecar_session.py::test_desktop_startup_recovery_requires_explicit_resume_or_cancel
+        assertion: Startup reports categorized incomplete work and does not resume it before an explicit user choice.
+      - state: existing
+        runner: pytest
+        kind: integration
+        path: tests/integration/test_sidecar_session.py
+        selector: tests/integration/test_sidecar_session.py::test_analysis_recovery_requires_explicit_cost_confirmation_and_is_idempotent
+        assertion: Analysis recovery is idempotent and remains blocked until the user separately confirms possible model cost.
+      - state: existing
+        runner: vitest
+        kind: component
+        path: web/src/features/desktop/DesktopExitGuard.test.tsx
+        selector: shows blocked counts and requires a second explicit checkpoint confirmation
+        assertion: The desktop confirmation discloses active work and requires a second explicit confirmation before requesting a checkpointed shutdown.
+      - state: existing
+        runner: vitest
+        kind: component
+        path: web/src/features/desktop/DesktopTaskRecovery.test.tsx
+        selector: defaults to cancel and offers explicit resume for incomplete work
+        assertion: The incomplete-work dialog focuses the safe cancel action by default and keeps resume as an explicit alternative.
+      - state: existing
+        runner: vitest
+        kind: component
+        path: web/src/features/desktop/DesktopTaskRecovery.test.tsx
+        selector: requires an extra model-cost confirmation before resuming analysis
+        assertion: Resuming analysis requires a separate user acknowledgement that model calls can incur cost.
+  - id: V11-R-014
+    category: platform
+    kind: security
+    behavior_key: authenticated_desktop_core_vertical_slice
+    acceptance: "Backtest, Analysis, and Task Center operations join Formula Studio behind the authenticated Tauri host proxy: missing or wrong Origin or Bearer authority is rejected before dependencies run, authenticated requests preserve frozen workflow provenance, and React never receives session authority or sidecar coordinates."
+    source_refs:
+      - {
+          capability: windows-desktop-shell,
+          requirement: sidecar-lifecycle-and-session-security,
+          scenario: unauthorized-local-request,
+        }
+      - {
+          capability: windows-desktop-shell,
+          requirement: core-capability-compatibility-baseline,
+          scenario: use-existing-core-capability-after-desktopization,
+        }
+    owning_stage: 4
+    status: mapped
+    evidence:
+      - state: existing
+        runner: pytest
+        kind: security
+        path: tests/integration/test_desktop_core_workflows.py
+        selector: tests/integration/test_desktop_core_workflows.py::test_desktop_authority_protects_each_core_workflow_before_dependencies_run
+        assertion: Backtest, analysis, and task endpoints reject missing or incorrect desktop authority before invoking their workflow dependencies.
+      - state: existing
+        runner: pytest
+        kind: integration
+        path: tests/integration/test_desktop_core_workflows.py
+        selector: tests/integration/test_desktop_core_workflows.py::test_authenticated_desktop_runs_backtest_analysis_and_safe_task_center
+        assertion: An authenticated desktop session runs a real formula-to-backtest-to-analysis-to-task-center slice with frozen and redacted provenance.
+      - state: existing
+        runner: vitest
+        kind: integration
+        path: web/src/app/tauriAdapter.test.ts
+        selector: routes Backtest, Analysis, and Task Center operations only through host IPC
+        assertion: React routes every non-formula core request through the closed Tauri command without receiving sidecar authority or network coordinates.
+  - id: V11-R-015
+    category: publication
+    kind: publication
+    behavior_key: unsigned_prerelease_exact_proof_reuse
+    acceptance: "Unsigned v1.1 alpha and beta publication consumes the exact tagged main proof and exact-version Windows candidate, verifies their identities and digests, and publishes only clearly unsigned Windows prerelease assets without rerunning source tests or rebuilding; stable and rc tags remain fail-closed until the separate trusted signing and installed-matrix chain exists."
+    source_refs:
+      - {
+          capability: trusted-windows-distribution,
+          requirement: independent-candidate-build-and-no-duplicate-release,
+          scenario: release-consumes-main-proof,
+        }
+      - {
+          capability: trusted-windows-distribution,
+          requirement: trusted-code-signing-and-smartscreen-gate,
+          scenario: publish-unsigned-test-package,
+        }
+    owning_stage: 4
+    status: mapped
+    evidence:
+      - state: existing
+        runner: pytest
+        kind: contract
+        path: tests/unit/test_v11_release_workflow.py
+        selector: tests/unit/test_v11_release_workflow.py::test_v11_release_has_only_exact_proof_reuse_and_unsigned_publish_jobs
+        assertion: The current v1.1 release workflow contains only tag policy, exact proof and candidate verification, and unsigned prerelease publication jobs.
+      - state: existing
+        runner: pytest
+        kind: absence
+        path: tests/unit/test_v11_release_workflow.py
+        selector: tests/unit/test_v11_release_workflow.py::test_v11_release_cannot_rebuild_retest_or_publish_legacy_platforms
+        assertion: The release workflow contains no source test, binary rebuild, Inno Setup, macOS, Linux, Android, or legacy stable publication path.
+      - state: existing
+        runner: pytest
+        kind: contract
+        path: tests/unit/test_v11_release_workflow.py
+        selector: tests/unit/test_v11_release_workflow.py::test_v11_tag_policy_fails_closed_until_trusted_stable_chain_exists
+        assertion: Stable and rc tags are visibly rejected while only version-matched unsigned alpha and beta tags are accepted.
+      - state: existing
+        runner: pytest
+        kind: contract
+        path: tests/unit/test_v11_release_workflow.py
+        selector: tests/unit/test_v11_release_workflow.py::test_v11_prerelease_asset_selection_is_version_agnostic_and_windows_only
+        assertion: Unsigned prerelease publication binds the tag version to the exact Windows candidate name and rejects every unsupported asset family.
 non_goals: []

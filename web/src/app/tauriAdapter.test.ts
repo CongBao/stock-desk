@@ -280,6 +280,98 @@ it('routes every Formula Studio operation through the host without exposing sess
   browserFetch.mockRestore();
 });
 
+it('routes Backtest, Analysis, and Task Center operations only through host IPC', async () => {
+  vi.mocked(isTauri).mockReturnValue(true);
+  vi.mocked(invoke).mockClear();
+  vi.mocked(invoke).mockResolvedValue({
+    body: '{"ok":true}',
+    content_type: 'application/json',
+    status: 200,
+  });
+  const transport = createTauriApiTransport();
+  if (transport === undefined) throw new Error('transport was not created');
+  const client = createApiClient('/api', transport);
+  const browserFetch = vi.spyOn(globalThis, 'fetch');
+
+  await client.post('/backtests/preflight', {
+    body: { formula_version_id: 'formula-version', period: '1d' },
+  });
+  await client.post('/backtests', {
+    body: { formula_version_id: 'formula-version', period: '1d' },
+  });
+  await client.post('/analysis', {
+    body: { symbol: '600000.SH', model_config_id: 'model-config' },
+  });
+  await client.get('/tasks?view=safe&limit=100');
+  await client.get('/tasks/task-id/events?view=safe&limit=100');
+
+  expect(browserFetch).not.toHaveBeenCalled();
+  expect(vi.mocked(invoke).mock.calls).toEqual([
+    [
+      'desktop_api_request',
+      {
+        request: {
+          method: 'POST',
+          path: '/api/backtests/preflight',
+          body: JSON.stringify({
+            formula_version_id: 'formula-version',
+            period: '1d',
+          }),
+        },
+      },
+    ],
+    [
+      'desktop_api_request',
+      {
+        request: {
+          method: 'POST',
+          path: '/api/backtests',
+          body: JSON.stringify({
+            formula_version_id: 'formula-version',
+            period: '1d',
+          }),
+        },
+      },
+    ],
+    [
+      'desktop_api_request',
+      {
+        request: {
+          method: 'POST',
+          path: '/api/analysis',
+          body: JSON.stringify({
+            symbol: '600000.SH',
+            model_config_id: 'model-config',
+          }),
+        },
+      },
+    ],
+    [
+      'desktop_api_request',
+      {
+        request: {
+          method: 'GET',
+          path: '/api/tasks?view=safe&limit=100',
+        },
+      },
+    ],
+    [
+      'desktop_api_request',
+      {
+        request: {
+          method: 'GET',
+          path: '/api/tasks/task-id/events?view=safe&limit=100',
+        },
+      },
+    ],
+  ]);
+  const serializedRequests = JSON.stringify(vi.mocked(invoke).mock.calls);
+  expect(serializedRequests).not.toMatch(
+    /authorization|bearer|127\.0\.0\.1|localhost|session.secret|port/iu,
+  );
+  browserFetch.mockRestore();
+});
+
 it('rejects an aborted desktop API request without exposing its late result', async () => {
   vi.mocked(isTauri).mockReturnValue(true);
   let resolveInvoke: ((value: unknown) => void) | undefined;

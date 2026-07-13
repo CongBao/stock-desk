@@ -5,7 +5,7 @@ import json
 import math
 from pathlib import Path
 from types import MappingProxyType
-from threading import Event, RLock
+from threading import Event, Lock, RLock
 from typing import Any, cast
 from uuid import UUID, uuid4
 
@@ -65,6 +65,10 @@ class TaskConflict(TaskRepositoryError):
 
 class TaskValidationError(TaskRepositoryError, ValueError):
     """Raised when task input is invalid."""
+
+
+class DesktopCheckpointPause(Exception):
+    """Stop one handler only after it has published a durable safe point."""
 
 
 _MAX_JSON_DEPTH = 128
@@ -450,6 +454,9 @@ class TaskRepository:
             raise TaskValidationError(
                 "Task database identity could not be determined"
             ) from error
+        self._desktop_checkpoint_requested = Event()
+        self._desktop_checkpoint_acknowledged = Event()
+        self._desktop_checkpoint_lock = Lock()
 
     @property
     def database_identity(self) -> DatabaseIdentity:
@@ -884,6 +891,37 @@ class TaskRepository:
             max_duration_ms=optional_float(duration_row["max_duration_ms"]),
         )
 
+    def active_desktop_recovery_summary(self) -> dict[str, int]:
+        """Return closed, non-sensitive counts for startup recovery UI."""
+        statement = (
+            select(TaskRun.status, TaskRun.kind, func.count(TaskRun.id))
+            .where(TaskRun.status.in_(("queued", "running")))
+            .group_by(TaskRun.status, TaskRun.kind)
+        )
+        summary = {
+            "queued": 0,
+            "running": 0,
+            "analysis": 0,
+            "backtest": 0,
+            "market": 0,
+            "other": 0,
+        }
+        with self._engine.connect() as connection:
+            rows = connection.execute(statement).all()
+        for status, kind, raw_count in rows:
+            count = int(raw_count)
+            summary[cast(str, status)] += count
+            if kind == _ANALYSIS_TASK_KIND:
+                category = "analysis"
+            elif kind == _BACKTEST_TASK_KIND:
+                category = "backtest"
+            elif kind in {"market.update", "market.catalog.update"}:
+                category = "market"
+            else:
+                category = "other"
+            summary[category] += count
+        return summary
+
     @contextmanager
     def hold_claim_gate(
         self,
@@ -927,6 +965,57 @@ class TaskRepository:
                 .where(TaskRun.status == "running")
             )
         return int(value or 0)
+
+    def request_desktop_checkpoint(self) -> None:
+        """Ask the active handler to stop at its next durable domain boundary."""
+        with self._desktop_checkpoint_lock:
+            self._desktop_checkpoint_acknowledged.clear()
+            self._desktop_checkpoint_requested.set()
+
+    def wait_for_desktop_checkpoint(self, timeout_seconds: float) -> bool:
+        if timeout_seconds < 0:
+            raise TaskValidationError("Desktop checkpoint timeout must be nonnegative")
+        return self._desktop_checkpoint_acknowledged.wait(timeout_seconds)
+
+    def cancel_desktop_checkpoint(self) -> bool:
+        """Cancel a timed-out request and report whether an acknowledgement won."""
+        with self._desktop_checkpoint_lock:
+            acknowledged = self._desktop_checkpoint_acknowledged.is_set()
+            if not acknowledged:
+                self._desktop_checkpoint_requested.clear()
+            return acknowledged
+
+    def pause_at_desktop_checkpoint(self, task_id: str) -> None:
+        """Persist the acknowledgement and unwind the handler at a safe point."""
+        with self._desktop_checkpoint_lock:
+            if not self._desktop_checkpoint_requested.is_set():
+                return
+            now = _utc_now()
+            with self._engine.begin() as connection:
+                row = (
+                    connection.execute(
+                        select(TaskRun).where(
+                            TaskRun.id == task_id,
+                            TaskRun.status == "running",
+                        )
+                    )
+                    .mappings()
+                    .one_or_none()
+                )
+                if row is None:
+                    return
+                task = _snapshot(row)
+                _append_event(
+                    connection,
+                    task_id=task.id,
+                    event_name="task.desktop_checkpointed",
+                    level="info",
+                    progress=task.progress,
+                    detail={"code": "desktop_shutdown_checkpoint"},
+                    occurred_at=now,
+                )
+            self._desktop_checkpoint_acknowledged.set()
+        raise DesktopCheckpointPause()
 
     def _terminalize_expired_cancellations(
         self,
@@ -1092,6 +1181,149 @@ class TaskRepository:
                     occurred_at=task.updated_at,
                 )
         return len(rows) + len(cancelled_rows)
+
+    def resume_desktop_recovery(self) -> int:
+        """Requeue abandoned running work from a previous desktop process."""
+        sampled_at = _utc_now()
+        transition_time = _transition_time(sampled_at)
+        statement = (
+            update(TaskRun)
+            .where(TaskRun.status == "running")
+            .values(
+                status="queued",
+                worker_id=None,
+                updated_at=transition_time,
+                claim_token=None,
+                lease_expires_at=None,
+                heartbeat_at=None,
+            )
+            .returning(TaskRun)
+        )
+        with self._engine.begin() as connection:
+            rows = connection.execute(statement).mappings().all()
+            for row in rows:
+                task = _snapshot(row)
+                _append_event(
+                    connection,
+                    task_id=task.id,
+                    event_name="task.lease_requeued",
+                    level="warning",
+                    progress=task.progress,
+                    detail={"code": "desktop_recovery_resumed"},
+                    occurred_at=task.updated_at,
+                )
+            queued = connection.scalar(
+                select(func.count())
+                .select_from(TaskRun)
+                .where(TaskRun.status == "queued")
+            )
+        return int(queued or 0)
+
+    def cancel_desktop_recovery(self) -> int:
+        """Terminalize queued/running work only after the user declines recovery."""
+        sampled_at = _utc_now()
+        active = select(TaskRun).where(TaskRun.status.in_(("queued", "running")))
+        with self._engine.begin() as connection:
+            rows = connection.execute(active).mappings().all()
+            if not rows:
+                return 0
+            task_ids = tuple(cast(str, row["id"]) for row in rows)
+            connection.execute(
+                update(TaskRun)
+                .where(TaskRun.id.in_(task_ids))
+                .values(
+                    status="cancelled",
+                    cancel_requested=True,
+                    worker_id=None,
+                    result_json=None,
+                    error_json=None,
+                    updated_at=sampled_at,
+                    finished_at=sampled_at,
+                    claim_token=None,
+                    lease_expires_at=None,
+                    heartbeat_at=None,
+                )
+            )
+            from stock_desk.backtest.models import BacktestRunRow
+
+            connection.execute(
+                update(BacktestRunRow)
+                .where(
+                    BacktestRunRow.task_id.in_(task_ids),
+                    BacktestRunRow.status.in_(("queued", "running")),
+                )
+                .values(
+                    status="cancelled",
+                    stage="cancelled",
+                    updated_at=sampled_at,
+                    finished_at=sampled_at,
+                )
+            )
+            from stock_desk.analysis.models import (
+                AnalysisAttemptRow,
+                AnalysisRunRow,
+                AnalysisStageRow,
+            )
+
+            analysis_ids = tuple(
+                connection.execute(
+                    select(AnalysisRunRow.id).where(
+                        AnalysisRunRow.task_id.in_(task_ids),
+                        AnalysisRunRow.status.in_(("queued", "running")),
+                    )
+                ).scalars()
+            )
+            if analysis_ids:
+                connection.execute(
+                    update(AnalysisAttemptRow)
+                    .where(
+                        AnalysisAttemptRow.run_id.in_(analysis_ids),
+                        AnalysisAttemptRow.status == "running",
+                    )
+                    .values(
+                        status="cancelled",
+                        error_json=None,
+                        retryable=None,
+                        backoff_seconds=None,
+                        finished_at=sampled_at,
+                    )
+                )
+                connection.execute(
+                    update(AnalysisStageRow)
+                    .where(
+                        AnalysisStageRow.run_id.in_(analysis_ids),
+                        AnalysisStageRow.status.in_(("pending", "running")),
+                    )
+                    .values(
+                        status="cancelled",
+                        failure_code=None,
+                        retryable=None,
+                        updated_at=sampled_at,
+                        finished_at=sampled_at,
+                    )
+                )
+                connection.execute(
+                    update(AnalysisRunRow)
+                    .where(AnalysisRunRow.id.in_(analysis_ids))
+                    .values(
+                        status="cancelled",
+                        current_stage=None,
+                        updated_at=sampled_at,
+                        finished_at=sampled_at,
+                    )
+                )
+            for row in rows:
+                task = _snapshot(row)
+                _append_event(
+                    connection,
+                    task_id=task.id,
+                    event_name="task.cancelled",
+                    level="info",
+                    progress=task.progress,
+                    detail={"code": "desktop_recovery_cancelled"},
+                    occurred_at=sampled_at,
+                )
+        return len(rows)
 
     def claim_next(
         self,
