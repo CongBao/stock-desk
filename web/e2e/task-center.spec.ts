@@ -235,6 +235,9 @@ test('keyboard selection and cancellation send one POST and announce reflection'
   const cancellation = { count: 0 };
   await installTaskStubs(page, { trackCancel: cancellation });
   await page.goto('/tasks');
+  await expect(
+    page.getByRole('heading', { level: 2, name: '任务中心' }),
+  ).toBeFocused();
   const backtest = page.getByRole('button', { name: /股票池回测/u }).first();
   await expect(backtest).toHaveAttribute('aria-current', 'true');
   const analysis = page.getByRole('button', { name: /智能分析/u });

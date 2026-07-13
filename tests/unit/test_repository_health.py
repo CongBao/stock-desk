@@ -2003,6 +2003,21 @@ def test_performance_target_ci_is_explicit_and_requirement_is_verified() -> None
     assert steps["Install Chromium for the performance shard"]["run"] == (
         "pnpm exec playwright install --with-deps chromium"
     )
+    preserved = steps["Preserve first-attempt performance evidence"]
+    assert preserved["if"] == (
+        "always() && env.PYTHON_SHARD == 'acceptance-performance'"
+    )
+    assert preserved["with"] == {
+        "name": "performance-first-attempt-${{ github.run_id }}-${{ github.run_attempt }}",
+        "path": "test-results/performance/current.json\n"
+        "test-results/performance/browser-raw.json\n"
+        "test-results/performance/first-attempt-failure.json\n",
+        "if-no-files-found": "error",
+        "retention-days": 7,
+    }
+    assert acceptance["steps"].index(
+        steps["Prepare deterministic performance evidence once"]
+    ) < acceptance["steps"].index(preserved)
     provenance = steps["Verify documentation provenance before performance"]
     assert provenance["if"] == "env.PYTHON_SHARD == 'acceptance-performance'"
     assert "git init --bare --quiet" in provenance["run"]
