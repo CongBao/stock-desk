@@ -39,6 +39,7 @@ from tests.performance.ten_year_a_share import (  # noqa: E402
 DEFAULT_OUTPUT = ROOT / "test-results" / "performance" / "current.json"
 DEFAULT_BROWSER_OUTPUT = ROOT / "test-results" / "performance" / "browser-raw.json"
 OFFICIAL_BASELINE = ROOT / "tests" / "performance" / "baseline.json"
+FAILURE_SCHEMA = "stock-desk-performance-first-attempt-failure-v1"
 
 
 class BaselineRecordingError(RuntimeError):
@@ -94,6 +95,40 @@ def atomic_write_json(path: Path, value: object) -> None:
         os.replace(temporary, destination)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def write_first_attempt_failure(
+    output: Path,
+    *,
+    source_sha: str,
+    stage: str,
+    reason: str,
+) -> Path:
+    """Persist a bounded, path-free failure fact beside performance evidence."""
+
+    if stage not in {"browser", "evidence", "validation"}:
+        raise ValueError("performance failure stage is invalid")
+    if re.fullmatch(r"[0-9a-f]{40}", source_sha) is None:
+        raise ValueError("performance failure source SHA is invalid")
+    normalized_reason = " ".join(reason.split())
+    if not normalized_reason or len(normalized_reason) > 240:
+        raise ValueError("performance failure reason is invalid")
+    if re.fullmatch(r"[\x20-\x7e]+", normalized_reason) is None:
+        raise ValueError("performance failure reason must be printable ASCII")
+
+    failure_path = output.resolve().parent / "first-attempt-failure.json"
+    atomic_write_json(
+        failure_path,
+        {
+            "schema_version": FAILURE_SCHEMA,
+            "source_sha": source_sha,
+            "stage": stage,
+            "reason": normalized_reason,
+            "run_id": _environment_integer("GITHUB_RUN_ID"),
+            "run_attempt": _environment_integer("GITHUB_RUN_ATTEMPT"),
+        },
+    )
+    return failure_path
 
 
 def require_recording_preconditions(
@@ -382,6 +417,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"{args.evidence_kind} hardware/runner preflight failed before browser start"
         )
     preflight_sha = _verified_git_sha()
+    failure_path = args.output.resolve().parent / "first-attempt-failure.json"
+    failure_path.unlink(missing_ok=True)
     fixture = load_fixture_metadata()
     generated = generate_fixture_bars(fixture)
     if generated.content_digest != fixture.content_digest:
@@ -390,8 +427,26 @@ def main(argv: Sequence[str] | None = None) -> int:
         _fail("fixture metadata row count is stale")
 
     browser_output = DEFAULT_BROWSER_OUTPUT
-    _run_browser_measurement(browser_output)
-    raw = _load_json(browser_output)
+    try:
+        _run_browser_measurement(browser_output)
+    except subprocess.CalledProcessError:
+        write_first_attempt_failure(
+            args.output,
+            source_sha=preflight_sha,
+            stage="browser",
+            reason="browser measurement command failed",
+        )
+        raise
+    try:
+        raw = _load_json(browser_output)
+    except (OSError, json.JSONDecodeError, PerformanceGateError):
+        write_first_attempt_failure(
+            args.output,
+            source_sha=preflight_sha,
+            stage="evidence",
+            reason="browser performance evidence is missing or invalid",
+        )
+        raise
     if not isinstance(raw, dict):
         _fail("browser performance evidence must be a JSON object")
     result: dict[str, Any] = dict(raw)
@@ -432,6 +487,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             expected_source_sha=preflight_sha,
         )
         gate_passed = True
+    except PerformanceGateError as error:
+        write_first_attempt_failure(
+            args.output,
+            source_sha=preflight_sha,
+            stage="validation",
+            reason=str(error),
+        )
+        print(f"performance first-attempt validation failure: {error}", file=sys.stderr)
+        raise
     finally:
         atomic_write_json(Path(args.output), result)
 

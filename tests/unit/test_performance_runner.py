@@ -12,6 +12,7 @@ from scripts.run_performance_baseline import (
     atomic_write_json,
     parse_args,
     require_recording_preconditions,
+    write_first_attempt_failure,
 )
 
 
@@ -44,6 +45,63 @@ def test_atomic_writer_never_leaves_a_partial_file(tmp_path: Path) -> None:
 
     assert json.loads(destination.read_text(encoding="utf-8"))["value"] == 1
     assert list(destination.parent.glob(".*.tmp")) == []
+
+
+def test_first_attempt_failure_is_bounded_and_path_free(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GITHUB_RUN_ID", "29264410088")
+    monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "1")
+    output = tmp_path / "performance" / "current.json"
+
+    failure = write_first_attempt_failure(
+        output,
+        source_sha="a" * 40,
+        stage="validation",
+        reason="single_backtest p95 exceeds its absolute budget",
+    )
+
+    assert failure == output.parent / "first-attempt-failure.json"
+    assert json.loads(failure.read_text(encoding="utf-8")) == {
+        "schema_version": "stock-desk-performance-first-attempt-failure-v1",
+        "source_sha": "a" * 40,
+        "stage": "validation",
+        "reason": "single_backtest p95 exceeds its absolute budget",
+        "run_id": 29264410088,
+        "run_attempt": 1,
+    }
+    serialized = failure.read_text(encoding="utf-8")
+    assert str(tmp_path) not in serialized
+    assert "runner" not in serialized
+
+
+@pytest.mark.parametrize(
+    ("stage", "reason"),
+    [
+        ("unknown", "failed"),
+        ("validation", ""),
+        ("validation", "x" * 241),
+        ("validation", "contains\nnewline\x00"),
+    ],
+)
+def test_first_attempt_failure_rejects_unbounded_fields(
+    tmp_path: Path, stage: str, reason: str
+) -> None:
+    with pytest.raises(ValueError):
+        write_first_attempt_failure(
+            tmp_path / "current.json",
+            source_sha="a" * 40,
+            stage=stage,
+            reason=reason,
+        )
+
+    with pytest.raises(ValueError, match="source SHA"):
+        write_first_attempt_failure(
+            tmp_path / "current.json",
+            source_sha="not-a-sha",
+            stage="validation",
+            reason="failed",
+        )
 
 
 def test_browser_measurement_clears_stale_run_evidence_before_playwright(
