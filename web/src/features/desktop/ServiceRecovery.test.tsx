@@ -9,15 +9,24 @@ function bridge(
 ): TauriDesktopBridge {
   return {
     cancelExit: vi.fn(() => Promise.resolve()),
+    checkForUpdates: vi.fn(() =>
+      Promise.resolve({ state: 'disabled', currentVersion: '1.1.0' } as const),
+    ),
     confirmExit: vi.fn(() => Promise.resolve()),
+    confirmUpdate: vi.fn(() => Promise.resolve()),
+    dismissUpdate: vi.fn(() => Promise.resolve()),
     exportDiagnostics: vi.fn(() => Promise.resolve('saved' as const)),
     isDesktop: true,
     getRuntimeState: vi.fn(() => Promise.resolve({ state: 'ready' } as const)),
+    getUpdateState: vi.fn(() =>
+      Promise.resolve({ state: 'disabled', currentVersion: '1.1.0' } as const),
+    ),
     openDiagnostics: vi.fn(() => Promise.resolve()),
     requestExit: vi.fn(() => Promise.resolve()),
     restartService: vi.fn(() => Promise.resolve()),
     subscribe: vi.fn(() => Promise.resolve(() => undefined)),
     subscribeExit: vi.fn(() => Promise.resolve(() => undefined)),
+    subscribeUpdate: vi.fn(() => Promise.resolve(() => undefined)),
     ...overrides,
   };
 }

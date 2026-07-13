@@ -23,6 +23,7 @@ from scripts.source_fingerprint import compute_source_fingerprint
 from scripts.artifact_manifest import (
     ManifestError,
     validate_manifest,
+    verify_artifact_root_closure,
     verify_for_consumption,
 )
 
@@ -67,6 +68,7 @@ CRITICAL_INPUTS: Final = LEGACY_CRITICAL_INPUTS + (
     "playwright.config.ts",
     "schemas/artifact-manifest-v2.schema.json",
     "schemas/windows-installed-evidence-v1.schema.json",
+    "schemas/trusted-updater-release-v1.schema.json",
     "scripts/aggregate_ci_evidence.py",
     "scripts/artifact_manifest.py",
     "scripts/build_windows_desktop.py",
@@ -78,6 +80,7 @@ CRITICAL_INPUTS: Final = LEGACY_CRITICAL_INPUTS + (
     "scripts/e2e_snapshot.py",
     "scripts/verify_ci_cache_policy.py",
     "scripts/verify_zero_telemetry.py",
+    "scripts/trusted_updater_release.py",
     "scripts/verify_windows_desktop_bundle.py",
     "scripts/verify_windows_installed_evidence.py",
     "scripts/windows_installed_environment_policy.py",
@@ -86,6 +89,7 @@ CRITICAL_INPUTS: Final = LEGACY_CRITICAL_INPUTS + (
     "src-tauri/tauri.conf.json",
     "src-tauri/tauri.windows.conf.json",
     "src-tauri/src/main.rs",
+    "src-tauri/src/updater.rs",
     "src-tauri/src/uninstall.rs",
     "rust-toolchain.toml",
     "tests/acceptance/requirements.yml",
@@ -1179,6 +1183,11 @@ def verify_proved_artifacts(
                     artifact_attestations[artifact_name],
                     f"{artifact_name} attestation",
                 ),
+            )
+            verify_artifact_root_closure(
+                manifest,
+                root=artifact_roots[artifact_name],
+                artifact_name=artifact_name,
             )
         except (ManifestError, OSError) as error:
             raise MainValidationProofError(

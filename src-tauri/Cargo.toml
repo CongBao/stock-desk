@@ -14,18 +14,27 @@ tauri-build = { version = "=2.6.3", features = [] }
 [dependencies]
 base64 = { version = "=0.22.1" }
 getrandom = { version = "=0.3.4" }
+minisign-verify = { version = "=0.2.5" }
 reqwest = { version = "=0.13.4", default-features = false, features = ["json"] }
+semver = { version = "=1.0.28" }
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = { version = "=1.0.150" }
+sha2 = { version = "=0.10.9" }
 tauri = { version = "=2.11.5", features = [] }
 tauri-plugin-single-instance = { version = "=2.4.2" }
 tauri-plugin-shell = { version = "=2.3.5" }
+tauri-plugin-updater = { version = "=2.10.1", default-features = false, features = [
+    "native-tls",
+    "zip",
+] }
 tokio = { version = "=1.52.3", features = ["time"] }
+url = { version = "=2.5.8" }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "=0.61.2", features = [
     "Win32_Foundation",
     "Win32_Security",
+    "Win32_Storage_FileSystem",
     "Win32_System_Com",
     "Win32_System_JobObjects",
     "Win32_System_Threading",

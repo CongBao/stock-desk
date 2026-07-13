@@ -6735,6 +6735,96 @@ a {
   color: var(--surface-1);
 }
 
+.desktop-update-notice {
+  position: relative;
+  z-index: 10;
+  display: flex;
+  width: auto;
+  margin: max(8px, env(safe-area-inset-top))
+    max(8px, env(safe-area-inset-right)) 0 max(8px, env(safe-area-inset-left));
+  gap: 16px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px;
+  border: 1px solid var(--accent);
+  border-radius: 14px;
+  background: var(--surface-1);
+  color: var(--text-primary);
+  box-shadow: 0 16px 44px rgb(9 24 47 / 28%);
+}
+
+.desktop-update-slot {
+  grid-column: 1 / -1;
+  min-width: 0;
+  /* The fixed theme selector occupies this corner. Reserve its full desktop
+     width so update actions stay visible and clickable in the same grid row. */
+  padding-inline-end: 168px;
+}
+
+.desktop-update-notice p {
+  margin: 6px 0 0;
+  color: var(--text-secondary);
+}
+
+.desktop-update-actions,
+.desktop-update-dialog-actions {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.desktop-update-dialog-backdrop {
+  position: fixed;
+  z-index: 1150;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgb(5 15 30 / 58%);
+}
+
+.desktop-update-dialog {
+  position: static;
+  display: block;
+  width: min(520px, 100%);
+  max-height: calc(100dvh - 32px);
+  overflow: auto;
+  padding: clamp(20px, 4vw, 28px);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--surface-1);
+  color: var(--text-primary);
+  box-shadow: 0 22px 64px rgb(5 15 30 / 36%);
+}
+
+.desktop-update-dialog h2 {
+  margin-block-start: 0;
+}
+
+.desktop-update-dialog-actions {
+  margin-block-start: 24px;
+}
+
+@media (max-width: 600px), (resolution >= 1.75dppx) {
+  .desktop-update-notice {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .desktop-update-actions button,
+  .desktop-update-dialog-actions button {
+    flex: 1 1 160px;
+  }
+}
+
+@media (max-width: 760px) {
+  .desktop-update-slot {
+    padding-inline-end: 60px;
+  }
+}
+
 @media (max-width: 480px) {
   .desktop-exit-backdrop {
     align-items: end;

@@ -26,6 +26,13 @@ Web、Python、OCI、SBOM/provenance 等产物都有内容 manifest，记录 sou
 
 当前未签名的 `v1.1.0-alpha.N` 和 `v1.1.0-beta.N` 标签只消费同一提交已经成功生成的 exact-SHA `main` proof 与 Windows candidate。Release 会重新验证 tag、GitHub attestation、proof、candidate manifest、版本化安装器文件名和内容摘要，然后只发布显著标记的 Windows x64 unsigned prerelease；它不重跑 unit/E2E，也不重建桌面安装包。`v1.1.0` stable 和 `rc` 标签在独立的 SignPath、可信更新及 Windows 10/11 普通用户安装链完成前保持 fail closed。SignPath 申请已提交但仍为 pending，因此当前证据不代表 Authenticode、SmartScreen 或正式发布门禁已经通过。
 
+PR 与 main 都使用锁定版本 `cargo-audit 0.22.2` 对 `src-tauri/Cargo.lock`
+执行 RustSec 检查。已知漏洞使用工具默认的非零失败语义，yanked crate 由
+`--deny yanked` 明确阻断；命令不配置任何 advisory ignore。上游维护状态等 warning
+仍完整显示，但不会把 Tauri 的跨平台传递依赖误报成漏洞。任何工具安装、数据库更新或
+审计失败都会阻断。缓存只包含该固定工具和 RustSec advisory database；审计结论、报告、
+证明和发布资产从不进入缓存，每次运行都会重新计算结论。
+
 ### Windows 安装后验收接线
 
 `windows-installed.yml` 只允许从受保护 `main` 手工调度当前精确提交。仓库持久化 self-hosted runner 注册被明确禁止；入口门禁固定使用 GitHub-hosted `ubuntu-24.04`，通过 GitHub API 要求仓库 runner inventory 的 `total_count=0` 且列表为空，同时要求输入 SHA、`GITHUB_SHA`、`GITHUB_WORKFLOW_SHA`、实时 `origin/main` 完全一致，`GITHUB_WORKFLOW_REF` 精确指向本仓库 main 上的 workflow。非 main 调度不能越过 environment 的精确 main 分支策略。
@@ -59,6 +66,14 @@ Web, Python, OCI, and SBOM/provenance outputs carry content manifests with sourc
 ### Cache boundary
 
 Only dependency downloads and compiler/browser intermediates keyed by OS, architecture, toolchain, and lockfile may be cached. JUnit, coverage, databases, requirement evidence, signatures, release proofs, and final artifact identities are never accepted from a cache. Warm-cache and clean-miss runs execute identical gates.
+
+Both PR and main run pinned `cargo-audit 0.22.2` against the exact desktop
+lockfile. Known vulnerabilities fail through cargo-audit's default exit status,
+yanked crates fail through `--deny yanked`, and no advisory is ignored. Upstream
+maintenance warnings remain visible without being misclassified as
+vulnerabilities. Tool installation, advisory-database update, or audit failure
+blocks the gate. Caches may contain only the pinned tool and advisory database,
+never audit conclusions, reports, proofs, or release artifacts.
 
 ### Release reuse
 

@@ -8,7 +8,7 @@ Stock Desk 是本地优先的个人研究软件。默认不收集遥测，不创
 
 这些默认值同时固化在机器可校验的
 [`config/desktop-network-privacy.json`](../config/desktop-network-privacy.json)
-中。当前锁定的 `pre-updater` 阶段会在 CI 中拒绝缺失或被修改的策略、已枚举的遥测或崩溃 SDK 特征、自动诊断上传、稳定设备标识、出现在精确路径清单之外的已枚举网络导入和直接原语，以及在可信更新功能完成前提前启用 updater 的代码或配置。Python 网络导入使用 AST 检查，别名导入同样受控；所有 Tauri 配置和嵌套 capability JSON 都会递归检查。隐私策略和校验器的哈希同时绑定到候选安装包证据与 main 验证证明。
+中。当前锁定的 `trusted-updater-foundation` 阶段会在 CI 中拒绝缺失或被修改的策略、已枚举的遥测或崩溃 SDK 特征、自动诊断上传、稳定设备标识、出现在精确路径清单之外的已枚举网络导入和直接原语，以及绕过 Rust 宿主提前启用 updater 的代码或配置。Python 网络导入使用 AST 检查，别名导入同样受控；所有 Tauri 配置和嵌套 capability JSON 都会递归检查。隐私策略和校验器的哈希同时绑定到候选安装包证据与 main 验证证明。
 
 ## 何时会访问网络
 
@@ -16,7 +16,7 @@ Stock Desk 只为用户请求的功能访问相应服务：
 
 - 获取用户选择或首次向导所需的公开行情、证券列表和数据来源信息；
 - 在用户配置模型提供商并明确启动分析后，向该提供商发送完成请求所需的数据；
-- 后续版本启用公开 GitHub Release 更新检查时，请求不得发送稳定设备标识或使用行为，下载和安装更新必须由用户确认；当前版本不会后台检查或自动安装更新；
+- 当前源码包含默认关闭的 GitHub Release 更新检查基础；若未来通过正式门禁后启用，请求最多携带固定目标 `windows-x86_64-nsis`、架构 `x86_64` 和当前版本，不发送设备标识、使用行为或本地数据摘要，下载和安装仍必须由用户明确确认；当前版本不会后台检查、下载或自动安装更新；
 - 打开用户明确选择的公开文档、发布页或问题报告页面。
 
 所选行情源、模型提供商和 GitHub 会按各自政策处理直接发送给它们的请求。用户应在配置第三方 Token 或服务前阅读相应提供商的隐私和服务条款。可用连接和配置边界见[配置文档](configuration.md)。
@@ -34,10 +34,11 @@ Stock Desk 只为用户请求的功能访问相应服务：
 
 ## English summary
 
-Stock Desk is local-first. It has no telemetry, stable device identifier, automatic crash upload, or automatic diagnostic upload by default. Internal workers use a fresh random session identity that contains no hostname. CI confines enumerated network-capable imports and direct primitives to exact reviewed production paths for user-requested market data and explicitly configured model-provider requests. The current version does not check or install updates in the background. A future public-release check must carry no behavioral identifier and still require confirmation before download or installation. Local diagnostics are created only on explicit request and are never uploaded automatically.
+Stock Desk is local-first. It has no telemetry, stable device identifier, automatic crash upload, or automatic diagnostic upload by default. Internal workers use a fresh random session identity that contains no hostname. CI confines enumerated network-capable imports and direct primitives to exact reviewed production paths for user-requested market data and explicitly configured model-provider requests. The trusted-update foundation is default-off. If formally activated later, its request may carry only the fixed target, architecture, and current version; it carries no device identifier, behavior, or local-data digest and still requires confirmation before download or installation. Local diagnostics are created only on explicit request and are never uploaded automatically.
 
 These defaults are also frozen in the machine-verifiable
 [`config/desktop-network-privacy.json`](../config/desktop-network-privacy.json)
-policy and enforced by CI. The active pre-updater phase, aliased Python imports,
-recursive Tauri capability configuration, and evidence hashes are all checked
-fail-closed.
+policy and enforced by CI. The active `trusted-updater-foundation` phase keeps
+the Rust-host updater closed while checking its fixed endpoint and request
+allowlist. Aliased Python imports, recursive Tauri capability configuration,
+and evidence hashes are also checked fail-closed.

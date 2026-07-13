@@ -573,7 +573,7 @@ V11_CANONICAL_REQUIREMENTS: dict[str, dict[str, Any]] = {
         "security",
         "anonymous_update_and_local_diagnostics_privacy_guard",
         4,
-        "f3a944820e08e998534ea9ccfcea876e45cef8bdbec98c39936aa3168f6c4b1d",
+        "019dc37d089d70c635adfd0f87fc8e7508436abe7ba14c40d3310757cb6756f6",
         (
             "desktop-user-experience",
             "local-redacted-diagnostic-bundle",

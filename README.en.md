@@ -43,6 +43,11 @@ To test `v1.1.0-beta.2`:
 Ordinary users do not need GitHub CLI, a source checkout, Docker, or development tools. Use the bilingual
 [download and authenticity guide](docs/download.md) for the stable release; beta.2 checksums and immutable build proof are on its prerelease page.
 
+The current source includes a **default-off** trusted-update foundation. It accepts only
+Windows x64 stable metadata from Stock Desk GitHub Releases and requires explicit confirmation
+before any download or install. It makes no update request until signing keys, SignPath,
+Windows 10/11 evidence, and the formal release contract have all passed.
+
 `v1.1.0` does not ship macOS, Linux, Android, or ARM64 installers, and it does not migrate or delete v1 local data. Refer to the release page and [code-signing policy](docs/code-signing-policy.md) for the authoritative signing status.
 
 The next candidate in the current source lets the user explicitly choose whether to remove **v1.1-only** local data during uninstall. Cancelling that deletion or a deletion failure keeps the data, and legacy v1 data is outside this operation. This source change does not retroactively claim that the published beta.2 has that behavior.

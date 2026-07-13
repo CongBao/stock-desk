@@ -17,10 +17,11 @@
 - 文件名、版本和架构必须与发布说明一致；
 - SHA-256 必须与发布页校验文件一致；
 - 对声称已签名的 Windows 资产，Authenticode 状态、签名主体和时间戳必须有效；
+- 对提供应用内更新元数据的正式版本，发布门禁必须读取实际安装包与证据文件，重新计算安装包 SHA-256，并同时通过固定生产公钥的 Tauri Minisign/Ed25519 签名、WinVerifyTrust、SignPath exact-SHA attestation，以及 Windows 10 22H2/Windows 11 x64 exact-SHA 实机回执；自报布尔值或摘要不构成证据，缺少任一项都不得发布更新元数据；
 - 如果任一验证失败，请停止安装并通过 [GitHub Security Advisories](https://github.com/CongBao/stock-desk/security/advisories/new) 报告。
 
 ---
 
 ## English summary
 
-Download Stock Desk only from its [GitHub Releases](https://github.com/CongBao/stock-desk/releases). Verify the release SHA-256 files and manifest. The SignPath Foundation application and CI integration are still pending, so existing artifacts remain unsigned unless both the manifest and Windows Authenticode verification explicitly prove a trusted signature.
+Download Stock Desk only from its [GitHub Releases](https://github.com/CongBao/stock-desk/releases). Verify the release SHA-256 files and manifest. The trusted-update gate hashes the actual installer bytes and requires a repository-pinned Tauri Minisign/Ed25519 signature, WinVerifyTrust, exact-SHA SignPath attestation, and exact-SHA Windows 10/11 x64 receipts. Claimed booleans or digests are not proof; any missing evidence fails closed. The production updater key and formal SignPath integration are still pending, so trusted updates remain disabled and existing artifacts remain unsigned unless independently proven otherwise.

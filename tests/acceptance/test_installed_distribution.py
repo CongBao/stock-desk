@@ -141,6 +141,34 @@ def test_release_workflow_generates_checksums_sbom_and_provenance() -> None:
     assert "pull_request" not in workflow_text
 
 
+def test_trusted_updater_foundation_cannot_publish_stable_metadata() -> None:
+    workflow_text = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+    contract = (ROOT / "scripts" / "trusted_updater_release.py").read_text(
+        encoding="utf-8"
+    )
+    schema = json.loads(
+        (ROOT / "schemas" / "trusted-updater-release-v1.schema.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert "^v1\\.1\\.0-(alpha|beta)" in workflow_text
+    assert "latest.json" not in workflow_text
+    assert "TAURI_SIGNING_PRIVATE_KEY" not in workflow_text
+    assert schema["properties"]["channel"] == {"const": "stable"}
+    for required_gate in (
+        "TRUSTED_TAURI_PUBLIC_KEY",
+        "_verify_minisign",
+        "WinVerifyTrust",
+        "SignPath receipt",
+        "windows_10_22h2_x64",
+        "windows_11_x64",
+        "GitHub attestation",
+    ):
+        assert required_gate in contract
+    assert "secrets:" not in contract
+
+
 def test_legacy_inno_compiler_is_not_reachable_from_v11_release() -> None:
     workflow_text = RELEASE_WORKFLOW.read_text(encoding="utf-8")
     build_script = (ROOT / "scripts" / "build_installer.py").read_text(encoding="utf-8")

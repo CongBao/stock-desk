@@ -5,6 +5,7 @@ import ast
 import json
 from pathlib import Path
 import re
+import tomllib
 from typing import Any, Final
 
 
@@ -43,14 +44,15 @@ _NETWORK_EXACT_PATHS: Final = {
         "src-tauri/src/app.rs",
         "src-tauri/src/exit.rs",
         "src-tauri/src/proxy.rs",
+        "src-tauri/src/updater.rs",
     ),
     "web": ("web/src/shared/api/client.ts",),
 }
 EXPECTED_PRIVACY_POLICY: Final = {
-    "schema_version": 2,
-    "active_phase": "pre-updater",
+    "schema_version": 3,
+    "active_phase": "trusted-updater-foundation",
     "phases": {
-        "pre-updater": {
+        "trusted-updater-foundation": {
             "telemetry": "disabled",
             "automatic_crash_upload": "disabled",
             "automatic_diagnostic_upload": "disabled",
@@ -59,13 +61,23 @@ EXPECTED_PRIVACY_POLICY: Final = {
                 key: list(paths) for key, paths in _NETWORK_EXACT_PATHS.items()
             },
             "updater": {
-                "enabled": False,
-                "future_request": {
+                "runtime_enabled": False,
+                "implementation": "rust-host-only",
+                "endpoint": "https://github.com/CongBao/stock-desk/releases/latest/download/latest.json",
+                "target": "windows-x86_64-nsis",
+                "arch": "x86_64",
+                "channel": "stable-only",
+                "request": {
                     "identity": "anonymous",
                     "allowed_fields": ["target", "arch", "current_version"],
                     "stable_device_identifier": False,
                     "usage_behavior": False,
                     "local_data_digest": False,
+                },
+                "installation": {
+                    "automatic_download": False,
+                    "explicit_user_confirmation": True,
+                    "forced_silent_update": False,
                 },
             },
         }
@@ -87,9 +99,9 @@ _LOCKFILE_PACKAGE = re.compile(
     r"rollbar|crashlytics|segment[_-]analytics|amplitude)"
 )
 _FORBIDDEN_UPDATER = re.compile(
-    r"(?i)(?:tauri[-_]plugin[-_]updater|@tauri-apps/plugin-updater|"
+    r"(?i)(?:@tauri-apps/plugin-updater|"
     r"\bupdater:(?:default|allow-|deny-)|\bcreateUpdaterArtifacts\b|"
-    r"[\"']updater[\"']\s*:|\bplugin_updater\b)"
+    r"[\"']updater[\"']\s*:)"
 )
 _FORBIDDEN_STABLE_IDENTIFIER = re.compile(
     r"(?i)\b(?:installation[_-]?id|machine[_-]?guid|machine[_-]?uid|"
@@ -118,7 +130,9 @@ _PYTHON_NETWORK_MODULES: Final = frozenset(
         "urllib3",
     }
 )
-_RUST_NETWORK = re.compile(r"\b(?:reqwest::|TcpStream\b|UdpSocket\b|ureq::|hyper::)")
+_RUST_NETWORK = re.compile(
+    r"\b(?:reqwest::|TcpStream\b|UdpSocket\b|ureq::|hyper::|tauri_plugin_updater::)"
+)
 _RUST_NETWORK_ALIAS = re.compile(
     r"\buse\s+(?P<module>reqwest|ureq|hyper)\s+as\s+"
     r"(?P<alias>[A-Za-z_][A-Za-z0-9_]*)\s*;"
@@ -142,6 +156,7 @@ def audit_repository(root: Path) -> tuple[str, ...]:
     resolved_root = root.resolve()
     violations: list[str] = []
     _validate_privacy_policy(resolved_root, violations)
+    _validate_updater_foundation(resolved_root, violations)
     for relative in MANIFESTS:
         path = resolved_root / relative
         if not path.is_file() or path.is_symlink():
@@ -399,6 +414,132 @@ def _is_diagnostic_source(label: str) -> bool:
         or label == "src/stock_desk/api/diagnostics.py"
         or label.startswith("src/stock_desk/diagnostics/")
     )
+
+
+def _rust_without_comments(source: str) -> str:
+    output: list[str] = []
+    index = 0
+    block_depth = 0
+    in_string = False
+    escaped = False
+    while index < len(source):
+        current = source[index]
+        following = source[index + 1] if index + 1 < len(source) else ""
+        if block_depth:
+            if current == "/" and following == "*":
+                block_depth += 1
+                output.extend("  ")
+                index += 2
+                continue
+            if current == "*" and following == "/":
+                block_depth -= 1
+                output.extend("  ")
+                index += 2
+                continue
+            output.append("\n" if current == "\n" else " ")
+            index += 1
+            continue
+        if not in_string and current == "/" and following == "/":
+            while index < len(source) and source[index] != "\n":
+                output.append(" ")
+                index += 1
+            continue
+        if not in_string and current == "/" and following == "*":
+            block_depth = 1
+            output.extend("  ")
+            index += 2
+            continue
+        output.append(current)
+        if in_string:
+            if current == '"' and not escaped:
+                in_string = False
+            escaped = current == "\\" and not escaped
+            if current != "\\":
+                escaped = False
+        elif current == '"':
+            in_string = True
+            escaped = False
+        index += 1
+    return "".join(output)
+
+
+def _validate_updater_foundation(root: Path, violations: list[str]) -> None:
+    cargo_path = root / "src-tauri/Cargo.toml"
+    updater_path = root / "src-tauri/src/updater.rs"
+    main_path = root / "src-tauri/src/main.rs"
+    web_package_path = root / "web/package.json"
+    try:
+        cargo = tomllib.loads(cargo_path.read_text(encoding="utf-8", errors="strict"))
+        updater_source = updater_path.read_text(encoding="utf-8", errors="strict")
+        main_source = main_path.read_text(encoding="utf-8", errors="strict")
+        web_package = json.loads(
+            web_package_path.read_text(encoding="utf-8", errors="strict"),
+            object_pairs_hook=_unique_json_object,
+        )
+    except (
+        OSError,
+        UnicodeError,
+        tomllib.TOMLDecodeError,
+        json.JSONDecodeError,
+        ValueError,
+    ):
+        violations.append("invalid-trusted-updater-foundation")
+        return
+
+    dependency = cargo.get("dependencies", {}).get("tauri-plugin-updater")
+    if dependency != {
+        "version": "=2.10.1",
+        "default-features": False,
+        "features": ["native-tls", "zip"],
+    }:
+        violations.append("invalid-trusted-updater-dependency")
+    if cargo.get("dependencies", {}).get("minisign-verify") != {"version": "=0.2.5"}:
+        violations.append("invalid-trusted-updater-signature-dependency")
+    rust_code = _rust_without_comments(updater_source)
+    required_source_contracts = (
+        r"pub\s+const\s+UPDATE_RUNTIME_ENABLED\s*:\s*bool\s*=\s*false\s*;",
+        r'pub\s+const\s+UPDATE_TARGET\s*:\s*&str\s*=\s*"windows-x86_64-nsis"\s*;',
+        r'pub\s+const\s+UPDATE_ARCH\s*:\s*&str\s*=\s*"x86_64"\s*;',
+        r'pub\s+const\s+UPDATE_ENDPOINT\s*:\s*&str\s*=\s*"https://github\.com/CongBao/stock-desk/releases/latest/download/latest\.json"\s*;',
+        r"const\s+_\s*:\s*\(\)\s*=\s*assert!\s*\(\s*!UPDATE_RUNTIME_ENABLED\s*\)\s*;",
+        r'const\s+CURRENT_VERSION\s*:\s*&str\s*=\s*env!\s*\(\s*"CARGO_PKG_VERSION"\s*\)\s*;',
+        r"const\s+TRUSTED_TAURI_PUBLIC_KEY\s*:\s*Option\s*<\s*&str\s*>\s*=\s*None\s*;",
+        r"tauri_plugin_updater::Builder::new\(\)\.build\(\)",
+        r"verify_downloaded_candidate\(",
+        r"PublicKey::decode",
+        r"verify_authenticode\(installer_path\)",
+        "InstalledWatermark",
+        "verified_pending",
+        "installed-watermark.json",
+    )
+    if any(
+        re.search(contract, rust_code, re.DOTALL) is None
+        for contract in required_source_contracts
+    ):
+        violations.append("invalid-trusted-updater-runtime-contract")
+    command_contracts = (
+        r"pub\s+fn\s+desktop_check_for_updates\b[\s\S]*?if\s*!UPDATE_RUNTIME_ENABLED\s*\{\s*return\s+Ok\(machine\.state\(\)\.clone\(\)\);\s*\}",
+        r"pub\s+fn\s+desktop_confirm_update\b[\s\S]*?gate_native_confirmation\s*\(\s*UPDATE_RUNTIME_ENABLED\s*,",
+        r"fn\s+gate_native_confirmation\b[\s\S]*?if\s*!enabled\s*\{\s*return\s+Err\(\"desktop_updater_disabled\"\);\s*\}",
+    )
+    if any(re.search(contract, rust_code) is None for contract in command_contracts):
+        violations.append("invalid-trusted-updater-command-guard")
+    if "VerificationOutcome" in updater_source or "true, true, true" in updater_source:
+        violations.append("claimable-trusted-updater-outcome")
+    if (
+        "PathBuf::new()" in updater_source
+        or "verified-watermark.json" in updater_source
+    ):
+        violations.append("unsafe-trusted-updater-state-path")
+    if ".plugin(updater::plugin())" not in main_source:
+        violations.append("missing-trusted-updater-host-wiring")
+
+    web_dependencies = {
+        **web_package.get("dependencies", {}),
+        **web_package.get("devDependencies", {}),
+    }
+    if "@tauri-apps/plugin-updater" in web_dependencies:
+        violations.append("web-updater-bypasses-rust-host")
 
 
 def _validate_privacy_policy(root: Path, violations: list[str]) -> None:

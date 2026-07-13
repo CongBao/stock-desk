@@ -41,6 +41,10 @@ it('uses only closed payload-free desktop commands', async () => {
   await adapter.cancelExit();
   await adapter.confirmExit();
   await adapter.openDiagnostics();
+  await adapter.getUpdateState();
+  await adapter.checkForUpdates();
+  await adapter.dismissUpdate();
+  await adapter.confirmUpdate();
 
   expect(vi.mocked(invoke).mock.calls).toEqual([
     ['desktop_runtime_state'],
@@ -49,6 +53,10 @@ it('uses only closed payload-free desktop commands', async () => {
     ['desktop_cancel_exit'],
     ['desktop_confirm_exit'],
     ['desktop_open_diagnostics'],
+    ['desktop_update_state'],
+    ['desktop_check_for_updates'],
+    ['desktop_dismiss_update'],
+    ['desktop_confirm_update'],
   ]);
 });
 
@@ -177,6 +185,34 @@ it('subscribes only to the closed runtime-state event payload', async () => {
   });
 
   expect(listener).toHaveBeenCalledWith({ state: 'ready' });
+  unsubscribe();
+  expect(unlisten).toHaveBeenCalledOnce();
+});
+
+it('subscribes only to the closed update-state event payload', async () => {
+  vi.mocked(isTauri).mockReturnValue(true);
+  const unlisten = vi.fn();
+  let emit: EventCallback<unknown> | undefined;
+  vi.mocked(listen).mockImplementation((event, handler) => {
+    expect(event).toBe('desktop-update-state');
+    emit = handler;
+    return Promise.resolve(unlisten);
+  });
+  const adapter = createTauriAdapter();
+  if (adapter === undefined) throw new Error('adapter was not created');
+  const listener = vi.fn();
+
+  const unsubscribe = await adapter.subscribeUpdate(listener);
+  emit?.({
+    event: 'desktop-update-state',
+    id: 1,
+    payload: { state: 'disabled', current_version: '1.1.0' },
+  });
+
+  expect(listener).toHaveBeenCalledWith({
+    state: 'disabled',
+    current_version: '1.1.0',
+  });
   unsubscribe();
   expect(unlisten).toHaveBeenCalledOnce();
 });

@@ -15,8 +15,12 @@ import {
 
 const commands = {
   cancelExit: 'desktop_cancel_exit',
+  checkForUpdates: 'desktop_check_for_updates',
   confirmExit: 'desktop_confirm_exit',
+  confirmUpdate: 'desktop_confirm_update',
+  dismissUpdate: 'desktop_dismiss_update',
   getRuntimeState: 'desktop_runtime_state',
+  getUpdateState: 'desktop_update_state',
   openDiagnostics: 'desktop_open_diagnostics',
   requestExit: 'desktop_request_exit',
   restartService: 'desktop_restart_service',
@@ -24,6 +28,7 @@ const commands = {
 
 const runtimeStateEvent = 'desktop-runtime-state';
 const exitStateEvent = 'desktop-exit-state';
+const updateStateEvent = 'desktop-update-state';
 export const MAX_DESKTOP_API_RESPONSE_BYTES = 192 * 1_048_576;
 
 type DesktopApiResponse = {
@@ -131,6 +136,10 @@ export function createTauriAdapter(): DesktopAdapter | undefined {
   ).showSaveFilePicker;
   return {
     getRuntimeState: () => invoke<unknown>(commands.getRuntimeState),
+    getUpdateState: () => invoke<unknown>(commands.getUpdateState),
+    checkForUpdates: () => invoke<unknown>(commands.checkForUpdates),
+    dismissUpdate: () => invoke<void>(commands.dismissUpdate),
+    confirmUpdate: () => invoke<void>(commands.confirmUpdate),
     restartService: () => invoke<void>(commands.restartService),
     requestExit: () => invoke<void>(commands.requestExit),
     cancelExit: () => invoke<void>(commands.cancelExit),
@@ -150,5 +159,7 @@ export function createTauriAdapter(): DesktopAdapter | undefined {
       listen<unknown>(runtimeStateEvent, (event) => listener(event.payload)),
     subscribeExit: (listener) =>
       listen<unknown>(exitStateEvent, (event) => listener(event.payload)),
+    subscribeUpdate: (listener) =>
+      listen<unknown>(updateStateEvent, (event) => listener(event.payload)),
   };
 }

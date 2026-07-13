@@ -296,6 +296,50 @@ def verify_payloads(manifest: Mapping[str, Any], root: Path) -> None:
             raise ManifestError(f"payload SHA-256 mismatch: {relative}")
 
 
+def verify_artifact_root_closure(
+    manifest: Mapping[str, Any], *, root: Path, artifact_name: str
+) -> None:
+    """Reject files not bound by the manifest or its exact local bindings."""
+    normalized = validate_manifest(dict(manifest))
+    manifest_name = _relative_path(
+        f"{artifact_name}.json", field="artifact manifest path"
+    )
+    expected = {
+        *(str(payload["path"]) for payload in normalized["payloads"]),
+        manifest_name,
+        "manifest-binding.json",
+    }
+    root_path = root.resolve(strict=True)
+    if root.is_symlink() or not root_path.is_dir():
+        raise ManifestError("artifact root must be a regular directory")
+    actual: set[str] = set()
+    for path in root.rglob("*"):
+        if path.is_symlink():
+            raise ManifestError("artifact root contains a symlink")
+        if path.is_file():
+            actual.add(path.relative_to(root).as_posix())
+    extras = sorted(actual - expected)
+    missing = sorted(expected - actual)
+    if extras or missing:
+        raise ManifestError(
+            f"artifact root is not manifest-closed; extra={extras}, missing={missing}"
+        )
+    if read_manifest(root / manifest_name) != normalized:
+        raise ManifestError("artifact manifest file differs from the proved manifest")
+    try:
+        binding = json.loads(
+            (root / "manifest-binding.json").read_text(encoding="utf-8")
+        )
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ManifestError(
+            f"cannot read artifact manifest binding: {error}"
+        ) from error
+    if binding != create_attestation_binding(normalized):
+        raise ManifestError(
+            "artifact manifest binding differs from the proved manifest"
+        )
+
+
 def verify_for_consumption(
     manifest: Mapping[str, Any],
     *,

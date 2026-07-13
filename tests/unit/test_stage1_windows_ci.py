@@ -88,6 +88,9 @@ def test_builders_use_exact_source_frozen_inputs_and_preserve_acl_contracts() ->
         ROOT / "tests" / "integration" / "test_windows_runtime_acl.py"
     ).read_text(encoding="utf-8")
     assert "tests/unit/storage/test_backup.py -k restore_journal" in a_commands
+    assert (
+        "tests/unit/test_trusted_updater_release.py -k windows_production" in a_commands
+    )
     assert "make e2e" not in both
     assert "tests/unit tests/integration" not in both
     assert "git rev-parse HEAD" in both and "$env:SOURCE_SHA" in both
@@ -190,11 +193,14 @@ def test_comparison_promotes_only_a_and_main_proof_attests_both_identities() -> 
         "scripts/verify_windows_desktop_bundle.py",
         "scripts/compare_windows_payloads.py",
         "scripts/verify_zero_telemetry.py",
+        "scripts/trusted_updater_release.py",
+        "schemas/trusted-updater-release-v1.schema.json",
         "config/desktop-network-privacy.json",
         "src-tauri/tauri.conf.json",
         "src-tauri/tauri.windows.conf.json",
         "src-tauri/Cargo.toml",
         "src-tauri/src/main.rs",
+        "src-tauri/src/updater.rs",
         "src-tauri/src/uninstall.rs",
         "packaging/nsis/installer.nsi",
         "packaging/nsis/installer-hooks.nsh",
@@ -232,6 +238,8 @@ def test_comparison_promotes_only_a_and_main_proof_attests_both_identities() -> 
         "scripts/verify_windows_desktop_bundle.py",
         "scripts/compare_windows_payloads.py",
         "scripts/verify_zero_telemetry.py",
+        "scripts/trusted_updater_release.py",
+        "schemas/trusted-updater-release-v1.schema.json",
         "config/desktop-network-privacy.json",
         "packaging/nsis/installer.nsi",
         "packaging/nsis/installer-hooks.nsh",
@@ -244,6 +252,7 @@ def test_comparison_promotes_only_a_and_main_proof_attests_both_identities() -> 
         "src-tauri/Cargo.lock",
         "src-tauri/Cargo.toml",
         "src-tauri/src/main.rs",
+        "src-tauri/src/updater.rs",
         "src-tauri/src/uninstall.rs",
         "src-tauri/tauri.windows.conf.json",
     } <= set(main_validation_proof.CRITICAL_INPUTS)

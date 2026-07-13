@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/CongBao/stock-desk/schemas/trusted-updater-release-v1.schema.json",
+  "title": "Stock Desk trusted updater release metadata v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "channel",
+    "version",
+    "target",
+    "arch",
+    "source_sha",
+    "url",
+    "sha256",
+    "signature"
+  ],
+  "properties": {
+    "schema_version": { "const": "stock-desk-trusted-updater-v1" },
+    "channel": { "const": "stable" },
+    "version": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+    },
+    "target": { "const": "windows-x86_64-nsis" },
+    "arch": { "const": "x86_64" },
+    "source_sha": { "$ref": "#/$defs/source_sha" },
+    "url": { "type": "string", "format": "uri", "maxLength": 512 },
+    "sha256": { "$ref": "#/$defs/sha256" },
+    "signature": { "type": "string", "minLength": 16, "maxLength": 16384 }
+  },
+  "$defs": {
+    "source_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  }
+}

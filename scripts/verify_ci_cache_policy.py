@@ -13,28 +13,48 @@ import yaml  # type: ignore[import-untyped]
 
 POLICY_SCHEMA_VERSION = 1
 ALLOWED_CONTENT_CLASSES = frozenset(
-    {"dependency-downloads", "browser-binaries", "compiled-intermediates"}
+    {
+        "dependency-downloads",
+        "browser-binaries",
+        "compiled-intermediates",
+        "audit-tool",
+        "vulnerability-database",
+    }
 )
 _ECOSYSTEM_CONTENT = {
     "uv": frozenset({"dependency-downloads"}),
     "pnpm": frozenset({"dependency-downloads"}),
     "playwright": frozenset({"browser-binaries"}),
-    "cargo": frozenset({"dependency-downloads", "compiled-intermediates"}),
-}
-_ALLOWED_PATH_MARKERS = {
-    "uv": (".cache/uv",),
-    "pnpm": (".pnpm-store", ".local/share/pnpm/store", "pnpm/store"),
-    "playwright": (".cache/ms-playwright",),
-    "cargo": (
-        ".cargo/registry",
-        ".cargo/git",
-        "target/debug/build",
-        "target/debug/deps",
-        "target/debug/incremental",
-        "target/release/build",
-        "target/release/deps",
-        "target/release/incremental",
+    "cargo": frozenset(
+        {
+            "dependency-downloads",
+            "compiled-intermediates",
+            "audit-tool",
+            "vulnerability-database",
+        }
     ),
+}
+_PATH_CONTENT_CLASSES = {
+    "uv": {"~/.cache/uv": frozenset({"dependency-downloads"})},
+    "pnpm": {
+        "~/.pnpm-store": frozenset({"dependency-downloads"}),
+        "~/.local/share/pnpm/store": frozenset({"dependency-downloads"}),
+    },
+    "playwright": {
+        "~/.cache/ms-playwright": frozenset({"browser-binaries"}),
+    },
+    "cargo": {
+        "~/.cargo/registry": frozenset({"dependency-downloads"}),
+        "~/.cargo/git": frozenset({"dependency-downloads"}),
+        "~/.cargo/bin/cargo-audit": frozenset({"audit-tool"}),
+        "~/.cargo/advisory-db": frozenset({"vulnerability-database"}),
+        "target/debug/build": frozenset({"compiled-intermediates"}),
+        "target/debug/deps": frozenset({"compiled-intermediates"}),
+        "target/debug/incremental": frozenset({"compiled-intermediates"}),
+        "target/release/build": frozenset({"compiled-intermediates"}),
+        "target/release/deps": frozenset({"compiled-intermediates"}),
+        "target/release/incremental": frozenset({"compiled-intermediates"}),
+    },
 }
 _PROHIBITED_PATH_PATTERNS = tuple(
     re.compile(pattern, re.IGNORECASE)
@@ -66,9 +86,12 @@ def _cache_path(raw: object, *, entry: str) -> str:
     if not isinstance(raw, str) or not raw.strip() or "\\" in raw or "\x00" in raw:
         raise CachePolicyError(f"{entry}: cache paths must be non-empty POSIX paths")
     value = raw.strip()
-    pure = PurePosixPath(value.replace("~/", "home/", 1))
+    normalized_for_check = value.replace("~/", "home/", 1)
+    pure = PurePosixPath(normalized_for_check)
     if ".." in pure.parts:
         raise CachePolicyError(f"{entry}: cache paths cannot contain '..'")
+    if "." in pure.parts or pure.as_posix() != normalized_for_check:
+        raise CachePolicyError(f"{entry}: cache paths must be normalized")
     for pattern in _PROHIBITED_PATH_PATTERNS:
         if pattern.search(value):
             raise CachePolicyError(f"{entry}: prohibited cache content path: {value}")
@@ -114,12 +137,13 @@ def validate_cache_policy(raw: object) -> dict[str, Any]:
         if not isinstance(paths, list) or not paths:
             raise CachePolicyError(f"{name}: paths must be a non-empty array")
         normalized_paths = [_cache_path(path, entry=name) for path in paths]
-        allowed_markers = _ALLOWED_PATH_MARKERS[ecosystem]
         for path in normalized_paths:
-            if not any(marker in path for marker in allowed_markers):
+            if path not in _PATH_CONTENT_CLASSES[ecosystem]:
                 raise CachePolicyError(
                     f"{name}: path is not an allowed {ecosystem} intermediate: {path}"
                 )
+        if len(set(normalized_paths)) != len(normalized_paths):
+            raise CachePolicyError(f"{name}: cache paths must be unique")
 
         content_classes = raw_entry["content_classes"]
         if not isinstance(content_classes, list) or not content_classes:
@@ -133,6 +157,13 @@ def validate_cache_policy(raw: object) -> dict[str, Any]:
         if not class_set <= _ECOSYSTEM_CONTENT[ecosystem]:
             raise CachePolicyError(
                 f"{name}: content classes are not valid for {ecosystem}"
+            )
+        expected_classes = frozenset().union(
+            *(_PATH_CONTENT_CLASSES[ecosystem][path] for path in normalized_paths)
+        )
+        if class_set != expected_classes:
+            raise CachePolicyError(
+                f"{name}: content classes do not exactly match cache paths"
             )
 
         key = raw_entry["key"]
@@ -186,8 +217,8 @@ def validate_cache_policy(raw: object) -> dict[str, Any]:
 def _infer_ecosystem(paths: list[str]) -> str:
     matches = {
         ecosystem
-        for ecosystem, markers in _ALLOWED_PATH_MARKERS.items()
-        if any(any(marker in path for marker in markers) for path in paths)
+        for ecosystem, allowed_paths in _PATH_CONTENT_CLASSES.items()
+        if any(path in allowed_paths for path in paths)
     }
     if len(matches) != 1:
         raise CachePolicyError(
@@ -232,11 +263,9 @@ def _workflow_cache_entry(
         raise CachePolicyError(
             f"{location}: cache key must bind an exact lockfile hashFiles expression"
         )
-    content_classes = (
-        ["browser-binaries"] if ecosystem == "playwright" else ["dependency-downloads"]
+    content_classes = sorted(
+        frozenset().union(*(_PATH_CONTENT_CLASSES[ecosystem][path] for path in paths))
     )
-    if ecosystem == "cargo" and any("target/" in path for path in paths):
-        content_classes.append("compiled-intermediates")
     return {
         "name": location,
         "ecosystem": ecosystem,
