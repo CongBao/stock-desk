@@ -43,7 +43,7 @@ def _manifest() -> dict[str, object]:
         "schema_version": 1,
         "artifact": "windows-desktop-bundle",
         "release": {
-            "version": "1.1.0-alpha.2",
+            "version": "1.1.0-beta.2",
             "channel": "prerelease",
             "signature": "unsigned",
         },

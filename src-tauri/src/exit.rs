@@ -7,8 +7,12 @@ use crate::app::{DesktopRuntime, ReadySession};
 
 const EXIT_EVENT: &str = "desktop-exit-state";
 const SHUTDOWN_PATH: &str = "/api/desktop/shutdown";
+const SHUTDOWN_COMMIT_PATH: &str = "/api/desktop/shutdown/commit";
 const SHUTDOWN_RESPONSE_LIMIT: usize = 4 * 1024;
-const SIDECAR_EXIT_TIMEOUT: Duration = Duration::from_secs(10);
+// The sidecar owns an internal 10-second worker drain deadline. The host must
+// remain authoritative beyond that boundary so a late clean Terminated event
+// cannot race a host timeout and leave the desktop permanently open.
+const SIDECAR_EXIT_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
@@ -31,6 +35,7 @@ enum ExitEffect {
     None,
     Emit,
     Recover(u64),
+    ForceExit(u64),
     Exit,
 }
 
@@ -85,6 +90,17 @@ impl ExitMachine {
         ExitEffect::Emit
     }
 
+    fn confirm_without_ready_session(&mut self) -> ExitEffect {
+        if self.state != DesktopExitState::Confirm {
+            return ExitEffect::None;
+        }
+        self.state = DesktopExitState::ShuttingDown;
+        self.generation = None;
+        self.terminated_before_reply = None;
+        self.committed = true;
+        ExitEffect::Exit
+    }
+
     fn shutdown_reply(&mut self, generation: u64, reply: ShutdownReply) -> ExitEffect {
         if self.generation != Some(generation) || self.state != DesktopExitState::Checking {
             return ExitEffect::None;
@@ -102,15 +118,10 @@ impl ExitMachine {
                 ExitEffect::Emit
             }
             ShutdownReply::Accepted => match self.terminated_before_reply.take() {
-                Some(Some(0)) => {
+                Some(_) => {
                     self.committed = true;
                     self.state = DesktopExitState::ShuttingDown;
                     ExitEffect::Exit
-                }
-                Some(_) => {
-                    let failed_generation = self.generation.expect("checked generation");
-                    self.reset();
-                    ExitEffect::Recover(failed_generation)
                 }
                 None => {
                     self.state = DesktopExitState::ShuttingDown;
@@ -121,17 +132,20 @@ impl ExitMachine {
     }
 
     fn shutdown_failed(&mut self, generation: u64) -> ExitEffect {
-        if self.generation != Some(generation)
-            || !matches!(
-                self.state,
-                DesktopExitState::Checking | DesktopExitState::ShuttingDown
-            )
-        {
+        if self.generation != Some(generation) || self.state != DesktopExitState::Checking {
             return ExitEffect::None;
         }
         let failed_generation = self.generation.expect("checked generation");
         self.reset();
         ExitEffect::Recover(failed_generation)
+    }
+
+    fn shutdown_timed_out(&mut self, generation: u64) -> ExitEffect {
+        if self.generation != Some(generation) || self.state != DesktopExitState::ShuttingDown {
+            return ExitEffect::None;
+        }
+        self.committed = true;
+        ExitEffect::ForceExit(generation)
     }
 
     fn terminated(&mut self, generation: u64, code: Option<i32>) -> ExitEffect {
@@ -143,14 +157,9 @@ impl ExitMachine {
                 self.terminated_before_reply = Some(code);
                 ExitEffect::None
             }
-            DesktopExitState::ShuttingDown if code == Some(0) => {
+            DesktopExitState::ShuttingDown => {
                 self.committed = true;
                 ExitEffect::Exit
-            }
-            DesktopExitState::ShuttingDown => {
-                let failed_generation = self.generation.expect("checked generation");
-                self.reset();
-                ExitEffect::Recover(failed_generation)
             }
             _ => ExitEffect::None,
         }
@@ -220,6 +229,12 @@ impl DesktopExitController {
                     );
                 }
             }
+            ExitEffect::ForceExit(generation) => {
+                if let Some(runtime) = app.try_state::<DesktopRuntime>() {
+                    runtime.terminate_generation_for_exit(generation);
+                }
+                app.exit(0);
+            }
             ExitEffect::Exit => app.exit(0),
         }
     }
@@ -242,12 +257,32 @@ impl DesktopExitController {
         changed
     }
 
+    fn confirm_without_ready_session(&self, app: &AppHandle) -> bool {
+        let mut committed = false;
+        self.apply(app, |machine| {
+            let effect = machine.confirm_without_ready_session();
+            committed = effect == ExitEffect::Exit;
+            if committed {
+                // The caller must first release the failed managed sidecar
+                // resources; it performs the actual app exit afterwards.
+                ExitEffect::Emit
+            } else {
+                effect
+            }
+        });
+        committed
+    }
+
     fn receive_reply(&self, app: &AppHandle, generation: u64, reply: ShutdownReply) {
         self.apply(app, |machine| machine.shutdown_reply(generation, reply));
     }
 
     fn fail(&self, app: &AppHandle, generation: u64) {
         self.apply(app, |machine| machine.shutdown_failed(generation));
+    }
+
+    fn timeout(&self, app: &AppHandle, generation: u64) {
+        self.apply(app, |machine| machine.shutdown_timed_out(generation));
     }
 
     pub(crate) fn sidecar_terminated(
@@ -300,10 +335,17 @@ pub async fn desktop_confirm_exit(app: AppHandle) -> Result<(), String> {
     let runtime = app
         .try_state::<DesktopRuntime>()
         .ok_or_else(|| "desktop_runtime_not_ready".to_owned())?;
-    let session = runtime.ready_session().map_err(str::to_owned)?;
     let controller = app
         .try_state::<DesktopExitController>()
         .ok_or_else(|| "desktop_exit_unavailable".to_owned())?;
+    if !runtime.is_ready() {
+        if controller.confirm_without_ready_session(&app) {
+            runtime.terminate_non_ready_for_exit();
+            app.exit(0);
+        }
+        return Ok(());
+    }
+    let session = runtime.ready_session().map_err(str::to_owned)?;
     if !controller.begin_confirm(&app, session.generation) {
         return Ok(());
     }
@@ -324,11 +366,27 @@ pub async fn desktop_confirm_exit(app: AppHandle) -> Result<(), String> {
         tauri::async_runtime::spawn(async move {
             tokio::time::sleep(SIDECAR_EXIT_TIMEOUT).await;
             if let Some(controller) = timeout_app.try_state::<DesktopExitController>() {
-                controller.fail(&timeout_app, generation);
+                controller.timeout(&timeout_app, generation);
             }
         });
+        commit_shutdown(&session).await;
     }
     Ok(())
+}
+
+async fn commit_shutdown(session: &ReadySession) {
+    let Ok(url) = session.authority.api_url(SHUTDOWN_COMMIT_PATH) else {
+        return;
+    };
+    let _ = session
+        .client
+        .post(url)
+        .header("Origin", session.authority.origin())
+        .header("Authorization", session.authority.authorization_header())
+        .header("Accept", "application/json")
+        .timeout(Duration::from_secs(2))
+        .send()
+        .await;
 }
 
 async fn request_shutdown(session: &ReadySession) -> Result<ShutdownReply, ()> {
@@ -443,6 +501,16 @@ mod tests {
     }
 
     #[test]
+    fn non_ready_exit_requires_confirmation_before_it_can_commit() {
+        let mut machine = ExitMachine::default();
+        assert_eq!(machine.confirm_without_ready_session(), ExitEffect::None);
+        assert_eq!(machine.request(), ExitEffect::Emit);
+        assert_eq!(machine.confirm_without_ready_session(), ExitEffect::Exit);
+        assert!(machine.committed);
+        assert_eq!(machine.state, DesktopExitState::ShuttingDown);
+    }
+
+    #[test]
     fn service_restart_is_allowed_only_without_an_exit_attempt() {
         let controller = DesktopExitController::default();
         assert!(controller.allows_service_restart());
@@ -490,7 +558,7 @@ mod tests {
     }
 
     #[test]
-    fn clean_termination_is_required_after_accepted_shutdown() {
+    fn accepted_shutdown_commits_when_the_sidecar_terminates() {
         let mut machine = ExitMachine::default();
         machine.request();
         machine.confirm(9);
@@ -537,21 +605,37 @@ mod tests {
     }
 
     #[test]
-    fn nonzero_unknown_and_timeout_fail_back_to_idle() {
+    fn accepted_shutdown_still_exits_after_nonzero_or_unknown_termination() {
         for code in [Some(1), None] {
             let mut machine = ExitMachine::default();
             machine.request();
             machine.confirm(13);
             machine.shutdown_reply(13, ShutdownReply::Accepted);
-            assert_eq!(machine.terminated(13, code), ExitEffect::Recover(13));
-            assert_eq!(machine.state, DesktopExitState::Idle);
-            assert!(!machine.committed);
+            assert_eq!(machine.terminated(13, code), ExitEffect::Exit);
+            assert_eq!(machine.state, DesktopExitState::ShuttingDown);
+            assert!(machine.committed);
         }
+    }
+
+    #[test]
+    fn accepted_shutdown_timeout_forces_contained_generation_exit() {
         let mut machine = ExitMachine::default();
         machine.request();
         machine.confirm(14);
-        assert_eq!(machine.shutdown_failed(14), ExitEffect::Recover(14));
+        machine.shutdown_reply(14, ShutdownReply::Accepted);
+        assert_eq!(machine.shutdown_timed_out(14), ExitEffect::ForceExit(14));
+        assert_eq!(machine.state, DesktopExitState::ShuttingDown);
+        assert!(machine.committed);
+    }
+
+    #[test]
+    fn failed_shutdown_request_recovers_without_forcing_exit() {
+        let mut machine = ExitMachine::default();
+        machine.request();
+        machine.confirm(15);
+        assert_eq!(machine.shutdown_failed(15), ExitEffect::Recover(15));
         assert_eq!(machine.state, DesktopExitState::Idle);
+        assert!(!machine.committed);
     }
 
     #[test]

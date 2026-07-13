@@ -11,6 +11,7 @@ function createAdapter(
   return {
     cancelExit: vi.fn(() => Promise.resolve()),
     confirmExit: vi.fn(() => Promise.resolve()),
+    exportDiagnostics: vi.fn(() => Promise.resolve('saved' as const)),
     getRuntimeState: vi.fn(() => Promise.resolve({ state: 'ready' })),
     openDiagnostics: vi.fn(() => Promise.resolve()),
     requestExit: vi.fn(() => Promise.resolve()),
@@ -32,6 +33,7 @@ it('uses a synchronous ready and no-op fallback outside Tauri', () => {
   expect(bridge.cancelExit()).toBeUndefined();
   expect(bridge.confirmExit()).toBeUndefined();
   expect(bridge.openDiagnostics()).toBeUndefined();
+  expect(bridge.exportDiagnostics()).toBeUndefined();
 
   const unsubscribe = bridge.subscribe(listener);
   const unsubscribeExit = bridge.subscribeExit(listener);
@@ -51,6 +53,14 @@ it.each<readonly [unknown, DesktopRuntimeState]>([
   [
     { state: 'recovery', reason: 'startup_timeout', can_restart: false },
     { state: 'recovery', reason: 'startup_timeout', canRestart: false },
+  ],
+  [
+    { state: 'recovery', reason: 'restart_limit_reached', can_restart: false },
+    {
+      state: 'recovery',
+      reason: 'restart_limit_reached',
+      canRestart: false,
+    },
   ],
 ])(
   'strictly decodes a supported desktop runtime state',
@@ -96,12 +106,14 @@ it('delegates desktop commands without accepting command payloads', async () => 
   await expect(bridge.cancelExit()).resolves.toBeUndefined();
   await expect(bridge.confirmExit()).resolves.toBeUndefined();
   await expect(bridge.openDiagnostics()).resolves.toBeUndefined();
+  await expect(bridge.exportDiagnostics()).resolves.toBe('saved');
 
   expect(adapter.restartService).toHaveBeenCalledWith();
   expect(adapter.requestExit).toHaveBeenCalledWith();
   expect(adapter.cancelExit).toHaveBeenCalledWith();
   expect(adapter.confirmExit).toHaveBeenCalledWith();
   expect(adapter.openDiagnostics).toHaveBeenCalledWith();
+  expect(adapter.exportDiagnostics).toHaveBeenCalledWith();
 });
 
 it('decodes subscribed events before exposing them and rejects unsafe events', async () => {
@@ -141,6 +153,7 @@ it('does not read from or write to browser persistence', async () => {
   await bridge.cancelExit();
   await bridge.confirmExit();
   await bridge.openDiagnostics();
+  await bridge.exportDiagnostics();
   await bridge.subscribe(() => undefined);
   await bridge.subscribeExit(() => undefined);
 

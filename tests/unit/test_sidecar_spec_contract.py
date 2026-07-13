@@ -70,6 +70,7 @@ def test_sidecar_module_filter_keeps_runtime_and_provider_modules() -> None:
     include = _module_filter(_spec_tree())
 
     assert include("stock_desk.desktop_session")
+    assert include("stock_desk.desktop_runtime")
     assert include("stock_desk.market.providers.akshare")
     assert include("stock_desk.analysis.providers.deepseek")
 
@@ -116,3 +117,29 @@ def test_sidecar_packages_only_sorted_migration_sources_not_ignored_caches() -> 
     assert 'rglob("*.py")' in source
     assert 'str(ROOT / "migrations"), "stock_desk/migrations"' not in source
     assert "sorted(" in source
+
+
+def test_frozen_sidecar_runtime_path_never_imports_excluded_modules() -> None:
+    sidecar = (ROOT / "src" / "stock_desk" / "sidecar.py").read_text(encoding="utf-8")
+    main = (ROOT / "src" / "stock_desk" / "main.py").read_text(encoding="utf-8")
+    lake = (ROOT / "src" / "stock_desk" / "market" / "lake.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "from stock_desk.desktop_runtime import RuntimePaths" in sidecar
+    assert "from stock_desk.desktop import RuntimePaths" not in sidecar
+    assert "from stock_desk.desktop_runtime import _restrict_owner_access" in lake
+    assert "from stock_desk.desktop import _restrict_owner_access" not in lake
+    assert main.index("if resolved_settings.web_dist_dir is not None:") < main.index(
+        "from stock_desk.web import install_web_routes"
+    )
+    assert 'app = None if "STOCK_DESK_DESKTOP_PORT" in os.environ' in main
+
+
+def test_frozen_multiprocessing_dispatch_precedes_the_host_bootstrap_gate() -> None:
+    source = (ROOT / "src" / "stock_desk" / "sidecar.py").read_text(encoding="utf-8")
+
+    main_start = source.index("def main() -> int:")
+    freeze_support = source.index("multiprocessing.freeze_support()", main_start)
+    bootstrap_gate = source.index("await_bootstrap_gate(sys.stdin.buffer)", main_start)
+    assert freeze_support < bootstrap_gate

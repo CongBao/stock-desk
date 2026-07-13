@@ -80,29 +80,60 @@ class DesktopLifecycleController:
     """Thread-safe cooperative stop authority shared by API, worker and server."""
 
     def __init__(self) -> None:
+        self._claim_stop_event = Event()
         self._stop_event = Event()
         self._lock = Lock()
         self._server: _CooperativeServer | None = None
+        self._shutdown_prepared = False
+        self._server_exit_requested = False
 
     @property
     def stop_event(self) -> Event:
         return self._stop_event
 
     @property
+    def claim_stop_event(self) -> Event:
+        return self._claim_stop_event
+
+    @property
     def shutdown_requested(self) -> bool:
         return self._stop_event.is_set()
+
+    @property
+    def shutdown_prepared(self) -> bool:
+        with self._lock:
+            return self._shutdown_prepared
+
+    def prepare_shutdown(self) -> None:
+        with self._lock:
+            self._shutdown_prepared = True
+            self._claim_stop_event.set()
 
     def bind_server(self, server: _CooperativeServer) -> None:
         with self._lock:
             self._server = server
-            if self._stop_event.is_set():
+            if self._server_exit_requested:
                 server.should_exit = True
 
-    def request_shutdown(self) -> None:
+    def begin_shutdown(self) -> None:
         with self._lock:
+            self._shutdown_prepared = True
+            self._claim_stop_event.set()
             self._stop_event.set()
+
+    def complete_shutdown(self) -> None:
+        with self._lock:
+            if not self._shutdown_prepared:
+                return
+            self._claim_stop_event.set()
+            self._stop_event.set()
+            self._server_exit_requested = True
             if self._server is not None:
                 self._server.should_exit = True
+
+    def request_shutdown(self) -> None:
+        self.begin_shutdown()
+        self.complete_shutdown()
 
 
 CallNext = Callable[[Request], Awaitable[Response]]

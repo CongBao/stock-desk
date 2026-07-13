@@ -225,12 +225,43 @@ it('shows the product identity and all primary navigation items', () => {
   }
 });
 
+it('offers a keyboard-accessible local diagnostic export with visible status', async () => {
+  const user = userEvent.setup();
+  const exportDiagnostics = vi.fn(() => Promise.resolve('saved' as const));
+  const adapter: DesktopAdapter = {
+    cancelExit: vi.fn(() => Promise.resolve()),
+    confirmExit: vi.fn(() => Promise.resolve()),
+    exportDiagnostics,
+    getRuntimeState: vi.fn(() => Promise.resolve({ state: 'ready' })),
+    openDiagnostics: vi.fn(() => Promise.resolve()),
+    requestExit: vi.fn(() => Promise.resolve()),
+    restartService: vi.fn(() => Promise.resolve()),
+    subscribe: vi.fn(() => Promise.resolve(() => undefined)),
+    subscribeExit: vi.fn(() => Promise.resolve(() => undefined)),
+  };
+  renderApp(['/market'], false, createDesktopBridge(adapter));
+
+  await user.click(
+    await screen.findByRole('button', { name: '关于 stock-desk' }),
+  );
+  const exportButton = screen.getByRole('button', { name: '导出诊断包' });
+  exportButton.focus();
+  await user.keyboard('{Enter}');
+
+  expect(exportDiagnostics).toHaveBeenCalledOnce();
+  expect(
+    await screen.findByText('诊断包已保存到本机，未上传。'),
+  ).toHaveAttribute('role', 'status');
+  expect(screen.getByText(/仅保存到你选择的本机位置/u)).toBeVisible();
+});
+
 it('does not mount the workspace or request business APIs while desktop startup is pending', async () => {
   const fetchMock = vi.fn();
   vi.stubGlobal('fetch', fetchMock);
   const adapter: DesktopAdapter = {
     cancelExit: vi.fn(() => Promise.resolve()),
     confirmExit: vi.fn(() => Promise.resolve()),
+    exportDiagnostics: vi.fn(() => Promise.resolve('saved' as const)),
     getRuntimeState: vi.fn(() => Promise.resolve({ state: 'starting' })),
     openDiagnostics: vi.fn(() => Promise.resolve()),
     requestExit: vi.fn(() => Promise.resolve()),

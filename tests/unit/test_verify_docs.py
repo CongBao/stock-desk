@@ -2420,9 +2420,7 @@ REPOSITORY_DOCUMENTS = {
 ## 下载安装
 
 从 https://github.com/CongBao/stock-desk/releases/latest 选择无需源码的
-`stock-desk-<version>-windows-x86_64.exe`、
-`stock-desk-<version>-macos-x86_64.dmg` 或
-`stock-desk-<version>-macos-arm64.dmg` 安装包。
+`stock-desk-1.1.0-beta.2-unsigned-x64-setup.exe` Windows 安装包。
 
 ## 使用文档
 
@@ -2448,9 +2446,7 @@ Use the task center, market charts, Formula Studio, backtesting, and research.
 
 Choose a source-free installer from
 https://github.com/CongBao/stock-desk/releases/latest:
-`stock-desk-<version>-windows-x86_64.exe`,
-`stock-desk-<version>-macos-x86_64.dmg`, or
-`stock-desk-<version>-macos-arm64.dmg`.
+`stock-desk-1.1.0-beta.2-unsigned-x64-setup.exe` for Windows.
 
 ## Documentation
 
@@ -4247,14 +4243,14 @@ def test_repository_contract_requires_source_free_installers_before_source_setup
     readme = tmp_path / "README.md"
     readme.write_text(
         readme.read_text(encoding="utf-8").replace(
-            "stock-desk-<version>-macos-arm64.dmg", "macOS installer"
+            "stock-desk-1.1.0-beta.2-unsigned-x64-setup.exe", "Windows installer"
         ),
         encoding="utf-8",
     )
 
     failures = verify_repository(tmp_path)
 
-    assert any("source-free installer" in failure for failure in failures)
+    assert any("source-free Windows installer" in failure for failure in failures)
 
 
 def test_repository_contract_requires_native_topology_and_attestation_guidance(

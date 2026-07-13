@@ -95,6 +95,39 @@ def test_production_worker_polls_tasks_quickly_without_locking_schedules_each_ti
     assert schedule_ticks[1] >= 1.0
 
 
+def test_prepared_shutdown_keeps_heartbeat_alive_without_claiming_new_tasks() -> None:
+    class Heartbeat:
+        def raise_if_failed(self) -> None:
+            return None
+
+    runtime = object.__new__(ProductionMarketWorker)
+    runtime.scheduler = type(
+        "Scheduler",
+        (),
+        {"tick": lambda _self: pytest.fail("prepared shutdown must not schedule")},
+    )()
+    runtime.worker = type(
+        "Worker",
+        (),
+        {
+            "run_once": lambda _self, *, stop_event=None: pytest.fail(
+                "prepared shutdown must not claim"
+            ),
+            "heartbeat_lifecycle": lambda _self, _stop: nullcontext(Heartbeat()),
+        },
+    )()
+    clock = _FakeMonotonic()
+    stop = _RepeatedIdleWait(clock, limit=3)
+    claims_stopped = type("ClaimsStopped", (), {"is_set": lambda _self: True})()
+
+    runtime.run_forever(  # type: ignore[arg-type]
+        stop,
+        claim_stop_event=claims_stopped,
+    )
+
+    assert stop.waits == [0.1] * 3
+
+
 class _Provider:
     def __init__(self, name: ProviderId, closed: list[ProviderId]) -> None:
         self.name = name

@@ -725,25 +725,27 @@ def test_rejects_unreleased_malformed_or_duplicate_release_dates(
         check_changelog(release_repo, "0.1.0")
 
 
-def test_alpha_tag_uses_unreleased_entry_and_unsigned_release_note(
-    release_repo: Path,
+@pytest.mark.parametrize("channel", ["alpha", "beta"])
+def test_prerelease_tag_uses_unreleased_entry_and_unsigned_release_note(
+    release_repo: Path, channel: str
 ) -> None:
+    tag_name = f"v0.1.0-{channel}.1"
     changelog = release_repo / "CHANGELOG.md"
     changelog.write_text(
-        "# Changelog\n\n## [Unreleased]\n\n- `v0.1.0-alpha.1` delivery preview.\n",
+        f"# Changelog\n\n## [Unreleased]\n\n- `{tag_name}` delivery preview.\n",
         encoding="utf-8",
     )
-    release_note = release_repo / "docs" / "releases" / "v0.1.0-alpha.1.md"
+    release_note = release_repo / "docs" / "releases" / f"{tag_name}.md"
     release_note.parent.mkdir(parents=True, exist_ok=True)
     release_note.write_text(
-        "# Stock Desk v0.1.0-alpha.1\n\nUnsigned prerelease.\n",
+        f"# Stock Desk {tag_name}\n\nUnsigned prerelease.\n",
         encoding="utf-8",
     )
 
     check_changelog(
         release_repo,
         "0.1.0",
-        tag_name="v0.1.0-alpha.1",
+        tag_name=tag_name,
     )
     with pytest.raises(ReleaseVerificationError, match="release changelog entry"):
         check_changelog(release_repo, "0.1.0")
@@ -1359,23 +1361,25 @@ def test_exact_sha_proof_replaces_compatible_source_test_reruns(
     assert runner.calls == []
 
 
-def test_proved_alpha_release_accepts_only_the_explicit_exact_alpha_tag(
-    release_repo: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("channel", ["alpha", "beta"])
+def test_proved_prerelease_accepts_the_explicit_exact_supported_tag(
+    release_repo: Path, monkeypatch: pytest.MonkeyPatch, channel: str
 ) -> None:
+    tag_name = f"v0.1.0-{channel}.1"
     changelog = release_repo / "CHANGELOG.md"
     changelog.write_text(
-        "# Changelog\n\n## [Unreleased]\n\n- `v0.1.0-alpha.1` delivery preview.\n",
+        f"# Changelog\n\n## [Unreleased]\n\n- `{tag_name}` delivery preview.\n",
         encoding="utf-8",
     )
-    release_note = release_repo / "docs" / "releases" / "v0.1.0-alpha.1.md"
+    release_note = release_repo / "docs" / "releases" / f"{tag_name}.md"
     release_note.parent.mkdir(parents=True, exist_ok=True)
     release_note.write_text(
-        "# Stock Desk v0.1.0-alpha.1\n\nUnsigned prerelease.\n",
+        f"# Stock Desk {tag_name}\n\nUnsigned prerelease.\n",
         encoding="utf-8",
     )
     git(release_repo, "add", ".")
-    git(release_repo, "commit", "-q", "-m", "prepare alpha release")
-    git(release_repo, "tag", "v0.1.0-alpha.1")
+    git(release_repo, "commit", "-q", "-m", "prepare prerelease")
+    git(release_repo, "tag", tag_name)
     monkeypatch.setattr(
         verify_release_module,
         "verify_proved_release_inputs",
@@ -1388,9 +1392,19 @@ def test_proved_alpha_release_accepts_only_the_explicit_exact_alpha_tag(
         FakeGateRunner(release_repo),
         fingerprint=lambda _repo: "stable",
         proved_inputs=_proved_inputs(release_repo),
-        tag_name="v0.1.0-alpha.1",
+        tag_name=tag_name,
     )
 
+
+def test_proved_prerelease_rejects_unsupported_channel(
+    release_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    git(release_repo, "tag", "v0.1.0-rc.1")
+    monkeypatch.setattr(
+        verify_release_module,
+        "verify_proved_release_inputs",
+        lambda _repo, _inputs: None,
+    )
     with pytest.raises(ReleaseVerificationError, match="tag name is not allowed"):
         verify_release(
             release_repo,
@@ -1398,7 +1412,7 @@ def test_proved_alpha_release_accepts_only_the_explicit_exact_alpha_tag(
             FakeGateRunner(release_repo),
             fingerprint=lambda _repo: "stable",
             proved_inputs=_proved_inputs(release_repo),
-            tag_name="v0.1.0-beta.1",
+            tag_name="v0.1.0-rc.1",
         )
 
 

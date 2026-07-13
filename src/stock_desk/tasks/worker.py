@@ -14,6 +14,7 @@ from typing import Any, TypeAlias
 from sqlalchemy.exc import DBAPIError, OperationalError
 
 from stock_desk.config import get_settings
+from stock_desk.diagnostics.models import DiagnosticEventCode, DiagnosticEventSink
 from stock_desk.tasks.models import TaskClaim, TaskSnapshot
 from stock_desk.tasks.repository import (
     TaskConflict,
@@ -318,6 +319,7 @@ class TaskWorker:
         heartbeat_start_timeout: float = _DEFAULT_HEARTBEAT_START_TIMEOUT_SECONDS,
         heartbeat_stop_timeout: float = _DEFAULT_HEARTBEAT_STOP_TIMEOUT_SECONDS,
         heartbeat_io_timeout: float = _DEFAULT_HEARTBEAT_IO_TIMEOUT_SECONDS,
+        diagnostic_event_sink: DiagnosticEventSink | None = None,
     ) -> None:
         if not worker_id or worker_id != worker_id.strip() or len(worker_id) > 255:
             raise ValueError("Worker id must contain 1 to 255 characters")
@@ -341,6 +343,7 @@ class TaskWorker:
         self._heartbeat_start_timeout = heartbeat_start_timeout
         self._heartbeat_stop_timeout = heartbeat_stop_timeout
         self._heartbeat_io_timeout = heartbeat_io_timeout
+        self._diagnostic_event_sink = diagnostic_event_sink
         self._handlers: dict[str, TaskHandler] = {}
         self._claimed_handlers: dict[str, ClaimedTaskHandler] = {}
 
@@ -372,6 +375,7 @@ class TaskWorker:
             task = claimed.snapshot
             claimed_handler = self._claimed_handlers.get(task.kind)
             if claimed_handler is None:
+                self._record_task_failure()
                 return self._fail_current(task, claim, _UNKNOWN_KIND_ERROR)
             invoke_claimed = claimed_handler
         else:
@@ -379,6 +383,7 @@ class TaskWorker:
             task = claimed
             handler = self._handlers.get(task.kind)
             if handler is None:
+                self._record_task_failure()
                 return self._fail_current(task, claim, _UNKNOWN_KIND_ERROR)
             invoke_legacy = handler
 
@@ -390,6 +395,7 @@ class TaskWorker:
             )
         except Exception as error:
             self._log_handler_failure(task, error)
+            self._record_task_failure()
             return self._fail_current(task, claim, _HANDLER_FAILURE_ERROR)
         try:
             return self._repository.complete(
@@ -399,6 +405,7 @@ class TaskWorker:
             )
         except TaskValidationError as error:
             self._log_handler_failure(task, error)
+            self._record_task_failure()
             return self._fail_current(task, claim, _HANDLER_FAILURE_ERROR)
         except TaskConflict:
             return self._repository.get(task.id)
@@ -426,6 +433,10 @@ class TaskWorker:
             task.kind,
             type(error).__name__,
         )
+
+    def _record_task_failure(self) -> None:
+        if self._diagnostic_event_sink is not None:
+            self._diagnostic_event_sink.emit(DiagnosticEventCode.WORKER_TASK_FAILED)
 
     @contextmanager
     def heartbeat_lifecycle(

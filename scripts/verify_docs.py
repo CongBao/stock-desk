@@ -2506,10 +2506,8 @@ FORBIDDEN_TRACKED_PREFIXES = (
     "work/",
 )
 
-SOURCE_FREE_INSTALLER_PATTERNS = (
-    "stock-desk-<version>-windows-x86_64.exe",
-    "stock-desk-<version>-macos-x86_64.dmg",
-    "stock-desk-<version>-macos-arm64.dmg",
+SOURCE_FREE_WINDOWS_INSTALLER_PATTERNS = (
+    "stock-desk-1.1.0-beta.2-unsigned-x64-setup.exe",
 )
 
 REQUIRED_PUBLIC_SNIPPETS = {
@@ -4211,12 +4209,12 @@ def verify_repository(repo_root: Path) -> list[str]:
         ("README.en.md", english),
     ):
         positions = [
-            document.find(pattern) for pattern in SOURCE_FREE_INSTALLER_PATTERNS
+            document.find(pattern) for pattern in SOURCE_FREE_WINDOWS_INSTALLER_PATTERNS
         ]
         source_setup = document.find("make bootstrap")
         if any(position < 0 for position in positions):
             failures.append(
-                f"{relative_path}: source-free installer artifact names are incomplete"
+                f"{relative_path}: source-free Windows installer artifact name is missing"
             )
         elif source_setup >= 0 and max(positions) > source_setup:
             failures.append(

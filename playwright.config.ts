@@ -7,6 +7,12 @@ export default defineConfig({
   testDir: "./web/e2e",
   testIgnore: performanceMode ? [] : ["**/performance.spec.ts"],
   fullyParallel: false,
+  // The browser suite shares one real API/worker snapshot. GitHub-hosted
+  // runners can starve that worker when multiple browser files drive it at
+  // once, producing false timeouts and cross-file selection races. Serial CI
+  // still executes every specification exactly once and is faster than
+  // repeatedly rebuilding the same immutable snapshot after flaky failures.
+  workers: process.env.CI ? 1 : undefined,
   forbidOnly: Boolean(process.env.CI),
   // A retry may supplement diagnosis, but cannot replace a failed first run in
   // immutable main evidence. Keep the authoritative CI invocation retry-free.

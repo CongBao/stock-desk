@@ -12,6 +12,7 @@ function adapter(overrides: Partial<DesktopAdapter> = {}): DesktopAdapter {
   return {
     cancelExit: vi.fn(() => Promise.resolve()),
     confirmExit: vi.fn(() => Promise.resolve()),
+    exportDiagnostics: vi.fn(() => Promise.resolve('saved' as const)),
     getRuntimeState: vi.fn(() => Promise.resolve({ state: 'ready' })),
     openDiagnostics: vi.fn(() => Promise.resolve()),
     requestExit: vi.fn(() => Promise.resolve()),

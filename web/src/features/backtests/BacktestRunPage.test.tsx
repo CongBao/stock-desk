@@ -79,11 +79,11 @@ it('polls overview and append-only logs with bounded backoff, then stops termina
 
   renderRun(api);
   expect(await screen.findByText('1 / 10')).toBeVisible();
-  expect(screen.getByText('启动')).toBeVisible();
+  expect(await screen.findByText('启动')).toBeVisible();
 
   expect(await screen.findByText('回测结果')).toBeVisible();
   expect(screen.getAllByText('启动')).toHaveLength(1);
-  expect(screen.getByText('完成')).toBeVisible();
+  expect(await screen.findByText('完成')).toBeVisible();
   expect(getLogs).toHaveBeenLastCalledWith(
     running.runId,
     expect.objectContaining({ afterCursor: 'tail-1' }),

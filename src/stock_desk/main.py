@@ -2,6 +2,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AbstractContextManager, asynccontextmanager
 import os
 from pathlib import Path
+import platform
 import secrets
 from threading import Lock
 
@@ -26,6 +27,7 @@ from stock_desk.api.analysis import (
     AnalysisDatabaseMismatch,
     router as analysis_router,
 )
+from stock_desk.api.diagnostics import router as diagnostics_router
 
 from stock_desk.api.backtests import (
     BacktestServiceDatabaseMismatch,
@@ -67,6 +69,13 @@ from stock_desk.desktop_session import (
     DesktopSession,
     DesktopSessionMiddleware,
 )
+from stock_desk.diagnostics.models import (
+    DiagnosticConfiguration,
+    DiagnosticEventCode,
+    DiagnosticEventSink,
+    DiagnosticModelProvider,
+    DiagnosticSnapshotService,
+)
 from stock_desk.formula.repository import FormulaRepository
 from stock_desk.guidance.store import GuidancePreferencesStore
 from stock_desk.formula.service import FormulaService, FormulaServiceDatabaseMismatch
@@ -86,8 +95,17 @@ from stock_desk.storage.lifecycle import (
     service_lifecycle,
 )
 from stock_desk.tasks.repository import TaskRepository, TaskRepositoryError
-from stock_desk.web import install_web_routes
 from stock_desk.workspace.service import WorkspaceService
+
+
+_DEMO_ALLOWED_WRITE_PATHS = frozenset(
+    {
+        "/api/desktop/shutdown",
+        "/api/desktop/shutdown/commit",
+        "/api/v1/onboarding/actions/exit_demo",
+        "/api/v1/diagnostics/snapshot",
+    }
+)
 
 
 class _ApplicationDatabaseMismatch(RuntimeError):
@@ -155,6 +173,8 @@ def create_app(
     onboarding_service: OnboardingService | None = None,
     workspace_service: WorkspaceService | None = None,
     market_navigation_service: MarketNavigationService | None = None,
+    diagnostic_snapshot_service: DiagnosticSnapshotService | None = None,
+    diagnostic_event_sink: DiagnosticEventSink | None = None,
 ) -> FastAPI:
     resolved_settings = settings if settings is not None else get_settings()
     database_identity = _ApplicationDatabaseIdentity(
@@ -206,9 +226,26 @@ def create_app(
     market_navigation_service_lock = Lock()
     owned_guidance_preferences_store: GuidancePreferencesStore | None = None
     guidance_preferences_store_lock = Lock()
+    owned_diagnostic_snapshot_service: DiagnosticSnapshotService | None = None
+    diagnostic_snapshot_service_lock = Lock()
     shutdown_lock = Lock()
     active_lifespans = 0
     service_guard: AbstractContextManager[None] | None = None
+    resolved_diagnostic_event_sink = diagnostic_event_sink or DiagnosticEventSink()
+    storage_ready_recorded = False
+    if desktop_session is not None:
+        resolved_diagnostic_event_sink.emit(DiagnosticEventCode.SIDECAR_API_CONFIGURED)
+
+    def record_storage_ready() -> None:
+        nonlocal storage_ready_recorded
+        if desktop_session is None or storage_ready_recorded:
+            return
+        resolved_diagnostic_event_sink.emit(DiagnosticEventCode.STORAGE_READY)
+        storage_ready_recorded = True
+
+    def record_storage_unavailable() -> None:
+        if desktop_session is not None:
+            resolved_diagnostic_event_sink.emit(DiagnosticEventCode.STORAGE_UNAVAILABLE)
 
     def bind_dependency(dependency: object) -> None:
         database_identity.bind(getattr(dependency, "database_identity", None))
@@ -219,19 +256,29 @@ def create_app(
             try:
                 bind_dependency(task_repository)
             except _ApplicationDatabaseMismatch:
+                record_storage_unavailable()
                 raise TaskRepositoryError(
                     "Task storage does not match the application"
                 ) from None
+            record_storage_ready()
             return task_repository
         with repository_lock:
             if owned_repository is None:
-                owned_repository = TaskRepository.open(resolved_settings.database_url)
+                try:
+                    owned_repository = TaskRepository.open(
+                        resolved_settings.database_url
+                    )
+                except Exception:
+                    record_storage_unavailable()
+                    raise
             try:
                 bind_dependency(owned_repository)
             except _ApplicationDatabaseMismatch:
+                record_storage_unavailable()
                 raise TaskRepositoryError(
                     "Task storage does not match the application"
                 ) from None
+            record_storage_ready()
             return owned_repository
 
     def provide_market_services() -> MarketServices:
@@ -528,6 +575,63 @@ def create_app(
                 )
             return owned_market_navigation_service
 
+    def provide_diagnostic_snapshot_service() -> DiagnosticSnapshotService:
+        nonlocal owned_diagnostic_snapshot_service
+        if diagnostic_snapshot_service is not None:
+            return diagnostic_snapshot_service
+        if desktop_session is None:
+            raise RuntimeError("desktop diagnostics are unavailable")
+
+        def safe_configuration() -> DiagnosticConfiguration:
+            sources = provide_source_settings_services().response()
+            catalog = provide_model_catalog()
+            with catalog.transaction() as connection:
+                models = catalog.list_page_with_public_configs_in_transaction(
+                    connection,
+                    limit=100,
+                    include_disabled=True,
+                )
+            priorities = sources.priorities
+            return DiagnosticConfiguration(
+                available=True,
+                daily_sources=tuple(item.value for item in priorities.daily_bars),
+                weekly_sources=tuple(item.value for item in priorities.weekly_bars),
+                minute_sources=tuple(item.value for item in priorities.minute_bars),
+                instrument_sources=tuple(item.value for item in priorities.instruments),
+                tushare_token_configured=sources.tushare.configured,
+                local_tdx_configured=sources.tdx_path is not None,
+                model_providers=tuple(
+                    dict.fromkeys(
+                        DiagnosticModelProvider(item.provider.value)
+                        for item in (entry.snapshot for entry in models.items)
+                    )
+                ),
+            )
+
+        def safe_health() -> tuple[bool, bool]:
+            repository = provide_task_repository()
+            repository.metrics()
+            worker_ready = repository.worker_status().state == "running"
+            resolved_diagnostic_event_sink.emit(
+                DiagnosticEventCode.WORKER_READY
+                if worker_ready
+                else DiagnosticEventCode.WORKER_UNAVAILABLE
+            )
+            return True, worker_ready
+
+        with diagnostic_snapshot_service_lock:
+            if owned_diagnostic_snapshot_service is None:
+                owned_diagnostic_snapshot_service = DiagnosticSnapshotService(
+                    version=desktop_session.sidecar_version,
+                    source_revision=desktop_session.source_revision,
+                    configuration_provider=safe_configuration,
+                    health_provider=safe_health,
+                    event_sink=resolved_diagnostic_event_sink,
+                    platform_system=platform.system(),
+                    platform_machine=platform.machine(),
+                )
+            return owned_diagnostic_snapshot_service
+
     def provide_guidance_preferences_store() -> GuidancePreferencesStore:
         nonlocal owned_guidance_preferences_store
         with guidance_preferences_store_lock:
@@ -650,8 +754,7 @@ def create_app(
                     status_code=503,
                     content={"code": "onboarding_state_unavailable"},
                 )
-            exit_path = "/api/v1/onboarding/actions/exit_demo"
-            if state.demo_mode and request.url.path != exit_path:
+            if state.demo_mode and request.url.path not in _DEMO_ALLOWED_WRITE_PATHS:
                 return JSONResponse(
                     status_code=409,
                     content={"code": "demo_read_only"},
@@ -676,6 +779,10 @@ def create_app(
     application.state.guidance_preferences_store_provider = (
         provide_guidance_preferences_store
     )
+    if desktop_session is not None:
+        application.state.diagnostic_snapshot_service_provider = (
+            provide_diagnostic_snapshot_service
+        )
     application.state.database_identity_provider = database_identity.current
     application.state.model_settings_cursor_key = secrets.token_bytes(32)
     application.state.analysis_cursor_key = secrets.token_bytes(32)
@@ -754,6 +861,7 @@ def create_app(
     application.include_router(formulas_router, prefix="/api")
     application.include_router(backtests_router, prefix="/api")
     if desktop_session is not None:
+        application.include_router(diagnostics_router, prefix="/api")
         resolved_desktop_lifecycle = (
             desktop_lifecycle
             if desktop_lifecycle is not None
@@ -802,7 +910,10 @@ def create_app(
                                 "running": running,
                             },
                         )
-                    resolved_desktop_lifecycle.request_shutdown()
+                    # Stop new claims while the authoritative gate is held, but
+                    # keep heartbeat/API resources alive until the host has
+                    # received this 202 and explicitly commits shutdown.
+                    resolved_desktop_lifecycle.prepare_shutdown()
             except Exception:
                 return JSONResponse(
                     status_code=503,
@@ -813,9 +924,27 @@ def create_app(
                 content={"status": "shutdown_requested"},
             )
 
+        @application.post("/api/desktop/shutdown/commit", tags=["desktop"])
+        def desktop_shutdown_commit() -> Response:
+            if not resolved_desktop_lifecycle.shutdown_prepared:
+                return JSONResponse(
+                    status_code=409,
+                    content={"code": "desktop_shutdown_not_prepared"},
+                )
+            resolved_desktop_lifecycle.complete_shutdown()
+            return JSONResponse(
+                status_code=202,
+                content={"status": "shutdown_committed"},
+            )
+
     if resolved_settings.web_dist_dir is not None:
+        from stock_desk.web import install_web_routes
+
         install_web_routes(application, resolved_settings.web_dist_dir)
     return application
 
 
-app = create_app()
+# The frozen desktop sidecar imports this module only for the application
+# factory. Building an unrelated default app here would use the wrong data
+# root before the authenticated desktop settings are supplied.
+app = None if "STOCK_DESK_DESKTOP_PORT" in os.environ else create_app()

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+import { safeUserMessage } from '../../shared/safeUserMessage';
 import { AnalysisRunPanel } from './AnalysisRunPanel';
 import { ConclusionPanel } from './ConclusionPanel';
 import { EvidencePanel } from './EvidencePanel';
@@ -72,9 +73,7 @@ export function AnalysisPage({
       .then((modelPage) => setModels(modelPage.items))
       .catch((error: unknown) => {
         if (!controller.signal.aborted)
-          setStatusMessage(
-            error instanceof Error ? error.message : '加载模型配置失败',
-          );
+          setStatusMessage(safeUserMessage(error, '加载模型配置失败'));
       });
     void api
       .listRuns({ signal: controller.signal })
@@ -93,9 +92,7 @@ export function AnalysisPage({
       })
       .catch((error: unknown) => {
         if (!controller.signal.aborted)
-          setStatusMessage(
-            error instanceof Error ? error.message : '加载历史报告失败',
-          );
+          setStatusMessage(safeUserMessage(error, '加载历史报告失败'));
       });
     return () => controller.abort();
   }, [api]);
@@ -204,9 +201,7 @@ export function AnalysisPage({
       setHistory((items) => [...items, ...page.items]);
       setHistoryCursor(page.nextCursor);
     } catch (error) {
-      setStatusMessage(
-        error instanceof Error ? error.message : '加载历史报告失败',
-      );
+      setStatusMessage(safeUserMessage(error, '加载历史报告失败'));
     }
   }
 
@@ -244,7 +239,7 @@ export function AnalysisPage({
       setRun(cancelled);
       setStatusMessage('取消请求已记录；已持久化数据不会删除。');
     } catch (error) {
-      setStatusMessage(error instanceof Error ? error.message : '取消分析失败');
+      setStatusMessage(safeUserMessage(error, '取消分析失败'));
     }
   }
 
@@ -259,7 +254,7 @@ export function AnalysisPage({
       setStatusMessage(retryCreatedStatus);
       setRunId(child.runId);
     } catch (error) {
-      setStatusMessage(error instanceof Error ? error.message : '阶段重试失败');
+      setStatusMessage(safeUserMessage(error, '阶段重试失败'));
     } finally {
       setRetryingStage(null);
     }

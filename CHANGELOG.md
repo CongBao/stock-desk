@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- `v1.1.0-beta.2` completes the desktop UX stage with searchable/restorable
+  workspaces, responsive themes and guidance, bounded sidecar recovery,
+  local-only redacted diagnostics, unified Windows icons, and exact-SHA
+  evidence captured from the installed packaged Tauri candidate.
 - `v1.1.0-alpha.2` adds the standalone Tauri Windows shell, current-user NSIS
   installer, controlled Python sidecar, startup recovery, and exact-SHA Windows
   candidate reuse without rebuilding or rerunning source tests during release.
@@ -20,10 +24,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Security
 
+- Diagnostic export is desktop-session authenticated, schema allowlisted,
+  validated independently by React and Rust, saved only after explicit user
+  choice, and never uploaded automatically; telemetry and crash SDKs remain
+  forbidden by a locked-source gate.
 - Cache and artifact consumers fail closed on stale source identities,
   incomplete lock/toolchain keys, forbidden cached conclusions, substituted
   payloads, or missing attestations.
-- The SignPath Foundation application is submitted and pending. Alpha assets
+- The SignPath Foundation application is submitted and pending. Prerelease assets
   remain explicitly unsigned prereleases until trusted signing is integrated.
 
 ## [1.0.0] - 2026-07-08

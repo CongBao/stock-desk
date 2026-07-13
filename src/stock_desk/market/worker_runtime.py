@@ -33,6 +33,7 @@ from stock_desk.api.settings import SourceSettingsServices
 from stock_desk.config import Settings
 from stock_desk.formula.repository import FormulaRepository
 from stock_desk.formula.service import FormulaService, IsolatedFormulaExecutor
+from stock_desk.diagnostics.models import DiagnosticEventSink
 from stock_desk.market.compositions import (
     AkShareCompositionProvider,
     CompositionProvider,
@@ -310,6 +311,7 @@ class ProductionMarketWorker:
         analysis_provider_factory: Callable[[AnalysisExecutionConfig], ModelProvider]
         | None = None,
         analysis_data_service_factory: Callable[[], ResearchDataService] | None = None,
+        diagnostic_event_sink: DiagnosticEventSink | None = None,
     ) -> ProductionMarketWorker:
         data_dir = Path(os.path.abspath(os.fspath(settings.data_dir.expanduser())))
         lifecycle_guard = service_lifecycle(
@@ -346,6 +348,7 @@ class ProductionMarketWorker:
             task_worker = TaskWorker(
                 tasks,
                 worker_id=worker_id or f"{socket.gethostname()}-{os.getpid()}",
+                diagnostic_event_sink=diagnostic_event_sink,
             )
             resolved_factory = provider_factory or DefaultRuntimeProviderFactory()
             task_worker.register("demo.double", demo_double)
@@ -481,18 +484,30 @@ class ProductionMarketWorker:
         self.scheduler.tick()
         return self.worker.run_once()
 
-    def run_forever(self, stop_event: Event, *, ready_event: Any | None = None) -> None:
+    def run_forever(
+        self,
+        stop_event: Event,
+        *,
+        ready_event: Any | None = None,
+        claim_stop_event: Any | None = None,
+    ) -> None:
         next_schedule_poll = 0.0
+        claims_stopped = (
+            claim_stop_event if claim_stop_event is not None else stop_event
+        )
         with self.worker.heartbeat_lifecycle(stop_event) as heartbeat:
             if ready_event is not None:
                 ready_event.set()
             while not stop_event.is_set():
                 heartbeat.raise_if_failed()
+                if claims_stopped.is_set():
+                    stop_event.wait(_IDLE_TASK_POLL_SECONDS)
+                    continue
                 now = _monotonic()
                 if now >= next_schedule_poll:
                     self.scheduler.tick()
                     next_schedule_poll = now + _SCHEDULE_POLL_SECONDS
-                completed = self.worker.run_once(stop_event=stop_event)
+                completed = self.worker.run_once(stop_event=claims_stopped)
                 if completed is None:
                     stop_event.wait(_IDLE_TASK_POLL_SECONDS)
             heartbeat.raise_if_failed()

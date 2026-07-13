@@ -1,5 +1,6 @@
 export type DesktopRecoveryReason =
   | 'permission_denied'
+  | 'restart_limit_reached'
   | 'sidecar_unavailable'
   | 'startup_timeout'
   | 'version_mismatch';
@@ -24,6 +25,7 @@ export type DesktopExitState =
 export type DesktopExitListener = (state: DesktopExitState) => void;
 export type DesktopProtocolErrorListener = () => void;
 export type DesktopUnsubscribe = () => void;
+export type DesktopDiagnosticExportResult = 'cancelled' | 'saved';
 
 export type DesktopAdapter = {
   readonly getRuntimeState: () => Promise<unknown>;
@@ -32,6 +34,7 @@ export type DesktopAdapter = {
   readonly cancelExit: () => Promise<void>;
   readonly confirmExit: () => Promise<void>;
   readonly openDiagnostics: () => Promise<void>;
+  readonly exportDiagnostics: () => Promise<DesktopDiagnosticExportResult>;
   readonly subscribe: (
     listener: (payload: unknown) => void,
   ) => Promise<DesktopUnsubscribe>;
@@ -48,6 +51,7 @@ export type BrowserDesktopBridge = {
   readonly cancelExit: () => void;
   readonly confirmExit: () => void;
   readonly openDiagnostics: () => void;
+  readonly exportDiagnostics: () => void;
   readonly subscribe: (
     listener: DesktopRuntimeListener,
     onProtocolError?: DesktopProtocolErrorListener,
@@ -66,6 +70,7 @@ export type TauriDesktopBridge = {
   readonly cancelExit: () => Promise<void>;
   readonly confirmExit: () => Promise<void>;
   readonly openDiagnostics: () => Promise<void>;
+  readonly exportDiagnostics: () => Promise<DesktopDiagnosticExportResult>;
   readonly subscribe: (
     listener: DesktopRuntimeListener,
     onProtocolError?: DesktopProtocolErrorListener,
@@ -84,6 +89,7 @@ const browserReadyState: DesktopRuntimeState = Object.freeze({
 
 const recoveryReasons = new Set<DesktopRecoveryReason>([
   'permission_denied',
+  'restart_limit_reached',
   'sidecar_unavailable',
   'startup_timeout',
   'version_mismatch',
@@ -201,6 +207,7 @@ function createBrowserBridge(): BrowserDesktopBridge {
     cancelExit: () => undefined,
     confirmExit: () => undefined,
     openDiagnostics: () => undefined,
+    exportDiagnostics: () => undefined,
     subscribe: () => () => undefined,
     subscribeExit: () => () => undefined,
   };
@@ -216,6 +223,7 @@ function createTauriBridge(adapter: DesktopAdapter): TauriDesktopBridge {
     cancelExit: () => adapter.cancelExit(),
     confirmExit: () => adapter.confirmExit(),
     openDiagnostics: () => adapter.openDiagnostics(),
+    exportDiagnostics: () => adapter.exportDiagnostics(),
     subscribe: (listener, onProtocolError) =>
       adapter.subscribe(
         handleDecodedPayload(decodeRuntimeState, listener, onProtocolError),

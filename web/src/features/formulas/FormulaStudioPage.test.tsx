@@ -744,6 +744,26 @@ it('explains a missing local bar cache without reporting the healthy API as down
   expect(screen.queryByText(/API 已启动/u)).not.toBeInTheDocument();
 });
 
+it('never renders a raw HTTP status for an unmapped formula failure', async () => {
+  const user = userEvent.setup();
+  const marketApiClient = marketApiFixture();
+  vi.mocked(marketApiClient.getBars).mockRejectedValueOnce(
+    new ApiError('API request failed with status 503', {
+      kind: 'http',
+      status: 503,
+      details: { code: 'unmapped_failure' },
+    }),
+  );
+  renderStudio({ initialFormula: detail }, apiFixture(), marketApiClient);
+
+  await user.click(screen.getByRole('button', { name: '运行预览' }));
+
+  expect(await screen.findByRole('alert')).toHaveTextContent(
+    '本地服务暂时无法完成公式请求',
+  );
+  expect(document.body).not.toHaveTextContent(/HTTP|503|unmapped_failure/u);
+});
+
 it.each([
   ['preview_timeout', 504, '公式预览超过 3 秒执行上限，已安全终止'],
   ['resource_limit_exceeded', 422, '公式或行情数据超过预览资源上限'],

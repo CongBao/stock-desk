@@ -1,4 +1,12 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  memo,
+  startTransition,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
 
 import { ApiError } from '../../shared/api/client';
@@ -36,6 +44,18 @@ function supportsReports(
   );
 }
 
+const RunLogItem = memo(function RunLogItem({
+  log,
+}: {
+  readonly log: BacktestLog;
+}) {
+  return (
+    <li>
+      <span>{log.level}</span> {log.message}
+    </li>
+  );
+});
+
 const RunLog = memo(function RunLog({
   logs,
   logError,
@@ -46,12 +66,7 @@ const RunLog = memo(function RunLog({
   readonly onRetry: () => void;
 }) {
   const items = useMemo(
-    () =>
-      logs.map((log) => (
-        <li key={log.ordinal}>
-          <span>{log.level}</span> {log.message}
-        </li>
-      )),
+    () => logs.map((log) => <RunLogItem key={log.ordinal} log={log} />),
     [logs],
   );
 
@@ -203,15 +218,17 @@ export function BacktestRunPage({
         const cursorAdvanced = afterCursor !== priorCursor;
         moreLogs =
           final && page.nextCursor !== null && afterCursor !== priorCursor;
-        setLogs((current) => {
-          if (page.items.length === 0 && !cursorAdvanced) return current;
-          const byOrdinal = new Map(
-            current.map((item) => [item.ordinal, item]),
-          );
-          for (const item of page.items) byOrdinal.set(item.ordinal, item);
-          return [...byOrdinal.values()]
-            .sort((left, right) => left.ordinal - right.ordinal)
-            .slice(-300);
+        startTransition(() => {
+          setLogs((current) => {
+            if (page.items.length === 0 && !cursorAdvanced) return current;
+            const byOrdinal = new Map(
+              current.map((item) => [item.ordinal, item]),
+            );
+            for (const item of page.items) byOrdinal.set(item.ordinal, item);
+            return [...byOrdinal.values()]
+              .sort((left, right) => left.ordinal - right.ordinal)
+              .slice(-300);
+          });
         });
         if (!final && !finalLogRequested)
           logTimer = window.setTimeout(

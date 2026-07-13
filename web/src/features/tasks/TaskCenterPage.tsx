@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 
+import { ActionableState } from '../../shared/ActionableState';
 import {
   TaskApiError,
   taskApi as defaultTaskApi,
@@ -524,14 +525,22 @@ export function TaskCenterPage({
       </section>
 
       {isLoading && tasks.length === 0 ? (
-        <p className="task-center-empty" role="status">
-          正在读取任务…
-        </p>
+        <ActionableState
+          kind="loading"
+          title="正在读取任务"
+          reason="正在从本地服务恢复最近任务。"
+          actionLabel="重新读取"
+          onAction={() => void refresh()}
+          actionDisabledReason="当前读取完成后即可重试。"
+        />
       ) : !hasLoadedTasks && listError !== null ? (
-        <div className="task-center-empty">
-          <h3>任务列表暂不可用</h3>
-          <p>尚未成功读取任务，请检查服务后重试。</p>
-        </div>
+        <ActionableState
+          kind="offline"
+          title="任务列表暂不可用"
+          reason="尚未成功读取本地任务，已有数据不会被删除。"
+          actionLabel="重新读取"
+          onAction={() => void refresh()}
+        />
       ) : tasks.length === 0 ? (
         <div className="task-center-empty">
           <h3>暂无任务</h3>
@@ -688,7 +697,10 @@ export function TaskCenterPage({
                   {events.length === 0 ? (
                     <p>暂无可显示事件。</p>
                   ) : (
-                    <ol>
+                    // The list owns the scroll viewport. It must itself be
+                    // focusable so keyboard users can scroll all events.
+                    // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex
+                    <ol tabIndex={0} aria-label="安全事件时间线列表">
                       {events.map((event) => (
                         <li key={event.id} data-level={event.level}>
                           <div>

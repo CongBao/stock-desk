@@ -388,9 +388,7 @@ def _windows_guard_root(
 
 
 def _windows_private_path(path: Path, *, directory: bool) -> None:
-    # Kept local to avoid a module cycle: desktop imports the lake only while
-    # constructing the runtime after this module has finished loading.
-    from stock_desk.desktop import _restrict_owner_access
+    from stock_desk.desktop_runtime import _restrict_owner_access
 
     _restrict_owner_access(path, directory=directory)
 

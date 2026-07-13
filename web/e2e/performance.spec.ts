@@ -1,10 +1,12 @@
 import {
   type BrowserContext,
+  type ConsoleMessage,
   type Page,
   type Response,
   type Route,
 } from '@playwright/test';
 import { execFile } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
@@ -912,79 +914,20 @@ class RenderSignalLedger {
   }
 }
 
-type ProgressPaintSignal = {
-  readonly sequence: number;
-  readonly token: string;
-};
-
-type ProgressPaintWaiter = {
-  readonly token: string;
-  readonly resolve: (signal: ProgressPaintSignal) => void;
-  readonly reject: (error: Error) => void;
-  readonly timer: ReturnType<typeof setTimeout>;
-};
-
-class ProgressPaintSignalLedger {
-  private readonly signals: ProgressPaintSignal[] = [];
-  private readonly waiters = new Set<ProgressPaintWaiter>();
-
-  record(value: unknown) {
-    if (typeof value !== 'object' || value === null) return;
-    const candidate = value as Record<string, unknown>;
-    const { sequence, token } = candidate;
-    if (
-      !Number.isSafeInteger(sequence) ||
-      typeof token !== 'string' ||
-      token.length === 0
-    ) {
-      return;
-    }
-    const signal = {
-      sequence: Number(sequence),
-      token,
-    } satisfies ProgressPaintSignal;
-    this.signals.push(signal);
-    for (const waiter of this.waiters) {
-      if (waiter.token !== token) continue;
-      clearTimeout(waiter.timer);
-      this.waiters.delete(waiter);
-      waiter.resolve(signal);
-    }
-  }
-
-  next(token: string, description: string): Promise<ProgressPaintSignal> {
-    const existing = this.signals.findLast((signal) => signal.token === token);
-    if (existing !== undefined) return Promise.resolve(existing);
-    return new Promise((resolve, reject) => {
-      const waiter: ProgressPaintWaiter = {
-        token,
-        resolve,
-        reject,
-        timer: setTimeout(() => {
-          this.waiters.delete(waiter);
-          reject(
-            new Error(`${description} paint-ready signal was not observed`),
-          );
-        }, 45_000),
-      };
-      this.waiters.add(waiter);
-    });
-  }
-
-  dispose() {
-    for (const waiter of this.waiters) {
-      clearTimeout(waiter.timer);
-      waiter.reject(new Error('progress paint signal ledger was disposed'));
-    }
-    this.waiters.clear();
-  }
-}
-
 async function installRenderSignalObserver(page: Page) {
   const ledger = new RenderSignalLedger();
-  const binding = '__stockDeskPerformanceRenderSignal';
-  await page.exposeFunction(binding, (value: unknown) => ledger.record(value));
-  await page.evaluate((bindingName) => {
+  const prefix = `stock-desk-performance-render:${randomUUID()}:`;
+  const capture = (message: ConsoleMessage) => {
+    const text = message.text();
+    if (!text.startsWith(prefix)) return;
+    try {
+      ledger.record(JSON.parse(text.slice(prefix.length)) as unknown);
+    } catch {
+      // A malformed harness signal is ignored and the causal waiter times out.
+    }
+  };
+  page.on('console', capture);
+  await page.evaluate((signalPrefix) => {
     const browser = globalThis as unknown as {
       document: {
         body: object;
@@ -996,6 +939,7 @@ async function installRenderSignalObserver(page: Page) {
       };
       location: { pathname: string };
       MutationObserver: new (callback: () => void) => {
+        disconnect(): void;
         observe(
           target: object,
           options: {
@@ -1008,25 +952,21 @@ async function installRenderSignalObserver(page: Page) {
       };
     };
     let sequence = 0;
-    const report = (
-      globalThis as unknown as Record<
-        string,
-        (value: RenderSignal) => Promise<void>
-      >
-    )[bindingName];
     const emit = () => {
       const progress = browser.document.querySelector(
         '[data-rendered-progress]',
       );
       const heading = browser.document.querySelector('[data-page-heading]');
-      void report?.({
-        sequence: ++sequence,
-        pathname: browser.location.pathname,
-        progressKey: progress?.getAttribute('data-rendered-progress') ?? null,
-        heading: heading?.textContent?.trim() ?? null,
-        taskCount: browser.document.querySelectorAll('.task-center-list > li')
-          .length,
-      });
+      console.debug(
+        `${signalPrefix}${JSON.stringify({
+          sequence: ++sequence,
+          pathname: browser.location.pathname,
+          progressKey: progress?.getAttribute('data-rendered-progress') ?? null,
+          heading: heading?.textContent?.trim() ?? null,
+          taskCount: browser.document.querySelectorAll('.task-center-list > li')
+            .length,
+        })}`,
+      );
     };
     const observer = new browser.MutationObserver(emit);
     observer.observe(browser.document.body, {
@@ -1039,29 +979,58 @@ async function installRenderSignalObserver(page: Page) {
       __stockDeskPerformanceRenderObserver: observer,
     });
     emit();
-  }, binding);
-  return ledger;
+  }, prefix);
+  return {
+    get latestSequence() {
+      return ledger.latestSequence;
+    },
+    nextMatching: (
+      predicate: (signal: RenderSignal) => boolean,
+      description: string,
+    ) => ledger.nextMatching(predicate, description),
+    dispose: async () => {
+      page.off('console', capture);
+      await page.evaluate(() => {
+        const observer = (
+          globalThis as unknown as {
+            __stockDeskPerformanceRenderObserver?: { disconnect(): void };
+          }
+        ).__stockDeskPerformanceRenderObserver;
+        observer?.disconnect();
+        delete (
+          globalThis as unknown as {
+            __stockDeskPerformanceRenderObserver?: { disconnect(): void };
+          }
+        ).__stockDeskPerformanceRenderObserver;
+      });
+    },
+  };
 }
 
 async function installProgressPaintSignals(page: Page) {
-  const ledger = new ProgressPaintSignalLedger();
-  const binding = '__stockDeskPerformancePaintReady';
-  await page.exposeFunction(binding, (value: unknown) => ledger.record(value));
+  const attribute = `data-stock-desk-performance-paint-${randomUUID()}`;
   await page.evaluate(
-    ({ bindingName, headerName }) => {
+    ({ attributeName, headerName }) => {
       const browser = globalThis as unknown as {
+        document: {
+          documentElement: {
+            removeAttribute(name: string): void;
+            setAttribute(name: string, value: string): void;
+          };
+        };
         fetch: typeof fetch;
         requestAnimationFrame(callback: (timestamp: number) => void): number;
         __stockDeskPerformancePaintCleanup?: () => void;
+        __stockDeskLongTaskWindow?: {
+          records: Record<string, unknown>[];
+          observer: {
+            takeRecords(): { toJSON(): Record<string, unknown> }[];
+            disconnect(): void;
+          };
+        };
       };
       let sequence = 0;
       const originalFetch = browser.fetch;
-      const report = (
-        globalThis as unknown as Record<
-          string,
-          (value: ProgressPaintSignal) => Promise<void>
-        >
-      )[bindingName];
       const wrappedFetch: typeof fetch = async (...args) => {
         const response = await originalFetch.apply(globalThis, args);
         const token = response.headers.get(headerName);
@@ -1073,7 +1042,17 @@ async function installProgressPaintSignals(page: Page) {
               const value: unknown = await originalJson();
               browser.requestAnimationFrame(() => {
                 browser.requestAnimationFrame(() => {
-                  void report?.({ token, sequence: ++sequence });
+                  const longTaskWindow = browser.__stockDeskLongTaskWindow;
+                  longTaskWindow?.observer
+                    .takeRecords()
+                    .forEach((entry) =>
+                      longTaskWindow.records.push(entry.toJSON()),
+                    );
+                  longTaskWindow?.observer.disconnect();
+                  browser.document.documentElement.setAttribute(
+                    attributeName,
+                    `${token}|${++sequence}`,
+                  );
                 });
               });
               return value;
@@ -1085,16 +1064,70 @@ async function installProgressPaintSignals(page: Page) {
       browser.fetch = wrappedFetch;
       browser.__stockDeskPerformancePaintCleanup = () => {
         if (browser.fetch === wrappedFetch) browser.fetch = originalFetch;
+        browser.document.documentElement.removeAttribute(attributeName);
         delete browser.__stockDeskPerformancePaintCleanup;
       };
     },
-    { bindingName: binding, headerName: PROGRESS_GATE_HEADER },
+    { attributeName: attribute, headerName: PROGRESS_GATE_HEADER },
   );
   return {
     next: (token: string, description: string) =>
-      ledger.next(token, description),
+      page
+        .evaluate(
+          ({ attributeName, expectedToken }) =>
+            new Promise<boolean>((resolve, reject) => {
+              const browser = globalThis as unknown as {
+                clearTimeout(timer: number): void;
+                document: {
+                  documentElement: {
+                    getAttribute(name: string): string | null;
+                  };
+                };
+                MutationObserver: new (callback: () => void) => {
+                  disconnect(): void;
+                  observe(
+                    target: object,
+                    options: {
+                      attributes: boolean;
+                      attributeFilter: string[];
+                    },
+                  ): void;
+                };
+                setTimeout(callback: () => void, delay: number): number;
+              };
+              const target = browser.document.documentElement;
+              const matches = () =>
+                target
+                  .getAttribute(attributeName)
+                  ?.startsWith(`${expectedToken}|`) ?? false;
+              if (matches()) {
+                resolve(true);
+                return;
+              }
+              const observer = new browser.MutationObserver(() => {
+                if (!matches()) return;
+                browser.clearTimeout(timer);
+                observer.disconnect();
+                resolve(true);
+              });
+              const timer = browser.setTimeout(() => {
+                observer.disconnect();
+                reject(new Error('paint-ready signal timed out'));
+              }, 45_000);
+              observer.observe(target, {
+                attributes: true,
+                attributeFilter: [attributeName],
+              });
+            }),
+          { attributeName: attribute, expectedToken: token },
+        )
+        .catch((error: unknown) => {
+          throw new Error(
+            `${description} paint-ready signal was not observed`,
+            { cause: error },
+          );
+        }),
     dispose: async () => {
-      ledger.dispose();
       await page.evaluate(() => {
         const browser = globalThis as unknown as {
           fetch: typeof fetch;
@@ -1107,7 +1140,7 @@ async function installProgressPaintSignals(page: Page) {
 }
 
 function renderReadyAfter<T>(
-  ledger: RenderSignalLedger,
+  ledger: Pick<RenderSignalLedger, 'nextMatching'>,
   expected: Promise<T>,
   predicate: (signal: RenderSignal, value: T) => boolean,
   description: string,
@@ -1541,7 +1574,6 @@ test('records aggregate 2/3/5 budgets and worker-backed UI responsiveness', asyn
     snapshot_id: string;
   };
   await expect(page).toHaveURL(`/backtests/${poolSubmission.run_id}`);
-  const renderSignals = await installRenderSignalObserver(page);
   const progressPaintSignals = await installProgressPaintSignals(page);
   const observedProgressStates: ProgressState[] = [];
   const poolSamples: {
@@ -1619,6 +1651,7 @@ test('records aggregate 2/3/5 budgets and worker-backed UI responsiveness', asyn
     });
   }
   await progressPaintSignals.dispose();
+  const renderSignals = await installRenderSignalObserver(page);
   expect(
     progressWindowsDemonstrateChange(
       initialProgressKey,
@@ -1755,6 +1788,7 @@ test('records aggregate 2/3/5 budgets and worker-backed UI responsiveness', asyn
   expect(totalLongTasks).toBe(0);
   expect(progressResponseErrors).toEqual([]);
   page.off('response', captureProgressResponse);
+  await renderSignals.dispose();
   await context.close();
 
   const result = {

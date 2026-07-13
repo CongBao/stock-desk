@@ -38,6 +38,7 @@ def test_module_inventory_and_heavy_work_use_independent_worker(
         "analysis",
         "api",
         "backtest",
+        "diagnostics",
         "formula",
         "guidance",
         "market",

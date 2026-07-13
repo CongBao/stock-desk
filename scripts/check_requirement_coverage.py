@@ -417,6 +417,57 @@ V11_CANONICAL_REQUIREMENTS: dict[str, dict[str, Any]] = {
             "use-existing-core-capability-after-desktopization",
         ),
     ),
+    "V11-R-010": _authority(
+        "platform",
+        "user_visible",
+        "bounded_actionable_desktop_recovery",
+        3,
+        "a68dce93efaf6e503a3ab92f809b91bb18342e227ee8cb0f19c15ca470fba3f1",
+        (
+            "desktop-user-experience",
+            "actionable-empty-error-and-offline-states",
+            "sidecar-unavailable",
+        ),
+        (
+            "windows-desktop-shell",
+            "sidecar-lifecycle-and-session-security",
+            "unexpected-sidecar-exit",
+        ),
+    ),
+    "V11-R-011": _authority(
+        "security",
+        "security",
+        "explicit_local_redacted_diagnostics_and_zero_telemetry",
+        3,
+        "ee2c1e52484d108288a498748570cf4af5f4afd66c459d1166498b87deea36af",
+        (
+            "desktop-user-experience",
+            "local-redacted-diagnostic-bundle",
+            "explicitly-export-diagnostic-bundle",
+        ),
+        (
+            "desktop-user-experience",
+            "default-zero-telemetry",
+            "normal-application-use",
+        ),
+    ),
+    "V11-R-012": _authority(
+        "platform",
+        "user_visible",
+        "exact_sha_windows_icon_and_packaged_desktop_matrix",
+        3,
+        "79eaf9e03c8d0eff63b53379645c7ef8c3c1df3cd6fe00b280e6cbcd25bcb312",
+        (
+            "desktop-user-experience",
+            "unified-desktop-icon",
+            "consistent-icons-across-desktop-entry-points",
+        ),
+        (
+            "desktop-user-experience",
+            "responsive-desktop-layout",
+            "high-display-scaling",
+        ),
+    ),
 }
 
 AUTHORITATIVE_BEHAVIOR_KEYS: dict[str, str] = {
@@ -1315,25 +1366,25 @@ def validate_v11_manifest(
         raise ValidationError("v1.1 schema_version must be integer 1")
     requirements = _expect_list(matrix["requirements"], "v1.1 requirements")
     non_goals = _expect_list(matrix["non_goals"], "v1.1 non_goals")
-    expected = [f"V11-R-{index:03d}" for index in range(1, 10)]
+    expected = [f"V11-R-{index:03d}" for index in range(1, 13)]
     if [
         item.get("id") if isinstance(item, dict) else None for item in requirements
     ] != expected:
         raise ValidationError(
-            "v1.1 requirements must contain exactly V11-R-001 through V11-R-009"
+            "v1.1 requirements must contain exactly V11-R-001 through V11-R-012"
         )
     if non_goals:
         raise ValidationError("v1.1 non_goals must be empty for the frozen increment")
     if list(V11_CANONICAL_REQUIREMENTS) != expected:
         raise ValidationError(
-            "v1.1 canonical registry must contain exactly V11-R-001 through V11-R-009"
+            "v1.1 canonical registry must contain exactly V11-R-001 through V11-R-012"
         )
     if (
         list(V11_AUTHORITATIVE_BEHAVIOR_KEYS) != expected
         or list(V11_AUTHORITATIVE_ACCEPTANCE_SHA256) != expected
     ):
         raise ValidationError(
-            "v1.1 authoritative contract must contain exactly V11-R-001 through V11-R-009"
+            "v1.1 authoritative contract must contain exactly V11-R-001 through V11-R-012"
         )
     tracked_paths = _tracked_paths(repo_root)
     behavior_keys: set[str] = set()

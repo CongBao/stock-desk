@@ -221,7 +221,7 @@ jobs:
           $manifestOutput = Join-Path $out 'windows-desktop-bundle.json'
           if (-not (Test-Path -LiteralPath $python -PathType Leaf)) { throw 'locked Python environment is missing' }
           & $python scripts/verify_windows_desktop_bundle.py $payload `
-            --version 1.1.0-alpha.2 --source-sha $env:SOURCE_SHA `
+            --version 1.1.0-beta.2 --source-sha $env:SOURCE_SHA `
             --toolchain "python=$env:PYTHON_VERSION" --toolchain "node=$env:NODE_VERSION" `
             --toolchain "pnpm=$env:PNPM_VERSION" --toolchain "rust=$env:RUST_VERSION" `
             --lock "uv.lock=$uvLock" --lock "pnpm-lock.yaml=$pnpmLock" --lock "Cargo.lock=$cargoLock" `
@@ -230,9 +230,58 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Windows bundle verifier failed' }
           if (-not (Test-Path -LiteralPath $manifestOutput -PathType Leaf) -or (Get-Item -LiteralPath $manifestOutput).Length -le 0) { throw 'Windows bundle manifest was not created' }
           $manifest = Get-Content -LiteralPath $manifestOutput -Raw | ConvertFrom-Json
-          if ($manifest.artifact -ne 'windows-desktop-bundle' -or $manifest.source_sha -ne $env:SOURCE_SHA -or $manifest.release.version -ne '1.1.0-alpha.2') { throw 'Windows bundle manifest identity is invalid' }
+          if ($manifest.artifact -ne 'windows-desktop-bundle' -or $manifest.source_sha -ne $env:SOURCE_SHA -or $manifest.release.version -ne '1.1.0-beta.2') { throw 'Windows bundle manifest identity is invalid' }
           Copy-Item $installers[0].FullName (Join-Path $out 'stock-desk-unsigned-nsis.exe')
           [ordered]@{schema_version=1;builder='A';source_sha=$env:SOURCE_SHA;source_tree=(git rev-parse 'HEAD^{tree}');runner_os=$env:RUNNER_OS;runner_arch=$env:RUNNER_ARCH;run_id=$env:GITHUB_RUN_ID;run_attempt=$env:GITHUB_RUN_ATTEMPT;job_id=$env:GITHUB_JOB} | ConvertTo-Json -Compress | Set-Content -Encoding utf8NoBOM (Join-Path $out 'provenance.json')
+      - name: Generate exact-SHA light and dark icon evidence
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP 'windows-desktop-a'
+          $out = Join-Path $root 'artifact\icon-evidence'
+          $tree = git rev-parse 'HEAD^{tree}'
+          uv run --frozen python scripts/icon_visual_evidence.py --icons src-tauri/icons --output $out --source-sha $env:SOURCE_SHA --source-tree $tree
+          if ($LASTEXITCODE -ne 0) { throw 'Windows icon evidence generation failed' }
+          $scriptHash = (Get-FileHash scripts\icon_visual_evidence.py -Algorithm SHA256).Hash.ToLowerInvariant()
+          $baselineHash = (Get-FileHash tests\fixtures\desktop-icons\pixel-baseline.json -Algorithm SHA256).Hash.ToLowerInvariant()
+          uv run --frozen python scripts/artifact_manifest.py create --root $out --output (Join-Path $out 'manifest.json') --source-sha $env:SOURCE_SHA --source-tree $tree --workflow CI --run-id $env:GITHUB_RUN_ID --run-attempt $env:GITHUB_RUN_ATTEMPT --job-id $env:GITHUB_JOB --job-name 'Build and verify Windows desktop candidate A' --payload 'windows-icon-evidence.json:provenance' --payload 'windows-icon-light-dark-contact-sheet.png:provenance' --critical-input "scripts/icon_visual_evidence.py=$scriptHash" --critical-input "tests/fixtures/desktop-icons/pixel-baseline.json=$baselineHash" --toolchain "python=$env:PYTHON_VERSION" --lockfile "uv.lock=$((Get-FileHash uv.lock -Algorithm SHA256).Hash.ToLowerInvariant())"
+          if ($LASTEXITCODE -ne 0) { throw 'Windows icon evidence binding failed' }
+      - name: Launch packaged Tauri and capture Windows desktop evidence
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP 'windows-desktop-a'
+          $artifact = Join-Path $root 'artifact'
+          $out = Join-Path $artifact 'desktop-ux-evidence'
+          $installer = Join-Path $artifact 'stock-desk-unsigned-nsis.exe'
+          $tree = git rev-parse 'HEAD^{tree}'
+          & scripts\capture_windows_desktop_evidence.ps1 -Installer $installer -Output $out -SourceSha $env:SOURCE_SHA -SourceTree $tree
+          if ($LASTEXITCODE -ne 0) { throw 'packaged Windows desktop evidence failed' }
+          $captureHash = (Get-FileHash scripts\capture_windows_desktop_evidence.ps1 -Algorithm SHA256).Hash.ToLowerInvariant()
+          $webviewHash = (Get-FileHash scripts\windows_desktop_webview_evidence.mjs -Algorithm SHA256).Hash.ToLowerInvariant()
+          $payload = @(
+            'windows-desktop-evidence.json:provenance',
+            'tauri-webview-evidence.json:provenance',
+            'tauri-native-window.png:provenance',
+            'tauri-webview-light.png:provenance',
+            'tauri-webview-dark.png:provenance',
+            'tauri-webview-effective-100.png:provenance',
+            'tauri-webview-effective-125.png:provenance',
+            'tauri-webview-effective-150.png:provenance',
+            'tauri-webview-effective-175.png:provenance',
+            'tauri-webview-effective-200.png:provenance',
+            'packaged-icon-evidence.json:provenance',
+            'packaged-host-icon-16.png:provenance',
+            'packaged-installer-icon-16.png:provenance',
+            'packaged-host-icon.png:provenance',
+            'packaged-installer-icon.png:provenance'
+          )
+          $arguments = @('scripts/artifact_manifest.py','create','--root',$out,'--output',(Join-Path $out 'manifest.json'),'--source-sha',$env:SOURCE_SHA,'--source-tree',$tree,'--workflow','CI','--run-id',$env:GITHUB_RUN_ID,'--run-attempt',$env:GITHUB_RUN_ATTEMPT,'--job-id',$env:GITHUB_JOB,'--job-name','Build and verify Windows desktop candidate A')
+          foreach ($item in $payload) { $arguments += @('--payload', $item) }
+          $iconVerifierHash = (Get-FileHash scripts\verify_windows_packaged_icons.py -Algorithm SHA256).Hash.ToLowerInvariant()
+          $arguments += @('--critical-input',"scripts/capture_windows_desktop_evidence.ps1=$captureHash",'--critical-input',"scripts/windows_desktop_webview_evidence.mjs=$webviewHash",'--critical-input',"scripts/verify_windows_packaged_icons.py=$iconVerifierHash",'--toolchain',"node=$env:NODE_VERSION",'--lockfile',"pnpm-lock.yaml=$((Get-FileHash pnpm-lock.yaml -Algorithm SHA256).Hash.ToLowerInvariant())")
+          uv run --frozen python @arguments
+          if ($LASTEXITCODE -ne 0) { throw 'packaged Windows desktop evidence binding failed' }
       - name: Upload source-free candidate A
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -367,11 +416,11 @@ jobs:
           $uvLock=(Get-FileHash uv.lock -Algorithm SHA256).Hash.ToLowerInvariant(); $pnpmLock=(Get-FileHash pnpm-lock.yaml -Algorithm SHA256).Hash.ToLowerInvariant(); $cargoLock=(Get-FileHash src-tauri\Cargo.lock -Algorithm SHA256).Hash.ToLowerInvariant()
           $python=Join-Path $PWD '.venv\Scripts\python.exe'; $manifestOutput=Join-Path $out 'windows-desktop-bundle.json'
           if (-not (Test-Path -LiteralPath $python -PathType Leaf)) { throw 'locked Python environment is missing' }
-          & $python scripts/verify_windows_desktop_bundle.py $payload --version 1.1.0-alpha.2 --source-sha $env:SOURCE_SHA --toolchain "python=$env:PYTHON_VERSION" --toolchain "node=$env:NODE_VERSION" --toolchain "pnpm=$env:PNPM_VERSION" --toolchain "rust=$env:RUST_VERSION" --lock "uv.lock=$uvLock" --lock "pnpm-lock.yaml=$pnpmLock" --lock "Cargo.lock=$cargoLock" --installer (Join-Path $payload 'stock-desk-unsigned-nsis.exe') --sidecar $sidecar[0].FullName --output $manifestOutput
+          & $python scripts/verify_windows_desktop_bundle.py $payload --version 1.1.0-beta.2 --source-sha $env:SOURCE_SHA --toolchain "python=$env:PYTHON_VERSION" --toolchain "node=$env:NODE_VERSION" --toolchain "pnpm=$env:PNPM_VERSION" --toolchain "rust=$env:RUST_VERSION" --lock "uv.lock=$uvLock" --lock "pnpm-lock.yaml=$pnpmLock" --lock "Cargo.lock=$cargoLock" --installer (Join-Path $payload 'stock-desk-unsigned-nsis.exe') --sidecar $sidecar[0].FullName --output $manifestOutput
           if ($LASTEXITCODE -ne 0) { throw 'Windows bundle verifier failed' }
           if (-not (Test-Path -LiteralPath $manifestOutput -PathType Leaf) -or (Get-Item -LiteralPath $manifestOutput).Length -le 0) { throw 'Windows bundle manifest was not created' }
           $manifest=Get-Content -LiteralPath $manifestOutput -Raw | ConvertFrom-Json
-          if ($manifest.artifact -ne 'windows-desktop-bundle' -or $manifest.source_sha -ne $env:SOURCE_SHA -or $manifest.release.version -ne '1.1.0-alpha.2') { throw 'Windows bundle manifest identity is invalid' }
+          if ($manifest.artifact -ne 'windows-desktop-bundle' -or $manifest.source_sha -ne $env:SOURCE_SHA -or $manifest.release.version -ne '1.1.0-beta.2') { throw 'Windows bundle manifest identity is invalid' }
           Copy-Item $installers[0].FullName (Join-Path $out 'stock-desk-unsigned-nsis.exe')
           [ordered]@{schema_version=1;builder='B';source_sha=$env:SOURCE_SHA;source_tree=(git rev-parse 'HEAD^{tree}');runner_os=$env:RUNNER_OS;runner_arch=$env:RUNNER_ARCH;run_id=$env:GITHUB_RUN_ID;run_attempt=$env:GITHUB_RUN_ATTEMPT;job_id=$env:GITHUB_JOB} | ConvertTo-Json -Compress | Set-Content -Encoding utf8NoBOM (Join-Path $out 'provenance.json')
       - name: Upload source-free candidate B
@@ -462,14 +511,14 @@ jobs:
           Copy-Item $left.Manifest (Join-Path $diagnostics 'left-windows-desktop-bundle.json')
           Copy-Item $right.Manifest (Join-Path $diagnostics 'right-windows-desktop-bundle.json')
           uv run --frozen python -m scripts.compare_windows_payloads $left.Manifest $right.Manifest --left-installer $left.Installer --right-installer $right.Installer --output (Join-Path $evidence 'windows-payload-comparison.json')
-          Copy-Item $left.Installer (Join-Path $promoted 'stock-desk-1.1.0-alpha.2-unsigned-x64-setup.exe')
+          Copy-Item $left.Installer (Join-Path $promoted 'stock-desk-1.1.0-beta.2-unsigned-x64-setup.exe')
           Copy-Item $left.Manifest (Join-Path $promoted 'windows-desktop-bundle.json')
           Copy-Item $left.Provenance (Join-Path $promoted 'builder-a-provenance.json')
           Copy-Item (Join-Path $evidence 'windows-payload-comparison.json') (Join-Path $promoted 'windows-payload-comparison.json')
           $tree = git rev-parse 'HEAD^{tree}'; $cargoLock=(Get-FileHash src-tauri\Cargo.lock -Algorithm SHA256).Hash.ToLowerInvariant(); $cargoToml=(Get-FileHash src-tauri\Cargo.toml -Algorithm SHA256).Hash.ToLowerInvariant(); $ciHash=(Get-FileHash .github\workflows\ci.yml -Algorithm SHA256).Hash.ToLowerInvariant(); $buildHash=(Get-FileHash scripts\build_windows_desktop.py -Algorithm SHA256).Hash.ToLowerInvariant(); $verifyHash=(Get-FileHash scripts\verify_windows_desktop_bundle.py -Algorithm SHA256).Hash.ToLowerInvariant(); $compareHash=(Get-FileHash scripts\compare_windows_payloads.py -Algorithm SHA256).Hash.ToLowerInvariant(); $tauriHash=(Get-FileHash src-tauri\tauri.conf.json -Algorithm SHA256).Hash.ToLowerInvariant(); $tauriWindowsHash=(Get-FileHash src-tauri\tauri.windows.conf.json -Algorithm SHA256).Hash.ToLowerInvariant(); $sidecarSpecHash=(Get-FileHash packaging\stock-desk-sidecar.spec -Algorithm SHA256).Hash.ToLowerInvariant(); $nsisHash=(Get-FileHash packaging\nsis\installer.nsi -Algorithm SHA256).Hash.ToLowerInvariant()
           $critical = @('--critical-input', ".github/workflows/ci.yml=$ciHash", '--critical-input', "scripts/build_windows_desktop.py=$buildHash", '--critical-input', "scripts/verify_windows_desktop_bundle.py=$verifyHash", '--critical-input', "scripts/compare_windows_payloads.py=$compareHash", '--critical-input', "src-tauri/tauri.conf.json=$tauriHash", '--critical-input', "src-tauri/tauri.windows.conf.json=$tauriWindowsHash", '--critical-input', "src-tauri/Cargo.toml=$cargoToml", '--critical-input', "packaging/stock-desk-sidecar.spec=$sidecarSpecHash", '--critical-input', "packaging/nsis/installer.nsi=$nsisHash")
           uv run --frozen python scripts/artifact_manifest.py create --root $evidence --output (Join-Path $evidence 'windows-payload-comparison-manifest.json') --source-sha $env:SOURCE_SHA --source-tree $tree --workflow CI --run-id $env:GITHUB_RUN_ID --run-attempt $env:GITHUB_RUN_ATTEMPT --job-id windows-desktop-compare --job-name 'Compare independent Windows desktop candidates' --payload 'windows-payload-comparison.json:provenance' @critical --toolchain "python=$env:PYTHON_VERSION" --lockfile "src-tauri/Cargo.lock=$cargoLock"
-          uv run --frozen python scripts/artifact_manifest.py create --root $promoted --output (Join-Path $promoted 'windows-desktop-alpha-candidate-manifest.json') --source-sha $env:SOURCE_SHA --source-tree $tree --workflow CI --run-id $env:GITHUB_RUN_ID --run-attempt $env:GITHUB_RUN_ATTEMPT --job-id windows-desktop-compare --job-name 'Compare independent Windows desktop candidates' --payload 'stock-desk-1.1.0-alpha.2-unsigned-x64-setup.exe:tauri-unsigned' --payload 'windows-desktop-bundle.json:provenance' --payload 'builder-a-provenance.json:provenance' --payload 'windows-payload-comparison.json:provenance' @critical --toolchain "python=$env:PYTHON_VERSION" --lockfile "src-tauri/Cargo.lock=$cargoLock" --cargo-lock-sha256 $cargoLock
+          uv run --frozen python scripts/artifact_manifest.py create --root $promoted --output (Join-Path $promoted 'windows-desktop-alpha-candidate-manifest.json') --source-sha $env:SOURCE_SHA --source-tree $tree --workflow CI --run-id $env:GITHUB_RUN_ID --run-attempt $env:GITHUB_RUN_ATTEMPT --job-id windows-desktop-compare --job-name 'Compare independent Windows desktop candidates' --payload 'stock-desk-1.1.0-beta.2-unsigned-x64-setup.exe:tauri-unsigned' --payload 'windows-desktop-bundle.json:provenance' --payload 'builder-a-provenance.json:provenance' --payload 'windows-payload-comparison.json:provenance' @critical --toolchain "python=$env:PYTHON_VERSION" --lockfile "src-tauri/Cargo.lock=$cargoLock" --cargo-lock-sha256 $cargoLock
           $bindingScript = @'
           import json
           from pathlib import Path

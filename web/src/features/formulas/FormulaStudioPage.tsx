@@ -99,7 +99,7 @@ function errorMessage(error: unknown): string {
       return '无法连接本地 API，请确认 stock-desk 服务正在运行。';
     }
     if (error.kind === 'http') {
-      return `本地 API 拒绝了请求（HTTP ${String(error.status ?? '未知')}），请按页面诊断处理。`;
+      return '本地服务暂时无法完成公式请求，请按页面诊断处理。';
     }
   }
   if (

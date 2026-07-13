@@ -2,6 +2,7 @@ import secrets
 from datetime import date
 from pathlib import Path
 import threading
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 import pytest
@@ -300,6 +301,8 @@ def test_desktop_shutdown_accepts_only_terminal_storage_and_signals_lifecycle(
     session = _session()
     repository = _repository(tmp_path)
     lifecycle = DesktopLifecycleController()
+    server = SimpleNamespace(should_exit=False)
+    lifecycle.bind_server(server)
     succeeded = repository.create("demo.double", {"value": 1})
     claimed = repository.claim_next("desktop-test-worker")
     assert claimed is not None and claimed.id == succeeded.id
@@ -314,11 +317,108 @@ def test_desktop_shutdown_accepts_only_terminal_storage_and_signals_lifecycle(
             )
         ) as client:
             response = client.post("/api/desktop/shutdown", headers=_headers(session))
+            assert server.should_exit is False
+            assert lifecycle.shutdown_prepared is True
+            assert lifecycle.claim_stop_event.is_set() is True
+            assert lifecycle.shutdown_requested is False
+            committed = client.post(
+                "/api/desktop/shutdown/commit", headers=_headers(session)
+            )
 
         assert response.status_code == 202
         assert response.json() == {"status": "shutdown_requested"}
+        assert committed.status_code == 202
+        assert committed.json() == {"status": "shutdown_committed"}
         assert lifecycle.shutdown_requested is True
         assert lifecycle.stop_event.is_set()
+        assert server.should_exit is True
+    finally:
+        repository.close()
+
+
+def test_desktop_shutdown_remains_available_in_read_only_demo_mode(
+    tmp_path: Path,
+) -> None:
+    session = _session()
+    database_url = f"sqlite:///{tmp_path / 'desktop-demo-exit.db'}"
+    migrate(database_url)
+    repository = TaskRepository(
+        create_engine_for_url(database_url),
+        owns_engine=True,
+    )
+    lifecycle = DesktopLifecycleController()
+    server = SimpleNamespace(should_exit=False)
+    lifecycle.bind_server(server)
+    settings = Settings(
+        database_url=database_url,
+        data_dir=tmp_path / "Stock Desk" / "v1.1",
+    )
+    try:
+        with TestClient(
+            create_app(
+                settings,
+                task_repository=repository,
+                desktop_session=session,
+                desktop_lifecycle=lifecycle,
+            )
+        ) as client:
+            headers = _headers(session)
+            demo = client.post(
+                "/api/v1/onboarding/actions/demo",
+                headers=headers,
+            )
+            unauthorized = client.post("/api/desktop/shutdown")
+            assert lifecycle.shutdown_prepared is False
+            assert lifecycle.shutdown_requested is False
+            prepared = client.post(
+                "/api/desktop/shutdown",
+                headers=headers,
+            )
+            assert server.should_exit is False
+            assert lifecycle.shutdown_prepared is True
+            assert lifecycle.shutdown_requested is False
+            committed = client.post(
+                "/api/desktop/shutdown/commit",
+                headers=headers,
+            )
+
+        assert demo.status_code == 200
+        assert demo.json()["demo_mode"] is True
+        assert unauthorized.status_code == 403
+        assert unauthorized.json() == {"code": "desktop_origin_forbidden"}
+        assert prepared.status_code == 202
+        assert prepared.json() == {"status": "shutdown_requested"}
+        assert committed.status_code == 202
+        assert committed.json() == {"status": "shutdown_committed"}
+        assert lifecycle.shutdown_requested is True
+        assert server.should_exit is True
+    finally:
+        repository.close()
+
+
+def test_desktop_shutdown_commit_cannot_bypass_prepare_gate(tmp_path: Path) -> None:
+    session = _session()
+    repository = _repository(tmp_path)
+    lifecycle = DesktopLifecycleController()
+    server = SimpleNamespace(should_exit=False)
+    lifecycle.bind_server(server)
+    try:
+        with TestClient(
+            create_app(
+                task_repository=repository,
+                desktop_session=session,
+                desktop_lifecycle=lifecycle,
+            )
+        ) as client:
+            response = client.post(
+                "/api/desktop/shutdown/commit", headers=_headers(session)
+            )
+
+        assert response.status_code == 409
+        assert response.json() == {"code": "desktop_shutdown_not_prepared"}
+        assert lifecycle.shutdown_prepared is False
+        assert lifecycle.shutdown_requested is False
+        assert server.should_exit is False
     finally:
         repository.close()
 

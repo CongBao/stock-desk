@@ -1,6 +1,9 @@
 use std::{
-    fmt, io,
-    path::PathBuf,
+    fmt,
+    fs::OpenOptions,
+    io,
+    io::Write as _,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -18,7 +21,10 @@ use crate::{exit::DesktopExitController, sidecar::SidecarAuthority, windows_job:
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(45);
 const BOOTSTRAP_RELEASE_BYTE: &[u8] = b"\x01";
 const ABNORMAL_SETUP_EXIT_CODE: u32 = 70;
+const FORCED_USER_EXIT_CODE: u32 = 71;
 const MAX_USER_RESTARTS: u8 = 3;
+const MAX_CONSECUTIVE_HEALTH_FAILURES: u8 = 3;
+const HEALTH_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 const RUNTIME_EVENT: &str = "desktop-runtime-state";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -27,6 +33,38 @@ enum SidecarSetupError {
     LaunchFailed,
     AssignmentFailed,
     BootstrapFailed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StartupFailure {
+    PermissionDenied,
+    SidecarUnavailable,
+}
+
+fn startup_failure_state(failure: StartupFailure) -> DesktopRuntimeState {
+    DesktopRuntimeState::Recovery {
+        reason: match failure {
+            StartupFailure::PermissionDenied => "permission_denied",
+            StartupFailure::SidecarUnavailable => "sidecar_unavailable",
+        },
+        can_restart: true,
+    }
+}
+
+#[derive(Default)]
+struct HealthFailureMonitor {
+    consecutive_failures: u8,
+}
+
+impl HealthFailureMonitor {
+    fn record(&mut self, healthy: bool) -> bool {
+        if healthy {
+            self.consecutive_failures = 0;
+            return false;
+        }
+        self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+        self.consecutive_failures >= MAX_CONSECUTIVE_HEALTH_FAILURES
+    }
 }
 
 impl SidecarSetupError {
@@ -258,6 +296,27 @@ impl DesktopRuntime {
         }
     }
 
+    fn recovery(
+        state: DesktopRuntimeState,
+        client: reqwest::Client,
+        local_data_root: PathBuf,
+    ) -> Self {
+        Self {
+            inner: Mutex::new(DesktopRuntimeInner {
+                slot: GenerationSlot {
+                    generation: 1,
+                    state,
+                    authority: None,
+                    child: None,
+                    job: None,
+                },
+                restart_attempts: 0,
+            }),
+            client,
+            local_data_root,
+        }
+    }
+
     fn current(&self) -> DesktopRuntimeState {
         self.inner
             .lock()
@@ -327,6 +386,54 @@ impl DesktopRuntime {
             .slot
             .generation
             == generation
+    }
+
+    pub(crate) fn is_ready(&self) -> bool {
+        matches!(self.current(), DesktopRuntimeState::Ready)
+    }
+
+    pub(crate) fn terminate_non_ready_for_exit(&self) {
+        let (child, job) = {
+            let mut inner = self.inner.lock().expect("runtime state poisoned");
+            if matches!(inner.slot.state, DesktopRuntimeState::Ready) {
+                return;
+            }
+            // Close the generation before releasing its resources so a late
+            // startup handshake cannot reinstall or promote it while the host
+            // is committing the user-confirmed exit.
+            inner.slot.state = DesktopRuntimeState::Recovery {
+                reason: "exit_committed",
+                can_restart: false,
+            };
+            inner.slot.authority = None;
+            (inner.slot.child.take(), inner.slot.job.take())
+        };
+        if let Some(child) = child {
+            if let Some(job) = job {
+                cleanup_failed_setup(&job, child);
+            } else {
+                child.kill_fallback();
+            }
+        }
+    }
+
+    pub(crate) fn terminate_generation_for_exit(&self, generation: u64) {
+        let (child, job) = {
+            let mut inner = self.inner.lock().expect("runtime state poisoned");
+            if inner.slot.generation != generation {
+                return;
+            }
+            inner.slot.authority = None;
+            (inner.slot.child.take(), inner.slot.job.take())
+        };
+        match (child, job) {
+            (Some(child), Some(job)) => cleanup_failed_setup(&job, child),
+            (Some(child), None) => child.kill_fallback(),
+            (None, Some(job)) => {
+                let _ = job.terminate(FORCED_USER_EXIT_CODE);
+            }
+            (None, None) => {}
+        }
     }
 
     pub(crate) fn transition_recovery_for_generation(
@@ -516,14 +623,41 @@ impl Handshake {
 
 pub fn setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     let local_data_root = app.path().local_data_dir()?;
-    let authority = Arc::new(
-        SidecarAuthority::new(&local_data_root, env!("STOCK_DESK_SOURCE_REVISION"))
-            .map_err(io::Error::other)?,
-    );
     // Finish all fallible host-only initialization before the gated process is
     // spawned. No error may strand a released child outside managed runtime.
     let client = build_proxy_client()?;
-    let (events, child, job) = spawn_generation(app.handle(), &authority)?;
+    let data_root = local_data_root.join("Stock Desk").join("v1.1");
+    if ensure_user_data_root(&data_root).is_err() {
+        app.manage(DesktopRuntime::recovery(
+            startup_failure_state(StartupFailure::PermissionDenied),
+            client,
+            local_data_root,
+        ));
+        return Ok(());
+    }
+    let authority =
+        match SidecarAuthority::new(&local_data_root, env!("STOCK_DESK_SOURCE_REVISION")) {
+            Ok(authority) => Arc::new(authority),
+            Err(_) => {
+                app.manage(DesktopRuntime::recovery(
+                    startup_failure_state(StartupFailure::SidecarUnavailable),
+                    client,
+                    local_data_root,
+                ));
+                return Ok(());
+            }
+        };
+    let (events, child, job) = match spawn_generation(app.handle(), &authority) {
+        Ok(resources) => resources,
+        Err(_) => {
+            app.manage(DesktopRuntime::recovery(
+                startup_failure_state(StartupFailure::SidecarUnavailable),
+                client,
+                local_data_root,
+            ));
+            return Ok(());
+        }
+    };
     app.manage(DesktopRuntime::new(
         child,
         Arc::clone(&authority),
@@ -533,6 +667,19 @@ pub fn setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     ));
     start_generation_watchers(app.handle().clone(), 1, authority, events);
     Ok(())
+}
+
+fn ensure_user_data_root(path: &Path) -> io::Result<()> {
+    std::fs::create_dir_all(path)?;
+    let probe = path.join(format!(".write-probe-{}", std::process::id()));
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)?;
+    let write_result = file.write_all(b"stock-desk");
+    drop(file);
+    let cleanup_result = std::fs::remove_file(probe);
+    write_result.and(cleanup_result)
 }
 
 fn spawn_generation(
@@ -601,8 +748,12 @@ fn start_generation_watchers(
 
     tauri::async_runtime::spawn(async move {
         let state = wait_for_handshake(&authority).await;
+        let ready = matches!(state, DesktopRuntimeState::Ready);
         if let Some(runtime) = app.try_state::<DesktopRuntime>() {
             runtime.transition_startup_for_generation(&app, generation, state);
+        }
+        if ready {
+            monitor_ready_health(app, generation, authority).await;
         }
     });
 }
@@ -654,74 +805,91 @@ pub async fn desktop_restart_service(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
-pub fn desktop_open_diagnostics(app: AppHandle) -> Result<(), String> {
-    let local_data_root = app
-        .path()
-        .local_data_dir()
-        .map_err(|_| "desktop_diagnostics_unavailable".to_owned())?;
-    open_diagnostics_directory(local_data_root.join("Stock Desk").join("v1.1"))
-}
-
-#[cfg(windows)]
-fn open_diagnostics_directory(path: PathBuf) -> Result<(), String> {
-    std::fs::create_dir_all(&path).map_err(|_| "desktop_diagnostics_unavailable".to_owned())?;
-    std::process::Command::new("explorer.exe")
-        .arg(path)
-        .spawn()
-        .map(|_| ())
-        .map_err(|_| "desktop_diagnostics_unavailable".to_owned())
-}
-
-#[cfg(not(windows))]
-fn open_diagnostics_directory(_path: PathBuf) -> Result<(), String> {
-    Err("desktop_diagnostics_unsupported".to_owned())
-}
-
 async fn wait_for_handshake(authority: &SidecarAuthority) -> DesktopRuntimeState {
-    let client = match reqwest::Client::builder()
-        .connect_timeout(Duration::from_millis(500))
-        .timeout(Duration::from_secs(2))
-        .redirect(Policy::none())
-        .build()
-    {
+    let client = match build_health_client() {
         Ok(client) => client,
         Err(_) => {
-            return DesktopRuntimeState::Recovery {
-                reason: "sidecar_unavailable",
-                can_restart: true,
-            };
+            return startup_failure_state(StartupFailure::SidecarUnavailable);
         }
     };
     let deadline = Instant::now() + STARTUP_TIMEOUT;
     while Instant::now() < deadline {
-        let response = client
-            .get(authority.handshake_url())
-            .header("Origin", authority.origin())
-            .header("Authorization", authority.authorization_header())
-            .send()
-            .await;
-        if let Ok(response) = response {
-            if response.status().is_success() {
-                match response.json::<Handshake>().await {
-                    Ok(handshake) if handshake.matches(authority) => {
-                        return DesktopRuntimeState::Ready;
-                    }
-                    Ok(_) => {
-                        return DesktopRuntimeState::Recovery {
-                            reason: "version_mismatch",
-                            can_restart: false,
-                        };
-                    }
-                    Err(_) => {}
-                }
+        if let Ok(handshake) = request_handshake(&client, authority).await {
+            if handshake.matches(authority) {
+                return DesktopRuntimeState::Ready;
             }
+            return DesktopRuntimeState::Recovery {
+                reason: "version_mismatch",
+                can_restart: false,
+            };
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     DesktopRuntimeState::Recovery {
         reason: "startup_timeout",
         can_restart: true,
+    }
+}
+
+fn build_health_client() -> Result<reqwest::Client, reqwest::Error> {
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_millis(500))
+        .timeout(Duration::from_secs(2))
+        .redirect(Policy::none())
+        .build()
+}
+
+async fn request_handshake(
+    client: &reqwest::Client,
+    authority: &SidecarAuthority,
+) -> Result<Handshake, ()> {
+    let response = client
+        .get(authority.handshake_url())
+        .header("Origin", authority.origin())
+        .header("Authorization", authority.authorization_header())
+        .send()
+        .await
+        .map_err(|_| ())?;
+    if !response.status().is_success() {
+        return Err(());
+    }
+    response.json::<Handshake>().await.map_err(|_| ())
+}
+
+async fn monitor_ready_health(app: AppHandle, generation: u64, authority: Arc<SidecarAuthority>) {
+    let client = match build_health_client() {
+        Ok(client) => client,
+        Err(_) => return,
+    };
+    let mut monitor = HealthFailureMonitor::default();
+    loop {
+        tokio::time::sleep(HEALTH_CHECK_INTERVAL).await;
+        let Some(runtime) = app.try_state::<DesktopRuntime>() else {
+            return;
+        };
+        if !runtime.is_same_ready_generation(generation) {
+            return;
+        }
+        match request_handshake(&client, &authority).await {
+            Ok(handshake) if handshake.matches(&authority) => {
+                monitor.record(true);
+            }
+            Ok(_) => {
+                runtime.transition_recovery_for_generation(
+                    &app,
+                    generation,
+                    "version_mismatch",
+                    false,
+                );
+                return;
+            }
+            Err(()) if monitor.record(false) => {
+                let state = runtime.restart_failure_state(generation, "sidecar_unavailable");
+                runtime.transition_for_generation(&app, generation, state);
+                return;
+            }
+            Err(()) => {}
+        }
     }
 }
 
@@ -1112,15 +1280,6 @@ mod tests {
         ));
     }
 
-    #[cfg(not(windows))]
-    #[test]
-    fn diagnostics_is_stably_unsupported_without_disclosing_its_path() {
-        let private = std::env::temp_dir().join("private-user").join("Stock Desk");
-        let error = open_diagnostics_directory(private.clone()).unwrap_err();
-        assert_eq!(error, "desktop_diagnostics_unsupported");
-        assert!(!error.contains(private.to_string_lossy().as_ref()));
-    }
-
     #[test]
     fn proxy_client_never_follows_redirects() {
         let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
@@ -1145,5 +1304,34 @@ mod tests {
         });
         assert_eq!(response.status(), reqwest::StatusCode::FOUND);
         server.join().unwrap();
+    }
+
+    #[test]
+    fn running_health_loss_requires_three_consecutive_failures() {
+        let mut monitor = HealthFailureMonitor::default();
+        assert!(!monitor.record(false));
+        assert!(!monitor.record(false));
+        monitor.record(true);
+        assert!(!monitor.record(false));
+        assert!(!monitor.record(false));
+        assert!(monitor.record(false));
+    }
+
+    #[test]
+    fn startup_failures_are_recoverable_and_stably_categorized() {
+        assert_eq!(
+            startup_failure_state(StartupFailure::PermissionDenied),
+            DesktopRuntimeState::Recovery {
+                reason: "permission_denied",
+                can_restart: true,
+            }
+        );
+        assert_eq!(
+            startup_failure_state(StartupFailure::SidecarUnavailable),
+            DesktopRuntimeState::Recovery {
+                reason: "sidecar_unavailable",
+                can_restart: true,
+            }
+        );
     }
 }

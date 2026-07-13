@@ -11,6 +11,7 @@ function adapter(overrides: Partial<DesktopAdapter> = {}): DesktopAdapter {
   return {
     cancelExit: vi.fn(() => Promise.resolve()),
     confirmExit: vi.fn(() => Promise.resolve()),
+    exportDiagnostics: vi.fn(() => Promise.resolve('saved' as const)),
     getRuntimeState: vi.fn(() => Promise.resolve({ state: 'starting' })),
     openDiagnostics: vi.fn(() => Promise.resolve()),
     requestExit: vi.fn(() => Promise.resolve()),
@@ -150,9 +151,7 @@ it('returns to starting after one explicit successful restart', async () => {
     </DesktopStartup>,
   );
 
-  await user.click(
-    await screen.findByRole('button', { name: 'Restart Service' }),
-  );
+  await user.click(await screen.findByRole('button', { name: '重启服务' }));
   expect(restartService).toHaveBeenCalledOnce();
   expect(screen.getByRole('status')).toHaveTextContent('正在启动桌面服务');
   expect(screen.queryByText('workspace ready')).not.toBeInTheDocument();
@@ -191,11 +190,33 @@ it('does not overwrite a ready event that arrives before restart resolves', asyn
     </DesktopStartup>,
   );
 
-  await user.click(
-    await screen.findByRole('button', { name: 'Restart Service' }),
-  );
+  await user.click(await screen.findByRole('button', { name: '重启服务' }));
   act(() => emit?.({ state: 'ready' }));
   expect(await screen.findByText('workspace ready')).toBeInTheDocument();
   act(() => resolveRestart?.());
   expect(screen.getByText('workspace ready')).toBeInTheDocument();
+});
+
+it('keeps the bounded terminal recovery state without offering another restart', async () => {
+  render(
+    <DesktopStartup
+      bridge={createDesktopBridge(
+        adapter({
+          getRuntimeState: vi.fn(() =>
+            Promise.resolve({
+              state: 'recovery',
+              reason: 'restart_limit_reached',
+              can_restart: false,
+            }),
+          ),
+        }),
+      )}
+    >
+      <p>workspace ready</p>
+    </DesktopStartup>,
+  );
+
+  expect(await screen.findByText(/已达到安全重启上限/u)).toBeVisible();
+  expect(screen.queryByRole('button', { name: '重启服务' })).toBeNull();
+  expect(screen.queryByText('workspace ready')).toBeNull();
 });
