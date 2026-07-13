@@ -88,6 +88,7 @@ def test_allowlisted_recursive_redaction_removes_all_private_classes() -> None:
     "payload",
     [
         {"unknown": "ordinary"},
+        {"events": [{"nested": {"unknown": "ordinary"}}]},
         {"events": {1: "invalid key"}},
         {"events": object()},
         {"events": float("nan")},

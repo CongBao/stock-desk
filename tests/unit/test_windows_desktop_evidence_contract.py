@@ -17,6 +17,15 @@ def test_windows_candidate_runs_packaged_tauri_and_binds_visual_evidence() -> No
     assert "tauri-native-window.png:provenance" in workflow
     assert "tauri-webview-effective-200.png:provenance" in workflow
     assert "windows-icon-light-dark-contact-sheet.png:provenance" in workflow
+    assert "Verify candidate A desktop privacy boundary" in workflow
+    assert "scripts/verify_zero_telemetry.py --root ." in workflow
+    assert "$workflowHash = (Get-FileHash .github\\workflows\\ci.yml" in workflow
+    assert (
+        '".github/workflows/ci.yml=$workflowHash"' in workflow
+        or "'.github/workflows/ci.yml=$workflowHash'" in workflow
+    )
+    assert "scripts/verify_zero_telemetry.py=$privacyVerifierHash" in workflow
+    assert "config/desktop-network-privacy.json=$privacyPolicyHash" in workflow
 
 
 def test_native_harness_installs_candidate_checks_shell_icons_and_exits_cleanly() -> (

@@ -7,7 +7,6 @@ from contextlib import AbstractContextManager
 from datetime import datetime, timezone
 import os
 from pathlib import Path
-import socket
 from threading import Event, Lock
 from time import monotonic as _monotonic
 from typing import Any
@@ -34,6 +33,7 @@ from stock_desk.config import Settings
 from stock_desk.formula.repository import FormulaRepository
 from stock_desk.formula.service import FormulaService, IsolatedFormulaExecutor
 from stock_desk.diagnostics.models import DiagnosticEventSink
+from stock_desk.runtime_identity import new_worker_id
 from stock_desk.market.compositions import (
     AkShareCompositionProvider,
     CompositionProvider,
@@ -355,7 +355,7 @@ class ProductionMarketWorker:
             schedules = MarketUpdateScheduleRepository(engine)
             task_worker = TaskWorker(
                 tasks,
-                worker_id=worker_id or f"{socket.gethostname()}-{os.getpid()}",
+                worker_id=worker_id or new_worker_id("market"),
                 diagnostic_event_sink=diagnostic_event_sink,
             )
             resolved_factory = provider_factory or DefaultRuntimeProviderFactory()

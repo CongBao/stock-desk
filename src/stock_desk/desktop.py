@@ -33,6 +33,7 @@ from stock_desk.desktop_runtime import (
     _restrict_owner_access,
     _windows_acl_command as _runtime_windows_acl_command,
 )
+from stock_desk.runtime_identity import new_worker_id
 
 
 APP_NAME: Final = "stock-desk"
@@ -207,7 +208,7 @@ def _worker_child(
 
     runtime = ProductionMarketWorker.open(
         _settings_from_payload(settings_payload),
-        worker_id=f"desktop-{socket.gethostname()}-{os.getpid()}",
+        worker_id=new_worker_id("desktop"),
     )
     try:
         runtime.run_forever(stop_event, ready_event=ready_event)

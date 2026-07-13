@@ -57,6 +57,7 @@ LEGACY_CRITICAL_INPUTS: Final = (
     "uv.lock",
 )
 CRITICAL_INPUTS: Final = LEGACY_CRITICAL_INPUTS + (
+    "config/desktop-network-privacy.json",
     "packaging/nsis/installer.nsi",
     "packaging/stock-desk-sidecar.spec",
     "playwright.config.ts",
@@ -71,6 +72,7 @@ CRITICAL_INPUTS: Final = LEGACY_CRITICAL_INPUTS + (
     "scripts/compare_windows_payloads.py",
     "scripts/e2e_snapshot.py",
     "scripts/verify_ci_cache_policy.py",
+    "scripts/verify_zero_telemetry.py",
     "scripts/verify_windows_desktop_bundle.py",
     "src-tauri/Cargo.lock",
     "src-tauri/Cargo.toml",

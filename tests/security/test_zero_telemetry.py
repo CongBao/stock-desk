@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import copy
+import json
 from pathlib import Path
+import re
 import socket
 
 import pytest
@@ -16,9 +19,60 @@ from stock_desk.diagnostics.models import (
     DiagnosticConfiguration,
     DiagnosticSnapshotService,
 )
+from stock_desk.runtime_identity import new_worker_id
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+PRIVACY_POLICY = {
+    "schema_version": 2,
+    "active_phase": "pre-updater",
+    "phases": {
+        "pre-updater": {
+            "telemetry": "disabled",
+            "automatic_crash_upload": "disabled",
+            "automatic_diagnostic_upload": "disabled",
+            "diagnostics": {
+                "creation": "explicit-user-action",
+                "upload": "never",
+            },
+            "production_network_exact_paths": {
+                "python": [
+                    "src/stock_desk/analysis/model_config.py",
+                    "src/stock_desk/analysis/model_settings.py",
+                    "src/stock_desk/analysis/providers/base.py",
+                    "src/stock_desk/analysis/providers/deepseek.py",
+                    "src/stock_desk/analysis/providers/ollama.py",
+                    "src/stock_desk/analysis/providers/openai_compatible.py",
+                    "src/stock_desk/analysis/sources/_akshare_worker.py",
+                    "src/stock_desk/analysis/sources/tushare.py",
+                    "src/stock_desk/desktop.py",
+                    "src/stock_desk/market/compositions.py",
+                    "src/stock_desk/market/providers/akshare.py",
+                    "src/stock_desk/market/providers/baostock.py",
+                    "src/stock_desk/market/providers/tushare.py",
+                ],
+                "rust": [
+                    "src-tauri/src/app.rs",
+                    "src-tauri/src/exit.rs",
+                    "src-tauri/src/proxy.rs",
+                ],
+                "web": ["web/src/shared/api/client.ts"],
+            },
+            "updater": {
+                "enabled": False,
+                "future_request": {
+                    "identity": "anonymous",
+                    "allowed_fields": ["target", "arch", "current_version"],
+                    "stable_device_identifier": False,
+                    "usage_behavior": False,
+                    "local_data_digest": False,
+                },
+            },
+        }
+    },
+}
 
 
 def _minimal_repository(root: Path) -> None:
@@ -30,10 +84,70 @@ def _minimal_repository(root: Path) -> None:
         path = root / relative
         path.mkdir(parents=True, exist_ok=True)
         (path / "safe.py").write_text("VALUE = 'local-only'\n", encoding="utf-8")
+    allowlist = PRIVACY_POLICY["phases"]["pre-updater"][
+        "production_network_exact_paths"
+    ]
+    for relative in allowlist["python"]:
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "import socket as network\nnetwork.socket()\n", encoding="utf-8"
+        )
+    for relative in allowlist["rust"]:
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "fn network() { let _ = reqwest::Client::new(); }\n", encoding="utf-8"
+        )
+    for relative in allowlist["web"]:
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "export const request = () => fetch('/api');\n", encoding="utf-8"
+        )
+    policy = root / "config/desktop-network-privacy.json"
+    policy.parent.mkdir(parents=True, exist_ok=True)
+    policy.write_text(json.dumps(PRIVACY_POLICY), encoding="utf-8")
+    tauri_config = root / "src-tauri/tauri.conf.json"
+    tauri_config.write_text("{}\n", encoding="utf-8")
+    windows_config = root / "src-tauri/tauri.windows.conf.json"
+    windows_config.write_text("{}\n", encoding="utf-8")
+    capability = root / "src-tauri/capabilities/default.json"
+    capability.parent.mkdir(parents=True, exist_ok=True)
+    capability.write_text('{"permissions": []}\n', encoding="utf-8")
 
 
 def test_current_locked_application_has_no_telemetry_or_crash_sdk() -> None:
     assert audit_repository(ROOT) == ()
+
+
+def test_production_worker_ids_use_random_session_identity_not_host_identity() -> None:
+    paths = (
+        "src/stock_desk/desktop.py",
+        "src/stock_desk/sidecar.py",
+        "src/stock_desk/tasks/worker.py",
+        "src/stock_desk/market/worker_runtime.py",
+    )
+    for relative in paths:
+        source = (ROOT / relative).read_text(encoding="utf-8")
+        assert "socket.gethostname()" not in source
+        assert "new_worker_id(" in source
+
+
+def test_new_worker_id_has_random_unique_session_shape() -> None:
+    worker_ids = {new_worker_id("market") for _ in range(64)}
+
+    assert len(worker_ids) == 64
+    assert all(re.fullmatch(r"market-[0-9a-f]{32}", item) for item in worker_ids)
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    ("", "Market", "market_worker", "1market", "a" * 33),
+)
+def test_new_worker_id_rejects_invalid_prefix(prefix: str) -> None:
+    with pytest.raises(ValueError, match="short lowercase slug"):
+        new_worker_id(prefix)
 
 
 @pytest.mark.parametrize(
@@ -68,6 +182,155 @@ def test_missing_manifest_or_source_symlink_fails_closed(tmp_path: Path) -> None
     violations = audit_repository(tmp_path)
     assert "missing-or-unsafe-manifest:uv.lock" in violations
     assert "unsafe-source-link:src/stock_desk/linked.py" in violations
+
+
+@pytest.mark.parametrize(
+    ("relative", "payload", "expected"),
+    [
+        (
+            "src/stock_desk/identity.py",
+            "installation_id = read_machine_guid()\n",
+            "stable-device-identifier",
+        ),
+        (
+            "web/src/diagnostics.ts",
+            "uploadDiagnosticBundle(bundle);\n",
+            "automatic-diagnostic-upload",
+        ),
+        (
+            "src/stock_desk/diagnostics/sender.py",
+            'import requests as transport\ntransport.post("https://example.invalid", data=b"bundle")\n',
+            "network-path-not-allowlisted",
+        ),
+        (
+            "src-tauri/Cargo.toml",
+            'tauri-plugin-updater = "2"\n',
+            "updater-enabled",
+        ),
+        (
+            "src-tauri/capabilities/default.json",
+            '{"permissions": ["updater:default"]}\n',
+            "updater-enabled",
+        ),
+        (
+            "src-tauri/tauri.conf.json",
+            '{"plugins": {"updater": {"endpoints": ["https://example.invalid"]}}}\n',
+            "updater-enabled",
+        ),
+    ],
+)
+def test_device_identity_automatic_upload_or_updater_enablement_fails_closed(
+    tmp_path: Path,
+    relative: str,
+    payload: str,
+    expected: str,
+) -> None:
+    _minimal_repository(tmp_path)
+    path = tmp_path / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(payload, encoding="utf-8")
+
+    with pytest.raises(ZeroTelemetryError, match=expected):
+        verify_repository(tmp_path)
+
+
+def test_privacy_policy_is_required_and_future_updates_must_remain_anonymous(
+    tmp_path: Path,
+) -> None:
+    _minimal_repository(tmp_path)
+    policy_path = tmp_path / "config/desktop-network-privacy.json"
+    policy_path.unlink()
+    with pytest.raises(ZeroTelemetryError, match="privacy-policy"):
+        verify_repository(tmp_path)
+
+    _minimal_repository(tmp_path)
+    unsafe = copy.deepcopy(PRIVACY_POLICY)
+    unsafe["phases"]["pre-updater"]["updater"]["future_request"]["identity"] = (
+        "stable-device"
+    )
+    policy_path.write_text(json.dumps(unsafe), encoding="utf-8")
+    with pytest.raises(ZeroTelemetryError, match="privacy-policy"):
+        verify_repository(tmp_path)
+
+
+def test_phase_policy_and_recursive_tauri_json_fail_closed(tmp_path: Path) -> None:
+    _minimal_repository(tmp_path)
+    policy_path = tmp_path / "config/desktop-network-privacy.json"
+    unsafe = copy.deepcopy(PRIVACY_POLICY)
+    unsafe["active_phase"] = "anonymous-updater"
+    policy_path.write_text(json.dumps(unsafe), encoding="utf-8")
+    with pytest.raises(ZeroTelemetryError, match="privacy-policy"):
+        verify_repository(tmp_path)
+
+    _minimal_repository(tmp_path)
+    nested = tmp_path / "src-tauri/capabilities/nested/update.json"
+    nested.parent.mkdir(parents=True, exist_ok=True)
+    nested.write_text('{"permissions": ["updater:default"]}\n', encoding="utf-8")
+    with pytest.raises(ZeroTelemetryError, match="updater-enabled"):
+        verify_repository(tmp_path)
+
+
+def test_capabilities_symlink_ancestor_fails_closed(tmp_path: Path) -> None:
+    _minimal_repository(tmp_path)
+    capabilities = tmp_path / "src-tauri/capabilities"
+    (capabilities / "default.json").unlink()
+    capabilities.rmdir()
+    outside = tmp_path / "outside-capabilities"
+    outside.mkdir()
+    (outside / "default.json").write_text('{"permissions": []}\n', encoding="utf-8")
+    capabilities.symlink_to(outside, target_is_directory=True)
+
+    violations = audit_repository(tmp_path)
+    assert "missing-or-unsafe-config-root:src-tauri/capabilities" in violations
+    assert "missing-or-unsafe-config:src-tauri/capabilities/default.json" in violations
+
+
+@pytest.mark.parametrize(
+    "payload",
+    (
+        "import httpx2 as transport\nclient = transport.AsyncClient()\n",
+        "from urllib import request as transport\ntransport.urlopen('https://example.invalid')\n",
+        "import importlib as loader\nloader.import_module('requests')\n",
+        "load = __import__\nload('requests')\n",
+        "from stock_desk.market.providers.sdk import import_optional_sdk\n"
+        "module = import_optional_sdk('akshare')\n",
+    ),
+)
+def test_python_network_aliases_require_an_exact_allowlisted_path(
+    tmp_path: Path, payload: str
+) -> None:
+    _minimal_repository(tmp_path)
+    hidden = tmp_path / "src/stock_desk/hidden_transport.py"
+    hidden.write_text(payload, encoding="utf-8")
+    with pytest.raises(ZeroTelemetryError, match="network-path-not-allowlisted"):
+        verify_repository(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("relative", "payload"),
+    (
+        (
+            "src-tauri/src/hidden_transport.rs",
+            "use reqwest as transport; fn call() { let _ = transport::Client::new(); }\n",
+        ),
+        (
+            "src-tauri/src/hidden_client.rs",
+            "use reqwest::Client as HttpClient; fn call() { let _ = HttpClient::new(); }\n",
+        ),
+        (
+            "web/src/hidden-beacon.ts",
+            "navigator.sendBeacon('/telemetry', payload);\n",
+        ),
+    ),
+)
+def test_direct_network_aliases_require_an_exact_allowlisted_path(
+    tmp_path: Path, relative: str, payload: str
+) -> None:
+    _minimal_repository(tmp_path)
+    hidden = tmp_path / relative
+    hidden.write_text(payload, encoding="utf-8")
+    with pytest.raises(ZeroTelemetryError, match="network-path-not-allowlisted"):
+        verify_repository(tmp_path)
 
 
 def test_snapshot_and_failure_collection_make_no_network_attempt(

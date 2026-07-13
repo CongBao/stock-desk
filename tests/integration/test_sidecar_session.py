@@ -4,7 +4,9 @@ from pathlib import Path
 import threading
 from types import SimpleNamespace
 
+from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
+from pydantic import SecretStr
 import pytest
 
 from stock_desk.api.market import MarketServices
@@ -80,6 +82,64 @@ def test_desktop_session_rejects_missing_and_wrong_credentials_without_leaking()
     assert session.secret_for_host() not in serialized
     assert "evil.invalid" not in serialized
     assert "traceback" not in serialized.casefold()
+
+
+def test_analysis_and_task_center_share_exact_desktop_session_authority(
+    tmp_path: Path,
+) -> None:
+    session = _session()
+    database_url = f"sqlite:///{tmp_path / 'desktop-analysis-tasks.db'}"
+    migrate(database_url)
+    repository = TaskRepository(create_engine_for_url(database_url), owns_engine=True)
+    private_marker = "ANALYSIS-TASK-PRIVATE-PAYLOAD"
+    analysis_task = repository.create(
+        "analysis.run", {"analysis_run_id": private_marker}
+    )
+    settings = Settings(
+        database_url=database_url,
+        data_dir=tmp_path,
+        master_key=SecretStr(Fernet.generate_key().decode("ascii")),
+    )
+    try:
+        with TestClient(
+            create_app(
+                settings,
+                task_repository=repository,
+                desktop_session=session,
+            )
+        ) as client:
+            paths = (
+                "/api/settings/models",
+                "/api/analysis",
+                "/api/tasks?view=safe&limit=100",
+            )
+            assert [client.get(path).status_code for path in paths] == [403] * 3
+            assert [
+                client.get(
+                    path,
+                    headers={
+                        "Origin": session.origin,
+                        "Authorization": "Bearer wrong",
+                    },
+                ).status_code
+                for path in paths
+            ] == [401] * 3
+
+            authorized = [client.get(path, headers=_headers(session)) for path in paths]
+
+        assert [response.status_code for response in authorized] == [200] * 3
+        assert authorized[0].json()["items"] == []
+        assert authorized[1].json()["items"] == []
+        safe_tasks = authorized[2].json()
+        assert len(safe_tasks) == 1
+        assert safe_tasks[0]["id"] == analysis_task.id
+        assert safe_tasks[0]["presentation"]["label"] == "智能分析"
+        assert private_marker not in authorized[2].text
+        assert "payload" not in safe_tasks[0]
+        assert "result" not in safe_tasks[0]
+        assert "error" not in safe_tasks[0]
+    finally:
+        repository.close()
 
 
 def test_formula_studio_requires_desktop_authority_and_preserves_provenance(

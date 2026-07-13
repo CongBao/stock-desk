@@ -2,9 +2,13 @@
 
 ## 默认原则
 
-Stock Desk 是本地优先的个人研究软件。默认不收集遥测，不创建稳定设备标识，不自动上传崩溃报告，也不自动上传日志、诊断包、行情、自选、公式、回测、模型提示词或分析结果。
+Stock Desk 是本地优先的个人研究软件。默认不收集遥测，不创建稳定设备标识；内部 worker 只使用每次启动随机生成的临时会话标识，不包含主机名。不自动上传崩溃报告，也不自动上传日志、诊断包、行情、自选、公式、回测、模型提示词或分析结果。
 
 用户数据保存在本机用户数据目录。诊断包只有在用户明确操作后才会在本地生成；生成前执行允许清单和脱敏检查，程序不会自动上传该文件。
+
+这些默认值同时固化在机器可校验的
+[`config/desktop-network-privacy.json`](../config/desktop-network-privacy.json)
+中。当前锁定的 `pre-updater` 阶段会在 CI 中拒绝缺失或被修改的策略、已枚举的遥测或崩溃 SDK 特征、自动诊断上传、稳定设备标识、出现在精确路径清单之外的已枚举网络导入和直接原语，以及在可信更新功能完成前提前启用 updater 的代码或配置。Python 网络导入使用 AST 检查，别名导入同样受控；所有 Tauri 配置和嵌套 capability JSON 都会递归检查。隐私策略和校验器的哈希同时绑定到候选安装包证据与 main 验证证明。
 
 ## 何时会访问网络
 
@@ -30,4 +34,10 @@ Stock Desk 只为用户请求的功能访问相应服务：
 
 ## English summary
 
-Stock Desk is local-first. It has no telemetry, stable device identifier, automatic crash upload, or automatic diagnostic upload by default. Network access is limited to user-requested market data, explicitly configured model-provider requests, and links the user chooses to open. The current version does not check or install updates in the background. A future public-release check must carry no behavioral identifier and still require confirmation before download or installation. Local diagnostics are created only on explicit request and are never uploaded automatically.
+Stock Desk is local-first. It has no telemetry, stable device identifier, automatic crash upload, or automatic diagnostic upload by default. Internal workers use a fresh random session identity that contains no hostname. CI confines enumerated network-capable imports and direct primitives to exact reviewed production paths for user-requested market data and explicitly configured model-provider requests. The current version does not check or install updates in the background. A future public-release check must carry no behavioral identifier and still require confirmation before download or installation. Local diagnostics are created only on explicit request and are never uploaded automatically.
+
+These defaults are also frozen in the machine-verifiable
+[`config/desktop-network-privacy.json`](../config/desktop-network-privacy.json)
+policy and enforced by CI. The active pre-updater phase, aliased Python imports,
+recursive Tauri capability configuration, and evidence hashes are all checked
+fail-closed.
