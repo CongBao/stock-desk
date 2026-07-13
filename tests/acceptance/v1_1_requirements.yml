@@ -803,4 +803,59 @@ requirements:
         path: tests/unit/test_windows_desktop_evidence_contract.py
         selector: tests/unit/test_windows_desktop_evidence_contract.py::test_windows_candidate_runs_packaged_tauri_and_binds_visual_evidence
         assertion: Candidate A runs the privacy verifier before packaging evidence and binds the workflow, privacy verifier, and privacy policy hashes into its exact-SHA evidence manifest.
+  - id: V11-R-019
+    category: backtest
+    kind: operational
+    behavior_key: desktop_backtest_v1_oracle_equivalence
+    acceptance: "The current backtest engine preserves v1.0.0 business semantics against an independent offline oracle bound to the immutable v1.0.0 commit and tree: twelve MACD or parameterized-custom formula, single or pool, daily or weekly or 60-minute cells plus A-share constraint chains, open-position costs, and partial-pool gaps match exactly after only a closed, canonical allowlist of versioned identity and price normalization; a fresh-worker desktop checkpoint resume matches the uninterrupted v1.0.0 oracle, and any source, generator, input, allowlist, case, or payload drift fails closed. The existing authenticated twelve-cell desktop transport matrix and real MACD and custom-formula Playwright journeys carry this proof through the host boundary into the visible desktop UI without treating current-to-current transport comparison as the oracle."
+    source_refs:
+      - {
+          capability: windows-desktop-shell,
+          requirement: core-capability-compatibility-baseline,
+          scenario: use-existing-core-capability-after-desktopization,
+        }
+      - {
+          capability: windows-desktop-shell,
+          requirement: task-checkpoint-and-recovery-choice,
+          scenario: active-tasks-on-confirmed-exit,
+        }
+    owning_stage: 4
+    status: mapped
+    evidence:
+      - state: existing
+        runner: pytest
+        kind: contract
+        path: tests/unit/test_v1_backtest_oracle.py
+        selector: tests/unit/test_v1_backtest_oracle.py::test_frozen_v1_oracle_is_self_verifying_and_covers_every_input
+        assertion: The frozen oracle integrity-validates its pinned source identity, exact input matrix, generator, canonical allowlist, complete case inventory, and per-case semantic payload; Git review and main proof bind the files to the repository history.
+      - state: existing
+        runner: pytest
+        kind: acceptance
+        path: tests/acceptance/test_v1_backtest_oracle_equivalence.py
+        selector: tests/acceptance/test_v1_backtest_oracle_equivalence.py::test_current_backtest_business_semantics_match_frozen_v1_oracle
+        assertion: All twelve normal-market cells and three abnormal or cost cases execute in the current engine and match the independent v1.0.0 business-semantic oracle.
+      - state: existing
+        runner: pytest
+        kind: integration
+        path: tests/acceptance/test_v1_backtest_oracle_equivalence.py
+        selector: tests/acceptance/test_v1_backtest_oracle_equivalence.py::test_resumed_current_pool_run_matches_uninterrupted_v1_oracle
+        assertion: A pool backtest paused at a durable desktop checkpoint and resumed by a fresh task repository and worker matches the uninterrupted v1.0.0 oracle apart from auditable recovery logs.
+      - state: existing
+        runner: pytest
+        kind: acceptance
+        path: tests/acceptance/test_desktop_backtest_transport_equivalence.py
+        selector: tests/acceptance/test_desktop_backtest_transport_equivalence.py::test_authenticated_desktop_transport_matches_current_service_for_12_normal_market_cells
+        assertion: The authenticated host transport carries all twelve current-service formula, scope, and period cells into the desktop boundary, completing the explicit v1 oracle to current service to desktop transport chain.
+      - state: existing
+        runner: playwright
+        kind: acceptance
+        path: web/e2e/backtest.spec.ts
+        selector: desktop market prefill runs MACD through report, replay, and export
+        assertion: A real visible desktop journey carries the oracle-covered MACD flow through Market handoff, report, replay, and export.
+      - state: existing
+        runner: playwright
+        kind: acceptance
+        path: web/e2e/backtest.spec.ts
+        selector: custom formula discloses and completes a partial pool
+        assertion: A real visible desktop journey carries the oracle-covered custom-formula pool flow through partial outcome disclosure and terminal reporting.
 non_goals: []

@@ -1,0 +1,105 @@
+{
+  "schema_version": "stock-desk-v1-backtest-oracle-input-v1",
+  "source": {
+    "tag": "v1.0.0",
+    "commit": "cd62bd3ba87518c79c027791e8e370c359f3e645",
+    "tree": "fcda96626c1482cebff1de4fb3803573bb3a7d19"
+  },
+  "matrix": {
+    "formulas": [
+      {
+        "id": "macd",
+        "name": "MACD 金叉死叉",
+        "source": "DIF:EMA(C,12)-EMA(C,26);DEA:EMA(DIF,9);MACD:(DIF-DEA)*2;BUY:CROSS(DIF,DEA);SELL:CROSS(DEA,DIF);",
+        "parameter_schema": {},
+        "parameters": {}
+      },
+      {
+        "id": "custom",
+        "name": "参数化自定义均线",
+        "source": "MID:MA(C,N);BUY:CROSS(C,MID);SELL:CROSS(MID,C);",
+        "parameter_schema": {
+          "N": {
+            "kind": "integer",
+            "default": 5
+          }
+        },
+        "parameters": {
+          "N": 7
+        }
+      }
+    ],
+    "scopes": ["single", "pool"],
+    "periods": ["1d", "1w", "60m"],
+    "symbols": ["600000.SH", "000001.SZ"],
+    "costs": {
+      "quantity_shares": 1000,
+      "commission_bps": "2.5",
+      "minimum_commission": "5",
+      "sell_tax_bps": "5",
+      "slippage_bps": "3"
+    }
+  },
+  "special_cases": [
+    {
+      "id": "a_share_constraints_60m",
+      "kind": "a_share_constraints"
+    },
+    {
+      "id": "open_position_costs_1d",
+      "kind": "open_position_costs"
+    },
+    {
+      "id": "partial_pool_gap_1d",
+      "kind": "partial_pool_gap"
+    }
+  ],
+  "allowed_versioned_differences": [
+    {
+      "id": "instrument-kind-identity-v1.1",
+      "paths": ["snapshot.symbol_inputs[].instrument_kind"],
+      "normalization": "excluded-from-v1-semantic-projection-but-validated-by-current-domain-contract"
+    },
+    {
+      "id": "content-addressed-runtime-identities",
+      "paths": [
+        "run.run_id",
+        "run.task_id",
+        "run.result_hash",
+        "snapshot.snapshot_id",
+        "snapshot.formula_version_id",
+        "snapshot.scope_id",
+        "snapshot.scope_revision_or_snapshot_id",
+        "snapshot.symbol_inputs[].manifest_record_id",
+        "snapshot.symbol_inputs[].dataset_version",
+        "snapshot.symbol_inputs[].route_version",
+        "symbols[].signal_series_id",
+        "payloads[].formula_version_id",
+        "payloads[].signal_series_id",
+        "payloads[].market_manifest_ids",
+        "payloads[].status_manifest_ids",
+        "report.provenance_digest"
+      ],
+      "normalization": "replace-with-typed-identity-token-and-validate-shape-and-cross-reference"
+    },
+    {
+      "id": "a-share-price-canonicalization-v1.1",
+      "paths": [
+        "order_events[].payload.price",
+        "order_events[].payload.entry_price",
+        "order_events[].payload.mark_price",
+        "order_events[].payload.floating_pnl"
+      ],
+      "normalization": "round-versioned-market-prices-to-the-v1.1-four-decimal-contract-before-semantic-comparison"
+    },
+    {
+      "id": "desktop-checkpoint-extension-v1.1",
+      "paths": [
+        "checkpoint.resume_metadata",
+        "collections.logs[message=run_started,detail.attempt>1]",
+        "collections.logs[].ordinal_after_resume"
+      ],
+      "normalization": "remove-only-the-exact-extra-run_started-attempt-and-renumber-log-ordinals-before-comparing-resumed-v1.1-to-uninterrupted-v1.0"
+    }
+  ]
+}

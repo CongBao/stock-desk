@@ -1220,6 +1220,9 @@ jobs:
             "${payloads[@]}" \
             --critical-input "requirements=$(sha256sum tests/acceptance/requirements.yml | cut -d' ' -f1)" \
             --critical-input "v1.1-requirements=$(sha256sum tests/acceptance/v1_1_requirements.yml | cut -d' ' -f1)" \
+            --critical-input "v1-backtest-oracle=$(sha256sum tests/fixtures/backtest/v1_0_oracle.json | cut -d' ' -f1)" \
+            --critical-input "v1-backtest-oracle-inputs=$(sha256sum tests/fixtures/backtest/v1_0_oracle_inputs.json | cut -d' ' -f1)" \
+            --critical-input "v1-backtest-oracle-generator=$(sha256sum scripts/v1_backtest_oracle.py | cut -d' ' -f1)" \
             --toolchain "python=$(python --version | cut -d' ' -f2)" \
             --lockfile "uv.lock=$(sha256sum uv.lock | cut -d' ' -f1)"
           uv run --frozen python - <<'PY'

@@ -21,6 +21,8 @@ Kweichow Moutai `600519.SH`; BaoStock daily/qfq data; cutoff `2026-07-08T07:00:0
 - Backtest saved formula versions with explicit A-share T+1, costs, lots, data coverage, and immutable results.
 - Run DeepSeek, OpenAI-compatible, or local Ollama research workflows with conclusions linked to persisted evidence.
 
+Backtest compatibility is protected by an offline immutable `v1.0.0` oracle bound to the release commit and Git tree. It covers twelve MACD or parameterized-custom formula, single or pool, and daily, weekly, or 60-minute combinations, plus A-share constraints, open-position costs, and partial data gaps. CI authenticates the oracle, inputs, and generator and rejects drift outside the closed allowlist.
+
 | Real formula preview | Blocked real backtest preflight | Analysis readiness |
 | --- | --- | --- |
 | ![CATL MACD BUY/SELL formula preview](docs/images/formula-studio.png)<br>CATL `300750.SZ`; BaoStock, 1d/qfq; cutoff `2026-07-08T07:00:00Z`; MACD BUY/SELL are visible. For feature demonstration only; not investment advice. （仅作功能演示，不构成投资建议。） | ![Ping An Bank MACD strict preflight blocked](docs/images/backtesting.png)<br>Real MACD configuration for Ping An Bank `000001.SZ`; BaoStock, 1d/qfq; cutoff `2026-07-08T07:00:00Z`. Strict preflight is blocked because no authorized Tushare execution-status snapshot exists. No task or report was created; this is not a successful backtest, result, or win rate. For feature demonstration only; not investment advice. （仅作功能演示，不构成投资建议。） | ![China Merchants Bank model and evidence readiness](docs/images/multi-agent-research.png)<br>Model/evidence readiness for China Merchants Bank `600036.SH`: no verified model, no model call started, and no report generated. |
