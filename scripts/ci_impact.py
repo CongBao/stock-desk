@@ -146,6 +146,14 @@ _INSTALLER_TEST_NAMES = frozenset(
         "test_windows_desktop_packaging.py",
     }
 )
+_HIGH_RISK_INSTALLER_FILES = frozenset(
+    {
+        ".github/workflows/windows-installed.yml",
+        "scripts/verify_windows_installed_evidence.py",
+        "scripts/windows_installed_environment_policy.py",
+        "scripts/windows_installed_vm_harness.ps1",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -199,6 +207,8 @@ def _path_domain(path: str) -> str | None:
     Order is security-sensitive: delivery/proof inputs are recognized before the
     broad scripts/tests prefixes so they always fail closed.
     """
+    if path in _HIGH_RISK_INSTALLER_FILES:
+        return "installer"
     if path in _DEPENDENCY_FILES:
         return "dependency"
     if path in _DELIVERY_FILES or path.startswith("schemas/"):
@@ -350,9 +360,13 @@ def classify_impact(
             domains=domains,
         )
     high_risk_domains = _HIGH_RISK_DOMAINS.intersection(domains)
-    if high_risk_domains:
+    high_risk_installer_paths = set(paths).intersection(_HIGH_RISK_INSTALLER_FILES)
+    if high_risk_domains or high_risk_installer_paths:
         high_risk_path = next(
-            path for path in paths if _path_domain(path) in _HIGH_RISK_DOMAINS
+            path
+            for path in paths
+            if _path_domain(path) in _HIGH_RISK_DOMAINS
+            or path in _HIGH_RISK_INSTALLER_FILES
         )
         return _impact(
             FULL_PROFILE,

@@ -194,7 +194,12 @@ def test_comparison_promotes_only_a_and_main_proof_attests_both_identities() -> 
         "src-tauri/tauri.conf.json",
         "src-tauri/tauri.windows.conf.json",
         "src-tauri/Cargo.toml",
+        "src-tauri/src/main.rs",
+        "src-tauri/src/uninstall.rs",
         "packaging/nsis/installer.nsi",
+        "packaging/nsis/installer-hooks.nsh",
+        "packaging/nsis/languages/English.nsh",
+        "packaging/nsis/languages/SimpChinese.nsh",
     ):
         assert critical_input in commands
     assert set(proof["needs"]) >= {
@@ -229,8 +234,17 @@ def test_comparison_promotes_only_a_and_main_proof_attests_both_identities() -> 
         "scripts/verify_zero_telemetry.py",
         "config/desktop-network-privacy.json",
         "packaging/nsis/installer.nsi",
+        "packaging/nsis/installer-hooks.nsh",
+        "packaging/nsis/languages/English.nsh",
+        "packaging/nsis/languages/SimpChinese.nsh",
+        ".github/workflows/windows-installed.yml",
+        "schemas/windows-installed-evidence-v1.schema.json",
+        "scripts/verify_windows_installed_evidence.py",
+        "scripts/windows_installed_environment_policy.py",
         "src-tauri/Cargo.lock",
         "src-tauri/Cargo.toml",
+        "src-tauri/src/main.rs",
+        "src-tauri/src/uninstall.rs",
         "src-tauri/tauri.windows.conf.json",
     } <= set(main_validation_proof.CRITICAL_INPUTS)
 

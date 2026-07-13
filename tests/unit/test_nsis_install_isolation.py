@@ -8,6 +8,10 @@ TAURI_CONFIG = ROOT / "src-tauri" / "tauri.conf.json"
 WINDOWS_CONFIG = ROOT / "src-tauri" / "tauri.windows.conf.json"
 NSIS_TEMPLATE = ROOT / "packaging" / "nsis" / "installer.nsi"
 NSIS_NOTICE = ROOT / "packaging" / "nsis" / "NOTICE.md"
+NSIS_HOOKS = ROOT / "packaging" / "nsis" / "installer-hooks.nsh"
+NSIS_LANGUAGES = ROOT / "packaging" / "nsis" / "languages"
+UNINSTALL_SOURCE = ROOT / "src-tauri" / "src" / "uninstall.rs"
+RUST_TOOLCHAIN = ROOT / "rust-toolchain.toml"
 UPSTREAM_SHA256 = "20f4ecc730defb71f1342eaeaec4021df13be3d843abba0effe88ea5835fa079"
 UPSTREAM_INSTALL_LINE = b'      StrCpy $INSTDIR "$LOCALAPPDATA\\${PRODUCTNAME}"\n'
 LOCAL_INSTALL_LINE = (
@@ -54,6 +58,11 @@ def test_nsis_configuration_has_no_reachable_admin_install_mode() -> None:
 
     assert nsis["installMode"] == "currentUser"
     assert nsis["template"] == "../packaging/nsis/installer.nsi"
+    assert nsis["installerHooks"] == "../packaging/nsis/installer-hooks.nsh"
+    assert nsis["customLanguageFiles"] == {
+        "English": "../packaging/nsis/languages/English.nsh",
+        "SimpChinese": "../packaging/nsis/languages/SimpChinese.nsh",
+    }
     assert "installMode" not in windows_override.get("bundle", {}).get(
         "windows", {}
     ).get("nsis", {})
@@ -89,3 +98,58 @@ def test_program_and_data_roots_are_physically_separate_and_uninstall_is_safe() 
         assert cleanup_root not in {USER_DATA_ROOT, LEGACY_DATA_ROOT}
         assert USER_DATA_ROOT not in cleanup_root
         assert LEGACY_DATA_ROOT not in cleanup_root
+
+
+def test_v11_data_cleanup_is_explicit_default_off_and_never_uses_nsis_rmdir() -> None:
+    source = NSIS_TEMPLATE.read_text(encoding="utf-8")
+    hooks = NSIS_HOOKS.read_text(encoding="utf-8")
+    languages = {
+        path.name: path.read_text(encoding="utf-8")
+        for path in sorted(NSIS_LANGUAGES.glob("*.nsh"))
+    }
+
+    assert "SendMessage $DeleteAppDataCheckbox ${BM_SETCHECK}" not in source
+    assert 'RmDir /r "$LOCALAPPDATA\\Stock Desk\\v1.1"' not in source
+    assert "RmDir /r" not in hooks
+    assert "--stock-desk-uninstall-v11-data" in hooks
+    assert "CopyFiles /SILENT" in hooks
+    assert "$PLUGINSDIR\\stock-desk-cleanup.exe" in hooks
+    assert "$DeleteAppDataCheckboxState = 1" in hooks
+    assert "$UpdateMode <> 1" in hooks
+    assert "MB_RETRYCANCEL" in hooks
+    assert "SetErrorLevel 70" in hooks
+
+    assert set(languages) == {"English.nsh", "SimpChinese.nsh"}
+    for language in languages.values():
+        assert "v1.1" in language
+        assert "v1.0.0" in language
+        assert "stockDeskCleanupFailed" in language
+        assert "stockDeskCleanupUnavailable" in language
+
+
+def test_cleanup_hook_failure_can_only_retry_or_keep_data() -> None:
+    hooks = NSIS_HOOKS.read_text(encoding="utf-8")
+    post = hooks.split("!macro NSIS_HOOK_POSTUNINSTALL", maxsplit=1)[1]
+
+    assert "ExecWait" in post
+    assert "IDRETRY stock_desk_cleanup_retry" in post
+    assert "IDCANCEL stock_desk_cleanup_done" in post
+    assert "Delete " not in post
+    assert "RMDir" not in post
+    assert "RmDir" not in post
+    unavailable = post.split("$StockDeskCleanupReady <> 1", maxsplit=1)[1].split(
+        "stock_desk_cleanup_retry:", maxsplit=1
+    )[0]
+    assert "MB_OK|MB_ICONEXCLAMATION" in unavailable
+    assert "IDRETRY" not in unavailable
+
+
+def test_windows_deletion_uses_the_pinned_handle_relative_standard_library() -> None:
+    source = UNINSTALL_SOURCE.read_text(encoding="utf-8")
+    toolchain = RUST_TOOLCHAIN.read_text(encoding="utf-8")
+
+    assert 'channel = "1.88.0"' in toolchain
+    assert "fs::remove_dir_all(root)" in source
+    assert "FILE_FLAG_OPEN_REPARSE_POINT" in source
+    assert "NtOpenFile" in source
+    assert "remove_directory_entries_no_follow" not in source

@@ -7,6 +7,7 @@ mod diagnostics;
 mod exit;
 mod proxy;
 mod sidecar;
+mod uninstall;
 mod windows_job;
 
 fn focus_main_window(app: &tauri::AppHandle) {
@@ -18,6 +19,10 @@ fn focus_main_window(app: &tauri::AppHandle) {
 }
 
 fn main() {
+    if let Some(exit_code) = uninstall::dispatch_from_env() {
+        std::process::exit(exit_code);
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             focus_main_window(app);

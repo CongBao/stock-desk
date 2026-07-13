@@ -328,6 +328,7 @@ def test_workflows_declare_the_expected_github_triggers() -> None:
         "codeql.yml": {"push", "pull_request", "schedule"},
         "release.yml": {"push"},
         "security.yml": {"push", "pull_request"},
+        "windows-installed.yml": {"workflow_dispatch"},
     }
     loaded_triggers: dict[str, dict[str, Any]] = {}
 

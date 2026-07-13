@@ -1,0 +1,612 @@
+# WIRING ONLY: GitHub-hosted jobs may call a future external isolated VM adapter.
+# Persistent repository runners are forbidden, and this workflow does not prove
+# that any installed Windows VM journey has passed.
+name: Windows installed VM acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact lowercase 40-hex main commit SHA to verify
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-installed-${{ inputs.source_sha }}
+  cancel-in-progress: false
+
+jobs:
+  dispatch-guard:
+    name: Reject untrusted dispatch identity before protected jobs
+    runs-on: ubuntu-24.04
+    environment: windows-installed-acceptance
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      EXPECTED_WORKFLOW_REF: ${{ format('{0}/.github/workflows/windows-installed.yml@refs/heads/main', github.repository) }}
+    steps:
+      - name: Reject every non-main or mutable workflow dispatch
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$GITHUB_REF" = "refs/heads/main"
+          test "$GITHUB_REF_TYPE" = "branch"
+          test "$GITHUB_REF_NAME" = "main"
+          test "$GITHUB_REF_PROTECTED" = "true"
+          test "$GITHUB_SHA" = "$SOURCE_SHA"
+          test "$GITHUB_WORKFLOW_REF" = "$EXPECTED_WORKFLOW_REF"
+          test "$GITHUB_WORKFLOW_SHA" = "$SOURCE_SHA"
+          test "$GITHUB_RUN_ATTEMPT" = "1"
+
+      - name: Check out the immutable guarded workflow source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ inputs.source_sha }}
+
+      - name: Prove exact protected main and environment branch policy
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          POLICY_TOKEN: ${{ secrets.WINDOWS_INSTALLED_POLICY_TOKEN }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          git fetch --no-tags origin \
+            +refs/heads/main:refs/remotes/origin/protected-main
+          test "$(git rev-parse refs/remotes/origin/protected-main)" = "$SOURCE_SHA"
+          branch="$RUNNER_TEMP/windows-installed-main-branch.json"
+          environment="$RUNNER_TEMP/windows-installed-environment.json"
+          branch_policies="$RUNNER_TEMP/windows-installed-environment-branches.json"
+          runners="$RUNNER_TEMP/windows-installed-repository-runners.json"
+          gh api "repos/$GITHUB_REPOSITORY/branches/main" > "$branch"
+          jq -e --arg sha "$SOURCE_SHA" \
+            '.name == "main" and .protected == true and .commit.sha == $sha' \
+            "$branch" >/dev/null
+          GH_TOKEN="$POLICY_TOKEN" gh api \
+            "repos/$GITHUB_REPOSITORY/environments/windows-installed-acceptance" \
+            > "$environment"
+          GH_TOKEN="$POLICY_TOKEN" gh api \
+            "repos/$GITHUB_REPOSITORY/environments/windows-installed-acceptance/deployment-branch-policies" \
+            > "$branch_policies"
+          GH_TOKEN="$POLICY_TOKEN" gh api \
+            "repos/$GITHUB_REPOSITORY/actions/runners" > "$runners"
+          python scripts/windows_installed_environment_policy.py verify \
+            "$environment" --branch-policies "$branch_policies" \
+            --runners "$runners" --repository "$GITHUB_REPOSITORY"
+
+  preflight:
+    name: Verify exact protected-main Windows candidate
+    needs: dispatch-guard
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: read
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha }}
+    steps:
+      - name: Reject non-canonical source identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$GITHUB_RUN_ATTEMPT" = "1"
+          echo "PROOF_ROOT=$RUNNER_TEMP/windows-installed-preflight/proof" >> "$GITHUB_ENV"
+          echo "CANDIDATE_ROOT=$RUNNER_TEMP/windows-installed-preflight/candidate" >> "$GITHUB_ENV"
+          echo "CONTROLLER_ROOT=$RUNNER_TEMP/windows-installed-controller" >> "$GITHUB_ENV"
+          echo "RECEIPT_ROOT=$RUNNER_TEMP/windows-installed-preflight/receipts" >> "$GITHUB_ENV"
+
+      - name: Check out the exact requested source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ inputs.source_sha }}
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+
+      - name: Prove the commit belongs to protected main
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          branch="$(gh api "repos/$GITHUB_REPOSITORY/branches/main")"
+          jq -e --arg sha "$SOURCE_SHA" \
+            '.name == "main" and .protected == true and .commit.sha == $sha' \
+            <<<"$branch" >/dev/null
+          git fetch --no-tags origin \
+            +refs/heads/main:refs/remotes/origin/protected-main
+          test "$(git rev-parse refs/remotes/origin/protected-main)" = "$SOURCE_SHA"
+
+      - name: Locate successful exact-SHA main validation run
+        id: main-run
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          payload="$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" -f branch=main -f event=push -f status=success -f per_page=100)"
+          run_id="$(jq -r --arg sha "$SOURCE_SHA" '[.workflow_runs[] | select(.head_sha == $sha and .head_branch == "main" and .event == "push" and .status == "completed" and .conclusion == "success")] | sort_by(.run_attempt, .id) | last | .id // empty' <<<"$payload")"
+          test -n "$run_id"
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+
+      - name: Download exact proof and promoted Windows candidate
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MAIN_RUN_ID: ${{ steps.main-run.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$PROOF_ROOT" "$CANDIDATE_ROOT"
+          gh run download "$MAIN_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name "main-validation-proof-$SOURCE_SHA" --dir "$PROOF_ROOT"
+          gh run download "$MAIN_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name "windows-desktop-alpha-candidate-$SOURCE_SHA" \
+            --dir "$CANDIDATE_ROOT"
+          for path in \
+            "$PROOF_ROOT/proof.json" \
+            "$PROOF_ROOT/post-gh-verify-binding.json" \
+            "$PROOF_ROOT/proof-attestation-bundle.jsonl" \
+            "$PROOF_ROOT/evidence-attestation-bundle.jsonl" \
+            "$CANDIDATE_ROOT/windows-desktop-alpha-candidate-manifest.json" \
+            "$CANDIDATE_ROOT/manifest-binding.json"
+          do
+            test -s "$path"
+          done
+
+      - name: Verify proof attestations, manifest, payload, and digests
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tree="$(git rev-parse 'HEAD^{tree}')"
+          mkdir -p "$RECEIPT_ROOT"
+          gh attestation verify "$PROOF_ROOT/proof.json" \
+            --bundle "$PROOF_ROOT/proof-attestation-bundle.jsonl" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/ci.yml" \
+            --source-ref refs/heads/main --source-digest "$SOURCE_SHA" \
+            --signer-digest "$SOURCE_SHA" --deny-self-hosted-runners \
+            --format json > "$RECEIPT_ROOT/main-proof.json"
+          jq -e 'length >= 1' "$RECEIPT_ROOT/main-proof.json" >/dev/null
+          gh attestation verify \
+            "$CANDIDATE_ROOT/windows-desktop-alpha-candidate-manifest.json" \
+            --bundle "$PROOF_ROOT/evidence-attestation-bundle.jsonl" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/ci.yml" \
+            --source-ref refs/heads/main --source-digest "$SOURCE_SHA" \
+            --signer-digest "$SOURCE_SHA" --deny-self-hosted-runners \
+            --format json > "$RECEIPT_ROOT/windows-candidate.json"
+          jq -e 'length >= 1' "$RECEIPT_ROOT/windows-candidate.json" >/dev/null
+          python scripts/main_validation_proof.py verify \
+            --repo-root . --repository "$GITHUB_REPOSITORY" \
+            --ref refs/heads/main --proof "$PROOF_ROOT/proof.json"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          from scripts.main_validation_proof import verify_post_gh_attestation_binding
+
+          proof_path = Path(os.environ["PROOF_ROOT"]) / "proof.json"
+          proof_bytes = proof_path.read_bytes()
+          proof = json.loads(proof_bytes)
+          binding = json.loads(
+              (Path(os.environ["PROOF_ROOT"]) / "post-gh-verify-binding.json").read_text()
+          )
+          candidate = json.loads(
+              (
+                  Path(os.environ["CANDIDATE_ROOT"])
+                  / "windows-desktop-alpha-candidate-manifest.json"
+              ).read_text()
+          )
+          verify_post_gh_attestation_binding(
+              proof,
+              proof_bytes=proof_bytes,
+              binding_value=binding,
+              expected_repository=os.environ["GITHUB_REPOSITORY"],
+          )
+          if proof["commit_sha"] != os.environ["SOURCE_SHA"]:
+              raise SystemExit("main proof source SHA mismatch")
+          if proof["validation_evidence"]["windows-alpha-candidate"] != candidate:
+              raise SystemExit("promoted candidate manifest is not the proved manifest")
+          PY
+          python scripts/artifact_manifest.py verify \
+            --manifest "$CANDIDATE_ROOT/windows-desktop-alpha-candidate-manifest.json" \
+            --root "$CANDIDATE_ROOT" --source-sha "$SOURCE_SHA" \
+            --source-tree "$tree" \
+            --attestation "$CANDIDATE_ROOT/manifest-binding.json"
+
+      - name: Create verified controller input without VM result claims
+        shell: bash
+        env:
+          MAIN_RUN_ID: ${{ steps.main-run.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          rm -rf "$CONTROLLER_ROOT"
+          mkdir -p "$CONTROLLER_ROOT/candidate" "$CONTROLLER_ROOT/trust"
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import shutil
+
+          source = Path(os.environ["CANDIDATE_ROOT"])
+          target = Path(os.environ["CONTROLLER_ROOT"])
+          manifest_path = source / "windows-desktop-alpha-candidate-manifest.json"
+          manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+          bundle = json.loads(
+              (source / "windows-desktop-bundle.json").read_text(encoding="utf-8")
+          )
+          installers = [
+              item
+              for item in manifest["payloads"]
+              if item["kind"] == "tauri-unsigned"
+              and item["path"].endswith("-unsigned-x64-setup.exe")
+          ]
+          if len(installers) != 1:
+              raise SystemExit("proved candidate must contain exactly one installer")
+          webview_installers = [
+              item
+              for item in bundle["files"]
+              if item["role"] == "webview2-offline-installer"
+          ]
+          if len(webview_installers) != 1:
+              raise SystemExit(
+                  "proved candidate must identify exactly one WebView2 installer"
+              )
+          installer = installers[0]
+          webview_installer = webview_installers[0]
+          installer_source = source / installer["path"]
+          installer_target = target / "candidate" / installer_source.name
+          shutil.copy2(installer_source, installer_target)
+          for name in (
+              "windows-desktop-alpha-candidate-manifest.json",
+              "manifest-binding.json",
+              "windows-desktop-bundle.json",
+          ):
+              shutil.copy2(source / name, target / "candidate" / name)
+          proof_root = Path(os.environ["PROOF_ROOT"])
+          proof_bytes = (proof_root / "proof.json").read_bytes()
+          for name in (
+              "proof.json",
+              "post-gh-verify-binding.json",
+              "proof-attestation-bundle.jsonl",
+              "evidence-attestation-bundle.jsonl",
+          ):
+              shutil.copy2(proof_root / name, target / "trust" / name)
+          receipt_root = Path(os.environ["RECEIPT_ROOT"])
+          receipt_target = target / "trust" / "receipts"
+          receipt_target.mkdir()
+          for name in ("main-proof.json", "windows-candidate.json"):
+              shutil.copy2(receipt_root / name, receipt_target / name)
+          request = {
+              "schema": "stock-desk-windows-installed-controller-request-v1",
+              "source_sha": os.environ["SOURCE_SHA"],
+              "tree_sha": manifest["source_tree"],
+              "main_run_id": int(os.environ["MAIN_RUN_ID"]),
+              "evidence_kind": "observed-windows-vm",
+              "status": "awaiting-controller",
+              "wiring_only": True,
+              "guest_profiles": ["win10-22h2", "win11"],
+              "candidate_manifest_sha256": manifest["manifest_sha256"],
+              "main_proof_sha256": hashlib.sha256(proof_bytes).hexdigest(),
+              "candidate_sha256": installer["sha256"],
+              "webview_installer_sha256": webview_installer["sha256"],
+              "installer": {
+                  "path": f"candidate/{installer_target.name}",
+                  "sha256": installer["sha256"],
+                  "size": installer["size"],
+              },
+          }
+          (target / "controller-request.json").write_text(
+              json.dumps(request, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+          )
+          if hashlib.sha256(installer_target.read_bytes()).hexdigest() != installer["sha256"]:
+              raise SystemExit("controller installer digest mismatch")
+          PY
+          (
+            cd "$CONTROLLER_ROOT"
+            find . -type f ! -name controller-digests.sha256 -print0 \
+              | sort -z | xargs -0 sha256sum > controller-digests.sha256
+          )
+          test -s "$CONTROLLER_ROOT/controller-request.json"
+          test -s "$CONTROLLER_ROOT/controller-digests.sha256"
+
+      - name: Upload verified controller input
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-installed-controller-${{ inputs.source_sha }}
+          path: ${{ runner.temp }}/windows-installed-controller/
+          if-no-files-found: error
+          retention-days: 7
+
+  windows-installed:
+    name: Wire ${{ matrix.guest_profile }} / ${{ matrix.scenario }} external adapter
+    needs: preflight
+    environment: windows-installed-acceptance
+    runs-on: windows-2025
+    timeout-minutes: 45
+    permissions:
+      actions: read
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - guest_profile: win10-22h2
+            scenario: webview-preinstalled
+          - guest_profile: win10-22h2
+            scenario: webview-install-failure
+          - guest_profile: win11
+            scenario: webview-absent
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      GUEST_PROFILE: ${{ matrix.guest_profile }}
+      EXPECTED_SCENARIO: ${{ matrix.scenario }}
+    steps:
+      - name: Assert ephemeral GitHub-hosted controller boundary
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted') { throw 'Persistent repository runners are forbidden' }
+
+      - name: Check out exact controller interface
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ inputs.source_sha }}
+
+      - name: Configure isolated controller roots
+        shell: pwsh
+        run: |
+          "CONTROLLER_ROOT=$env:RUNNER_TEMP\windows-installed-controller" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "EVIDENCE_ROOT=$env:RUNNER_TEMP\windows-installed-evidence-$env:GUEST_PROFILE" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Download verified controller input
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: windows-installed-controller-${{ inputs.source_sha }}
+          path: ${{ runner.temp }}\windows-installed-controller
+
+      - name: Validate controller input and future harness interface
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $requestPath = Join-Path $env:CONTROLLER_ROOT 'controller-request.json'
+          if (-not (Test-Path -LiteralPath $requestPath -PathType Leaf)) { throw 'Controller request is missing' }
+          $digestPath = Join-Path $env:CONTROLLER_ROOT 'controller-digests.sha256'
+          if (-not (Test-Path -LiteralPath $digestPath -PathType Leaf)) { throw 'Controller digest inventory is missing' }
+          $root = [IO.Path]::GetFullPath($env:CONTROLLER_ROOT).TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+          $digestCount = 0
+          foreach ($line in Get-Content -LiteralPath $digestPath) {
+            if ($line -notmatch '^(?<digest>[0-9a-f]{64})\s+\./(?<path>.+)$') { throw 'Controller digest inventory is malformed' }
+            $relative = $Matches.path -replace '/', [IO.Path]::DirectorySeparatorChar
+            $itemPath = [IO.Path]::GetFullPath((Join-Path $env:CONTROLLER_ROOT $relative))
+            if (-not $itemPath.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) { throw 'Controller digest path escapes its root' }
+            if (-not (Test-Path -LiteralPath $itemPath -PathType Leaf)) { throw 'Controller digest payload is missing' }
+            if ((Get-Item -LiteralPath $itemPath).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Controller digest payload cannot be a reparse point' }
+            $actual = (Get-FileHash -LiteralPath $itemPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actual -ne $Matches.digest) { throw 'Controller digest payload mismatch' }
+            $digestCount += 1
+          }
+          if ($digestCount -lt 1) { throw 'Controller digest inventory is empty' }
+          $request = Get-Content -LiteralPath $requestPath -Raw | ConvertFrom-Json
+          if ($request.source_sha -ne $env:SOURCE_SHA) { throw 'Controller request source mismatch' }
+          if ($request.evidence_kind -ne 'observed-windows-vm') { throw 'Controller evidence kind mismatch' }
+          if ($request.status -ne 'awaiting-controller' -or -not $request.wiring_only) { throw 'Controller request is not wiring-only' }
+          if ($request.guest_profiles -notcontains $env:GUEST_PROFILE) { throw 'Guest profile is not authorized' }
+          $allowedScenarios = @('webview-preinstalled', 'webview-absent', 'webview-install-failure')
+          if ($allowedScenarios -notcontains $env:EXPECTED_SCENARIO) { throw 'Controller scenario assignment is invalid' }
+          $installerPath = Join-Path $env:CONTROLLER_ROOT $request.installer.path
+          if (-not (Test-Path -LiteralPath $installerPath -PathType Leaf)) { throw 'Verified installer is missing' }
+          $digest = (Get-FileHash -LiteralPath $installerPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($digest -ne $request.installer.sha256) { throw 'Verified installer digest mismatch' }
+          $harness = Join-Path $env:GITHUB_WORKSPACE 'scripts\windows_installed_vm_harness.ps1'
+          if (-not (Test-Path -LiteralPath $harness -PathType Leaf)) { throw 'Windows VM controller harness is not implemented on this runner' }
+          "HARNESS_PATH=$harness" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Restore clean VM snapshot
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force $env:EVIDENCE_ROOT | Out-Null
+          & $env:HARNESS_PATH -Action RestoreCleanSnapshot -GuestProfile $env:GUEST_PROFILE -ControllerRequestPath (Join-Path $env:CONTROLLER_ROOT 'controller-request.json') -EvidenceRoot $env:EVIDENCE_ROOT
+          if ($LASTEXITCODE -ne 0) { throw 'Clean VM snapshot restore failed' }
+
+      - name: Run observed installed acceptance through controller harness
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & $env:HARNESS_PATH -Action RunInstalledAcceptance -GuestProfile $env:GUEST_PROFILE -Scenario $env:EXPECTED_SCENARIO -ScenarioAttempt 1 -ActionsRunId $env:GITHUB_RUN_ID -ActionsRunAttempt $env:GITHUB_RUN_ATTEMPT -ControllerRequestPath (Join-Path $env:CONTROLLER_ROOT 'controller-request.json') -EvidenceKind observed-windows-vm -EvidenceRoot $env:EVIDENCE_ROOT
+          if ($LASTEXITCODE -ne 0) { throw 'Observed installed acceptance harness failed' }
+          $publicRoot = Join-Path $env:EVIDENCE_ROOT 'public'
+          if (-not (Test-Path -LiteralPath $publicRoot -PathType Container)) { throw 'Observed VM public evidence root is missing' }
+          $results = @(Get-ChildItem -LiteralPath $publicRoot -File -Filter '*.json')
+          if ($results.Count -ne 1) { throw 'Observed VM scenario count mismatch' }
+          foreach ($resultPath in $results) {
+            $result = Get-Content -LiteralPath $resultPath.FullName -Raw | ConvertFrom-Json
+            if ($null -ne $result.PSObject.Properties['passed']) { throw 'Controller evidence cannot declare passed' }
+            if ($result.artifact -ne 'windows-installed-evidence' -or $result.schema_version -ne 1) { throw 'Observed VM evidence schema identity mismatch' }
+            if ($result.identity.source_sha -ne $env:SOURCE_SHA) { throw 'Observed VM source mismatch' }
+            if ($result.execution.run_attempt -ne 1 -or $result.execution.scenario_attempt -ne 1) { throw 'Retry evidence cannot replace first-attempt VM evidence' }
+            if ($result.execution.workflow -ne $env:GITHUB_WORKFLOW -or $result.execution.run_id -ne [long]$env:GITHUB_RUN_ID -or $result.execution.job_id -ne "windows-installed-$env:EXPECTED_SCENARIO") { throw 'Observed VM Actions execution identity mismatch' }
+            if ($result.scenario -ne $env:EXPECTED_SCENARIO) { throw 'Observed VM scenario assignment mismatch' }
+          }
+
+      - name: Clean controller state and restore snapshot
+        if: ${{ always() }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $harness = Join-Path $env:GITHUB_WORKSPACE 'scripts\windows_installed_vm_harness.ps1'
+          if (-not (Test-Path -LiteralPath $harness -PathType Leaf)) { throw 'Windows VM controller harness is unavailable for cleanup' }
+          & $harness -Action CleanupAndRestoreSnapshot -GuestProfile $env:GUEST_PROFILE -ControllerRequestPath (Join-Path $env:CONTROLLER_ROOT 'controller-request.json') -EvidenceRoot $env:EVIDENCE_ROOT
+          if ($LASTEXITCODE -ne 0) { throw 'Controller cleanup or snapshot restore failed' }
+
+      - name: Upload observed Windows VM evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-installed-observed-${{ matrix.guest_profile }}-${{ matrix.scenario }}-${{ inputs.source_sha }}
+          path: ${{ runner.temp }}\windows-installed-evidence-${{ matrix.guest_profile }}\
+          if-no-files-found: error
+          retention-days: 30
+
+  aggregate:
+    name: Validate wiring and refuse unverified raw observations
+    needs: [preflight, windows-installed]
+    if: ${{ needs.preflight.result == 'success' && needs.windows-installed.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: read
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha }}
+    steps:
+      - name: Check out exact verifier source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ inputs.source_sha }}
+
+      - name: Configure isolated aggregate roots
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "CONTROLLER_ROOT=$RUNNER_TEMP/windows-installed-aggregate/controller" >> "$GITHUB_ENV"
+          echo "OBSERVED_ROOT=$RUNNER_TEMP/windows-installed-aggregate/observed" >> "$GITHUB_ENV"
+          echo "RECEIPT_ROOT=$RUNNER_TEMP/windows-installed-aggregate/receipt" >> "$GITHUB_ENV"
+
+      - name: Download verified controller identity
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: windows-installed-controller-${{ inputs.source_sha }}
+          path: ${{ runner.temp }}/windows-installed-aggregate/controller
+
+      - name: Download both observed controller artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: windows-installed-observed-*-${{ inputs.source_sha }}
+          path: ${{ runner.temp }}/windows-installed-aggregate/observed
+          merge-multiple: false
+
+      - name: Verify exact three-scenario matrix and derive receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          request="$CONTROLLER_ROOT/controller-request.json"
+          test -s "$request"
+          mkdir -p "$RECEIPT_ROOT"
+          python - <<'PY' > "$RUNNER_TEMP/windows-installed-identity.env"
+          import json
+          import os
+          from pathlib import Path
+          import re
+
+          request = json.loads(
+              (Path(os.environ["CONTROLLER_ROOT"]) / "controller-request.json").read_text(
+                  encoding="utf-8"
+              )
+          )
+          hex40 = re.compile(r"^[0-9a-f]{40}$")
+          hex64 = re.compile(r"^[0-9a-f]{64}$")
+          values = {
+              "SOURCE_TREE": request.get("tree_sha"),
+              "MAIN_PROOF_SHA256": request.get("main_proof_sha256"),
+              "CANDIDATE_SHA256": request.get("candidate_sha256"),
+              "WEBVIEW_INSTALLER_SHA256": request.get("webview_installer_sha256"),
+          }
+          if request.get("source_sha") != os.environ["SOURCE_SHA"]:
+              raise SystemExit("controller request source mismatch")
+          if not isinstance(values["SOURCE_TREE"], str) or not hex40.fullmatch(
+              values["SOURCE_TREE"]
+          ):
+              raise SystemExit("controller request tree identity is invalid")
+          for name in (
+              "MAIN_PROOF_SHA256",
+              "CANDIDATE_SHA256",
+              "WEBVIEW_INSTALLER_SHA256",
+          ):
+              value = values[name]
+              if not isinstance(value, str) or not hex64.fullmatch(value):
+                  raise SystemExit(f"controller request {name} is invalid")
+          for name, value in values.items():
+              print(f"export {name}={value}")
+          PY
+          source "$RUNNER_TEMP/windows-installed-identity.env"
+          mapfile -d '' evidence_files < <(
+            find "$OBSERVED_ROOT" -type f -path '*/public/*.json' -print0 | sort -z
+          )
+          test "${#evidence_files[@]}" -eq 3
+          python scripts/verify_windows_installed_evidence.py \
+            --source-sha "$SOURCE_SHA" \
+            --source-tree "$SOURCE_TREE" \
+            --main-proof-sha256 "$MAIN_PROOF_SHA256" \
+            --candidate-sha256 "$CANDIDATE_SHA256" \
+            --webview-installer-sha256 "$WEBVIEW_INSTALLER_SHA256" \
+            --workflow "$GITHUB_WORKFLOW" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --job-id-prefix windows-installed \
+            "${evidence_files[@]}"
+          python - "${evidence_files[@]}" <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import sys
+
+          evidence = []
+          for path_text in sys.argv[1:]:
+              path = Path(path_text)
+              document = json.loads(path.read_text(encoding="utf-8"))
+              evidence.append(
+                  {
+                      "scenario": document["scenario"],
+                      "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                  }
+              )
+          diagnostic = {
+              "schema": "stock-desk-windows-installed-wiring-diagnostic-v1",
+              "evidence_kind": "wiring-only-diagnostic",
+              "source_sha": os.environ["SOURCE_SHA"],
+              "source_tree": os.environ["SOURCE_TREE"],
+              "scenario_evidence": sorted(evidence, key=lambda item: item["scenario"]),
+              "status": "raw-observation-verifier-required",
+          }
+          target = Path(os.environ["RECEIPT_ROOT"]) / "wiring-diagnostic.json"
+          target.write_text(
+              json.dumps(diagnostic, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+          )
+          PY
+          echo "Raw observation verification is not implemented; wiring cannot claim acceptance." >&2
+          exit 86
+
+      - name: Upload non-passing wiring diagnostic
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-installed-wiring-diagnostic-${{ inputs.source_sha }}
+          path: ${{ runner.temp }}/windows-installed-aggregate/receipt/
+          if-no-files-found: error
+          retention-days: 30

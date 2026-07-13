@@ -42,6 +42,16 @@ location). The desktop runtime does not use the source-development `.env`
 contract and does not read, migrate, modify, or delete the old
 `%LOCALAPPDATA%\stock-desk` v1 data tree.
 
+The v1.1 uninstaller shows an explicit, default-off data-removal choice. When
+selected outside an update, its NSIS hook copies the installed host to a private
+temporary directory and invokes one exact internal command before application
+files are removed. That command resolves Local AppData through the Windows Known
+Folder API, accepts no caller path, targets only the fixed `Stock Desk\v1.1`
+child, rejects reparse points and other special entries during full preflight,
+then performs a same-parent tombstone rename and no-follow deletion. Retry is
+interactive; cancel continues uninstall while retaining data, and silent failure
+uses a stable nonzero exit. The old lowercase v1 tree remains outside the target.
+
 Closing the main window, `Alt+F4`, and the application exit command enter one
 confirmation state with Cancel as the safe default. After explicit confirmation,
 the API closes the task-claim gate and accepts shutdown only when work is already

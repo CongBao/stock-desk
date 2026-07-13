@@ -1,0 +1,156 @@
+{
+  "schema_version": 1,
+  "artifact": "windows-installed-evidence",
+  "scenario": "webview-install-failure",
+  "identity": {
+    "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "source_tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "main_proof_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "candidate_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "webview_installer_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+  },
+  "execution": {
+    "workflow": "Installed Windows validation",
+    "run_id": 424242,
+    "run_attempt": 1,
+    "job_id": "installed-webview-install-failure",
+    "job_name": "Windows installed WebView2 failure",
+    "scenario_attempt": 1,
+    "attempt_id": "failure-first"
+  },
+  "system": {
+    "family": "windows-11",
+    "display_version": "23H2",
+    "build_number": 22631,
+    "update_build_revision": 5624,
+    "architecture": "x86_64",
+    "image_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "account": {
+    "account_type": "standard",
+    "is_admin": false,
+    "username_contains_non_ascii": false,
+    "profile_path_contains_space": true
+  },
+  "webview": {
+    "before": {
+      "state": "absent",
+      "version": null,
+      "channel": null,
+      "signer": null
+    },
+    "installation": {
+      "attempted": true,
+      "exit_code": 1603,
+      "installer_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    },
+    "after": {
+      "state": "absent",
+      "version": null,
+      "channel": null,
+      "signer": null
+    }
+  },
+  "processes": {
+    "installer": {
+      "started": true,
+      "elevated": false
+    },
+    "desktop_host": {
+      "started": false,
+      "elevated": null
+    },
+    "sidecar": {
+      "started": false,
+      "elevated": null
+    },
+    "uninstaller": {
+      "started": false,
+      "elevated": null
+    }
+  },
+  "security": {
+    "uac_prompt_count": 0,
+    "elevation_requested": false
+  },
+  "install": {
+    "exit_code": 1603,
+    "application_files_present": true,
+    "shortcut_present": true,
+    "launchable": true
+  },
+  "window": {
+    "observed": false,
+    "main_window_count": 0,
+    "title": null,
+    "external_browser_window_count": 0,
+    "rendered_content_sha256": null
+  },
+  "v1_canary": {
+    "before": {
+      "entry_count": 3,
+      "content_sha256": "4444444444444444444444444444444444444444444444444444444444444444"
+    },
+    "after": {
+      "entry_count": 3,
+      "content_sha256": "4444444444444444444444444444444444444444444444444444444444444444"
+    }
+  },
+  "diagnostic_summary": {
+    "archive_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "entry_count": 8,
+    "redaction_scan": {
+      "secret_match_count": 0,
+      "username_match_count": 0,
+      "absolute_path_match_count": 0
+    },
+    "records": [
+      {
+        "kind": "account-token",
+        "sha256": "6666666666666666666666666666666666666666666666666666666666666666",
+        "size_bytes": 80
+      },
+      {
+        "kind": "diagnostic-summary",
+        "sha256": "6666666666666666666666666666666666666666666666666666666666666666",
+        "size_bytes": 120
+      },
+      {
+        "kind": "failure-capture",
+        "sha256": "6666666666666666666666666666666666666666666666666666666666666666",
+        "size_bytes": 220
+      },
+      {
+        "kind": "install-log",
+        "sha256": "6666666666666666666666666666666666666666666666666666666666666666",
+        "size_bytes": 240
+      },
+      {
+        "kind": "process-token",
+        "sha256": "6666666666666666666666666666666666666666666666666666666666666666",
+        "size_bytes": 90
+      },
+      {
+        "kind": "uac-observation",
+        "sha256": "6666666666666666666666666666666666666666666666666666666666666666",
+        "size_bytes": 70
+      },
+      {
+        "kind": "v1-canary",
+        "sha256": "6666666666666666666666666666666666666666666666666666666666666666",
+        "size_bytes": 100
+      },
+      {
+        "kind": "webview-inventory",
+        "sha256": "6666666666666666666666666666666666666666666666666666666666666666",
+        "size_bytes": 160
+      }
+    ]
+  },
+  "uninstall": {
+    "attempted": false,
+    "exit_code": null,
+    "application_files_removed": null,
+    "shortcuts_removed": null
+  }
+}
