@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+from concurrent.futures import (
+    Future,
+    ThreadPoolExecutor,
+    TimeoutError as FutureTimeoutError,
+)
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
@@ -72,6 +76,7 @@ from tests.unit.market.providers.tdx_test_helpers import raw_record
 
 TOKEN = "ts-private-token-123456"
 FIXED_NOW = datetime(2026, 7, 6, 9, 30, tzinfo=timezone.utc)
+BLOCKED_DIAGNOSTIC_WATCHDOG_SECONDS = 30
 DEFAULT_PRIORITIES = {
     "daily_bars": [
         "tushare",
@@ -89,6 +94,23 @@ DEFAULT_PRIORITIES = {
     "announcements": ["tushare", "akshare"],
     "news": ["akshare"],
 }
+
+
+def result_while_diagnostic_remains_blocked[T](
+    future: Future[T],
+    release: threading.Event,
+    block_exited: threading.Event,
+) -> T:
+    """Wait for an independent operation without releasing the blocked probe."""
+    completed = threading.Event()
+    future.add_done_callback(lambda _future: completed.set())
+    assert completed.wait(timeout=5), (
+        "the independent settings operation waited for the blocked diagnostic"
+    )
+    assert not release.is_set()
+    assert not block_exited.is_set(), "the blocked diagnostic exited before release"
+    return future.result()
+
 
 LEGACY_V1_PRIORITIES = {
     key: value
@@ -133,16 +155,21 @@ class BlockingDiagnosticProvider(AvailableProvider):
         phase: str,
         started: threading.Event,
         release: threading.Event,
+        block_exited: threading.Event,
     ) -> None:
         super().__init__(source)
         self._phase = phase
         self._started = started
         self._release = release
+        self._block_exited = block_exited
 
     def _block(self, phase: str) -> None:
         if self._phase == phase:
             self._started.set()
-            assert self._release.wait(timeout=5)
+            try:
+                assert self._release.wait(timeout=BLOCKED_DIAGNOSTIC_WATCHDOG_SECONDS)
+            finally:
+                self._block_exited.set()
 
     def capabilities(self) -> CapabilityReport:
         self._block("probe")
@@ -944,17 +971,22 @@ def test_blocking_diagnostic_never_blocks_concurrent_get(
 ) -> None:
     started = threading.Event()
     release = threading.Event()
+    block_exited = threading.Event()
     provider = BlockingDiagnosticProvider(
         ProviderId.BAOSTOCK,
         phase=blocking_phase,
         started=started,
         release=release,
+        block_exited=block_exited,
     )
 
     def factory(_source: ProviderId, **_context: object) -> object:
         if blocking_phase == "factory":
             started.set()
-            assert release.wait(timeout=5)
+            try:
+                assert release.wait(timeout=BLOCKED_DIAGNOSTIC_WATCHDOG_SECONDS)
+            finally:
+                block_exited.set()
         return provider
 
     with settings_api(
@@ -973,7 +1005,11 @@ def test_blocking_diagnostic_never_blocks_concurrent_get(
                 "/api/settings/sources",
             )
             try:
-                fetched = get_future.result(timeout=0.5)
+                fetched = result_while_diagnostic_remains_blocked(
+                    get_future,
+                    release,
+                    block_exited,
+                )
             finally:
                 release.set()
             diagnostic = diagnostic_future.result(timeout=5)
@@ -988,11 +1024,13 @@ def test_service_close_completes_while_probe_blocks_and_late_result_is_ignored(
 ) -> None:
     started = threading.Event()
     release = threading.Event()
+    block_exited = threading.Event()
     provider = BlockingDiagnosticProvider(
         ProviderId.BAOSTOCK,
         phase="probe",
         started=started,
         release=release,
+        block_exited=block_exited,
     )
     merge_calls = 0
 
@@ -1021,7 +1059,11 @@ def test_service_close_completes_while_probe_blocks_and_late_result_is_ignored(
             assert started.wait(timeout=5)
             close_future = executor.submit(context.services.close)
             try:
-                close_future.result(timeout=0.5)
+                result_while_diagnostic_remains_blocked(
+                    close_future,
+                    release,
+                    block_exited,
+                )
             finally:
                 release.set()
             with pytest.raises(SourceSettingsStorageError):
@@ -1037,11 +1079,13 @@ def test_public_update_invalidates_blocked_diagnostic_without_merging_result(
 ) -> None:
     started = threading.Event()
     release = threading.Event()
+    block_exited = threading.Event()
     provider = BlockingDiagnosticProvider(
         ProviderId.BAOSTOCK,
         phase="probe",
         started=started,
         release=release,
+        block_exited=block_exited,
     )
     merge_calls = 0
 
@@ -1076,7 +1120,11 @@ def test_public_update_invalidates_blocked_diagnostic_without_merging_result(
             update_future = executor.submit(context.services.save_public, replacement)
             try:
                 assert (
-                    update_future.result(timeout=0.5).tdx_path
+                    result_while_diagnostic_remains_blocked(
+                        update_future,
+                        release,
+                        block_exited,
+                    ).tdx_path
                     == replacement["tdx_path"]
                 )
             finally:
@@ -1097,6 +1145,7 @@ def test_token_update_invalidates_blocked_diagnostic_without_merging_result(
     key = Fernet.generate_key().decode("ascii")
     started = threading.Event()
     release = threading.Event()
+    block_exited = threading.Event()
     replacement_token = "replacement-private-token"
     merge_calls = 0
 
@@ -1104,7 +1153,10 @@ def test_token_update_invalidates_blocked_diagnostic_without_merging_result(
         def fetch_bars(self, query: BarQuery) -> BarResult | BarFailure:
             if not started.is_set():
                 started.set()
-                assert release.wait(timeout=5)
+                try:
+                    assert release.wait(timeout=BLOCKED_DIAGNOSTIC_WATCHDOG_SECONDS)
+                finally:
+                    block_exited.set()
             return super().fetch_bars(query)
 
     provider = BlockingTushareProvider()
@@ -1141,7 +1193,14 @@ def test_token_update_invalidates_blocked_diagnostic_without_merging_result(
                 ),
             )
             try:
-                assert update_future.result(timeout=0.5).configured is True
+                assert (
+                    result_while_diagnostic_remains_blocked(
+                        update_future,
+                        release,
+                        block_exited,
+                    ).configured
+                    is True
+                )
             finally:
                 release.set()
             diagnostic = diagnostic_future.result(timeout=5)
