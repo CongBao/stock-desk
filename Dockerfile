@@ -12,6 +12,7 @@ COPY scripts/source_fingerprint.py ./scripts/source_fingerprint.py
 COPY migrations ./migrations
 COPY src ./src
 COPY src-tauri/Cargo.toml ./src-tauri/Cargo.toml
+COPY src-tauri/tauri.conf.json ./src-tauri/tauri.conf.json
 COPY web ./web
 RUN python scripts/source_fingerprint.py \
     --root /source \
@@ -29,6 +30,7 @@ COPY web/package.json ./web/package.json
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
     pnpm install --frozen-lockfile
 COPY src-tauri/Cargo.toml ./src-tauri/Cargo.toml
+COPY src-tauri/tauri.conf.json ./src-tauri/tauri.conf.json
 COPY web ./web
 RUN pnpm build
 

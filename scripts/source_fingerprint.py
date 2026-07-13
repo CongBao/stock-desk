@@ -19,6 +19,7 @@ ROOT_FILES = (
     "pyproject.toml",
     "scripts/source_fingerprint.py",
     "src-tauri/Cargo.toml",
+    "src-tauri/tauri.conf.json",
     "uv.lock",
 )
 TREE_ROOTS = ("migrations", "src", "web")
