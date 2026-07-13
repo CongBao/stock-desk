@@ -718,8 +718,8 @@ jobs:
         run: |
           uv lock --check
           pnpm install --lockfile-only --frozen-lockfile --ignore-scripts
-          if ! cargo audit --version 2>/dev/null | grep -F 'cargo-audit 0.22.2'; then
-            cargo install cargo-audit --version 0.22.2 --locked
+          if ! cargo-audit --version 2>/dev/null | grep -Fx 'cargo-audit 0.22.2'; then
+            cargo install cargo-audit --version 0.22.2 --locked --force
           fi
           cargo audit --file src-tauri/Cargo.lock --target-os windows --deny yanked
 

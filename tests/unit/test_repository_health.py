@@ -390,7 +390,11 @@ def test_security_workflow_fails_closed_on_dependency_and_boundary_audits() -> N
     audit_commands = "\n".join(str(step.get("run", "")) for step in audit["steps"])
     assert "uv audit --locked --no-dev" in audit_commands
     assert "pnpm audit --prod --audit-level high" in audit_commands
-    assert "cargo install cargo-audit --version 0.22.2 --locked" in audit_commands
+    assert "cargo-audit --version" in audit_commands
+    assert "grep -Fx 'cargo-audit 0.22.2'" in audit_commands
+    assert (
+        "cargo install cargo-audit --version 0.22.2 --locked --force" in audit_commands
+    )
     assert (
         "cargo audit --file src-tauri/Cargo.lock --target-os windows --deny yanked"
         in audit_commands
@@ -978,7 +982,12 @@ def test_ci_and_release_run_the_canonical_dependency_audit_gate() -> None:
         "pnpm install --lockfile-only --frozen-lockfile --ignore-scripts"
         in audit_step["run"]
     )
-    assert "cargo install cargo-audit --version 0.22.2 --locked" in audit_step["run"]
+    assert "cargo-audit --version" in audit_step["run"]
+    assert "grep -Fx 'cargo-audit 0.22.2'" in audit_step["run"]
+    assert (
+        "cargo install cargo-audit --version 0.22.2 --locked --force"
+        in audit_step["run"]
+    )
     assert (
         "cargo audit --file src-tauri/Cargo.lock --target-os windows --deny yanked"
         in audit_step["run"]
