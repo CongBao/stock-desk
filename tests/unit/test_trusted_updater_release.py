@@ -649,6 +649,50 @@ def test_signpath_receipt_must_match_actual_authenticode_identity(
         )
 
 
+def test_cli_success_log_never_discloses_decision_path_or_digest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    secret_path = str(tmp_path / "private-user" / "signed-installer.exe")
+    secret_digest = "d" * 64
+
+    def evaluate(**_kwargs: object) -> trusted_release.TrustedUpdaterDecision:
+        return {
+            "eligible": True,
+            "channel": "stable",
+            "version": VERSION,
+            "target": trusted_release._TARGET,
+            "payload_sha256": secret_digest,
+            "verified_installer_path": secret_path,
+        }
+
+    monkeypatch.setattr(trusted_release, "evaluate_trusted_updater_release", evaluate)
+    argv = [
+        str(tmp_path / "latest.json"),
+        str(tmp_path / "installer.exe"),
+        str(tmp_path / "installer.exe.sig"),
+        "--verified-installer",
+        secret_path,
+        "--expected-version",
+        VERSION,
+        "--source-sha",
+        SOURCE_SHA,
+    ]
+    for name in trusted_release.EvidencePaths.__required_keys__:
+        argv.extend([f"--{name.replace('_', '-')}", str(tmp_path / f"{name}.json")])
+
+    assert trusted_release.main(argv) == 0
+    output = capsys.readouterr().out
+    assert json.loads(output) == {
+        "channel": "stable",
+        "eligible": True,
+        "target": "windows-x86_64-nsis",
+    }
+    assert secret_path not in output
+    assert secret_digest not in output
+
+
 @pytest.mark.parametrize("version", ("1.1.0-beta.1", "1.1.0+build", "01.1.0"))
 def test_only_exact_xyz_version_is_accepted(tmp_path: Path, version: str) -> None:
     metadata, installer, signature, evidence = _paths(tmp_path)

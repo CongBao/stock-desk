@@ -974,7 +974,7 @@ def main(argv: list[str] | None = None) -> int:
             windows_11_receipt=options.windows_11_receipt,
             windows_11_attestation=options.windows_11_attestation,
         )
-        decision = evaluate_trusted_updater_release(
+        evaluate_trusted_updater_release(
             metadata_path=options.metadata,
             installer_path=options.installer,
             verified_installer_path=options.verified_installer,
@@ -986,7 +986,17 @@ def main(argv: list[str] | None = None) -> int:
     except TrustedUpdaterReleaseError as error:
         print(f"trusted updater release blocked: {error}")
         return 1
-    print(json.dumps(decision, sort_keys=True, separators=(",", ":")))
+    # The in-process decision deliberately contains the verified installer path
+    # for the release controller. Never echo that path (or any caller-derived
+    # value) into shared CI logs; the exit code is the authoritative gate and
+    # this closed public summary is sufficient for operators.
+    print(
+        json.dumps(
+            {"channel": "stable", "eligible": True, "target": _TARGET},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    )
     return 0
 
 
