@@ -410,10 +410,7 @@ async function installFlowStubs(page: Page) {
           target: null,
         },
       };
-      if (
-        unsafeTaskListArmed &&
-        taskUrl.searchParams.get('limit') === '100'
-      ) {
+      if (unsafeTaskListArmed && taskUrl.searchParams.get('limit') === '100') {
         await fulfill(route, [
           {
             ...task,
