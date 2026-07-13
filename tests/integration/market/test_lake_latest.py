@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+import stock_desk.market.lake as lake_module
 from stock_desk.market.lake import MarketLake, MarketLakeCorruptionError
 from stock_desk.market.provenance import RoutedBarSuccess, make_routing_manifest
 from stock_desk.market.providers.normalization import dataset_version
@@ -53,6 +55,80 @@ def test_latest_exact_returns_validated_manifest_with_year_order(
     assert latest == stored
     assert latest is not None
     assert tuple(partition.year for partition in latest.partitions) == (2023, 2024)
+
+
+def test_multi_partition_read_reuses_one_private_duckdb_parser(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    routed = routed_daily_bars(
+        (
+            date(2023, 12, 27),
+            date(2023, 12, 28),
+            date(2023, 12, 29),
+            date(2024, 1, 2),
+        )
+    )
+    with open_catalog_engine(tmp_path) as engine:
+        lake = MarketLake(engine=engine, root=tmp_path / "market")
+        stored = lake.write(routed)
+        original_connect = lake_module.duckdb.connect
+        connections: list[Any] = []
+
+        def connect(*args: object, **kwargs: object) -> Any:
+            connection = original_connect(*args, **kwargs)
+            connections.append(connection)
+            return connection
+
+        monkeypatch.setattr(lake_module.duckdb, "connect", connect)
+
+        result = lake.read_latest_series(
+            routed.result.query.symbol,
+            routed.result.query.period,
+            routed.result.query.adjustment,
+        )
+
+    assert len(stored.partitions) == 2
+    assert result == routed
+    assert len(connections) == 1
+    with pytest.raises(lake_module.duckdb.ConnectionException):
+        connections[0].execute("SELECT 1")
+
+
+def test_partition_parser_connect_failure_is_bounded_and_retryable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    routed = routed_daily_bars((date(2023, 12, 29), date(2024, 1, 2)))
+    with open_catalog_engine(tmp_path) as engine:
+        lake = MarketLake(engine=engine, root=tmp_path / "market")
+        lake.write(routed)
+        original_connect = lake_module.duckdb.connect
+        attempts = 0
+
+        def flaky_connect(*args: object, **kwargs: object) -> Any:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise lake_module.duckdb.IOException("synthetic connect failure")
+            return original_connect(*args, **kwargs)
+
+        monkeypatch.setattr(lake_module.duckdb, "connect", flaky_connect)
+
+        with pytest.raises(MarketLakeCorruptionError):
+            lake.read_latest_series(
+                routed.result.query.symbol,
+                routed.result.query.period,
+                routed.result.query.adjustment,
+            )
+        recovered = lake.read_latest_series(
+            routed.result.query.symbol,
+            routed.result.query.period,
+            routed.result.query.adjustment,
+        )
+
+    assert attempts == 2
+    assert recovered == routed
 
 
 def test_latest_exact_selects_newest_fetch_for_same_route(tmp_path: Path) -> None:

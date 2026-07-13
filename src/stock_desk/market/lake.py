@@ -2009,6 +2009,35 @@ def _file_signature(metadata: os.stat_result) -> tuple[int, int, int, int]:
     )
 
 
+_PARTITION_READER_LOCAL = threading.local()
+
+
+@contextmanager
+def _shared_partition_reader() -> Iterator[None]:
+    """Reuse one private DuckDB parser across a validated multi-partition read."""
+
+    existing = getattr(_PARTITION_READER_LOCAL, "connection", None)
+    if existing is not None:
+        yield
+        return
+    try:
+        with duckdb.connect(":memory:") as connection:
+            # Snapshot descriptors are intentionally exposed through /dev/fd on
+            # POSIX. The operating system may reuse the same descriptor number
+            # for the next partition, so DuckDB's external-file cache must not
+            # treat that stable path string as a stable file identity.
+            connection.execute("SET enable_external_file_cache = false")
+            _PARTITION_READER_LOCAL.connection = connection
+            try:
+                yield
+            finally:
+                del _PARTITION_READER_LOCAL.connection
+    except duckdb.Error as error:
+        raise _IntegrityValidationError(
+            "market partition parser could not be initialized"
+        ) from error
+
+
 def _read_partition_bars(path: Path, *, max_rows: int) -> tuple[Bar, ...]:
     if (
         isinstance(max_rows, bool)
@@ -2017,7 +2046,11 @@ def _read_partition_bars(path: Path, *, max_rows: int) -> tuple[Bar, ...]:
     ):
         raise _IntegrityValidationError("market partition row bound is invalid")
     try:
-        with duckdb.connect(":memory:") as connection:
+        connection = getattr(_PARTITION_READER_LOCAL, "connection", None)
+        if connection is None:
+            with _shared_partition_reader():
+                return _read_partition_bars(path, max_rows=max_rows)
+        else:
             description = tuple(
                 (str(row[0]), str(row[1]))
                 for row in connection.execute(
@@ -2895,23 +2928,24 @@ class MarketLake:
                 "market dataset row count does not match its partitions"
             )
         remaining_rows = dataset_row_count
-        for partition, partition_row_count in zip(
-            snapshot.partitions,
-            partition_row_counts,
-            strict=True,
-        ):
-            partition_bars, stored_partition = self._read_catalog_partition(
-                partition,
-                source=source,
-                query=query,
-                dataset_version=dataset_version,
-                root_descriptor=root_descriptor,
-                expected_row_count=partition_row_count,
-                max_rows=remaining_rows,
-            )
-            bars.extend(partition_bars)
-            stored_partitions.append(stored_partition)
-            remaining_rows -= partition_row_count
+        with _shared_partition_reader():
+            for partition, partition_row_count in zip(
+                snapshot.partitions,
+                partition_row_counts,
+                strict=True,
+            ):
+                partition_bars, stored_partition = self._read_catalog_partition(
+                    partition,
+                    source=source,
+                    query=query,
+                    dataset_version=dataset_version,
+                    root_descriptor=root_descriptor,
+                    expected_row_count=partition_row_count,
+                    max_rows=remaining_rows,
+                )
+                bars.extend(partition_bars)
+                stored_partitions.append(stored_partition)
+                remaining_rows -= partition_row_count
         if remaining_rows != 0:
             raise _IntegrityValidationError(
                 "market dataset row count does not match its partitions"
