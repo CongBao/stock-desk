@@ -595,6 +595,23 @@ V11_CANONICAL_REQUIREMENTS: dict[str, dict[str, Any]] = {
             "update-check-privacy",
         ),
     ),
+    "V11-R-019": _authority(
+        "backtest",
+        "operational",
+        "desktop_backtest_v1_oracle_equivalence",
+        4,
+        "03b1bfe18e3d9a0f0a3caca973a66c0f0dbc3dc6f1ebe47ab0e269909b3fa44e",
+        (
+            "windows-desktop-shell",
+            "core-capability-compatibility-baseline",
+            "use-existing-core-capability-after-desktopization",
+        ),
+        (
+            "windows-desktop-shell",
+            "task-checkpoint-and-recovery-choice",
+            "active-tasks-on-confirmed-exit",
+        ),
+    ),
 }
 
 AUTHORITATIVE_BEHAVIOR_KEYS: dict[str, str] = {
@@ -1493,25 +1510,25 @@ def validate_v11_manifest(
         raise ValidationError("v1.1 schema_version must be integer 1")
     requirements = _expect_list(matrix["requirements"], "v1.1 requirements")
     non_goals = _expect_list(matrix["non_goals"], "v1.1 non_goals")
-    expected = [f"V11-R-{index:03d}" for index in range(1, 19)]
+    expected = [f"V11-R-{index:03d}" for index in range(1, 20)]
     if [
         item.get("id") if isinstance(item, dict) else None for item in requirements
     ] != expected:
         raise ValidationError(
-            "v1.1 requirements must contain exactly V11-R-001 through V11-R-018"
+            "v1.1 requirements must contain exactly V11-R-001 through V11-R-019"
         )
     if non_goals:
         raise ValidationError("v1.1 non_goals must be empty for the frozen increment")
     if list(V11_CANONICAL_REQUIREMENTS) != expected:
         raise ValidationError(
-            "v1.1 canonical registry must contain exactly V11-R-001 through V11-R-018"
+            "v1.1 canonical registry must contain exactly V11-R-001 through V11-R-019"
         )
     if (
         list(V11_AUTHORITATIVE_BEHAVIOR_KEYS) != expected
         or list(V11_AUTHORITATIVE_ACCEPTANCE_SHA256) != expected
     ):
         raise ValidationError(
-            "v1.1 authoritative contract must contain exactly V11-R-001 through V11-R-018"
+            "v1.1 authoritative contract must contain exactly V11-R-001 through V11-R-019"
         )
     tracked_paths = _tracked_paths(repo_root)
     behavior_keys: set[str] = set()
