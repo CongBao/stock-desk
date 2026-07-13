@@ -6,7 +6,6 @@ import multiprocessing
 import os
 import signal
 import sqlite3
-import socket
 import threading
 import time
 from typing import Any, TypeAlias
@@ -15,6 +14,7 @@ from sqlalchemy.exc import DBAPIError, OperationalError
 
 from stock_desk.config import get_settings
 from stock_desk.diagnostics.models import DiagnosticEventCode, DiagnosticEventSink
+from stock_desk.runtime_identity import new_worker_id
 from stock_desk.tasks.models import TaskClaim, TaskSnapshot
 from stock_desk.tasks.repository import (
     DesktopCheckpointPause,
@@ -486,7 +486,7 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
     settings = get_settings()
-    worker_id = f"{socket.gethostname()}-{os.getpid()}"
+    worker_id = new_worker_id("task")
     from stock_desk.market.worker_runtime import ProductionMarketWorker
 
     runtime = ProductionMarketWorker.open(settings, worker_id=worker_id)

@@ -48,6 +48,7 @@ from stock_desk.analysis.sources.routing import ResearchSourceRouter
 from stock_desk.analysis.sources.tushare import TushareResearchSource
 from stock_desk.analysis.worker import AnalysisWorkerHandler
 from stock_desk.config import Settings
+from stock_desk.desktop_session import DesktopSession
 from stock_desk.main import create_app
 from stock_desk.market.providers.base import ProviderPermissionDenied
 from stock_desk.market.types import Adjustment, Period, ProviderId
@@ -269,6 +270,7 @@ def _harness(
     *,
     data_service: ResearchDataService | None = None,
     provider_builder: Callable[[AnalysisExecutionConfig], ModelProvider] | None = None,
+    desktop_session: DesktopSession | None = None,
     provider_builder_factory: Callable[
         [SecretStore],
         tuple[
@@ -362,9 +364,19 @@ def _harness(
         model_settings_service=model_settings,
         analysis_service=analysis,
         analysis_preflight_service=preflight,
+        desktop_session=desktop_session,
     )
     try:
         with TestClient(app) as client:
+            if desktop_session is not None:
+                client.headers.update(
+                    {
+                        "Origin": desktop_session.origin,
+                        "Authorization": (
+                            f"Bearer {desktop_session.secret_for_host()}"
+                        ),
+                    }
+                )
             yield AnalysisHarness(
                 client=client,
                 worker=worker,

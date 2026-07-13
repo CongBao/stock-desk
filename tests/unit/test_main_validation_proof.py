@@ -233,6 +233,8 @@ def test_generate_and_verify_complete_main_validation_proof(tmp_path: Path) -> N
     assert set(proof["workflows"]) == {"CI", "CodeQL", "Security"}  # type: ignore[arg-type]
     assert set(proof["critical_inputs"]) == set(proof_module.CRITICAL_INPUTS)  # type: ignore[arg-type]
     assert "tests/acceptance/v1_1_requirements.yml" in proof["critical_inputs"]  # type: ignore[operator]
+    assert "scripts/verify_zero_telemetry.py" in proof["critical_inputs"]  # type: ignore[operator]
+    assert "config/desktop-network-privacy.json" in proof["critical_inputs"]  # type: ignore[operator]
     assert "tests/acceptance/v1_1_requirements.yml" in proof["fixture_hashes"]  # type: ignore[operator]
 
 

@@ -529,6 +529,72 @@ V11_CANONICAL_REQUIREMENTS: dict[str, dict[str, Any]] = {
             "publish-unsigned-test-package",
         ),
     ),
+    "V11-R-016": _authority(
+        "backtest",
+        "user_visible",
+        "desktop_backtest_transport_equivalence_matrix",
+        4,
+        "1d3efc898d774dbe63919caff730559212e38a3d358eb3630dba1af5af43e6a1",
+        (
+            "windows-desktop-shell",
+            "core-capability-compatibility-baseline",
+            "use-existing-core-capability-after-desktopization",
+        ),
+        (
+            "windows-desktop-shell",
+            "task-checkpoint-and-recovery-choice",
+            "active-tasks-on-confirmed-exit",
+        ),
+    ),
+    "V11-R-017": _authority(
+        "analysis",
+        "security",
+        "desktop_analysis_task_research_safety",
+        4,
+        "94cad2b8d1cdf8516bc34adb9279c225b791ca529c1866b582c54303d55e6895",
+        (
+            "first-run-onboarding",
+            "core-flow-contextual-guidance",
+            "first-visit-core-page",
+        ),
+        (
+            "windows-desktop-shell",
+            "core-capability-compatibility-baseline",
+            "use-existing-core-capability-after-desktopization",
+        ),
+        (
+            "windows-desktop-shell",
+            "core-capability-compatibility-baseline",
+            "user-seeks-live-trading-or-investment-advice",
+        ),
+    ),
+    "V11-R-018": _authority(
+        "security",
+        "security",
+        "anonymous_update_and_local_diagnostics_privacy_guard",
+        4,
+        "f3a944820e08e998534ea9ccfcea876e45cef8bdbec98c39936aa3168f6c4b1d",
+        (
+            "desktop-user-experience",
+            "local-redacted-diagnostic-bundle",
+            "redaction-scan-finds-sensitive-field",
+        ),
+        (
+            "desktop-user-experience",
+            "default-zero-telemetry",
+            "application-crashes",
+        ),
+        (
+            "desktop-user-experience",
+            "default-zero-telemetry",
+            "perform-update-check",
+        ),
+        (
+            "trusted-windows-distribution",
+            "non-mandatory-trusted-in-app-update",
+            "update-check-privacy",
+        ),
+    ),
 }
 
 AUTHORITATIVE_BEHAVIOR_KEYS: dict[str, str] = {
@@ -1427,25 +1493,25 @@ def validate_v11_manifest(
         raise ValidationError("v1.1 schema_version must be integer 1")
     requirements = _expect_list(matrix["requirements"], "v1.1 requirements")
     non_goals = _expect_list(matrix["non_goals"], "v1.1 non_goals")
-    expected = [f"V11-R-{index:03d}" for index in range(1, 16)]
+    expected = [f"V11-R-{index:03d}" for index in range(1, 19)]
     if [
         item.get("id") if isinstance(item, dict) else None for item in requirements
     ] != expected:
         raise ValidationError(
-            "v1.1 requirements must contain exactly V11-R-001 through V11-R-015"
+            "v1.1 requirements must contain exactly V11-R-001 through V11-R-018"
         )
     if non_goals:
         raise ValidationError("v1.1 non_goals must be empty for the frozen increment")
     if list(V11_CANONICAL_REQUIREMENTS) != expected:
         raise ValidationError(
-            "v1.1 canonical registry must contain exactly V11-R-001 through V11-R-015"
+            "v1.1 canonical registry must contain exactly V11-R-001 through V11-R-018"
         )
     if (
         list(V11_AUTHORITATIVE_BEHAVIOR_KEYS) != expected
         or list(V11_AUTHORITATIVE_ACCEPTANCE_SHA256) != expected
     ):
         raise ValidationError(
-            "v1.1 authoritative contract must contain exactly V11-R-001 through V11-R-015"
+            "v1.1 authoritative contract must contain exactly V11-R-001 through V11-R-018"
         )
     tracked_paths = _tracked_paths(repo_root)
     behavior_keys: set[str] = set()

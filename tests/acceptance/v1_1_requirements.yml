@@ -605,4 +605,202 @@ requirements:
         path: tests/unit/test_v11_release_workflow.py
         selector: tests/unit/test_v11_release_workflow.py::test_v11_prerelease_asset_selection_is_version_agnostic_and_windows_only
         assertion: Unsigned prerelease publication binds the tag version to the exact Windows candidate name and rejects every unsupported asset family.
+  - id: V11-R-016
+    category: backtest
+    kind: user_visible
+    behavior_key: desktop_backtest_transport_equivalence_matrix
+    acceptance: "Authenticated desktop transport matches the current direct service across twelve normal-market cells combining MACD and custom formulas, single-symbol and pool scopes, and daily, weekly, and 60-minute periods: canonical reports, trades, open positions, snapshots, result hashes, and signal-series identities match, while a persisted pool checkpoint resumed by a fresh worker matches its uninterrupted current-service baseline. This transport regression proof is not an independent v1.0 oracle and does not claim complete suspension or price-limit edge coverage."
+    source_refs:
+      - {
+          capability: windows-desktop-shell,
+          requirement: core-capability-compatibility-baseline,
+          scenario: use-existing-core-capability-after-desktopization,
+        }
+      - {
+          capability: windows-desktop-shell,
+          requirement: task-checkpoint-and-recovery-choice,
+          scenario: active-tasks-on-confirmed-exit,
+        }
+    owning_stage: 4
+    status: mapped
+    evidence:
+      - state: existing
+        runner: pytest
+        kind: acceptance
+        path: tests/acceptance/test_desktop_backtest_transport_equivalence.py
+        selector: tests/acceptance/test_desktop_backtest_transport_equivalence.py::test_authenticated_desktop_transport_matches_current_service_for_12_normal_market_cells
+        assertion: All twelve normal-market formula, scope, and period cells run through the current direct service and authenticated desktop transport and produce canonical-equivalent reports, trades, open positions, snapshots, result hashes, and signal series; they are not an independent v1.0 or abnormal-market oracle.
+      - state: existing
+        runner: pytest
+        kind: integration
+        path: tests/acceptance/test_desktop_backtest_transport_equivalence.py
+        selector: tests/acceptance/test_desktop_backtest_transport_equivalence.py::test_pool_checkpoint_resumes_on_new_worker_with_uninterrupted_result
+        assertion: A persisted pool checkpoint is resumed through a fresh task repository and worker and finishes with the same canonical report, snapshot, result hash, and signal series as its uninterrupted current-service baseline.
+      - state: existing
+        runner: playwright
+        kind: acceptance
+        path: web/e2e/backtest.spec.ts
+        selector: desktop market prefill runs MACD through report, replay, and export
+        assertion: The desktop Backtest workspace accepts the Market handoff and completes the visible MACD report, replay, and export journey.
+      - state: existing
+        runner: playwright
+        kind: acceptance
+        path: web/e2e/backtest.spec.ts
+        selector: custom formula discloses and completes a partial pool
+        assertion: The desktop Backtest workspace visibly submits a versioned custom formula pool and renders its partial terminal report without hiding failures.
+  - id: V11-R-017
+    category: analysis
+    kind: security
+    behavior_key: desktop_analysis_task_research_safety
+    acceptance: "Analysis and Task Center share the exact authenticated desktop authority while preserving fixed role prompts, untrusted external-data isolation, masked domestic-model credentials, source and cutoff provenance, partial and insufficient degradation, safe task projections, non-investment-advice boundaries, module isolation from formulas and backtests, contextual guidance, and a second explicit model-cost confirmation before analysis recovery."
+    source_refs:
+      - {
+          capability: first-run-onboarding,
+          requirement: core-flow-contextual-guidance,
+          scenario: first-visit-core-page,
+        }
+      - {
+          capability: windows-desktop-shell,
+          requirement: core-capability-compatibility-baseline,
+          scenario: use-existing-core-capability-after-desktopization,
+        }
+      - {
+          capability: windows-desktop-shell,
+          requirement: core-capability-compatibility-baseline,
+          scenario: user-seeks-live-trading-or-investment-advice,
+        }
+    owning_stage: 4
+    status: mapped
+    evidence:
+      - state: existing
+        runner: pytest
+        kind: acceptance
+        path: tests/acceptance/test_v11_analysis_task_journey.py
+        selector: tests/acceptance/test_v11_analysis_task_journey.py::test_desktop_analysis_and_task_center_share_only_auditable_safe_state
+        assertion: A complete five-role DeepSeek-compatible workflow keeps malicious external text in untrusted data blocks, uses the current fixed role prompts, records non-empty prompt and request hashes with evidence provenance, emits the disclaimer, and exposes only safe task and event projections.
+      - state: existing
+        runner: pytest
+        kind: integration
+        path: tests/integration/test_sidecar_session.py
+        selector: tests/integration/test_sidecar_session.py::test_analysis_and_task_center_share_exact_desktop_session_authority
+        assertion: Model settings, analysis, and safe Task Center endpoints reject missing or wrong desktop authority and share the exact Origin and Bearer session without leaking private task payloads.
+      - state: existing
+        runner: playwright
+        kind: acceptance
+        path: web/e2e/analysis.spec.ts
+        selector: configures a model and completes traceable analysis, retry, and insufficient flows
+        assertion: One visible desktop journey covers masked model setup, traceable complete evidence, partial retry, insufficient recovery, Analysis and Task guidance anchors, safe Task Center projection, and formula or backtest isolation.
+      - state: existing
+        runner: vitest
+        kind: component
+        path: web/src/features/desktop/DesktopTaskRecovery.test.tsx
+        selector: requires an extra model-cost confirmation before resuming analysis
+        assertion: Analysis recovery keeps cancellation focused, performs no request after continue or return, and posts confirm_analysis_cost only after the separate explicit cost acknowledgement.
+  - id: V11-R-018
+    category: security
+    kind: security
+    behavior_key: anonymous_update_and_local_diagnostics_privacy_guard
+    acceptance: "The desktop privacy boundary is machine-verifiable and fail-closed for the active pre-updater phase: diagnostics remain explicit, allowlisted, recursively redacted, local-only, and abort on unknown nested data; telemetry, automatic crash or diagnostic upload, updater enablement, and stable host or device identifiers are absent; enumerated network-capable imports and direct primitives are confined to exact reviewed paths, including aliased Python dynamic imports, Rust network-client aliases, and Web sendBeacon, and all Tauri configuration and capability files are recursively checked for updater activation and unsafe symlink ancestors; the future updater contract permits only anonymous requests without usage behavior or local-data digests, and exact candidate and main proof evidence binds the privacy policy and verifier inputs."
+    source_refs:
+      - {
+          capability: desktop-user-experience,
+          requirement: local-redacted-diagnostic-bundle,
+          scenario: redaction-scan-finds-sensitive-field,
+        }
+      - {
+          capability: desktop-user-experience,
+          requirement: default-zero-telemetry,
+          scenario: application-crashes,
+        }
+      - {
+          capability: desktop-user-experience,
+          requirement: default-zero-telemetry,
+          scenario: perform-update-check,
+        }
+      - {
+          capability: trusted-windows-distribution,
+          requirement: non-mandatory-trusted-in-app-update,
+          scenario: update-check-privacy,
+        }
+    owning_stage: 4
+    status: mapped
+    evidence:
+      - state: existing
+        runner: pytest
+        kind: security
+        path: tests/security/test_diagnostic_export.py
+        selector: tests/security/test_diagnostic_export.py::test_allowlisted_recursive_redaction_removes_all_private_classes
+        assertion: Recursive diagnostics remove every credential, prompt, user, host, and path class before any local export can succeed.
+      - state: existing
+        runner: pytest
+        kind: security
+        path: tests/security/test_diagnostic_export.py
+        selector: tests/security/test_diagnostic_export.py::test_unknown_or_unserializable_diagnostic_material_fails_closed
+        assertion: Unknown or unserializable diagnostic material aborts export instead of bypassing the recursive allowlist and redaction boundary.
+      - state: existing
+        runner: pytest
+        kind: security
+        path: tests/security/test_zero_telemetry.py
+        selector: tests/security/test_zero_telemetry.py::test_current_locked_application_has_no_telemetry_or_crash_sdk
+        assertion: The locked production tree, manifests, recursive Tauri configuration, network paths, and privacy policy satisfy the fail-closed privacy verifier.
+      - state: existing
+        runner: pytest
+        kind: security
+        path: tests/security/test_zero_telemetry.py
+        selector: tests/security/test_zero_telemetry.py::test_production_worker_ids_use_random_session_identity_not_host_identity
+        assertion: All production worker entry points call the shared ephemeral identity helper and never derive identifiers from the hostname.
+      - state: existing
+        runner: pytest
+        kind: security
+        path: tests/security/test_zero_telemetry.py
+        selector: tests/security/test_zero_telemetry.py::test_new_worker_id_has_random_unique_session_shape
+        assertion: The shared worker identity helper produces unique session-scoped identifiers with a fixed high-entropy hexadecimal shape.
+      - state: existing
+        runner: pytest
+        kind: security
+        path: tests/security/test_zero_telemetry.py
+        selector: tests/security/test_zero_telemetry.py::test_device_identity_automatic_upload_or_updater_enablement_fails_closed
+        assertion: Static privacy verification rejects stable installation identity, automatic diagnostic upload, updater dependencies, updater capabilities, and updater configuration.
+      - state: existing
+        runner: pytest
+        kind: security
+        path: tests/security/test_zero_telemetry.py
+        selector: tests/security/test_zero_telemetry.py::test_privacy_policy_is_required_and_future_updates_must_remain_anonymous
+        assertion: The canonical policy is required semantically and refuses any future updater contract that changes anonymous requests into a stable device identity.
+      - state: existing
+        runner: pytest
+        kind: security
+        path: tests/security/test_zero_telemetry.py
+        selector: tests/security/test_zero_telemetry.py::test_phase_policy_and_recursive_tauri_json_fail_closed
+        assertion: An unreviewed policy phase or updater permission hidden in any nested Tauri capability file fails the privacy gate.
+      - state: existing
+        runner: pytest
+        kind: security
+        path: tests/security/test_zero_telemetry.py
+        selector: tests/security/test_zero_telemetry.py::test_capabilities_symlink_ancestor_fails_closed
+        assertion: A symlinked Tauri capabilities root and configuration reached through that unsafe ancestor both fail the privacy gate.
+      - state: existing
+        runner: pytest
+        kind: security
+        path: tests/security/test_zero_telemetry.py
+        selector: tests/security/test_zero_telemetry.py::test_python_network_aliases_require_an_exact_allowlisted_path
+        assertion: Python AST inspection recognizes enumerated aliased network-capable imports, including dynamic import aliases, and rejects them outside an exact reviewed path.
+      - state: existing
+        runner: pytest
+        kind: security
+        path: tests/security/test_zero_telemetry.py
+        selector: tests/security/test_zero_telemetry.py::test_direct_network_aliases_require_an_exact_allowlisted_path
+        assertion: Enumerated Rust network-client aliases and the Web sendBeacon primitive are rejected outside exact reviewed paths.
+      - state: existing
+        runner: pytest
+        kind: security
+        path: tests/security/test_zero_telemetry.py
+        selector: tests/security/test_zero_telemetry.py::test_snapshot_and_failure_collection_make_no_network_attempt
+        assertion: Diagnostic snapshot collection and its failure paths make no network connection attempts.
+      - state: existing
+        runner: pytest
+        kind: contract
+        path: tests/unit/test_windows_desktop_evidence_contract.py
+        selector: tests/unit/test_windows_desktop_evidence_contract.py::test_windows_candidate_runs_packaged_tauri_and_binds_visual_evidence
+        assertion: Candidate A runs the privacy verifier before packaging evidence and binds the workflow, privacy verifier, and privacy policy hashes into its exact-SHA evidence manifest.
 non_goals: []

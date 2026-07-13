@@ -1,0 +1,54 @@
+{
+  "schema_version": 2,
+  "active_phase": "pre-updater",
+  "phases": {
+    "pre-updater": {
+      "telemetry": "disabled",
+      "automatic_crash_upload": "disabled",
+      "automatic_diagnostic_upload": "disabled",
+      "diagnostics": {
+        "creation": "explicit-user-action",
+        "upload": "never"
+      },
+      "production_network_exact_paths": {
+        "python": [
+          "src/stock_desk/analysis/model_config.py",
+          "src/stock_desk/analysis/model_settings.py",
+          "src/stock_desk/analysis/providers/base.py",
+          "src/stock_desk/analysis/providers/deepseek.py",
+          "src/stock_desk/analysis/providers/ollama.py",
+          "src/stock_desk/analysis/providers/openai_compatible.py",
+          "src/stock_desk/analysis/sources/_akshare_worker.py",
+          "src/stock_desk/analysis/sources/tushare.py",
+          "src/stock_desk/desktop.py",
+          "src/stock_desk/market/compositions.py",
+          "src/stock_desk/market/providers/akshare.py",
+          "src/stock_desk/market/providers/baostock.py",
+          "src/stock_desk/market/providers/tushare.py"
+        ],
+        "rust": [
+          "src-tauri/src/app.rs",
+          "src-tauri/src/exit.rs",
+          "src-tauri/src/proxy.rs"
+        ],
+        "web": [
+          "web/src/shared/api/client.ts"
+        ]
+      },
+      "updater": {
+        "enabled": false,
+        "future_request": {
+          "identity": "anonymous",
+          "allowed_fields": [
+            "target",
+            "arch",
+            "current_version"
+          ],
+          "stable_device_identifier": false,
+          "usage_behavior": false,
+          "local_data_digest": false
+        }
+      }
+    }
+  }
+}

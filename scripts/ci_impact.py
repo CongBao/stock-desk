@@ -104,7 +104,14 @@ _DEPENDENCY_FILES = frozenset(
     }
 )
 _DELIVERY_FILES = frozenset(
-    {".dockerignore", ".editorconfig", ".env.example", ".gitattributes", ".gitignore"}
+    {
+        ".dockerignore",
+        ".editorconfig",
+        ".env.example",
+        ".gitattributes",
+        ".gitignore",
+        "config/desktop-network-privacy.json",
+    }
 )
 _HIGH_RISK_DOMAINS = frozenset({"delivery", "dependency", "permissions", "signing"})
 _HIGH_RISK_SCRIPT_NAMES = frozenset(

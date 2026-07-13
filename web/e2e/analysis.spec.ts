@@ -4,12 +4,16 @@ import { expect, test } from './fixtures';
 
 const digest = (character: string) => `sha256:${character.repeat(64)}`;
 const now = '2026-07-08T08:00:00Z';
+const taskFinishedAt = '2026-07-08T08:00:01.080Z';
 const modelId = digest('a');
 const snapshotId = digest('b');
 const completeRunId = '11111111-1111-1111-1111-111111111111';
 const partialRunId = '22222222-2222-2222-2222-222222222222';
 const insufficientRunId = '33333333-3333-3333-3333-333333333333';
 const retryRunId = '44444444-4444-4444-4444-444444444444';
+const analysisTaskId = '55555555-5555-4555-8555-555555555555';
+const analysisTaskEventId = '66666666-6666-4666-8666-666666666666';
+const secretTaskPayload = 'TASK-PAYLOAD-MUST-STAY-PRIVATE';
 
 const model = {
   id: modelId,
@@ -260,6 +264,9 @@ async function installFlowStubs(page: Page) {
   const completePollGate = createGate();
   const detailRunIds: string[] = [];
   const retryRequests: { parentRunId: string; requestedStage: string }[] = [];
+  const taskRequests: string[] = [];
+  const isolatedModuleRequests: string[] = [];
+  let unsafeTaskListArmed = false;
   await page.route('**/api/**', async (route) => {
     const request = route.request();
     const rawPathname = new URL(request.url()).pathname;
@@ -269,6 +276,9 @@ async function installFlowStubs(page: Page) {
     }
     const pathname = decodeURIComponent(rawPathname);
     const method = request.method();
+    if (/\/(?:formulas|backtests)(?:\/|$)/u.test(pathname)) {
+      isolatedModuleRequests.push(request.url());
+    }
     if (
       pathname === '/api/v1/onboarding/state' ||
       pathname === '/api/v1/workspace'
@@ -373,6 +383,114 @@ async function installFlowStubs(page: Page) {
           }),
         ],
         next_cursor: null,
+      });
+      return;
+    }
+    if (pathname.endsWith('/tasks') && method === 'GET') {
+      taskRequests.push(request.url());
+      const taskUrl = new URL(request.url());
+      expect(taskUrl.searchParams.get('view')).toBe('safe');
+      const task = {
+        id: analysisTaskId,
+        kind: 'analysis.run',
+        status: 'succeeded',
+        progress: 1,
+        cancel_requested: false,
+        created_at: now,
+        updated_at: taskFinishedAt,
+        started_at: now,
+        finished_at: taskFinishedAt,
+        duration_ms: 1080,
+        presentation: {
+          label: '智能分析',
+          stage: null,
+          processed: null,
+          total: null,
+          failed: null,
+          target: null,
+        },
+      };
+      if (
+        unsafeTaskListArmed &&
+        taskUrl.searchParams.get('limit') === '100'
+      ) {
+        await fulfill(route, [
+          {
+            ...task,
+            payload: { analysis_run_id: secretTaskPayload },
+            result: { private_summary: secretTaskPayload },
+            error: { private_detail: secretTaskPayload },
+          },
+        ]);
+        return;
+      }
+      await fulfill(route, [task]);
+      return;
+    }
+    if (pathname.endsWith('/tasks/metrics') && method === 'GET') {
+      await fulfill(route, {
+        total: 1,
+        by_status: {
+          queued: 0,
+          running: 0,
+          succeeded: 1,
+          failed: 0,
+          cancelled: 0,
+        },
+        failure_count: 0,
+        completed_count: 1,
+        average_duration_ms: 1080,
+        min_duration_ms: 1080,
+        max_duration_ms: 1080,
+      });
+      return;
+    }
+    if (
+      pathname.endsWith(`/tasks/${analysisTaskId}/events`) &&
+      method === 'GET'
+    ) {
+      taskRequests.push(request.url());
+      expect(new URL(request.url()).searchParams.get('view')).toBe('safe');
+      await fulfill(route, [
+        {
+          id: analysisTaskEventId,
+          task_id: analysisTaskId,
+          level: 'info',
+          progress: 1,
+          occurred_at: now,
+          presentation: {
+            label: '任务已完成',
+            stage: null,
+            processed: null,
+            total: null,
+            failed: null,
+          },
+        },
+      ]);
+      return;
+    }
+    if (pathname.endsWith(`/tasks/${analysisTaskId}`) && method === 'GET') {
+      taskRequests.push(request.url());
+      expect(new URL(request.url()).searchParams.get('view')).toBe('safe');
+      await fulfill(route, {
+        id: analysisTaskId,
+        kind: 'analysis.run',
+        status: 'succeeded',
+        progress: 1,
+        cancel_requested: false,
+        created_at: now,
+        updated_at: taskFinishedAt,
+        started_at: now,
+        finished_at: taskFinishedAt,
+        duration_ms: 1080,
+        presentation: {
+          label: '智能分析',
+          stage: null,
+          processed: null,
+          total: null,
+          failed: null,
+          target: null,
+        },
       });
       return;
     }
@@ -492,6 +610,14 @@ async function installFlowStubs(page: Page) {
     releaseNextPoll: () => completePollGate.release(),
     detailRunIds,
     retryRequests,
+    taskRequests,
+    isolatedModuleRequests,
+    armUnsafeTaskList: () => {
+      unsafeTaskListArmed = true;
+    },
+    useSafeTaskList: () => {
+      unsafeTaskListArmed = false;
+    },
   };
 }
 
@@ -508,6 +634,8 @@ test('configures a model and completes traceable analysis, retry, and insufficie
   await dialog.getByLabel('API Key').fill('e2e-secret-key');
   await dialog.getByRole('button', { name: '保存模型配置' }).click();
   await expect(dialog.getByRole('status')).toContainText('模型配置已安全保存');
+  await expect(dialog.getByText('sk-e•••••••-key')).toBeVisible();
+  await expect(dialog.getByText('e2e-secret-key')).toHaveCount(0);
   await dialog.getByRole('button', { name: '测试 E2E DeepSeek 连接' }).click();
   await expect(dialog.getByRole('status')).toContainText('连接测试通过');
   await expect(dialog.getByText('已验证', { exact: true })).toBeVisible();
@@ -555,6 +683,9 @@ test('configures a model and completes traceable analysis, retry, and insufficie
   const evidence = page.getByRole('complementary', { name: '证据详情' });
   await expect(evidence).toContainText('行业息差仍有下行压力');
   await expect(evidence).toContainText('立场：反对');
+  await expect(evidence).toContainText('akshare');
+  await expect(evidence).toContainText('数据截止');
+  await expect(evidence).toContainText('采集时间');
   await expect(
     evidence.getByRole('link', { name: /打开来源页面/u }),
   ).toHaveAttribute('href', 'https://example.com/news');
@@ -587,4 +718,48 @@ test('configures a model and completes traceable analysis, retry, and insufficie
   await expect(page.getByLabel('证据不足恢复建议')).toContainText(
     '配置基本面数据权限后重新运行预检',
   );
+
+  for (const target of [
+    'analysis-run',
+    'analysis-process',
+    'analysis-evidence',
+    'analysis-conclusion',
+  ]) {
+    const anchor = page.locator(`[data-guidance-target="${target}"]`);
+    await expect(anchor).toHaveCount(1);
+    const box = await anchor.boundingBox();
+    expect(box?.width ?? 0).toBeGreaterThan(0);
+    expect(box?.height ?? 0).toBeGreaterThan(0);
+  }
+
+  flow.armUnsafeTaskList();
+  await page.getByRole('link', { name: '任务中心' }).click();
+  await expect(page.getByRole('heading', { name: '任务中心' })).toBeVisible();
+  await expect(
+    page.getByRole('heading', { name: '任务列表暂不可用' }),
+  ).toBeVisible();
+  await expect(page.locator('body')).not.toContainText(secretTaskPayload);
+  flow.useSafeTaskList();
+  await page.getByRole('button', { name: '重新读取' }).click();
+  await expect(
+    page.getByRole('button', {
+      name: new RegExp(`智能分析.*${analysisTaskId}`, 'u'),
+    }),
+  ).toBeVisible();
+  await expect(page.getByText('安全任务摘要')).toBeVisible();
+  await expect(page.locator('body')).not.toContainText(secretTaskPayload);
+  for (const target of [
+    'tasks-metrics',
+    'tasks-filters',
+    'tasks-list',
+    'tasks-refresh',
+  ]) {
+    const anchor = page.locator(`[data-guidance-target="${target}"]`);
+    await expect(anchor).toHaveCount(1);
+    const box = await anchor.boundingBox();
+    expect(box?.width ?? 0).toBeGreaterThan(0);
+    expect(box?.height ?? 0).toBeGreaterThan(0);
+  }
+  expect(flow.taskRequests.length).toBeGreaterThanOrEqual(3);
+  expect(flow.isolatedModuleRequests).toEqual([]);
 });

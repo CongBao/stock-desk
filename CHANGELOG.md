@@ -8,6 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- Desktop transport compatibility evidence now covers twelve normal-market
+  cells combining MACD/custom-formula, single-symbol/pool, and
+  daily/weekly/60-minute inputs against the current direct service, including
+  deterministic recovery by a fresh worker from a persisted pool checkpoint.
+  This is transport regression coverage, not an independent v1.0 or complete
+  A-share edge-rule oracle.
+- Expanded automated desktop coverage for authenticated Analysis and Task
+  Center flows, including masked domestic-model configuration, fixed prompt
+  boundaries, untrusted-data isolation, evidence timing and sources, partial
+  retry, insufficient evidence, safe task projections, contextual guidance,
+  and model-cost recovery consent.
 - Desktop shutdown now asks for confirmation, checkpoints active market,
   backtest, and analysis work at durable safe points, waits at most ten seconds
   for acknowledgement, and keeps the application open with actionable recovery
@@ -34,6 +45,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Security
 
+- A machine-readable desktop privacy policy and fail-closed repository guard
+  now reject known telemetry or crash SDK signatures, automatic diagnostic
+  upload, premature updater enablement, stable device identifiers, and
+  non-anonymous future update requests; exact Windows candidate and main
+  evidence bind the policy and verifier.
 - Diagnostic export is desktop-session authenticated, schema allowlisted,
   validated independently by React and Rust, saved only after explicit user
   choice, and never uploaded automatically; telemetry and crash SDKs remain

@@ -52,7 +52,11 @@ it('defaults to cancel and offers explicit resume for incomplete work', async ()
   );
 
   expect(await screen.findByRole('dialog')).toBeVisible();
-  expect(screen.getByRole('button', { name: '取消未完成任务' })).toHaveFocus();
+  await waitFor(() =>
+    expect(
+      screen.getByRole('button', { name: '取消未完成任务' }),
+    ).toHaveFocus(),
+  );
   expect(screen.getByText('排队任务').nextSibling).toHaveTextContent('1');
   expect(screen.getByText('运行任务').nextSibling).toHaveTextContent('1');
   expect(screen.queryByText('workspace')).toBeNull();
@@ -114,6 +118,16 @@ it('requires an extra model-cost confirmation before resuming analysis', async (
   );
   expect(post).not.toHaveBeenCalled();
   expect(screen.getByText(/模型 API 并产生费用/u)).toBeVisible();
+  await waitFor(() =>
+    expect(
+      screen.getByRole('button', { name: '取消未完成任务' }),
+    ).toHaveFocus(),
+  );
+  await user.click(screen.getByRole('button', { name: '返回' }));
+  expect(post).not.toHaveBeenCalled();
+  expect(screen.getByText(/选择前不会自动执行任务/u)).toBeVisible();
+  await user.click(screen.getByRole('button', { name: '继续未完成任务' }));
+  expect(post).not.toHaveBeenCalled();
   await user.click(screen.getByRole('button', { name: '确认继续并产生费用' }));
   await waitFor(() =>
     expect(post).toHaveBeenCalledWith('/desktop/recovery/resume', {

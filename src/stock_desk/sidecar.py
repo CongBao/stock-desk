@@ -4,7 +4,6 @@ import logging
 import multiprocessing
 import os
 from pathlib import Path
-import socket
 import sys
 import threading
 import time
@@ -17,6 +16,7 @@ from stock_desk.config import Settings, V11_DATA_VERSION, V11_PRODUCT_DIRECTORY
 from stock_desk.desktop_session import DesktopLifecycleController, DesktopSession
 from stock_desk.desktop_runtime import RuntimePaths, RuntimeRecord
 from stock_desk.diagnostics.models import DiagnosticEventCode, DiagnosticEventSink
+from stock_desk.runtime_identity import new_worker_id
 
 
 _PREFIX = "STOCK_DESK_DESKTOP_"
@@ -126,7 +126,7 @@ def run_sidecar(config: SidecarLaunchConfig) -> int:
     try:
         worker = ProductionMarketWorker.open(
             settings,
-            worker_id=f"tauri-sidecar-{socket.gethostname()}-{os.getpid()}",
+            worker_id=new_worker_id("tauri-sidecar"),
             diagnostic_event_sink=diagnostic_events,
         )
     except BaseException:

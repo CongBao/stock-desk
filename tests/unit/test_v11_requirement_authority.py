@@ -34,6 +34,9 @@ def test_v11_authority_uses_a_disjoint_frozen_namespace() -> None:
         "V11-R-013",
         "V11-R-014",
         "V11-R-015",
+        "V11-R-016",
+        "V11-R-017",
+        "V11-R-018",
     ]
     assert not (
         {item["id"] for item in v1["requirements"]}
@@ -59,7 +62,7 @@ def test_all_authorities_validate_together_and_reject_cross_namespace_semantics(
     assert counts == {
         "v1_requirements": 82,
         "v1_non_goals": 10,
-        "v11_requirements": 15,
+        "v11_requirements": 18,
         "planned": 0,
         "manual": 20,
     }
@@ -79,7 +82,7 @@ def test_v11_pre_publish_accepts_only_delivered_selectors() -> None:
         mode="pre-publish",
         verify_selectors=False,
     )
-    assert counts["v11_requirements"] == 15
+    assert counts["v11_requirements"] == 18
     assert counts["planned"] == 0
 
 
@@ -95,7 +98,7 @@ def test_v11_authority_rejects_meaning_or_id_drift() -> None:
     missing = copy.deepcopy(manifest)
     missing["requirements"].pop()
     with pytest.raises(
-        checker.ValidationError, match="exactly V11-R-001 through V11-R-015"
+        checker.ValidationError, match="exactly V11-R-001 through V11-R-018"
     ):
         checker.validate_v11_manifest(
             missing, repo_root=ROOT, mode="mapping", verify_selectors=False
