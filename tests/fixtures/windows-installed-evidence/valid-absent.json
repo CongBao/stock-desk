@@ -1,0 +1,109 @@
+{
+  "schema_version": 1,
+  "artifact": "windows-installed-evidence",
+  "scenario": "webview-absent",
+  "identity": {
+    "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "source_tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "main_proof_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "candidate_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "webview_installer_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+  },
+  "execution": {
+    "workflow": "Installed Windows validation",
+    "run_id": 424242,
+    "run_attempt": 1,
+    "job_id": "installed-webview-absent",
+    "job_name": "Windows installed WebView2 absent",
+    "scenario_attempt": 1,
+    "attempt_id": "absent-first"
+  },
+  "system": {
+    "family": "windows-11",
+    "display_version": "24H2",
+    "build_number": 26100,
+    "update_build_revision": 4652,
+    "architecture": "x86_64",
+    "image_sha256": "7777777777777777777777777777777777777777777777777777777777777777"
+  },
+  "account": {
+    "account_type": "standard",
+    "is_admin": false,
+    "username_contains_non_ascii": true,
+    "profile_path_contains_space": true
+  },
+  "webview": {
+    "before": { "state": "absent", "version": null, "channel": null, "signer": null },
+    "installation": {
+      "attempted": true,
+      "exit_code": 0,
+      "installer_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    },
+    "after": {
+      "state": "present",
+      "version": "138.0.3351.77",
+      "channel": "evergreen",
+      "signer": {
+        "status": "Valid",
+        "subject": "CN=Microsoft Corporation",
+        "certificate_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+      }
+    }
+  },
+  "processes": {
+    "installer": { "started": true, "elevated": false },
+    "desktop_host": { "started": true, "elevated": false },
+    "sidecar": { "started": true, "elevated": false },
+    "uninstaller": { "started": true, "elevated": false }
+  },
+  "security": { "uac_prompt_count": 0, "elevation_requested": false },
+  "install": {
+    "exit_code": 0,
+    "application_files_present": true,
+    "shortcut_present": true,
+    "launchable": true
+  },
+  "window": {
+    "observed": true,
+    "main_window_count": 1,
+    "title": "Stock Desk",
+    "external_browser_window_count": 0,
+    "rendered_content_sha256": "8888888888888888888888888888888888888888888888888888888888888888"
+  },
+  "v1_canary": {
+    "before": {
+      "entry_count": 3,
+      "content_sha256": "4444444444444444444444444444444444444444444444444444444444444444"
+    },
+    "after": {
+      "entry_count": 3,
+      "content_sha256": "4444444444444444444444444444444444444444444444444444444444444444"
+    }
+  },
+  "diagnostic_summary": {
+    "archive_sha256": "9999999999999999999999999999999999999999999999999999999999999999",
+    "entry_count": 9,
+    "redaction_scan": {
+      "secret_match_count": 0,
+      "username_match_count": 0,
+      "absolute_path_match_count": 0
+    },
+    "records": [
+      { "kind": "account-token", "sha256": "6666666666666666666666666666666666666666666666666666666666666666", "size_bytes": 80 },
+      { "kind": "diagnostic-summary", "sha256": "6666666666666666666666666666666666666666666666666666666666666666", "size_bytes": 120 },
+      { "kind": "install-log", "sha256": "6666666666666666666666666666666666666666666666666666666666666666", "size_bytes": 240 },
+      { "kind": "process-token", "sha256": "6666666666666666666666666666666666666666666666666666666666666666", "size_bytes": 90 },
+      { "kind": "uac-observation", "sha256": "6666666666666666666666666666666666666666666666666666666666666666", "size_bytes": 70 },
+      { "kind": "uninstall-log", "sha256": "6666666666666666666666666666666666666666666666666666666666666666", "size_bytes": 180 },
+      { "kind": "v1-canary", "sha256": "6666666666666666666666666666666666666666666666666666666666666666", "size_bytes": 100 },
+      { "kind": "webview-inventory", "sha256": "6666666666666666666666666666666666666666666666666666666666666666", "size_bytes": 160 },
+      { "kind": "window-capture", "sha256": "6666666666666666666666666666666666666666666666666666666666666666", "size_bytes": 640 }
+    ]
+  },
+  "uninstall": {
+    "attempted": true,
+    "exit_code": 0,
+    "application_files_removed": true,
+    "shortcuts_removed": true
+  }
+}

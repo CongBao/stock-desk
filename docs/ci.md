@@ -26,6 +26,16 @@ Web、Python、OCI、SBOM/provenance 等产物都有内容 manifest，记录 sou
 
 当前未签名的 `v1.1.0-alpha.N` 和 `v1.1.0-beta.N` 标签只消费同一提交已经成功生成的 exact-SHA `main` proof 与 Windows candidate。Release 会重新验证 tag、GitHub attestation、proof、candidate manifest、版本化安装器文件名和内容摘要，然后只发布显著标记的 Windows x64 unsigned prerelease；它不重跑 unit/E2E，也不重建桌面安装包。`v1.1.0` stable 和 `rc` 标签在独立的 SignPath、可信更新及 Windows 10/11 普通用户安装链完成前保持 fail closed。SignPath 申请已提交但仍为 pending，因此当前证据不代表 Authenticode、SmartScreen 或正式发布门禁已经通过。
 
+### Windows 安装后验收接线
+
+`windows-installed.yml` 只允许从受保护 `main` 手工调度当前精确提交。仓库持久化 self-hosted runner 注册被明确禁止；入口门禁固定使用 GitHub-hosted `ubuntu-24.04`，通过 GitHub API 要求仓库 runner inventory 的 `total_count=0` 且列表为空，同时要求输入 SHA、`GITHUB_SHA`、`GITHUB_WORKFLOW_SHA`、实时 `origin/main` 完全一致，`GITHUB_WORKFLOW_REF` 精确指向本仓库 main 上的 workflow。非 main 调度不能越过 environment 的精确 main 分支策略。
+
+runner inventory、environment 和分支策略查询使用 protected environment secret `WINDOWS_INSTALLED_POLICY_TOKEN`；main 分支身份查询继续使用 job 自带的只读 `GITHUB_TOKEN`。该 secret 只能由入口门禁引用，必须是独立的最小权限 fine-grained token：仓库 Administration 与 Actions 均为只读，不得授予 Contents 或任何写权限。token 缺失、权限不足、API 拒绝、存在任一仓库 runner、管理员可绕过，或 custom deployment branch policies 不是唯一的 `type=branch, name=main`，门禁都会失败。
+
+管理员可先保存 environment API 响应，运行 `python scripts/windows_installed_environment_policy.py bootstrap-payload --existing environment.json > policy.json`，再以 `gh api --method PUT repos/CongBao/stock-desk/environments/windows-installed-acceptance --input policy.json` 应用。删除其他 deployment branch policies 后，用 `python scripts/windows_installed_environment_policy.py bootstrap-branch-policy-payload > main-policy.json` 和 `gh api --method POST repos/CongBao/stock-desk/environments/windows-installed-acceptance/deployment-branch-policies --input main-policy.json` 建立唯一 main 规则。启用前还必须在仓库 Settings → Actions → Runners 删除所有现有 runner 注册，并以 `gh api repos/CongBao/stock-desk/actions/runners > runners.json` 确认结果为零；最后把 environment、branch-policy 和 runner 三份 API 响应一起交给 verifier。不得仅凭 environment 名称或 runner 离线状态推断边界安全。
+
+通过入口门禁后，GitHub-hosted 预检重新验证成功的 main proof、attestation、候选清单和摘要。三个场景 job 均固定使用 GitHub-hosted `windows-2025` 并在第一步断言 `RUNNER_ENVIRONMENT=github-hosted`。当前仓库没有外部 VM adapter/harness，因此这些 job 按设计 fail closed；现有 workflow 只是接线，不能声称任何 Windows 10/11 真机/虚拟机验收已经通过。未来真实 VM 只能由 GitHub-hosted job 使用 protected environment secret 调用仓库外、隔离、短生命周期的 adapter/JIT 服务；不得为本仓库注册持久化 runner。原始窗口、进程、安装和卸载记录的独立校验器完成前，汇总任务同样固定拒绝成功回执。
+
 ### 优化前基线
 
 已记录基线包括：Python 全量关键路径最高约 `41m32s`、Chromium E2E 约 `16m54s`、本地连续候选约 `85m`；2026-07-11 最终 main run 的完整 CI 为 `32m48s`。v1.1 目标是普通 PR 10–20 分钟、高风险 PR 20–30 分钟、main 25–35 分钟。P50/P95 只能根据至少五次连续同类运行公布，不能通过跳过门禁美化。
@@ -53,6 +63,16 @@ Only dependency downloads and compiler/browser intermediates keyed by OS, archit
 ### Release reuse
 
 Current unsigned `v1.1.0-alpha.N` and `v1.1.0-beta.N` tags consume only the exact-SHA `main` proof and Windows candidate already produced successfully for the same commit. Release revalidates the tag, GitHub attestation, proof, candidate manifest, versioned installer name, and content digests, then publishes only a clearly labelled Windows x64 unsigned prerelease; it neither reruns unit/E2E nor rebuilds the desktop installer. `v1.1.0` stable and `rc` tags remain fail-closed until the separate SignPath, trusted-update, and Windows 10/11 standard-user installation chain exists. The SignPath application is submitted but still pending, so this evidence does not claim that Authenticode, SmartScreen, or formal-release gates have passed.
+
+### Installed Windows acceptance wiring
+
+`windows-installed.yml` accepts a manual dispatch only for the current exact commit of protected `main`. Persistent repository self-hosted runner registrations are forbidden. The entry guard is fixed to GitHub-hosted `ubuntu-24.04` and uses the GitHub API to require a repository runner inventory with `total_count=0` and an empty list. It also requires the input SHA, `GITHUB_SHA`, `GITHUB_WORKFLOW_SHA`, and live `origin/main` to be identical, while `GITHUB_WORKFLOW_REF` must identify this repository's workflow on main. A non-main dispatch cannot pass the environment's exact-main branch policy.
+
+The runner-inventory, environment, and branch-policy queries use the protected-environment secret `WINDOWS_INSTALLED_POLICY_TOKEN`; the main-branch identity query continues to use the job's read-only `GITHUB_TOKEN`. Only the entry guard may reference the secret. It must be a separate least-privilege fine-grained token with repository Administration and Actions set to read-only, no Contents access, and no write permission. A missing or underprivileged token, a rejected API request, any registered repository runner, administrator bypass, or any custom deployment branch-policy set other than exactly `type=branch, name=main` fails closed.
+
+For bootstrap, an administrator can save the current environment API response, run `python scripts/windows_installed_environment_policy.py bootstrap-payload --existing environment.json > policy.json`, and apply it with `gh api --method PUT repos/CongBao/stock-desk/environments/windows-installed-acceptance --input policy.json`. After removing every other deployment branch policy, generate the sole main rule with `python scripts/windows_installed_environment_policy.py bootstrap-branch-policy-payload > main-policy.json` and apply it with `gh api --method POST repos/CongBao/stock-desk/environments/windows-installed-acceptance/deployment-branch-policies --input main-policy.json`. Before enabling the workflow, remove every existing registration under Settings → Actions → Runners and confirm zero inventory with `gh api repos/CongBao/stock-desk/actions/runners > runners.json`. Then run the verifier against the environment, branch-policy, and runner API responses together. Neither the environment name nor an offline runner is accepted as proof of this boundary.
+
+After the entry guard, a GitHub-hosted preflight revalidates the successful main proof, attestations, candidate manifest, and digests. All three scenario jobs are fixed to GitHub-hosted `windows-2025` and begin by asserting `RUNNER_ENVIRONMENT=github-hosted`. The repository currently has no external VM adapter/harness, so these jobs deliberately fail closed: this workflow is wiring only and cannot claim that any Windows 10/11 physical or virtual-machine acceptance passed. A future real-VM path may only let a GitHub-hosted job use a protected-environment secret to call an external, isolated, short-lived adapter/JIT service; it must never register a persistent runner to this repository. The aggregate also refuses a success receipt until an independent verifier can validate raw window, process, install, and uninstall records and recompute their digests.
 
 ### Pre-optimization baseline
 

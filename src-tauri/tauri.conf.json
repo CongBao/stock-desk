@@ -49,9 +49,14 @@
       "nsis": {
         "installMode": "currentUser",
         "template": "../packaging/nsis/installer.nsi",
+        "installerHooks": "../packaging/nsis/installer-hooks.nsh",
         "installerIcon": "icons/icon.ico",
         "uninstallerIcon": "icons/icon.ico",
         "languages": ["English", "SimpChinese"],
+        "customLanguageFiles": {
+          "English": "../packaging/nsis/languages/English.nsh",
+          "SimpChinese": "../packaging/nsis/languages/SimpChinese.nsh"
+        },
         "displayLanguageSelector": true
       }
     }

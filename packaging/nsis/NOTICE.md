@@ -18,3 +18,11 @@ and exclude checkout mtimes from the independently reproduced installer payload:
 +; Do not serialize those host timestamps into the otherwise identical payload.
 +SetDateSave off
 ```
+
+Stock Desk-specific uninstall behavior is intentionally kept out of the
+vendored template. `installer-hooks.nsh` uses Tauri's supported NSIS hook
+surface to copy the installed host to the NSIS plug-in directory and invoke
+its fixed v1.1 cleanup mode only after an explicit, default-off user choice.
+The English and Simplified Chinese custom language files are derived from the
+same `tauri-cli-v2.11.4` language files and change only the data-removal
+description plus the fail-closed retry/keep-data explanation.

@@ -45,6 +45,8 @@ Ordinary users do not need GitHub CLI, a source checkout, Docker, or development
 
 `v1.1.0` does not ship macOS, Linux, Android, or ARM64 installers, and it does not migrate or delete v1 local data. Refer to the release page and [code-signing policy](docs/code-signing-policy.md) for the authoritative signing status.
 
+The next candidate in the current source lets the user explicitly choose whether to remove **v1.1-only** local data during uninstall. Cancelling that deletion or a deletion failure keeps the data, and legacy v1 data is outside this operation. This source change does not retroactively claim that the published beta.2 has that behavior.
+
 ## Documentation
 
 The default entry is the [Simplified-Chinese GitHub Wiki](https://github.com/CongBao/stock-desk/wiki),

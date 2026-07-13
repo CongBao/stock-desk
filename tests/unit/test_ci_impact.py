@@ -154,6 +154,27 @@ def test_high_risk_paths_keep_an_auditable_domain(path: str, domain: str) -> Non
     assert impact.required_jobs == ALL_GATES
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        ".github/workflows/windows-installed.yml",
+        "scripts/verify_windows_installed_evidence.py",
+        "scripts/windows_installed_environment_policy.py",
+        "scripts/windows_installed_vm_harness.ps1",
+    ],
+)
+def test_windows_installed_controller_paths_are_high_risk_installer_inputs(
+    path: str,
+) -> None:
+    impact = classify_impact("pull_request", [path])
+
+    assert impact.profile == FULL_PROFILE
+    assert impact.full is True
+    assert impact.domains == ("installer",)
+    assert impact.reason == f"high-risk-path:{path}"
+    assert impact.required_jobs == ALL_GATES
+
+
 def test_one_unknown_path_makes_an_otherwise_targeted_change_full() -> None:
     impact = classify_impact(
         "pull_request", ["README.md", "src/stock_desk/desktop.py", "new-file.txt"]
