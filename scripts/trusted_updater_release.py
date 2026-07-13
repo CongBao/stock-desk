@@ -821,8 +821,8 @@ def _stage_installer(source: Path, verified_output: Path) -> Iterator[StagedInst
         path_after = temporary_path.stat(follow_symlinks=False)
         handle_after = os.fstat(staged_stream.fileno())
         if (
-            _stat_identity(initial_stat) != _stat_identity(path_after)
-            or _stat_identity(initial_stat) != _stat_identity(handle_after)
+            not _same_file_object(initial_stat, path_after)
+            or not _same_file_object(initial_stat, handle_after)
             or _sha256_stream(staged_stream) != staged.sha256
         ):
             raise TrustedUpdaterReleaseError(

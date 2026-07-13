@@ -268,6 +268,20 @@ def test_source_replacement_during_verification_aborts_publication(
     assert not output.exists()
 
 
+def test_owned_file_identity_ignores_benign_timestamp_metadata_changes(
+    tmp_path: Path,
+) -> None:
+    owned = tmp_path / "owned.exe"
+    owned.write_bytes(b"verified")
+    initial = owned.stat()
+    changed_fields = list(initial)
+    changed_fields[8] += 10
+    changed_fields[9] += 20
+    changed_timestamps = os.stat_result(changed_fields)
+
+    assert trusted_release._same_file_object(initial, changed_timestamps)
+
+
 def test_post_link_failure_revokes_readonly_output_and_temporary_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -389,14 +403,20 @@ def test_windows_production_post_move_failure_revokes_published_file(
     real_same_file_object = trusted_release._same_file_object
     comparisons = 0
 
-    def fail_first_identity_check(left: os.stat_result, right: os.stat_result) -> bool:
+    def fail_published_identity_check(
+        left: os.stat_result, right: os.stat_result
+    ) -> bool:
         nonlocal comparisons
         comparisons += 1
-        if comparisons == 1:
+        # Writer/reader identity, then both post-verification path/handle
+        # identities, are checked before the final published-object binding.
+        if comparisons == 4:
             return False
         return real_same_file_object(left, right)
 
-    monkeypatch.setattr(trusted_release, "_same_file_object", fail_first_identity_check)
+    monkeypatch.setattr(
+        trusted_release, "_same_file_object", fail_published_identity_check
+    )
 
     with pytest.raises(TrustedUpdaterReleaseError, match="not the verified"):
         with trusted_release._stage_installer(source, output):
@@ -404,6 +424,7 @@ def test_windows_production_post_move_failure_revokes_published_file(
 
     assert not output.exists()
     assert list(output.parent.glob(".stock-desk-verified-*")) == []
+    assert comparisons == 4
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="requires real Win32 file APIs")
