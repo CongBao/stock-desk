@@ -18,7 +18,7 @@ export type DesktopRuntimeListener = (state: DesktopRuntimeState) => void;
 export type DesktopExitState =
   | { readonly state: 'idle' | 'confirm' | 'checking' | 'shutting_down' }
   | {
-      readonly state: 'blocked';
+      readonly state: 'blocked' | 'checkpoint_timed_out';
       readonly queued: number;
       readonly running: number;
     };
@@ -161,7 +161,7 @@ function decodeExitState(value: unknown): DesktopExitState {
     return { state: value.state };
   }
   if (
-    value.state !== 'blocked' ||
+    (value.state !== 'blocked' && value.state !== 'checkpoint_timed_out') ||
     !hasExactKeys(value, ['state', 'queued', 'running']) ||
     !Number.isSafeInteger(value.queued) ||
     (value.queued as number) < 0 ||
@@ -171,7 +171,7 @@ function decodeExitState(value: unknown): DesktopExitState {
     throw new DesktopBridgeProtocolError();
   }
   return {
-    state: 'blocked',
+    state: value.state,
     queued: value.queued as number,
     running: value.running as number,
   };

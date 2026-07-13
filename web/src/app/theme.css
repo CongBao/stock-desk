@@ -730,6 +730,23 @@ a {
   place-items: center;
 }
 
+.desktop-task-recovery {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--surface-0);
+}
+
+.desktop-task-recovery > section {
+  width: min(560px, 100%);
+  padding: 28px;
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  background: var(--surface-1);
+  box-shadow: 0 24px 72px var(--shadow-color);
+}
+
 .desktop-startup-card,
 .desktop-recovery-card {
   width: min(100%, 520px);

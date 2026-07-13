@@ -123,7 +123,7 @@ def test_source_wheel_and_web_artifacts_match_the_bound_public_revision(
         ("macos", "arm64", ".dmg"),
     ),
 )
-def test_native_manifest_checksum_sbom_and_attestation_chain_is_revision_bound(
+def test_legacy_native_manifest_remains_revision_bound_but_not_v11_reachable(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     os_name: str,
@@ -180,43 +180,9 @@ def test_native_manifest_checksum_sbom_and_attestation_chain_is_revision_bound(
     workflow = _workflow()
     jobs = workflow["jobs"]
     assert isinstance(jobs, dict)
-    build_job = jobs["build-installers"]
-    attest_job = jobs["attest"]
-    release_job = jobs["release"]
-    assert isinstance(build_job, dict)
-    assert isinstance(attest_job, dict)
-    assert isinstance(release_job, dict)
-    matrix = build_job["strategy"]["matrix"]["include"]
-    assert any(
-        entry["os_name"] == os_name and entry["architecture"] == architecture
-        for entry in matrix
-    )
-    assert build_job["permissions"] == {"contents": "read"}
-    assert attest_job["permissions"] == {
-        "attestations": "write",
-        "contents": "read",
-        "id-token": "write",
-    }
-    assert set(attest_job["needs"]) == {
-        "verify",
-        "verify-windows-installer",
-        "verify-macos-installer",
-    }
-    assert {"attest", "verify-windows-installer", "verify-macos-installer"}.issubset(
-        release_job["needs"]
-    )
-
-    attest_steps = attest_job["steps"]
-    assert isinstance(attest_steps, list)
-    rendered_steps = json.dumps(attest_steps, sort_keys=True)
-    assert "sha256sum -c SHA256SUMS.complete" in rendered_steps
-    assert "wc -l < SHA256SUMS.complete" in rendered_steps
-    assert "actions/attest@" in rendered_steps
-    assert "release-assets/*.whl" in rendered_steps
-    assert "release-assets/*.tar.gz" in rendered_steps
-    assert "release-assets/*.exe" in rendered_steps
-    assert "release-assets/*.dmg" in rendered_steps
-    target_glob = f"release-assets/*-{os_name}-{architecture}{suffix}"
-    target_sbom = f"release-assets/stock-desk-{os_name}-{architecture}.sbom.spdx.json"
-    assert target_glob in rendered_steps
-    assert target_sbom in rendered_steps
+    assert set(jobs) == {"tag-policy", "prerelease-verify", "prerelease"}
+    rendered_workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+    assert "build-installers" not in rendered_workflow
+    assert "build_installer.py" not in rendered_workflow
+    assert "release-assets/*.dmg" not in rendered_workflow
+    assert "stock-desk-*-unsigned-x64-setup.exe" in rendered_workflow

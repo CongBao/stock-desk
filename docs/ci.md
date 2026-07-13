@@ -24,7 +24,7 @@ Web、Python、OCI、SBOM/provenance 等产物都有内容 manifest，记录 sou
 
 ### Release 复用
 
-`v1.1.0-alpha.1` 必须验证 exact tag、main proof、GitHub attestation、manifest 与内容摘要；该 alpha 只重新打包已经证明的证据，不重跑 unit/E2E，也不构建桌面安装包。现有稳定版流水线仍保留自己的构建与安装包验证，后续版本只有在产物兼容性契约完成后才能声明复用。SignPath 申请已经提交但仍为 pending；未获批、未完成可信签名和 SmartScreen 验证前，v1.1 测试资产只能作为显著标记的 unsigned prerelease。
+当前未签名的 `v1.1.0-alpha.N` 和 `v1.1.0-beta.N` 标签只消费同一提交已经成功生成的 exact-SHA `main` proof 与 Windows candidate。Release 会重新验证 tag、GitHub attestation、proof、candidate manifest、版本化安装器文件名和内容摘要，然后只发布显著标记的 Windows x64 unsigned prerelease；它不重跑 unit/E2E，也不重建桌面安装包。`v1.1.0` stable 和 `rc` 标签在独立的 SignPath、可信更新及 Windows 10/11 普通用户安装链完成前保持 fail closed。SignPath 申请已提交但仍为 pending，因此当前证据不代表 Authenticode、SmartScreen 或正式发布门禁已经通过。
 
 ### 优化前基线
 
@@ -52,7 +52,7 @@ Only dependency downloads and compiler/browser intermediates keyed by OS, archit
 
 ### Release reuse
 
-`v1.1.0-alpha.1` verifies the exact tag, main proof, GitHub attestation, manifests, and content digests. This alpha only repackages proved evidence: it does not rerun unit/E2E or build desktop installers. The existing stable-release path retains its own build and installer verification; a later version may claim artifact reuse only after its compatibility contract is complete. The SignPath application is submitted but still pending; until trusted signing and SmartScreen verification are complete, v1.1 test assets can only be clearly labelled unsigned prereleases.
+Current unsigned `v1.1.0-alpha.N` and `v1.1.0-beta.N` tags consume only the exact-SHA `main` proof and Windows candidate already produced successfully for the same commit. Release revalidates the tag, GitHub attestation, proof, candidate manifest, versioned installer name, and content digests, then publishes only a clearly labelled Windows x64 unsigned prerelease; it neither reruns unit/E2E nor rebuilds the desktop installer. `v1.1.0` stable and `rc` tags remain fail-closed until the separate SignPath, trusted-update, and Windows 10/11 standard-user installation chain exists. The SignPath application is submitted but still pending, so this evidence does not claim that Authenticode, SmartScreen, or formal-release gates have passed.
 
 ### Pre-optimization baseline
 

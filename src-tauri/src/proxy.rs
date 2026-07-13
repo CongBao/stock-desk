@@ -271,6 +271,41 @@ mod tests {
     }
 
     #[test]
+    fn accepts_core_workflow_paths_without_frontend_authority() {
+        let cases = [
+            request(
+                "POST",
+                "/api/backtests/preflight",
+                Some(r#"{"formula_version_id":"version","period":"1d"}"#),
+            ),
+            request(
+                "POST",
+                "/api/backtests",
+                Some(r#"{"formula_version_id":"version","period":"1d"}"#),
+            ),
+            request(
+                "POST",
+                "/api/analysis",
+                Some(r#"{"symbol":"600000.SH","model_config_id":"model"}"#),
+            ),
+            request("GET", "/api/tasks?view=safe&limit=100", None),
+            request("GET", "/api/tasks/task-id/events?view=safe&limit=100", None),
+        ];
+
+        for case in cases {
+            let validated = validate_request(case).expect("core workflow path");
+            assert!(validated.path.starts_with("/api/"));
+            assert!(validated.body.as_deref().is_none_or(|body| {
+                let value: serde_json::Value =
+                    serde_json::from_str(body).expect("validated JSON body");
+                value.get("authorization").is_none()
+                    && value.get("session_secret").is_none()
+                    && value.get("port").is_none()
+            }));
+        }
+    }
+
+    #[test]
     fn rejects_absolute_cross_origin_and_traversal_paths() {
         for path in [
             "https://attacker.invalid/api",

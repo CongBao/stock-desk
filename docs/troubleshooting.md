@@ -5,6 +5,26 @@ run mode, operating system, Python/Node versions, task ID, sanitized error code,
 and relevant timestamps. Never share credentials, master keys, database files,
 licensed data, backups, or raw model prompts containing private material.
 
+## Windows desktop recovery and safe exit
+
+**Symptom:** the installed v1.1 desktop app shows a recovery surface, an exit
+checkpoint times out, or the next launch reports incomplete work.
+
+1. Use **Restart Service** once for a failed sidecar. If recovery remains
+   unavailable, use **Open Diagnostics** to save the local redacted bundle, or
+   choose the separately confirmed **Safe Exit**. Do not repeatedly relaunch the
+   application or delete its data directory.
+2. A checkpoint timeout deliberately keeps Stock Desk open and allows task
+   claiming to recover. Wait for the current atomic step, then explicitly retry
+   exit; do not terminate a healthy sidecar from Task Manager.
+3. On the next launch, review the categorized incomplete-work counts. Cancel has
+   the safe default focus but does nothing until explicitly chosen; select Resume
+   only when the work is still wanted. Resuming analysis requires a second
+   confirmation because new model calls may incur cost.
+4. If the same operation cannot checkpoint or recover, preserve the diagnostic
+   bundle, application version, sanitized failure identifier, and timestamps for
+   a private support report. Never edit task rows or checkpoint events directly.
+
 ## Startup and health
 
 **Symptom:** the browser cannot reach the API, or Compose reports an unhealthy

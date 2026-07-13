@@ -2514,9 +2514,10 @@ Release readiness.
 
 Local API and worker.
 
-### Native installer topology
+### v1.1 Windows desktop topology
 
-The parent launcher creates API and worker children on a random 127.0.0.1 port.
+The Tauri v2 host starts one sidecar on a random 127.0.0.1 port and stores data
+under `%LOCALAPPDATA%\\Stock Desk\\v1.1`. Exit waits for a safe checkpoint.
 
 ### Source development topology
 
@@ -2526,7 +2527,7 @@ Supervised source processes.
 
 Separate API and worker containers.
 
-The native packaged runtime does not self-mutate, but its user-writable install location can be changed by the user.
+The desktop application treats installed program files as read-only.
 
 ## Modules and boundaries
 
@@ -4253,12 +4254,12 @@ def test_repository_contract_requires_source_free_installers_before_source_setup
     assert any("source-free Windows installer" in failure for failure in failures)
 
 
-def test_repository_contract_requires_native_topology_and_attestation_guidance(
+def test_repository_contract_requires_desktop_topology_and_attestation_guidance(
     tmp_path: Path,
 ) -> None:
     _write_repository(tmp_path)
     removals = {
-        "docs/architecture.md": ("Native installer topology",),
+        "docs/architecture.md": ("v1.1 Windows desktop topology",),
         "docs/configuration.md": (
             "Native installers",
             "%LOCALAPPDATA%\\stock-desk",
@@ -4284,7 +4285,7 @@ def test_repository_contract_requires_native_topology_and_attestation_guidance(
         assert any(expected in failure for failure in failures), expected
 
 
-def test_repository_contract_requires_mode_specific_rollback_and_native_writability(
+def test_repository_contract_requires_mode_specific_rollback_and_desktop_checkpoint(
     tmp_path: Path,
 ) -> None:
     _write_repository(tmp_path)
@@ -4294,7 +4295,7 @@ def test_repository_contract_requires_mode_specific_rollback_and_native_writabil
             "immutable source commit",
             "exact macOS installer artifact",
         ),
-        "docs/architecture.md": ("user-writable install location",),
+        "docs/architecture.md": ("safe checkpoint",),
     }
     for relative_path, snippets in removals.items():
         path = tmp_path / relative_path
@@ -4309,7 +4310,7 @@ def test_repository_contract_requires_mode_specific_rollback_and_native_writabil
         "Compose image digest",
         "immutable source commit",
         "exact macOS installer artifact",
-        "user-writable install location",
+        "safe checkpoint",
     ):
         assert any(expected in failure for failure in failures), expected
 

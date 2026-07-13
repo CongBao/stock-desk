@@ -338,7 +338,7 @@ def test_workflows_declare_the_expected_github_triggers() -> None:
         loaded_triggers[workflow_path.name] = triggers
         assert set(triggers) == expected_triggers[workflow_path.name]
 
-    assert loaded_triggers["release.yml"] == {"push": {"tags": ["v*"]}}
+    assert loaded_triggers["release.yml"] == {"push": {"tags": ["v1.1.0", "v1.1.0-*"]}}
 
 
 def test_workflow_job_environment_avoids_runtime_only_contexts() -> None:
@@ -464,136 +464,22 @@ def test_stage_zero_ci_has_unique_shards_frontend_reports_and_one_oci_build() ->
     assert "attestation.json" not in _read(".github/workflows/ci.yml")
 
 
-def test_tag_release_generates_and_attests_sbom_and_artifacts() -> None:
-    release = _load_github_actions_yaml(_read(".github/workflows/release.yml"))
-    verify = release["jobs"]["verify"]
-    assert verify["permissions"] == {
-        "actions": "read",
-        "attestations": "read",
-        "contents": "read",
-    }
-    assert 10 <= verify["timeout-minutes"] <= 20
-    steps = verify["steps"]
-    names = [step.get("name") for step in steps]
-    proof_index = names.index("Verify main validation proof identity and inputs")
-    build_index = names.index("Build final release assets")
-    assert proof_index < build_index
-    assert "Run release gates" not in names
-    archive_index = names.index("Prepare release archives")
-    sbom_index = names.index("Generate release SBOM")
-    checksums_index = names.index("Prepare checksummed assets")
-    upload_index = names.index("Upload verified release assets for attestation")
-    assert archive_index < sbom_index < checksums_index < upload_index
-    assert not any("Attest" in str(name) for name in names)
-    sbom = steps[sbom_index]
-    assert str(sbom["uses"]).startswith("anchore/sbom-action@")
-    assert sbom["with"]["path"] == "dist"
-    assert sbom["with"]["format"] == "spdx-json"
-    assert sbom["with"]["output-file"] == "dist/stock-desk.spdx.json"
-    assert sbom["with"]["upload-artifact"] is False
-    assert sbom["with"]["upload-release-assets"] is False
+def test_legacy_v100_builder_metadata_remains_auditable_but_unreachable() -> None:
+    legacy_builder = _read("scripts/build_installer.py")
+    release = _read(".github/workflows/release.yml")
 
-    attest = release["jobs"]["attest"]
-    assert set(attest["needs"]) == {
-        "verify",
-        "verify-windows-installer",
-        "verify-macos-installer",
-    }
-    assert attest["permissions"] == {
-        "attestations": "write",
-        "contents": "read",
-        "id-token": "write",
-    }
-    for job_name, job in release["jobs"].items():
-        if job_name == "attest":
-            continue
-        permissions = job.get("permissions", {})
-        if job_name == "verify":
-            assert permissions.get("attestations") == "read"
-        elif job_name == "prerelease-verify":
-            assert permissions == {
-                "actions": "read",
-                "attestations": "read",
-                "contents": "read",
-            }
-        else:
-            assert "attestations" not in permissions
-        assert "id-token" not in permissions
-    attest_steps = attest["steps"]
-    attest_names = [step.get("name") for step in attest_steps]
-    assert attest_names == [
-        "Download verified release assets",
-        "Download verified native installer assets",
-        "Verify release asset checksums",
-        "Verify native assets and prepare complete checksums",
-        "Attest release provenance",
-        "Attest release SBOM",
-        "Attest Windows installer SBOM",
-        "Attest macOS x86_64 installer SBOM",
-        "Attest macOS arm64 installer SBOM",
-        "Upload attested release assets",
-    ]
-    provenance = attest_steps[attest_names.index("Attest release provenance")]
-    assert str(provenance["uses"]).startswith("actions/attest@")
-    provenance_subjects = provenance["with"]["subject-path"].splitlines()
-    assert provenance_subjects == [
-        "release-assets/*.whl",
-        "release-assets/*.tar.gz",
-        "release-assets/*.exe",
-        "release-assets/*.dmg",
-    ]
-    sbom_attestation = attest_steps[attest_names.index("Attest release SBOM")]
-    assert str(sbom_attestation["uses"]).startswith("actions/attest@")
-    sbom_subject_path = sbom_attestation["with"]["subject-path"]
-    assert sbom_subject_path.splitlines() == [
-        "release-assets/*.whl",
-        "release-assets/*.tar.gz",
-    ]
-    assert "{" not in sbom_subject_path
-    assert "}" not in sbom_subject_path
-    assert (
-        sbom_attestation["with"]["sbom-path"] == "release-assets/stock-desk.spdx.json"
-    )
-    for platform, suffix in (
-        ("Windows", "windows-x86_64.exe"),
-        ("macOS x86_64", "macos-x86_64.dmg"),
-        ("macOS arm64", "macos-arm64.dmg"),
+    for historical_contract in (
+        'INNO_SETUP_VERSION: Final = "6.7.3"',
+        "INNO_SETUP_PACKAGE_SHA256: Final",
+        'build_provenance["inno_setup"]',
+        '"compiler_sha256"',
+        "_sign_and_notarize_macos",
     ):
-        installer_attestation = attest_steps[
-            attest_names.index(f"Attest {platform} installer SBOM")
-        ]
-        assert str(installer_attestation["uses"]).startswith("actions/attest@")
-        assert installer_attestation["with"] == {
-            "subject-path": f"release-assets/*-{suffix}",
-            "sbom-path": f"release-assets/stock-desk-{suffix.rsplit('.', 1)[0]}.sbom.spdx.json",
-        }
+        assert historical_contract in legacy_builder
 
-    native_verification = attest_steps[
-        attest_names.index("Verify native assets and prepare complete checksums")
-    ]["run"]
-    assert 'test "${#installers[@]}" -eq 3' in native_verification
-    assert 'sha256sum -c "$sidecar"' in native_verification
-    assert "SHA256SUMS.complete" in native_verification
-    assert "! -name '*.sha256'" not in native_verification
-    assert "! -name 'SHA256SUMS'" not in native_verification
-    assert "wc -l < SHA256SUMS.complete" in native_verification
-
-    assert "codeql" not in release["jobs"]
-    assert "container" not in release["jobs"]
-
-    publish = release["jobs"]["release"]
-    assert set(publish["needs"]) == {
-        "verify",
-        "attest",
-        "verify-windows-installer",
-        "verify-macos-installer",
-    }
-    download = next(
-        step
-        for step in publish["steps"]
-        if step.get("name") == "Download attested release assets"
-    )
-    assert download["with"]["name"] == "release-assets-attested"
+    assert "scripts/build_installer.py" not in release
+    assert "innosetup" not in release.casefold()
+    assert ".dmg" not in release
 
 
 def test_release_job_dependency_graph_is_acyclic_and_preserves_trust_order() -> None:
@@ -611,16 +497,11 @@ def test_release_job_dependency_graph_is_acyclic_and_preserves_trust_order() -> 
             f"{dependencies[job_name] - set(jobs)}"
         )
 
-    assert dependencies["verify"] == {"tag-policy"}
-    assert dependencies["build-installers"] == {"verify"}
-    assert dependencies["verify-windows-installer"] == {"build-installers"}
-    assert dependencies["verify-macos-installer"] == {"build-installers"}
-    assert dependencies["attest"] == {
-        "verify",
-        "verify-windows-installer",
-        "verify-macos-installer",
+    assert dependencies == {
+        "tag-policy": set(),
+        "prerelease-verify": {"tag-policy"},
+        "prerelease": {"prerelease-verify"},
     }
-    assert "attest" in dependencies["release"]
 
     visited: set[str] = set()
     active: set[str] = set()
@@ -645,23 +526,14 @@ def test_prerelease_reuses_exact_main_evidence_without_running_stable_path() -> 
     release = _load_github_actions_yaml(_read(".github/workflows/release.yml"))
     jobs = release["jobs"]
     tag_policy = jobs["tag-policy"]
-    assert tag_policy["name"] == "Enforce supported release tag policy"
+    assert tag_policy["name"] == "Enforce supported v1.1 prerelease tag policy"
     tag_policy_command = tag_policy["steps"][0]["run"]
-    assert "v1.1.0-beta.2" in tag_policy_command
-    assert "^v[0-9]+\\.[0-9]+\\.[0-9]+$" in tag_policy_command
-    stable_condition = "${{ !contains(github.ref_name, '-') }}"
-    for job_name in (
-        "verify",
-        "attest",
-        "build-installers",
-        "verify-windows-installer",
-        "verify-macos-installer",
-        "release",
-    ):
-        assert jobs[job_name]["if"] == stable_condition
+    assert "^v1\\.1\\.0-(alpha|beta)\\.[1-9][0-9]*$" in tag_policy_command
+    assert set(jobs) == {"tag-policy", "prerelease-verify", "prerelease"}
 
     verify = jobs["prerelease-verify"]
-    assert verify["if"] == "github.ref_name == 'v1.1.0-beta.2'"
+    assert "startsWith(github.ref_name, 'v1.1.0-alpha.')" in verify["if"]
+    assert "startsWith(github.ref_name, 'v1.1.0-beta.')" in verify["if"]
     assert verify["needs"] == "tag-policy"
     assert verify["runs-on"] == "ubuntu-latest"
     assert verify["permissions"] == {
@@ -675,7 +547,7 @@ def test_prerelease_reuses_exact_main_evidence_without_running_stable_path() -> 
     steps = verify["steps"]
     names = [step.get("name") for step in steps]
     assert names == [
-        "Configure prerelease temporary roots",
+        "Configure isolated release evidence roots",
         "Check out exact prerelease source",
         "Set up Python",
         "Set up uv",
@@ -685,7 +557,7 @@ def test_prerelease_reuses_exact_main_evidence_without_running_stable_path() -> 
         "Verify GitHub proof attestation",
         "Verify real GitHub attestations for every proved manifest",
         "Verify proved release inputs without rebuilding or rerunning tests",
-        "Prepare explicitly unsigned evidence assets",
+        "Prepare explicitly unsigned Windows evidence assets",
         "Upload verified unsigned prerelease assets",
     ]
     root_configuration = steps[0]["run"]
@@ -694,12 +566,13 @@ def test_prerelease_reuses_exact_main_evidence_without_running_stable_path() -> 
     assert '>> "$GITHUB_ENV"' in root_configuration
 
     publish = jobs["prerelease"]
-    assert publish["if"] == "github.ref_name == 'v1.1.0-beta.2'"
+    assert "startsWith(github.ref_name, 'v1.1.0-alpha.')" in publish["if"]
+    assert "startsWith(github.ref_name, 'v1.1.0-beta.')" in publish["if"]
     assert publish["needs"] == "prerelease-verify"
     assert publish["permissions"] == {"actions": "read", "contents": "write"}
     assert [step.get("name") for step in publish["steps"]] == [
         "Download verified unsigned prerelease assets",
-        "Recheck exact tag and unsigned asset checksums",
+        "Recheck exact tag and Windows-only asset checksums",
         "Create unsigned prerelease",
     ]
 
@@ -734,8 +607,8 @@ def test_prerelease_reuses_exact_main_evidence_without_running_stable_path() -> 
         "--artifact-attestation",
         "manifest-binding.json",
         "windows-desktop-alpha-candidate-$GITHUB_SHA",
-        "stock-desk-1.1.0-beta.2-unsigned-x64-setup.exe",
-        "docs/releases/v1.1.0-beta.2.md",
+        "stock-desk-*-unsigned-x64-setup.exe",
+        "docs/releases/$GITHUB_REF_NAME.md",
         "UNSIGNED-TEST-ONLY",
         "--prerelease",
         "--latest=false",
@@ -757,31 +630,29 @@ def test_prerelease_reuses_exact_main_evidence_without_running_stable_path() -> 
         assert forbidden not in commands
 
 
-def test_release_publishes_only_the_attested_immutable_asset_directory() -> None:
+def test_release_publishes_only_the_verified_unsigned_windows_asset_directory() -> None:
     release = _load_github_actions_yaml(_read(".github/workflows/release.yml"))
-    publish = release["jobs"]["release"]
+    publish = release["jobs"]["prerelease"]
     steps = publish["steps"]
 
     assert [step.get("name") for step in steps] == [
-        "Download attested release assets",
-        "Verify release asset checksums",
-        "Verify complete release asset checksums",
-        "Verify remote tag still matches workflow commit",
-        "Create GitHub release",
+        "Download verified unsigned prerelease assets",
+        "Recheck exact tag and Windows-only asset checksums",
+        "Create unsigned prerelease",
     ]
     download = steps[0]
     assert download["with"] == {
-        "name": "release-assets-attested",
-        "path": "release-assets",
+        "name": "unsigned-v11-prerelease-assets-${{ github.sha }}",
+        "path": "unsigned-prerelease-assets",
     }
-    assert steps[1]["working-directory"] == "release-assets"
-    assert steps[1]["run"] == "sha256sum -c SHA256SUMS"
-    assert steps[2]["working-directory"] == "release-assets"
-    assert "sha256sum -c SHA256SUMS.complete" in steps[2]["run"]
-    assert (
-        steps[4]["run"] == 'gh release create "$GITHUB_REF_NAME" release-assets/* '
-        '--verify-tag --generate-notes --title "Stock Desk $GITHUB_REF_NAME"'
-    )
+    verification = steps[1]["run"]
+    assert "sha256sum -c UNSIGNED-TEST-ONLY-SHA256SUMS" in verification
+    assert "stock-desk-*-unsigned-x64-setup.exe" in verification
+    create = steps[2]["run"]
+    assert "gh release create" in create
+    assert "--verify-tag" in create
+    assert "--prerelease" in create
+    assert "--latest=false" in create
 
 
 def test_compose_services_use_read_only_least_privilege_runtime() -> None:
@@ -1002,15 +873,13 @@ def test_ci_uploads_coverage_reports_and_release_uses_canonical_test() -> None:
     assert "requirement-evidence.json" in aggregate
 
     release = _load_github_actions_yaml(_read(".github/workflows/release.yml"))
-    proof = next(
-        step
-        for step in release["jobs"]["verify"]["steps"]
-        if step.get("name") == "Verify main validation proof identity and inputs"
+    release_commands = "\n".join(
+        str(step.get("run", ""))
+        for step in release["jobs"]["prerelease-verify"]["steps"]
     )
-    command = str(proof["run"])
-    assert "gh attestation verify" in command
-    assert "scripts/main_validation_proof.py verify" in command
-    assert "--source-digest" in command
+    assert "gh attestation verify" in release_commands
+    assert "scripts/verify_release.py" in release_commands
+    assert "--source-digest" in release_commands
 
 
 def test_security_target_audits_only_locked_production_dependencies() -> None:
@@ -1122,55 +991,54 @@ def test_ci_and_release_gate_the_chromium_end_to_end_slice() -> None:
 
     release = _read(".github/workflows/release.yml")
     release_workflow = _load_github_actions_yaml(release)
-    assert release_workflow["jobs"]["verify"]["steps"][0]["with"] == {"fetch-depth": 0}
-    assert "uv sync --frozen --all-groups --extra providers" in release
+    checkout = next(
+        step
+        for step in release_workflow["jobs"]["prerelease-verify"]["steps"]
+        if step.get("name") == "Check out exact prerelease source"
+    )
+    assert checkout["with"] == {"fetch-depth": 0}
     assert "git fetch --no-tags origin main:refs/remotes/origin/main" in release
     assert (
         'git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main' in release
     )
     assert "pnpm exec playwright install --with-deps chromium" not in release
-    assert "scripts/main_validation_proof.py verify" in release
+    assert "scripts/verify_release.py" in release
     assert "gh attestation verify" in release
     assert "contents: write" in release
-    assert 'tags:\n      - "v*"' in release
+    assert 'tags:\n      - "v1.1.0"\n      - "v1.1.0-*"' in release
 
 
-def test_release_builds_final_artifacts_only_after_all_source_gates() -> None:
+def test_release_never_rebuilds_after_exact_proof_verification() -> None:
     workflow = _load_github_actions_yaml(_read(".github/workflows/release.yml"))
-    steps = workflow["jobs"]["verify"]["steps"]
+    steps = workflow["jobs"]["prerelease-verify"]["steps"]
     step_names = [step.get("name") for step in steps]
-
-    gate_index = step_names.index("Verify main validation proof identity and inputs")
-    build_index = step_names.index("Build final release assets")
-    verify_index = step_names.index("Verify built release artifacts")
-    assert gate_index < build_index < verify_index
-
-    gate_commands = str(steps[gate_index]["run"])
-    assert "scripts/main_validation_proof.py verify" in gate_commands
-    assert "gh attestation verify" in gate_commands
-    assert "make build" not in gate_commands
-    assert steps[build_index]["run"] == "make build"
+    assert "Verify GitHub proof attestation" in step_names
+    assert (
+        "Verify proved release inputs without rebuilding or rerunning tests"
+        in step_names
+    )
+    commands = "\n".join(str(step.get("run", "")) for step in steps)
+    for forbidden in ("make build", "pytest", "pnpm build", "cargo build"):
+        assert forbidden not in commands
 
 
 def test_release_workflow_reuses_only_the_attested_exact_main_proof() -> None:
     workflow = _load_github_actions_yaml(_read(".github/workflows/release.yml"))
-    steps = workflow["jobs"]["verify"]["steps"]
+    steps = workflow["jobs"]["prerelease-verify"]["steps"]
     locate = next(
         step
         for step in steps
-        if step.get("name") == "Locate exact successful main validation proof"
+        if step.get("name") == "Locate successful exact-SHA main validation run"
     )
     assert "head_sha == $sha" in locate["run"]
     download = next(
         step
         for step in steps
-        if step.get("name") == "Download exact main validation proof"
+        if step.get("name") == "Download exact proof and all proved artifacts"
     )
-    assert download["with"]["name"] == "main-validation-proof-${{ github.sha }}"
+    assert "main-validation-proof-$GITHUB_SHA" in download["run"]
     proof = next(
-        step
-        for step in steps
-        if step.get("name") == "Verify main validation proof identity and inputs"
+        step for step in steps if step.get("name") == "Verify GitHub proof attestation"
     )
     command = str(proof["run"])
     for required in (
@@ -1181,79 +1049,39 @@ def test_release_workflow_reuses_only_the_attested_exact_main_proof() -> None:
     ):
         assert required in command
 
-    installer_steps = workflow["jobs"]["build-installers"]["steps"]
-    native_builds = [
-        step
-        for step in installer_steps
-        if step.get("name") in {"Build Windows installer", "Build macOS installer"}
-    ]
-    assert len(native_builds) == 2
-    assert all(
-        step["env"]["STOCK_DESK_SOURCE_REVISION"] == "${{ github.sha }}"
-        for step in native_builds
-    )
-    build_script = _read("scripts/build_installer.py")
-    assert '"source_revision"' in build_script
-    assert '"source_fingerprint"' in build_script
+    commands = "\n".join(str(step.get("run", "")) for step in steps)
+    assert "windows-desktop-alpha-candidate-$GITHUB_SHA" in commands
+    assert "windows-payload-comparison-manifest" in commands
+    assert "scripts/verify_release.py" in commands
 
 
-def test_release_native_installer_steps_use_module_entrypoint() -> None:
+def test_release_has_no_native_installer_build_entrypoint() -> None:
     workflow_text = _read(".github/workflows/release.yml")
     workflow = _load_github_actions_yaml(workflow_text)
-    installer_steps = workflow["jobs"]["build-installers"]["steps"]
-    native_builds = {
-        step["name"]: str(step["run"]).splitlines()
-        for step in installer_steps
-        if step.get("name") in {"Build Windows installer", "Build macOS installer"}
-    }
-
-    assert native_builds == {
-        "Build Windows installer": [
-            "$version = $env:GITHUB_REF_NAME.Substring(1)",
-            "uv run --frozen python -m scripts.build_installer $version",
-        ],
-        "Build macOS installer": [
-            "set -euo pipefail",
-            'uv run --frozen python -m scripts.build_installer "${GITHUB_REF_NAME#v}"',
-        ],
-    }
-    assert "python scripts/build_installer.py" not in workflow_text
+    assert set(workflow["jobs"]) == {"tag-policy", "prerelease-verify", "prerelease"}
+    assert "scripts.build_installer" not in workflow_text
+    assert "scripts.build_windows_desktop" not in workflow_text
 
 
-def test_release_waits_for_inno_setup_and_checks_its_process_exit_code() -> None:
-    workflow = _load_github_actions_yaml(_read(".github/workflows/release.yml"))
-    installer_steps = workflow["jobs"]["build-installers"]["steps"]
-    install_inno = next(
-        step for step in installer_steps if step.get("name") == "Install Inno Setup"
-    )
-    command = str(install_inno["run"])
-
-    assert (
-        "$installProcess = Start-Process -FilePath $installer -ArgumentList "
-        "'/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', \"/DIR=$installDir\" "
-        "-Wait -PassThru"
-    ) in command
-    assert (
-        'if ($installProcess.ExitCode -ne 0) { throw "Inno Setup installation '
-        'failed: $($installProcess.ExitCode)" }'
-    ) in command
-    assert "$LASTEXITCODE" not in command
-    assert "Get-FileHash -Algorithm SHA256 $installer" in command
-    assert "Test-Path -LiteralPath $compiler -PathType Leaf" in command
+def test_release_cannot_invoke_inno_or_legacy_platform_builds() -> None:
+    workflow_text = _read(".github/workflows/release.yml")
+    for forbidden in ("Inno Setup", ".dmg", "macos-", "build-installers"):
+        assert forbidden not in workflow_text
 
 
 def test_release_workflow_delegates_source_gates_to_attested_main_proof() -> None:
     workflow = _load_github_actions_yaml(_read(".github/workflows/release.yml"))
-    steps = workflow["jobs"]["verify"]["steps"]
+    steps = workflow["jobs"]["prerelease-verify"]["steps"]
     names = [step.get("name") for step in steps]
     assert "Run release gates" not in names
     assert "Install Playwright Chromium" not in names
     proof = next(
         step
         for step in steps
-        if step.get("name") == "Verify main validation proof identity and inputs"
+        if step.get("name")
+        == "Verify proved release inputs without rebuilding or rerunning tests"
     )
-    assert "scripts/main_validation_proof.py verify" in proof["run"]
+    assert "scripts/verify_release.py" in proof["run"]
 
 
 def test_e2e_is_a_root_script_without_changing_the_make_contract() -> None:
@@ -1389,7 +1217,7 @@ def test_stage_two_formula_gates_extend_every_release_surface() -> None:
     ):
         target = command.removeprefix("make ")
         assert f'"{target}"' in candidate
-    assert "scripts/main_validation_proof.py verify" in release
+    assert "scripts/verify_release.py" in release
     assert "scripts/main_validation_proof.py generate" in ci_commands
 
 
@@ -1440,7 +1268,7 @@ def test_stage_three_backtest_gates_extend_every_release_surface() -> None:
     ):
         target = command.removeprefix("make ")
         assert f'"{target}"' in candidate
-    assert "scripts/main_validation_proof.py verify" in release
+    assert "scripts/verify_release.py" in release
     assert "scripts/main_validation_proof.py generate" in ci_commands
 
 
@@ -1484,7 +1312,7 @@ def test_stage_four_analysis_gates_extend_every_release_surface() -> None:
     for command in ("make acceptance-analysis", "make e2e-analysis"):
         target = command.removeprefix("make ")
         assert f'"{target}"' in candidate
-    assert "scripts/main_validation_proof.py verify" in release
+    assert "scripts/verify_release.py" in release
     assert "scripts/main_validation_proof.py generate" in ci_commands
 
 
@@ -1695,15 +1523,11 @@ def test_changelog_roadmap_and_architecture_match_current_release_scope() -> Non
 def test_release_workflow_is_tag_only_and_scopes_write_permission() -> None:
     release = _read(".github/workflows/release.yml")
     assert re.search(r"^\s+tags:\s*$", release, re.MULTILINE)
-    assert re.search(r'^\s+- ["\']v\*["\']\s*$', release, re.MULTILINE)
+    assert re.search(r'^\s+- ["\']v1\.1\.0-\*["\']\s*$', release, re.MULTILINE)
     assert "pull_request:" not in release
     assert "branches:" not in release
     assert "schedule:" not in release
-    assert release.count("contents: write") == 2
-    assert re.search(
-        r"release:\n(?:.|\n)*?permissions:\n\s+contents: write",
-        release,
-    )
+    assert release.count("contents: write") == 1
     assert re.search(
         r"prerelease:\n(?:.|\n)*?permissions:\n"
         r"\s+actions: read\n\s+contents: write",
@@ -1711,72 +1535,53 @@ def test_release_workflow_is_tag_only_and_scopes_write_permission() -> None:
     )
     assert "gh release create" in release
     assert "GH_REPO: ${{ github.repository }}" in release
-    assert "sha256sum -- *.whl *.tar.gz *.json > SHA256SUMS" in release
-    assert "${GITHUB_REF_NAME#v}" in release
-    assert (
-        "from scripts.verify_release import check_changelog, check_versions" in release
-    )
-    assert 'os.environ["RELEASE_VERSION"]' in release
-    stable_jobs = _load_github_actions_yaml(release)["jobs"]
-    assert stable_jobs["release"]["permissions"] == {"contents": "write"}
-    assert stable_jobs["prerelease"]["permissions"] == {
+    assert "UNSIGNED-TEST-ONLY-SHA256SUMS" in release
+    jobs = _load_github_actions_yaml(release)["jobs"]
+    assert set(jobs) == {"tag-policy", "prerelease-verify", "prerelease"}
+    assert jobs["prerelease"]["permissions"] == {
         "actions": "read",
         "contents": "write",
     }
 
 
-def test_tag_release_verifies_built_artifacts_before_packaging_and_upload() -> None:
+def test_tag_release_verifies_proved_artifacts_before_packaging_and_upload() -> None:
     workflow = _load_github_actions_yaml(_read(".github/workflows/release.yml"))
-    verify_steps = workflow["jobs"]["verify"]["steps"]
-    build_step = next(
+    verify_steps = workflow["jobs"]["prerelease-verify"]["steps"]
+    proof_step = next(
         step
         for step in verify_steps
-        if step.get("name") == "Build final release assets"
+        if step.get("name")
+        == "Verify proved release inputs without rebuilding or rerunning tests"
     )
-    artifact_step = next(
+    prepare_step = next(
         step
         for step in verify_steps
-        if step.get("name") == "Verify built release artifacts"
-    )
-    checksum_step = next(
-        step
-        for step in verify_steps
-        if step.get("name") == "Prepare checksummed assets"
+        if step.get("name") == "Prepare explicitly unsigned Windows evidence assets"
     )
     upload_step = next(
         step
         for step in verify_steps
-        if step.get("name") == "Upload verified release assets for attestation"
+        if step.get("name") == "Upload verified unsigned prerelease assets"
     )
-
-    assert build_step["run"] == "make build"
     assert (
-        verify_steps.index(build_step)
-        < verify_steps.index(artifact_step)
-        < verify_steps.index(checksum_step)
+        verify_steps.index(proof_step)
+        < verify_steps.index(prepare_step)
         < verify_steps.index(upload_step)
     )
-
-    artifact_command = artifact_step["run"]
-    for required in (
-        'release_version="${GITHUB_REF_NAME#v}"',
-        'RELEASE_VERSION="$release_version"',
-        "uv run --frozen python -c",
-        "from scripts.verify_release import check_build_artifacts",
-        'version = os.environ["RELEASE_VERSION"]',
-        "check_build_artifacts(Path.cwd(), version)",
-    ):
-        assert required in artifact_command
-    assert "0.1.0" not in artifact_command
+    assert "scripts/verify_release.py" in proof_step["run"]
+    assert "sha256sum -- *" in prepare_step["run"]
+    commands = "\n".join(str(step.get("run", "")) for step in verify_steps)
+    for forbidden in ("make build", "pytest", "pnpm build", "cargo build"):
+        assert forbidden not in commands
 
 
 def test_release_checksum_manifest_is_flat_and_verified_before_publish() -> None:
     workflow = _load_github_actions_yaml(_read(".github/workflows/release.yml"))
-    verify_steps = workflow["jobs"]["verify"]["steps"]
+    verify_steps = workflow["jobs"]["prerelease-verify"]["steps"]
     prepare_step = next(
         step
         for step in verify_steps
-        if step.get("name") == "Prepare checksummed assets"
+        if step.get("name") == "Prepare explicitly unsigned Windows evidence assets"
     )
     prepare_commands = [
         line.strip() for line in prepare_step["run"].splitlines() if line.strip()
@@ -1785,76 +1590,54 @@ def test_release_checksum_manifest_is_flat_and_verified_before_publish() -> None
         command for command in prepare_commands if command.startswith("sha256sum")
     ]
 
-    assert checksum_commands == ["sha256sum -- *.whl *.tar.gz *.json > SHA256SUMS"]
-    assert all("dist/" not in command for command in checksum_commands)
-    assert prepare_commands.index("cd dist") < prepare_commands.index(
-        checksum_commands[0]
+    assert checksum_commands == []
+    assert (
+        '(cd "$asset_root" && sha256sum -- * > UNSIGNED-TEST-ONLY-SHA256SUMS)'
+        in prepare_step["run"]
     )
 
-    release_steps = workflow["jobs"]["release"]["steps"]
+    release_steps = workflow["jobs"]["prerelease"]["steps"]
     checksum_step = next(
         step
         for step in release_steps
-        if step.get("name") == "Verify release asset checksums"
+        if step.get("name") == "Recheck exact tag and Windows-only asset checksums"
     )
     create_step_index = next(
         index
         for index, step in enumerate(release_steps)
-        if step.get("name") == "Create GitHub release"
+        if step.get("name") == "Create unsigned prerelease"
     )
-
-    assert checksum_step["working-directory"] == "release-assets"
-    assert checksum_step["run"] == "sha256sum -c SHA256SUMS"
+    assert "sha256sum -c UNSIGNED-TEST-ONLY-SHA256SUMS" in checksum_step["run"]
     assert release_steps.index(checksum_step) < create_step_index
 
-    native_checksum_step = next(
-        step
-        for step in release_steps
-        if step.get("name") == "Verify complete release asset checksums"
-    )
-    native_commands = native_checksum_step["run"]
-    assert "-eq 3" in native_commands
-    assert "SHA256SUMS.complete" in native_commands
-    assert "wc -l < SHA256SUMS.complete" in native_commands
-    for pattern in ("*.exe", "*.dmg", "stock-desk.spdx.json", "*.sbom.spdx.json"):
-        assert pattern in native_commands
-    assert release_steps.index(native_checksum_step) < create_step_index
 
-
-def test_release_publish_gate_verifies_base_and_installer_sboms_separately() -> None:
+def test_release_reuses_attested_sbom_evidence_instead_of_regenerating_it() -> None:
     workflow = _load_github_actions_yaml(_read(".github/workflows/release.yml"))
-    release_steps = workflow["jobs"]["release"]["steps"]
-    complete_step = next(
-        step
-        for step in release_steps
-        if step.get("name") == "Verify complete release asset checksums"
+    commands = "\n".join(
+        str(step.get("run", ""))
+        for step in workflow["jobs"]["prerelease-verify"]["steps"]
     )
-    commands = complete_step["run"]
-
-    assert "test -s stock-desk.spdx.json" in commands
-    assert "-name 'stock-desk-*-*.sbom.spdx.json'" in commands
-    assert 'installer_sboms[@]}" -eq 3' in commands
-    assert "-name '*.sbom.spdx.json' | wc -l" not in commands
+    assert "oci-security-evidence" in commands
+    assert "gh attestation verify" in commands
+    assert "anchore/sbom-action" not in _read(".github/workflows/release.yml")
 
 
 def test_release_publish_gate_rejects_a_moved_remote_tag() -> None:
     workflow = _load_github_actions_yaml(_read(".github/workflows/release.yml"))
-    release_steps = workflow["jobs"]["release"]["steps"]
-    create_index = next(
-        index
-        for index, step in enumerate(release_steps)
-        if step.get("name") == "Create GitHub release"
+    verify_step = next(
+        step
+        for step in workflow["jobs"]["prerelease-verify"]["steps"]
+        if step.get("name")
+        == "Verify exact prerelease tag is on main and remains unsigned"
     )
-    tag_step = release_steps[create_index - 1]
-
-    assert tag_step["name"] == "Verify remote tag still matches workflow commit"
-    commands = tag_step["run"]
     assert (
-        'git ls-remote "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" '
-        '"refs/tags/${GITHUB_REF_NAME}^{}"' in commands
+        'git ls-remote "$remote_url" "refs/tags/${GITHUB_REF_NAME}^{}"'
+        in verify_step["run"]
     )
-    assert 'test -n "$remote_tag_target"' in commands
-    assert 'test "$remote_tag_target" = "$GITHUB_SHA"' in commands
+    assert 'test -n "$remote_target"' in verify_step["run"]
+    assert 'test "$remote_target" = "$GITHUB_SHA"' in verify_step["run"]
+    publish_step = workflow["jobs"]["prerelease"]["steps"][1]
+    assert 'commits/$GITHUB_REF_NAME" --jq .sha' in publish_step["run"]
 
 
 def test_codeowners_covers_source_web_docs_tests_and_automation() -> None:

@@ -133,13 +133,13 @@ def test_bilingual_readme_baseline_contains_verified_installation_and_use() -> N
 
     workflow = _workflow()
     jobs = workflow["jobs"]
-    assert jobs["verify-windows-installer"]["needs"] == "build-installers"
-    assert jobs["verify-macos-installer"]["needs"] == "build-installers"
-    assert "verify-windows-installer" in jobs["attest"]["needs"]
-    assert "verify-macos-installer" in jobs["attest"]["needs"]
-    verify_steps = jobs["verify"]["steps"]
+    assert set(jobs) == {"tag-policy", "prerelease-verify", "prerelease"}
+    assert jobs["prerelease-verify"]["needs"] == "tag-policy"
+    assert jobs["prerelease"]["needs"] == "prerelease-verify"
+    verify_steps = jobs["prerelease-verify"]["steps"]
     assert any(
-        step.get("name") == "Verify main validation proof identity and inputs"
+        step.get("name")
+        == "Verify proved release inputs without rebuilding or rerunning tests"
         for step in verify_steps
     )
     ci = yaml.safe_load(

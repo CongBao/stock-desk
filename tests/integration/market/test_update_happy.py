@@ -20,6 +20,7 @@ from stock_desk.market.update import (
     register_market_update,
 )
 from stock_desk.tasks.worker import TaskWorker
+from stock_desk.tasks.repository import TaskRepository
 from tests.integration.market.lake_test_helpers import local_time, routed_daily_bars
 from tests.integration.market.update_test_helpers import (
     SpyRouter,
@@ -215,3 +216,72 @@ def test_worker_runs_happy_multi_symbol_update_with_previous_manifest(
         progress = [float(event.progress) for event in progress_events]
         assert progress == sorted(progress)
         assert all(value < 1 for value in progress)
+
+
+def test_market_update_resumes_after_a_durable_desktop_checkpoint(
+    tmp_path: Path,
+) -> None:
+    first_symbol = "600000.SH"
+    second_symbol = "000001.SZ"
+    day = date(2024, 1, 2)
+    with open_update_harness(tmp_path) as harness:
+        routed = {
+            first_symbol: routed_daily_bars((day,), symbol=first_symbol),
+            second_symbol: routed_daily_bars((day,), symbol=second_symbol),
+        }
+        first_router = SpyRouter(routed)
+        first_worker = TaskWorker(harness.tasks, worker_id="worker-before-exit")
+        register_market_update(
+            first_worker,
+            UpdateService(
+                router=first_router,
+                lake=harness.lake,
+                tasks=harness.tasks,
+                engine=harness.engine,
+            ),
+        )
+        task = harness.tasks.create(
+            MARKET_UPDATE_TASK_KIND,
+            update_payload(first_symbol, second_symbol),
+        )
+        harness.tasks.request_desktop_checkpoint()
+
+        paused = first_worker.run_once()
+
+        assert paused is not None and paused.status == "running"
+        assert [query.symbol for query, _ in first_router.calls] == [first_symbol]
+        assert [
+            (item.ordinal, item.symbol)
+            for item in MarketUpdateItemRepository(harness.engine).list_for_task(
+                task.id
+            )
+        ] == [(0, first_symbol)]
+        assert any(
+            event.event_name == "task.desktop_checkpointed"
+            for event in harness.tasks.list_events(task.id)
+        )
+
+        resumed_tasks = TaskRepository(harness.engine)
+        assert resumed_tasks.resume_desktop_recovery() == 1
+        second_router = SpyRouter(routed)
+        second_worker = TaskWorker(resumed_tasks, worker_id="worker-after-restart")
+        register_market_update(
+            second_worker,
+            UpdateService(
+                router=second_router,
+                lake=harness.lake,
+                tasks=resumed_tasks,
+                engine=harness.engine,
+            ),
+        )
+
+        completed = second_worker.run_once()
+
+        assert completed is not None and completed.status == "succeeded"
+        assert [query.symbol for query, _ in second_router.calls] == [second_symbol]
+        assert [
+            (item.ordinal, item.symbol)
+            for item in MarketUpdateItemRepository(harness.engine).list_for_task(
+                task.id
+            )
+        ] == [(0, first_symbol), (1, second_symbol)]

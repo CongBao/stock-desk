@@ -220,8 +220,11 @@ jobs:
           $python = Join-Path $PWD '.venv\Scripts\python.exe'
           $manifestOutput = Join-Path $out 'windows-desktop-bundle.json'
           if (-not (Test-Path -LiteralPath $python -PathType Leaf)) { throw 'locked Python environment is missing' }
+          $tauriConfig = Get-Content -LiteralPath 'src-tauri\tauri.conf.json' -Raw | ConvertFrom-Json
+          $releaseVersion = $tauriConfig.version
+          if ($releaseVersion -notmatch '^1\.1\.0-(alpha|beta)\.[1-9][0-9]*$') { throw 'Tauri release version is not an allowed unsigned prerelease' }
           & $python scripts/verify_windows_desktop_bundle.py $payload `
-            --version 1.1.0-beta.2 --source-sha $env:SOURCE_SHA `
+            --version $releaseVersion --source-sha $env:SOURCE_SHA `
             --toolchain "python=$env:PYTHON_VERSION" --toolchain "node=$env:NODE_VERSION" `
             --toolchain "pnpm=$env:PNPM_VERSION" --toolchain "rust=$env:RUST_VERSION" `
             --lock "uv.lock=$uvLock" --lock "pnpm-lock.yaml=$pnpmLock" --lock "Cargo.lock=$cargoLock" `
@@ -230,7 +233,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Windows bundle verifier failed' }
           if (-not (Test-Path -LiteralPath $manifestOutput -PathType Leaf) -or (Get-Item -LiteralPath $manifestOutput).Length -le 0) { throw 'Windows bundle manifest was not created' }
           $manifest = Get-Content -LiteralPath $manifestOutput -Raw | ConvertFrom-Json
-          if ($manifest.artifact -ne 'windows-desktop-bundle' -or $manifest.source_sha -ne $env:SOURCE_SHA -or $manifest.release.version -ne '1.1.0-beta.2') { throw 'Windows bundle manifest identity is invalid' }
+          if ($manifest.artifact -ne 'windows-desktop-bundle' -or $manifest.source_sha -ne $env:SOURCE_SHA -or $manifest.release.version -ne $releaseVersion) { throw 'Windows bundle manifest identity is invalid' }
           Copy-Item $installers[0].FullName (Join-Path $out 'stock-desk-unsigned-nsis.exe')
           [ordered]@{schema_version=1;builder='A';source_sha=$env:SOURCE_SHA;source_tree=(git rev-parse 'HEAD^{tree}');runner_os=$env:RUNNER_OS;runner_arch=$env:RUNNER_ARCH;run_id=$env:GITHUB_RUN_ID;run_attempt=$env:GITHUB_RUN_ATTEMPT;job_id=$env:GITHUB_JOB} | ConvertTo-Json -Compress | Set-Content -Encoding utf8NoBOM (Join-Path $out 'provenance.json')
       - name: Generate exact-SHA light and dark icon evidence
@@ -416,11 +419,14 @@ jobs:
           $uvLock=(Get-FileHash uv.lock -Algorithm SHA256).Hash.ToLowerInvariant(); $pnpmLock=(Get-FileHash pnpm-lock.yaml -Algorithm SHA256).Hash.ToLowerInvariant(); $cargoLock=(Get-FileHash src-tauri\Cargo.lock -Algorithm SHA256).Hash.ToLowerInvariant()
           $python=Join-Path $PWD '.venv\Scripts\python.exe'; $manifestOutput=Join-Path $out 'windows-desktop-bundle.json'
           if (-not (Test-Path -LiteralPath $python -PathType Leaf)) { throw 'locked Python environment is missing' }
-          & $python scripts/verify_windows_desktop_bundle.py $payload --version 1.1.0-beta.2 --source-sha $env:SOURCE_SHA --toolchain "python=$env:PYTHON_VERSION" --toolchain "node=$env:NODE_VERSION" --toolchain "pnpm=$env:PNPM_VERSION" --toolchain "rust=$env:RUST_VERSION" --lock "uv.lock=$uvLock" --lock "pnpm-lock.yaml=$pnpmLock" --lock "Cargo.lock=$cargoLock" --installer (Join-Path $payload 'stock-desk-unsigned-nsis.exe') --sidecar $sidecar[0].FullName --output $manifestOutput
+          $tauriConfig = Get-Content -LiteralPath 'src-tauri\tauri.conf.json' -Raw | ConvertFrom-Json
+          $releaseVersion = $tauriConfig.version
+          if ($releaseVersion -notmatch '^1\.1\.0-(alpha|beta)\.[1-9][0-9]*$') { throw 'Tauri release version is not an allowed unsigned prerelease' }
+          & $python scripts/verify_windows_desktop_bundle.py $payload --version $releaseVersion --source-sha $env:SOURCE_SHA --toolchain "python=$env:PYTHON_VERSION" --toolchain "node=$env:NODE_VERSION" --toolchain "pnpm=$env:PNPM_VERSION" --toolchain "rust=$env:RUST_VERSION" --lock "uv.lock=$uvLock" --lock "pnpm-lock.yaml=$pnpmLock" --lock "Cargo.lock=$cargoLock" --installer (Join-Path $payload 'stock-desk-unsigned-nsis.exe') --sidecar $sidecar[0].FullName --output $manifestOutput
           if ($LASTEXITCODE -ne 0) { throw 'Windows bundle verifier failed' }
           if (-not (Test-Path -LiteralPath $manifestOutput -PathType Leaf) -or (Get-Item -LiteralPath $manifestOutput).Length -le 0) { throw 'Windows bundle manifest was not created' }
           $manifest=Get-Content -LiteralPath $manifestOutput -Raw | ConvertFrom-Json
-          if ($manifest.artifact -ne 'windows-desktop-bundle' -or $manifest.source_sha -ne $env:SOURCE_SHA -or $manifest.release.version -ne '1.1.0-beta.2') { throw 'Windows bundle manifest identity is invalid' }
+          if ($manifest.artifact -ne 'windows-desktop-bundle' -or $manifest.source_sha -ne $env:SOURCE_SHA -or $manifest.release.version -ne $releaseVersion) { throw 'Windows bundle manifest identity is invalid' }
           Copy-Item $installers[0].FullName (Join-Path $out 'stock-desk-unsigned-nsis.exe')
           [ordered]@{schema_version=1;builder='B';source_sha=$env:SOURCE_SHA;source_tree=(git rev-parse 'HEAD^{tree}');runner_os=$env:RUNNER_OS;runner_arch=$env:RUNNER_ARCH;run_id=$env:GITHUB_RUN_ID;run_attempt=$env:GITHUB_RUN_ATTEMPT;job_id=$env:GITHUB_JOB} | ConvertTo-Json -Compress | Set-Content -Encoding utf8NoBOM (Join-Path $out 'provenance.json')
       - name: Upload source-free candidate B
@@ -508,17 +514,21 @@ jobs:
           }
           $left = Get-CompleteCandidate (Join-Path $root 'a') 'left'
           $right = Get-CompleteCandidate (Join-Path $root 'b') 'right'
+          $tauriConfig = Get-Content -LiteralPath 'src-tauri\tauri.conf.json' -Raw | ConvertFrom-Json
+          $releaseVersion = $tauriConfig.version
+          if ($releaseVersion -notmatch '^1\.1\.0-(alpha|beta)\.[1-9][0-9]*$') { throw 'Tauri release version is not an allowed unsigned prerelease' }
+          $installerName = "stock-desk-$releaseVersion-unsigned-x64-setup.exe"
           Copy-Item $left.Manifest (Join-Path $diagnostics 'left-windows-desktop-bundle.json')
           Copy-Item $right.Manifest (Join-Path $diagnostics 'right-windows-desktop-bundle.json')
           uv run --frozen python -m scripts.compare_windows_payloads $left.Manifest $right.Manifest --left-installer $left.Installer --right-installer $right.Installer --output (Join-Path $evidence 'windows-payload-comparison.json')
-          Copy-Item $left.Installer (Join-Path $promoted 'stock-desk-1.1.0-beta.2-unsigned-x64-setup.exe')
+          Copy-Item $left.Installer (Join-Path $promoted $installerName)
           Copy-Item $left.Manifest (Join-Path $promoted 'windows-desktop-bundle.json')
           Copy-Item $left.Provenance (Join-Path $promoted 'builder-a-provenance.json')
           Copy-Item (Join-Path $evidence 'windows-payload-comparison.json') (Join-Path $promoted 'windows-payload-comparison.json')
           $tree = git rev-parse 'HEAD^{tree}'; $cargoLock=(Get-FileHash src-tauri\Cargo.lock -Algorithm SHA256).Hash.ToLowerInvariant(); $cargoToml=(Get-FileHash src-tauri\Cargo.toml -Algorithm SHA256).Hash.ToLowerInvariant(); $ciHash=(Get-FileHash .github\workflows\ci.yml -Algorithm SHA256).Hash.ToLowerInvariant(); $buildHash=(Get-FileHash scripts\build_windows_desktop.py -Algorithm SHA256).Hash.ToLowerInvariant(); $verifyHash=(Get-FileHash scripts\verify_windows_desktop_bundle.py -Algorithm SHA256).Hash.ToLowerInvariant(); $compareHash=(Get-FileHash scripts\compare_windows_payloads.py -Algorithm SHA256).Hash.ToLowerInvariant(); $tauriHash=(Get-FileHash src-tauri\tauri.conf.json -Algorithm SHA256).Hash.ToLowerInvariant(); $tauriWindowsHash=(Get-FileHash src-tauri\tauri.windows.conf.json -Algorithm SHA256).Hash.ToLowerInvariant(); $sidecarSpecHash=(Get-FileHash packaging\stock-desk-sidecar.spec -Algorithm SHA256).Hash.ToLowerInvariant(); $nsisHash=(Get-FileHash packaging\nsis\installer.nsi -Algorithm SHA256).Hash.ToLowerInvariant()
           $critical = @('--critical-input', ".github/workflows/ci.yml=$ciHash", '--critical-input', "scripts/build_windows_desktop.py=$buildHash", '--critical-input', "scripts/verify_windows_desktop_bundle.py=$verifyHash", '--critical-input', "scripts/compare_windows_payloads.py=$compareHash", '--critical-input', "src-tauri/tauri.conf.json=$tauriHash", '--critical-input', "src-tauri/tauri.windows.conf.json=$tauriWindowsHash", '--critical-input', "src-tauri/Cargo.toml=$cargoToml", '--critical-input', "packaging/stock-desk-sidecar.spec=$sidecarSpecHash", '--critical-input', "packaging/nsis/installer.nsi=$nsisHash")
           uv run --frozen python scripts/artifact_manifest.py create --root $evidence --output (Join-Path $evidence 'windows-payload-comparison-manifest.json') --source-sha $env:SOURCE_SHA --source-tree $tree --workflow CI --run-id $env:GITHUB_RUN_ID --run-attempt $env:GITHUB_RUN_ATTEMPT --job-id windows-desktop-compare --job-name 'Compare independent Windows desktop candidates' --payload 'windows-payload-comparison.json:provenance' @critical --toolchain "python=$env:PYTHON_VERSION" --lockfile "src-tauri/Cargo.lock=$cargoLock"
-          uv run --frozen python scripts/artifact_manifest.py create --root $promoted --output (Join-Path $promoted 'windows-desktop-alpha-candidate-manifest.json') --source-sha $env:SOURCE_SHA --source-tree $tree --workflow CI --run-id $env:GITHUB_RUN_ID --run-attempt $env:GITHUB_RUN_ATTEMPT --job-id windows-desktop-compare --job-name 'Compare independent Windows desktop candidates' --payload 'stock-desk-1.1.0-beta.2-unsigned-x64-setup.exe:tauri-unsigned' --payload 'windows-desktop-bundle.json:provenance' --payload 'builder-a-provenance.json:provenance' --payload 'windows-payload-comparison.json:provenance' @critical --toolchain "python=$env:PYTHON_VERSION" --lockfile "src-tauri/Cargo.lock=$cargoLock" --cargo-lock-sha256 $cargoLock
+          uv run --frozen python scripts/artifact_manifest.py create --root $promoted --output (Join-Path $promoted 'windows-desktop-alpha-candidate-manifest.json') --source-sha $env:SOURCE_SHA --source-tree $tree --workflow CI --run-id $env:GITHUB_RUN_ID --run-attempt $env:GITHUB_RUN_ATTEMPT --job-id windows-desktop-compare --job-name 'Compare independent Windows desktop candidates' --payload "${installerName}:tauri-unsigned" --payload 'windows-desktop-bundle.json:provenance' --payload 'builder-a-provenance.json:provenance' --payload 'windows-payload-comparison.json:provenance' @critical --toolchain "python=$env:PYTHON_VERSION" --lockfile "src-tauri/Cargo.lock=$cargoLock" --cargo-lock-sha256 $cargoLock
           $bindingScript = @'
           import json
           from pathlib import Path

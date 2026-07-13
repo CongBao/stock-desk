@@ -9,6 +9,7 @@ from threading import Lock
 from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 from stock_desk.analysis.model_catalog import AnalysisModelCatalog
 from stock_desk.analysis.model_settings import (
@@ -102,6 +103,8 @@ _DEMO_ALLOWED_WRITE_PATHS = frozenset(
     {
         "/api/desktop/shutdown",
         "/api/desktop/shutdown/commit",
+        "/api/desktop/recovery/resume",
+        "/api/desktop/recovery/cancel",
         "/api/v1/onboarding/actions/exit_demo",
         "/api/v1/diagnostics/snapshot",
     }
@@ -110,6 +113,14 @@ _DEMO_ALLOWED_WRITE_PATHS = frozenset(
 
 class _ApplicationDatabaseMismatch(RuntimeError):
     pass
+
+
+class _DesktopShutdownRequest(BaseModel):
+    checkpoint_active: bool = False
+
+
+class _DesktopRecoveryResumeRequest(BaseModel):
+    confirm_analysis_cost: bool = False
 
 
 class _ApplicationDatabaseIdentity:
@@ -175,7 +186,12 @@ def create_app(
     market_navigation_service: MarketNavigationService | None = None,
     diagnostic_snapshot_service: DiagnosticSnapshotService | None = None,
     diagnostic_event_sink: DiagnosticEventSink | None = None,
+    desktop_shutdown_timeout_seconds: float = 10.0,
 ) -> FastAPI:
+    if not 0 <= desktop_shutdown_timeout_seconds <= 10:
+        raise ValueError(
+            "desktop shutdown timeout must be between zero and ten seconds"
+        )
     resolved_settings = settings if settings is not None else get_settings()
     database_identity = _ApplicationDatabaseIdentity(
         tuple(
@@ -893,15 +909,91 @@ def create_app(
                 }
             )
 
+        @application.get("/api/desktop/recovery", tags=["desktop"])
+        def desktop_recovery() -> Response:
+            recovery = resolved_desktop_lifecycle.startup_recovery()
+            summary = (
+                provide_task_repository().active_desktop_recovery_summary()
+                if recovery is not None
+                else {
+                    "queued": 0,
+                    "running": 0,
+                    "analysis": 0,
+                    "backtest": 0,
+                    "market": 0,
+                    "other": 0,
+                }
+            )
+            return JSONResponse(
+                content={
+                    "required": recovery is not None,
+                    **summary,
+                }
+            )
+
+        @application.post("/api/desktop/recovery/resume", tags=["desktop"])
+        def desktop_recovery_resume(
+            request: _DesktopRecoveryResumeRequest | None = None,
+        ) -> Response:
+            try:
+                with provide_task_repository().hold_claim_gate():
+                    if resolved_desktop_lifecycle.startup_recovery() is None:
+                        summary = (
+                            provide_task_repository().active_desktop_recovery_summary()
+                        )
+                        return JSONResponse(
+                            content={"status": "resumed", "queued": summary["queued"]}
+                        )
+                    summary = (
+                        provide_task_repository().active_desktop_recovery_summary()
+                    )
+                    if summary["analysis"] > 0 and not (
+                        request is not None and request.confirm_analysis_cost
+                    ):
+                        return JSONResponse(
+                            status_code=409,
+                            content={
+                                "code": "desktop_analysis_resume_confirmation_required",
+                                "analysis": summary["analysis"],
+                            },
+                        )
+                    queued = provide_task_repository().resume_desktop_recovery()
+                    resolved_desktop_lifecycle.complete_startup_recovery()
+            except Exception:
+                return JSONResponse(
+                    status_code=503, content={"code": "storage_unavailable"}
+                )
+            return JSONResponse(content={"status": "resumed", "queued": queued})
+
+        @application.post("/api/desktop/recovery/cancel", tags=["desktop"])
+        def desktop_recovery_cancel() -> Response:
+            try:
+                with provide_task_repository().hold_claim_gate():
+                    if resolved_desktop_lifecycle.startup_recovery() is None:
+                        return JSONResponse(
+                            content={"status": "cancelled", "cancelled": 0}
+                        )
+                    cancelled = provide_task_repository().cancel_desktop_recovery()
+                    resolved_desktop_lifecycle.complete_startup_recovery()
+            except Exception:
+                return JSONResponse(
+                    status_code=503, content={"code": "storage_unavailable"}
+                )
+            return JSONResponse(content={"status": "cancelled", "cancelled": cancelled})
+
         @application.post("/api/desktop/shutdown", tags=["desktop"])
-        def desktop_shutdown() -> Response:
+        def desktop_shutdown(
+            request: _DesktopShutdownRequest | None = None,
+        ) -> Response:
             repository = provide_task_repository()
             try:
                 with repository.hold_claim_gate():
                     metrics = repository.metrics()
                     queued = metrics.by_status["queued"]
                     running = metrics.by_status["running"]
-                    if queued + running > 0:
+                    if queued + running > 0 and not (
+                        request is not None and request.checkpoint_active
+                    ):
                         return JSONResponse(
                             status_code=409,
                             content={
@@ -910,18 +1002,44 @@ def create_app(
                                 "running": running,
                             },
                         )
-                    # Stop new claims while the authoritative gate is held, but
-                    # keep heartbeat/API resources alive until the host has
-                    # received this 202 and explicitly commits shutdown.
                     resolved_desktop_lifecycle.prepare_shutdown()
+                    checkpoint_requested = running > 0
+                    if checkpoint_requested:
+                        repository.request_desktop_checkpoint()
+                if checkpoint_requested:
+                    acknowledged = repository.wait_for_desktop_checkpoint(
+                        desktop_shutdown_timeout_seconds
+                    )
+                    if not acknowledged:
+                        acknowledged = repository.cancel_desktop_checkpoint()
+                    metrics = repository.metrics()
+                    queued = metrics.by_status["queued"]
+                    running = metrics.by_status["running"]
+                    if not acknowledged:
+                        resolved_desktop_lifecycle.cancel_prepared_shutdown()
+                        return JSONResponse(
+                            status_code=409,
+                            content={
+                                "code": "desktop_checkpoint_timeout",
+                                "queued": queued,
+                                "running": running,
+                                "retryable": True,
+                            },
+                        )
             except Exception:
+                resolved_desktop_lifecycle.cancel_prepared_shutdown()
                 return JSONResponse(
                     status_code=503,
                     content={"code": "storage_unavailable"},
                 )
             return JSONResponse(
                 status_code=202,
-                content={"status": "shutdown_requested"},
+                content={
+                    "status": "shutdown_requested",
+                    "queued": queued,
+                    "running": running,
+                    "recovery_required": queued + running > 0,
+                },
             )
 
         @application.post("/api/desktop/shutdown/commit", tags=["desktop"])

@@ -123,15 +123,25 @@ function installHealthyFetch(
   const fetchMock = vi.fn((input: RequestInfo | URL) => {
     const url = requestUrl(input);
     return Promise.resolve(
-      url.includes('/market/pools')
-        ? jsonResponse({ items: [], next_cursor: null })
-        : url.endsWith('/market/schedules/daily')
-          ? jsonResponse(disabledDailySchedule)
-          : url.endsWith('/tasks/worker-status')
-            ? jsonResponse(worker)
-            : url.endsWith('/health')
-              ? jsonResponse(healthyResponse)
-              : jsonResponse(tasks),
+      url.endsWith('/desktop/recovery')
+        ? jsonResponse({
+            required: false,
+            queued: 0,
+            running: 0,
+            analysis: 0,
+            backtest: 0,
+            market: 0,
+            other: 0,
+          })
+        : url.includes('/market/pools')
+          ? jsonResponse({ items: [], next_cursor: null })
+          : url.endsWith('/market/schedules/daily')
+            ? jsonResponse(disabledDailySchedule)
+            : url.endsWith('/tasks/worker-status')
+              ? jsonResponse(worker)
+              : url.endsWith('/health')
+                ? jsonResponse(healthyResponse)
+                : jsonResponse(tasks),
     );
   });
   vi.stubGlobal('fetch', fetchMock);
@@ -141,20 +151,32 @@ function installHealthyFetch(
 function installPendingFetch() {
   const signals: AbortSignal[] = [];
   const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) =>
-    requestUrl(input).includes('/market/pools')
-      ? Promise.resolve(jsonResponse({ items: [], next_cursor: null }))
-      : requestUrl(input).endsWith('/market/schedules/daily')
-        ? Promise.resolve(jsonResponse(disabledDailySchedule))
-        : new Promise<Response>((_resolve, reject) => {
-            if (init?.signal) {
-              signals.push(init.signal);
-              init.signal.addEventListener(
-                'abort',
-                () => reject(new DOMException('Aborted', 'AbortError')),
-                { once: true },
-              );
-            }
+    requestUrl(input).endsWith('/desktop/recovery')
+      ? Promise.resolve(
+          jsonResponse({
+            required: false,
+            queued: 0,
+            running: 0,
+            analysis: 0,
+            backtest: 0,
+            market: 0,
+            other: 0,
           }),
+        )
+      : requestUrl(input).includes('/market/pools')
+        ? Promise.resolve(jsonResponse({ items: [], next_cursor: null }))
+        : requestUrl(input).endsWith('/market/schedules/daily')
+          ? Promise.resolve(jsonResponse(disabledDailySchedule))
+          : new Promise<Response>((_resolve, reject) => {
+              if (init?.signal) {
+                signals.push(init.signal);
+                init.signal.addEventListener(
+                  'abort',
+                  () => reject(new DOMException('Aborted', 'AbortError')),
+                  { once: true },
+                );
+              }
+            }),
   );
   vi.stubGlobal('fetch', fetchMock);
   return { fetchMock, signals };

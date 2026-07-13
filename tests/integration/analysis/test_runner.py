@@ -45,7 +45,7 @@ from stock_desk.analysis.runner import AnalysisRunner, _MAX_DATA_WORKER_THREADS
 from stock_desk.analysis.runner import AnalysisCancelled
 from stock_desk.storage.database import create_engine_for_url, migrate
 from stock_desk.tasks.models import TaskClaim
-from stock_desk.tasks.repository import TaskRepository
+from stock_desk.tasks.repository import DesktopCheckpointPause, TaskRepository
 from tests.integration.analysis.test_partial_report import (
     FROZEN_AT,
     evidence_graph,
@@ -401,6 +401,78 @@ def test_data_runner_rejects_retry_policy_mismatch_before_loading_data(
 
     assert repository.get_run(pending.id).status is AnalysisRunStatus.QUEUED
     assert [loader.calls for loader in loaders] == [0, 0, 0, 0]
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_data_runner_acknowledges_desktop_checkpoint_after_durable_attempt(
+    tmp_path,
+    failure: bool,
+) -> None:
+    snapshot = frozen_snapshot()
+    first_section = snapshot.sections[0]
+    first_failures = (
+        (
+            ResearchDataUnavailable(
+                kind=first_section.kind,
+                reason=ResearchMissingReason.PERMISSION_DENIED,
+                attempted_sources=("fixture",),
+            ),
+        )
+        if failure
+        else ()
+    )
+    loaders = [
+        ScriptedSectionLoader(
+            section,
+            failures=first_failures if index == 0 else (),
+        )
+        for index, section in enumerate(snapshot.sections)
+    ]
+    service = ResearchDataService(loaders=loaders, clock=lambda: FROZEN_AT)
+    url = f"sqlite:///{tmp_path / f'data-checkpoint-{failure}.db'}"
+    migrate(url)
+    engine = create_engine_for_url(url)
+    tasks = TaskRepository(engine)
+    repository = AnalysisRepository(engine, tasks=tasks)
+    policy = RetryPolicy(max_retries=0)
+    claim = claimed_task(tasks, "data-checkpoint-worker")
+    pending = repository._create_run_for_existing_task(
+        task_id=claim.snapshot.id,
+        symbol=snapshot.symbol,
+        retry_policy=policy,
+        now=FROZEN_AT,
+    )
+    provider = ScriptedProvider()
+    runner = AnalysisRunner(
+        repository=repository,
+        provider=provider,
+        retry_policy=policy,
+        sleeper=lambda _delay: asyncio.sleep(0),
+        clock=lambda: FROZEN_AT,
+        monotonic=lambda: 1.0,
+    )
+    tasks.request_desktop_checkpoint()
+
+    with pytest.raises(DesktopCheckpointPause):
+        run(
+            runner.run_from_data(
+                claim=claim,
+                run_id=pending.id,
+                symbol=snapshot.symbol,
+                data_service=service,
+                evidence_factory=evidence_graph,
+            )
+        )
+
+    assert [loader.calls for loader in loaders] == [1, 0, 0, 0]
+    assert repository.get_stage(pending.id, first_section.kind.value).status is (
+        AnalysisStageStatus.FAILED if failure else AnalysisStageStatus.SUCCEEDED
+    )
+    assert not provider.calls
+    assert any(
+        event.event_name == "task.desktop_checkpointed"
+        for event in tasks.list_events(claim.snapshot.id)
+    )
 
 
 def test_partial_then_stage_retry_creates_child_and_reuses_valid_successes(

@@ -21,6 +21,7 @@ pub enum DesktopExitState {
     Confirm,
     Checking,
     Blocked { queued: u32, running: u32 },
+    CheckpointTimedOut { queued: u32, running: u32 },
     ShuttingDown,
 }
 
@@ -28,6 +29,7 @@ pub enum DesktopExitState {
 enum ShutdownReply {
     Accepted,
     Blocked { queued: u32, running: u32 },
+    CheckpointTimedOut { queued: u32, running: u32 },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -35,7 +37,6 @@ enum ExitEffect {
     None,
     Emit,
     Recover(u64),
-    ForceExit(u64),
     Exit,
 }
 
@@ -71,7 +72,9 @@ impl ExitMachine {
     fn cancel(&mut self) -> ExitEffect {
         if matches!(
             self.state,
-            DesktopExitState::Confirm | DesktopExitState::Blocked { .. }
+            DesktopExitState::Confirm
+                | DesktopExitState::Blocked { .. }
+                | DesktopExitState::CheckpointTimedOut { .. }
         ) {
             self.reset();
             ExitEffect::Emit
@@ -81,7 +84,12 @@ impl ExitMachine {
     }
 
     fn confirm(&mut self, generation: u64) -> ExitEffect {
-        if self.state != DesktopExitState::Confirm {
+        if !matches!(
+            self.state,
+            DesktopExitState::Confirm
+                | DesktopExitState::Blocked { .. }
+                | DesktopExitState::CheckpointTimedOut { .. }
+        ) {
             return ExitEffect::None;
         }
         self.state = DesktopExitState::Checking;
@@ -106,6 +114,17 @@ impl ExitMachine {
             return ExitEffect::None;
         }
         match reply {
+            ShutdownReply::CheckpointTimedOut { queued, running } => {
+                if self.terminated_before_reply.take().is_some() {
+                    let failed_generation = self.generation.expect("checked generation");
+                    self.reset();
+                    return ExitEffect::Recover(failed_generation);
+                }
+                self.state = DesktopExitState::CheckpointTimedOut { queued, running };
+                self.generation = None;
+                self.terminated_before_reply = None;
+                ExitEffect::Emit
+            }
             ShutdownReply::Blocked { queued, running } => {
                 if self.terminated_before_reply.take().is_some() {
                     let failed_generation = self.generation.expect("checked generation");
@@ -144,8 +163,17 @@ impl ExitMachine {
         if self.generation != Some(generation) || self.state != DesktopExitState::ShuttingDown {
             return ExitEffect::None;
         }
-        self.committed = true;
-        ExitEffect::ForceExit(generation)
+        let failed_generation = self.generation.expect("checked generation");
+        self.reset();
+        ExitEffect::Recover(failed_generation)
+    }
+
+    fn commit_failed(&mut self, generation: u64) -> ExitEffect {
+        if self.generation != Some(generation) || self.state != DesktopExitState::ShuttingDown {
+            return ExitEffect::None;
+        }
+        self.reset();
+        ExitEffect::Recover(generation)
     }
 
     fn terminated(&mut self, generation: u64, code: Option<i32>) -> ExitEffect {
@@ -229,12 +257,6 @@ impl DesktopExitController {
                     );
                 }
             }
-            ExitEffect::ForceExit(generation) => {
-                if let Some(runtime) = app.try_state::<DesktopRuntime>() {
-                    runtime.terminate_generation_for_exit(generation);
-                }
-                app.exit(0);
-            }
             ExitEffect::Exit => app.exit(0),
         }
     }
@@ -247,14 +269,19 @@ impl DesktopExitController {
         self.apply(app, ExitMachine::cancel);
     }
 
-    fn begin_confirm(&self, app: &AppHandle, generation: u64) -> bool {
+    fn begin_confirm(&self, app: &AppHandle, generation: u64) -> Option<bool> {
         let mut changed = false;
+        let mut checkpoint_active = false;
         self.apply(app, |machine| {
+            checkpoint_active = matches!(
+                machine.state,
+                DesktopExitState::Blocked { .. } | DesktopExitState::CheckpointTimedOut { .. }
+            );
             let effect = machine.confirm(generation);
             changed = effect == ExitEffect::Emit;
             effect
         });
-        changed
+        changed.then_some(checkpoint_active)
     }
 
     fn confirm_without_ready_session(&self, app: &AppHandle) -> bool {
@@ -283,6 +310,10 @@ impl DesktopExitController {
 
     fn timeout(&self, app: &AppHandle, generation: u64) {
         self.apply(app, |machine| machine.shutdown_timed_out(generation));
+    }
+
+    fn commit_failed(&self, app: &AppHandle, generation: u64) {
+        self.apply(app, |machine| machine.commit_failed(generation));
     }
 
     pub(crate) fn sidecar_terminated(
@@ -346,11 +377,11 @@ pub async fn desktop_confirm_exit(app: AppHandle) -> Result<(), String> {
         return Ok(());
     }
     let session = runtime.ready_session().map_err(str::to_owned)?;
-    if !controller.begin_confirm(&app, session.generation) {
+    let Some(checkpoint_active) = controller.begin_confirm(&app, session.generation) else {
         return Ok(());
-    }
+    };
 
-    let result = request_shutdown(&session).await;
+    let result = request_shutdown(&session, checkpoint_active).await;
     if !runtime.is_same_generation(session.generation) {
         controller.fail(&app, session.generation);
         return Ok(());
@@ -361,6 +392,12 @@ pub async fn desktop_confirm_exit(app: AppHandle) -> Result<(), String> {
     }
 
     if matches!(result, Ok(ShutdownReply::Accepted)) {
+        if commit_shutdown(&session).await.is_err()
+            || !runtime.is_same_generation(session.generation)
+        {
+            controller.commit_failed(&app, session.generation);
+            return Ok(());
+        }
         let timeout_app = app.clone();
         let generation = session.generation;
         tauri::async_runtime::spawn(async move {
@@ -369,16 +406,16 @@ pub async fn desktop_confirm_exit(app: AppHandle) -> Result<(), String> {
                 controller.timeout(&timeout_app, generation);
             }
         });
-        commit_shutdown(&session).await;
     }
     Ok(())
 }
 
-async fn commit_shutdown(session: &ReadySession) {
-    let Ok(url) = session.authority.api_url(SHUTDOWN_COMMIT_PATH) else {
-        return;
-    };
-    let _ = session
+async fn commit_shutdown(session: &ReadySession) -> Result<(), ()> {
+    let url = session
+        .authority
+        .api_url(SHUTDOWN_COMMIT_PATH)
+        .map_err(|_| ())?;
+    let response = session
         .client
         .post(url)
         .header("Origin", session.authority.origin())
@@ -386,21 +423,50 @@ async fn commit_shutdown(session: &ReadySession) {
         .header("Accept", "application/json")
         .timeout(Duration::from_secs(2))
         .send()
-        .await;
+        .await
+        .map_err(|_| ())?;
+    if response.status() != reqwest::StatusCode::ACCEPTED
+        || response.content_length().is_some_and(|length| length > 256)
+        || response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.split(';').next())
+            .map(str::trim)
+            != Some("application/json")
+    {
+        return Err(());
+    }
+    let body = response.bytes().await.map_err(|_| ())?;
+    if body.len() > 256 {
+        return Err(());
+    }
+    let committed: CommittedShutdown = serde_json::from_slice(&body).map_err(|_| ())?;
+    (committed.status == "shutdown_committed")
+        .then_some(())
+        .ok_or(())
 }
 
-async fn request_shutdown(session: &ReadySession) -> Result<ShutdownReply, ()> {
+async fn request_shutdown(
+    session: &ReadySession,
+    checkpoint_active: bool,
+) -> Result<ShutdownReply, ()> {
     let url = session.authority.api_url(SHUTDOWN_PATH).map_err(|_| ())?;
-    let mut response = session
+    let mut request = session
         .client
         .post(url)
         .header("Origin", session.authority.origin())
         .header("Authorization", session.authority.authorization_header())
         .header("Accept", "application/json")
-        .timeout(Duration::from_secs(5))
-        .send()
-        .await
-        .map_err(|_| ())?;
+        .timeout(if checkpoint_active {
+            Duration::from_secs(12)
+        } else {
+            Duration::from_secs(5)
+        });
+    if checkpoint_active {
+        request = request.json(&serde_json::json!({"checkpoint_active": true}));
+    }
+    let mut response = request.send().await.map_err(|_| ())?;
     if response
         .content_length()
         .is_some_and(|length| length > SHUTDOWN_RESPONSE_LIMIT as u64)
@@ -427,18 +493,26 @@ async fn request_shutdown(session: &ReadySession) -> Result<ShutdownReply, ()> {
     match status {
         reqwest::StatusCode::ACCEPTED => {
             let accepted: AcceptedShutdown = serde_json::from_slice(&body).map_err(|_| ())?;
-            (accepted.status == "shutdown_requested")
+            (accepted.status == "shutdown_requested"
+                && accepted.recovery_required == (accepted.queued + accepted.running > 0))
                 .then_some(ShutdownReply::Accepted)
                 .ok_or(())
         }
         reqwest::StatusCode::CONFLICT => {
-            let blocked: BlockedShutdown = serde_json::from_slice(&body).map_err(|_| ())?;
-            (blocked.code == "desktop_tasks_active")
-                .then_some(ShutdownReply::Blocked {
-                    queued: blocked.queued,
-                    running: blocked.running,
-                })
-                .ok_or(())
+            let error: ShutdownError = serde_json::from_slice(&body).map_err(|_| ())?;
+            match error.code.as_str() {
+                "desktop_tasks_active" if error.retryable.is_none() => Ok(ShutdownReply::Blocked {
+                    queued: error.queued,
+                    running: error.running,
+                }),
+                "desktop_checkpoint_timeout" if error.retryable == Some(true) => {
+                    Ok(ShutdownReply::CheckpointTimedOut {
+                        queued: error.queued,
+                        running: error.running,
+                    })
+                }
+                _ => Err(()),
+            }
         }
         _ => Err(()),
     }
@@ -448,14 +522,24 @@ async fn request_shutdown(session: &ReadySession) -> Result<ShutdownReply, ()> {
 #[serde(deny_unknown_fields)]
 struct AcceptedShutdown {
     status: String,
+    queued: u32,
+    running: u32,
+    recovery_required: bool,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct BlockedShutdown {
+struct CommittedShutdown {
+    status: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ShutdownError {
     code: String,
     queued: u32,
     running: u32,
+    retryable: Option<bool>,
 }
 
 #[cfg(test)]
@@ -483,6 +567,18 @@ mod tests {
             })
             .unwrap(),
             serde_json::json!({"state": "blocked", "queued": 2, "running": 1})
+        );
+        assert_eq!(
+            serde_json::to_value(DesktopExitState::CheckpointTimedOut {
+                queued: 2,
+                running: 1,
+            })
+            .unwrap(),
+            serde_json::json!({
+                "state": "checkpoint_timed_out",
+                "queued": 2,
+                "running": 1
+            })
         );
         assert_eq!(
             serde_json::to_value(DesktopExitState::ShuttingDown).unwrap(),
@@ -605,6 +701,26 @@ mod tests {
     }
 
     #[test]
+    fn termination_before_checkpoint_timeout_recovers_the_dead_sidecar() {
+        let mut machine = ExitMachine::default();
+        machine.request();
+        machine.confirm(18);
+        machine.terminated(18, Some(1));
+        assert_eq!(
+            machine.shutdown_reply(
+                18,
+                ShutdownReply::CheckpointTimedOut {
+                    queued: 1,
+                    running: 1,
+                }
+            ),
+            ExitEffect::Recover(18)
+        );
+        assert_eq!(machine.state, DesktopExitState::Idle);
+        assert!(!machine.committed);
+    }
+
+    #[test]
     fn accepted_shutdown_still_exits_after_nonzero_or_unknown_termination() {
         for code in [Some(1), None] {
             let mut machine = ExitMachine::default();
@@ -618,14 +734,14 @@ mod tests {
     }
 
     #[test]
-    fn accepted_shutdown_timeout_forces_contained_generation_exit() {
+    fn accepted_shutdown_timeout_recovers_without_killing_the_sidecar() {
         let mut machine = ExitMachine::default();
         machine.request();
         machine.confirm(14);
         machine.shutdown_reply(14, ShutdownReply::Accepted);
-        assert_eq!(machine.shutdown_timed_out(14), ExitEffect::ForceExit(14));
-        assert_eq!(machine.state, DesktopExitState::ShuttingDown);
-        assert!(machine.committed);
+        assert_eq!(machine.shutdown_timed_out(14), ExitEffect::Recover(14));
+        assert_eq!(machine.state, DesktopExitState::Idle);
+        assert!(!machine.committed);
     }
 
     #[test]
@@ -655,18 +771,19 @@ mod tests {
 
     #[test]
     fn response_parsers_are_exact_and_reject_extension_fields() {
-        assert!(
-            serde_json::from_str::<AcceptedShutdown>(r#"{"status":"shutdown_requested"}"#).is_ok()
-        );
         assert!(serde_json::from_str::<AcceptedShutdown>(
-            r#"{"status":"shutdown_requested","secret":"leak"}"#
+            r#"{"status":"shutdown_requested","queued":0,"running":0,"recovery_required":false}"#
+        )
+        .is_ok());
+        assert!(serde_json::from_str::<AcceptedShutdown>(
+            r#"{"status":"shutdown_requested","queued":0,"running":0,"recovery_required":false,"secret":"leak"}"#
         )
         .is_err());
-        assert!(serde_json::from_str::<BlockedShutdown>(
+        assert!(serde_json::from_str::<ShutdownError>(
             r#"{"code":"desktop_tasks_active","queued":1,"running":2}"#
         )
         .is_ok());
-        assert!(serde_json::from_str::<BlockedShutdown>(
+        assert!(serde_json::from_str::<ShutdownError>(
             r#"{"code":"desktop_tasks_active","queued":-1,"running":2}"#
         )
         .is_err());

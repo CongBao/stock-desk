@@ -41,6 +41,7 @@ from stock_desk.analysis.snapshot import MissingResearchSection, ResearchSection
 from stock_desk.analysis.workflow import WorkflowStageTrace
 from stock_desk.tasks.models import TaskClaim, TaskSnapshot
 from stock_desk.tasks.repository import TaskConflict, TaskRepository
+from stock_desk.storage.database import connection_database_identity
 from stock_desk.storage.models import TaskRun
 
 
@@ -583,9 +584,13 @@ def _stage_projection(row: RowMapping) -> AnalysisStageSnapshot:
 
 
 class AnalysisRepository:
-    def __init__(self, engine: Engine) -> None:
+    def __init__(self, engine: Engine, *, tasks: TaskRepository | None = None) -> None:
         self._engine = engine
-        self._tasks = TaskRepository(engine)
+        self._tasks = tasks if tasks is not None else TaskRepository(engine)
+        with engine.connect() as connection:
+            engine_identity = connection_database_identity(connection)
+        if self._tasks.database_identity != engine_identity:
+            raise ValueError("analysis task database identity does not match")
 
     @property
     def database_identity(self) -> object:
@@ -597,6 +602,9 @@ class AnalysisRepository:
     def cancellation_requested(self, claim: TaskClaim) -> bool:
         task = self._tasks.get(claim.snapshot.id)
         return task.cancel_requested or task.status == "cancelled"
+
+    def pause_at_desktop_checkpoint(self, task_id: str) -> None:
+        self._tasks.pause_at_desktop_checkpoint(task_id)
 
     def heartbeat(
         self,

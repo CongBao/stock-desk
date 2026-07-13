@@ -22,6 +22,7 @@ import { DataSourcesPage } from '../features/settings/DataSourcesPage';
 import { TaskCenterPage } from '../features/tasks/TaskCenterPage';
 import { DesktopStartup } from '../features/desktop/DesktopStartup';
 import { DesktopExitGuard } from '../features/desktop/DesktopExitGuard';
+import { DesktopTaskRecovery } from '../features/desktop/DesktopTaskRecovery';
 import { OnboardingGate } from '../features/onboarding/OnboardingGate';
 import { useOnboardingDemoMode } from '../features/onboarding/demoMode';
 import { useMarketStore } from '../features/market/marketStore';
@@ -536,16 +537,18 @@ export function App({
       </div>
       <DesktopExitGuard bridge={desktopBridge}>
         <DesktopStartup bridge={desktopBridge}>
-          {onboardingApi === null ? (
-            workspace
-          ) : (
-            <OnboardingGate
-              api={onboardingApi}
-              onDiagnostics={() => void desktopBridge.exportDiagnostics()}
-            >
-              {workspace}
-            </OnboardingGate>
-          )}
+          <DesktopTaskRecovery bridge={desktopBridge}>
+            {onboardingApi === null ? (
+              workspace
+            ) : (
+              <OnboardingGate
+                api={onboardingApi}
+                onDiagnostics={() => void desktopBridge.exportDiagnostics()}
+              >
+                {workspace}
+              </OnboardingGate>
+            )}
+          </DesktopTaskRecovery>
         </DesktopStartup>
       </DesktopExitGuard>
     </>

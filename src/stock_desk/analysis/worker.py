@@ -17,6 +17,7 @@ from stock_desk.analysis.repository import (
 from stock_desk.analysis.runner import AnalysisCancelled, AnalysisRunner
 from stock_desk.analysis.snapshot import ResearchSnapshot
 from stock_desk.tasks.models import TaskClaim
+from stock_desk.tasks.repository import DesktopCheckpointPause
 
 
 ANALYSIS_TASK_KIND = "analysis.run"
@@ -109,6 +110,8 @@ class AnalysisWorkerHandler:
                 "analysis_run_id": cancelled.id,
                 "status": cancelled.status.value,
             }
+        except DesktopCheckpointPause:
+            raise
         except Exception:
             try:
                 self._repository.fail_run(

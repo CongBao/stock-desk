@@ -126,7 +126,9 @@ def test_builders_fail_closed_when_bundle_manifest_is_not_materialized() -> None
         assert '--lock "src-tauri/Cargo.lock=$cargoLock"' not in commands
         assert "(Get-Item -LiteralPath $manifestOutput).Length -le 0" in commands
         assert "$manifest.source_sha -ne $env:SOURCE_SHA" in commands
-        assert "$manifest.release.version -ne '1.1.0-beta.2'" in commands
+        assert "$releaseVersion = $tauriConfig.version" in commands
+        assert "--version $releaseVersion" in commands
+        assert "$manifest.release.version -ne $releaseVersion" in commands
         assert "Windows bundle manifest was not created" in commands
         assert "Windows bundle manifest identity is invalid" in commands
 

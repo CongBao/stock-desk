@@ -50,8 +50,8 @@ def test_all_first_release_acceptance_domains_and_full_journey_are_gated() -> No
     } <= candidate_targets
     assert candidate_gates[0] == verify_release_module.PRE_PUBLISH_EVIDENCE_GATE
     assert candidate_gates.count(verify_release_module.PRE_PUBLISH_EVIDENCE_GATE) == 1
-    assert "scripts/main_validation_proof.py verify" in workflow
-    assert "main-validation-proof-${{ github.sha }}" in workflow
+    assert "scripts/verify_release.py" in workflow
+    assert "main-validation-proof-$GITHUB_SHA" in workflow
     assert "make acceptance-domain-contracts" not in workflow
     assert "make acceptance-full-journey" not in workflow
     assert set(release_line.removeprefix("release-check:").split()) == {

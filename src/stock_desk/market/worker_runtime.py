@@ -157,6 +157,7 @@ class SettingsBackedCatalogUpdateHandler:
         source_settings: SourceSettingsServices,
         instruments: InstrumentRepository,
         pools: PoolRepository,
+        tasks: TaskRepository,
         provider_factory: RuntimeProviderFactory,
         composition_factory: Callable[[], CompositionProvider] | None = None,
     ) -> None:
@@ -164,12 +165,14 @@ class SettingsBackedCatalogUpdateHandler:
             source_settings.database_identity,
             instruments.database_identity,
             pools.database_identity,
+            tasks.database_identity,
         )
         if identities[1:] != identities[:-1]:
             raise ValueError("market catalog database identities do not match")
         self._source_settings = source_settings
         self._instruments = instruments
         self._pools = pools
+        self._tasks = tasks
         self._provider_factory = provider_factory
         self._composition_factory = composition_factory or (
             lambda: AkShareCompositionProvider.from_sdk(clock=_utc_now)
@@ -195,6 +198,7 @@ class SettingsBackedCatalogUpdateHandler:
                 if not isinstance(routed, RoutedInstrumentSuccess):
                     raise TypeError("market router returned an invalid catalog outcome")
                 manifest = self._instruments.ingest(routed)
+                self._tasks.pause_at_desktop_checkpoint(task.id)
                 preset_successes: list[dict[str, str]] = []
                 preset_failures: list[dict[str, str]] = []
                 full_a_pool_id: str | None = None
@@ -212,6 +216,7 @@ class SettingsBackedCatalogUpdateHandler:
                             "reason": "persistence_failure",
                         }
                     )
+                self._tasks.pause_at_desktop_checkpoint(task.id)
                 try:
                     catalog = self._instruments.pinned_catalog(
                         manifest.manifest_record_id
@@ -232,6 +237,7 @@ class SettingsBackedCatalogUpdateHandler:
                             ("industry-catalog", PoolCategory.INDUSTRY),
                         )
                     )
+                self._tasks.pause_at_desktop_checkpoint(task.id)
                 if composition_result is not None:
                     preset_failures.extend(
                         {
@@ -258,6 +264,8 @@ class SettingsBackedCatalogUpdateHandler:
                                     "reason": "persistence_failure",
                                 }
                             )
+                        self._tasks.pause_at_desktop_checkpoint(task.id)
+                self._tasks.pause_at_desktop_checkpoint(task.id)
                 return {
                     "source": manifest.source.value,
                     "row_count": manifest.row_count,
@@ -369,6 +377,7 @@ class ProductionMarketWorker:
                     source_settings=source_settings,
                     instruments=instruments,
                     pools=pools,
+                    tasks=tasks,
                     provider_factory=resolved_factory,
                     composition_factory=composition_factory,
                 ),
@@ -392,7 +401,7 @@ class ProductionMarketWorker:
                     formulas=formula_service,
                 ),
             )
-            analysis_repository = AnalysisRepository(engine)
+            analysis_repository = AnalysisRepository(engine, tasks=tasks)
             model_catalog = AnalysisModelCatalog(
                 engine,
                 expected_database_identity=tasks.database_identity,

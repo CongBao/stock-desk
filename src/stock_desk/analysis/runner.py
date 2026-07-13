@@ -293,6 +293,7 @@ class AnalysisRunner:
                         )
                     raise AnalysisCancelled()
                 raise first_system_error
+            self._repository.pause_at_desktop_checkpoint(claim.snapshot.id)
 
         ordered_roles = tuple(role for role in ROLE_ORDER if role in completed)
         outputs = tuple(completed[role][0] for role in ordered_roles)
@@ -494,6 +495,7 @@ class AnalysisRunner:
                         now=self._clock(),
                     )
                     sections.append(section)
+                    self._repository.pause_at_desktop_checkpoint(claim.snapshot.id)
                     break
                 if failure.kind is not kind:
                     failure = ResearchDataUnavailable(
@@ -537,6 +539,7 @@ class AnalysisRunner:
                     missing_section=missing_outcome,
                     now=self._clock(),
                 )
+                self._repository.pause_at_desktop_checkpoint(claim.snapshot.id)
                 if exhausted:
                     assert missing_outcome is not None
                     missing.append(missing_outcome)

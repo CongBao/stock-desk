@@ -21,7 +21,6 @@ use crate::{exit::DesktopExitController, sidecar::SidecarAuthority, windows_job:
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(45);
 const BOOTSTRAP_RELEASE_BYTE: &[u8] = b"\x01";
 const ABNORMAL_SETUP_EXIT_CODE: u32 = 70;
-const FORCED_USER_EXIT_CODE: u32 = 71;
 const MAX_USER_RESTARTS: u8 = 3;
 const MAX_CONSECUTIVE_HEALTH_FAILURES: u8 = 3;
 const HEALTH_CHECK_INTERVAL: Duration = Duration::from_secs(5);
@@ -414,25 +413,6 @@ impl DesktopRuntime {
             } else {
                 child.kill_fallback();
             }
-        }
-    }
-
-    pub(crate) fn terminate_generation_for_exit(&self, generation: u64) {
-        let (child, job) = {
-            let mut inner = self.inner.lock().expect("runtime state poisoned");
-            if inner.slot.generation != generation {
-                return;
-            }
-            inner.slot.authority = None;
-            (inner.slot.child.take(), inner.slot.job.take())
-        };
-        match (child, job) {
-            (Some(child), Some(job)) => cleanup_failed_setup(&job, child),
-            (Some(child), None) => child.kill_fallback(),
-            (None, Some(job)) => {
-                let _ = job.terminate(FORCED_USER_EXIT_CODE);
-            }
-            (None, None) => {}
         }
     }
 

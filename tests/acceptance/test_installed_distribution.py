@@ -22,188 +22,154 @@ def _workflow() -> dict[str, Any]:
     return loaded
 
 
+def _commands(steps: list[dict[str, Any]]) -> str:
+    return "\n".join(str(step.get("run", "")) for step in steps)
+
+
 def test_distribution_contract_covers_all_native_release_artifacts() -> None:
+    """Keep the frozen v1.0 distribution claim backed by public release evidence.
+
+    The active v1.1 workflow is intentionally Windows-only, so the historical
+    cross-platform contract must be checked against the immutable v1.0 audit
+    instead of pretending that the current workflow still builds macOS assets.
+    """
+
+    release_notes = (ROOT / "docs" / "releases" / "v1.0.0.md").read_text(
+        encoding="utf-8"
+    )
+    final_audit = (ROOT / "docs" / "releases" / "v1.0.0-final-audit.md").read_text(
+        encoding="utf-8"
+    )
+
+    for target, asset in (
+        ("Windows x86_64", "stock-desk-1.0.0-windows-x86_64.exe"),
+        ("macOS x86_64", "stock-desk-1.0.0-macos-x86_64.dmg"),
+        ("macOS arm64", "stock-desk-1.0.0-macos-arm64.dmg"),
+    ):
+        assert target in release_notes
+        assert asset in release_notes
+        assert target in final_audit
+
+
+def test_install_verification_jobs_do_not_checkout_or_expose_development_path() -> None:
+    """Preserve the v1.0 source-free install proof after workflow replacement."""
+
+    release_notes = (ROOT / "docs" / "releases" / "v1.0.0.md").read_text(
+        encoding="utf-8"
+    )
+    final_audit = (ROOT / "docs" / "releases" / "v1.0.0-final-audit.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "source-free first" in release_notes
+    assert "Windows x86_64" in final_audit
+    assert "macOS x86_64" in final_audit
+    assert "macOS arm64" in final_audit
+    assert "安装、首次启动" in final_audit
+    assert final_audit.count("DMG 安装与首次启动通过") == 2
+
+
+def test_v11_distribution_contract_is_windows_only_and_reuses_main_candidate() -> None:
     workflow = _workflow()
     jobs = workflow["jobs"]
-    build_matrix = jobs["build-installers"]["strategy"]["matrix"]["include"]
+    rendered = RELEASE_WORKFLOW.read_text(encoding="utf-8")
 
-    targets = {
-        (entry["os_name"], entry["architecture"], entry["runner"])
-        for entry in build_matrix
-    }
-    assert targets == {
-        ("windows", "x86_64", "windows-2025"),
-        ("macos", "x86_64", "macos-26-intel"),
-        ("macos", "arm64", "macos-26"),
-    }
-    assert all(entry["native"] is True for entry in build_matrix)
+    assert set(jobs) == {"tag-policy", "prerelease-verify", "prerelease"}
+    assert "windows-desktop-alpha-candidate-$GITHUB_SHA" in rendered
+    assert "stock-desk-*-unsigned-x64-setup.exe" in rendered
+    for legacy_job in (
+        "build-installers",
+        "verify-windows-installer",
+        "verify-macos-installer",
+        "attest",
+        "release",
+    ):
+        assert legacy_job not in jobs
 
     for relative in (
-        "packaging/stock-desk.spec",
-        "packaging/windows/stock-desk.iss",
-        "packaging/macos/entitlements.plist",
-        "scripts/build_installer.py",
-        "scripts/verify_installed_app.py",
-        "tests/fixtures/distribution/v0.5.0.sql",
+        "src-tauri/tauri.conf.json",
+        "src-tauri/tauri.windows.conf.json",
+        "scripts/build_windows_desktop.py",
+        "scripts/verify_windows_desktop_bundle.py",
+        "scripts/compare_windows_payloads.py",
     ):
         assert (ROOT / relative).is_file(), relative
 
 
-def test_install_verification_jobs_do_not_checkout_or_expose_development_path() -> None:
+def test_v11_release_verification_uses_exact_tag_checkout_and_proved_payload() -> None:
     workflow = _workflow()
     jobs = workflow["jobs"]
+    steps = jobs["prerelease-verify"]["steps"]
+    combined = json.dumps(steps, sort_keys=True)
 
-    for job_name in ("verify-windows-installer", "verify-macos-installer"):
-        steps = jobs[job_name]["steps"]
-        assert not any(
-            str(step.get("uses", "")).startswith("actions/checkout@") for step in steps
-        )
-        combined = json.dumps(steps, sort_keys=True)
-        assert "verify_installed_app.py" in combined
-        assert "STOCK_DESK_INSTALL_TEST_PATH" in combined
-        assert "download-artifact" in combined
-        assert "installer-logs" in combined
-        assert "playwright" in combined.lower()
+    assert any(
+        str(step.get("uses", "")).startswith("actions/checkout@") for step in steps
+    )
+    assert "git merge-base --is-ancestor" in combined
+    assert "main-validation-proof-$GITHUB_SHA" in combined
+    assert "windows-desktop-alpha-candidate-$GITHUB_SHA" in combined
+    assert "verify_release.py" in combined
+    assert "build_installer.py" not in combined
+    assert "verify_installed_app.py" not in combined
+    assert "playwright" not in combined.lower()
 
 
-def test_windows_install_and_uninstall_prove_exit_codes_and_postconditions() -> None:
+def test_windows_candidate_is_bound_to_tag_version_before_publish() -> None:
     workflow = _workflow()
-    steps = workflow["jobs"]["verify-windows-installer"]["steps"]
-    install = next(
-        step
-        for step in steps
-        if step.get("name") == "Install and verify without development PATH"
-    )["run"]
-    uninstall = next(
-        step
-        for step in steps
-        if step.get("name") == "Uninstall without deleting user data"
-    )["run"]
-
-    assert "$installProcess = Start-Process" in install
-    assert "-Wait -PassThru" in install
-    assert "$installProcess.ExitCode -ne 0" in install
-
-    assert "$uninstallProcess = Start-Process" in uninstall
-    assert "-Wait -PassThru" in uninstall
-    assert "$uninstallProcess.ExitCode -ne 0" in uninstall
-    assert "$applicationDir = Join-Path" in uninstall
-    assert "$command = Join-Path $applicationDir 'stock-desk.exe'" in uninstall
-    assert "$uninstaller = Join-Path $applicationDir 'unins000.exe'" in uninstall
-    for path, message in (
-        ("$command", "application executable remains after uninstall"),
-        ("$uninstaller", "uninstaller remains after uninstall"),
-        ("$applicationDir", "application directory remains after uninstall"),
-    ):
-        assert (
-            f"if (Test-Path -LiteralPath {path}) {{ throw '{message}' }}" in uninstall
-        )
-    assert (
-        "if (-not (Test-Path -LiteralPath $persistence)) "
-        "{ throw 'user data was deleted' }"
-    ) in uninstall
-
-    install_step = next(
-        step
-        for step in steps
-        if step.get("name") == "Install and verify without development PATH"
+    rendered = "\n".join(
+        _commands(job["steps"])
+        for job in workflow["jobs"].values()
+        if isinstance(job, dict)
     )
-    assert "--diagnostic-dir $evidence" in install_step["run"]
-    capture = next(
-        step
-        for step in steps
-        if step.get("name") == "Capture installed browser smoke with Playwright"
-    )["run"]
-    assert "$shutdownProcess = Start-Process" in capture
-    assert "-ArgumentList '--shutdown'" in capture
-    assert "-Wait -PassThru" in capture
-    assert "$shutdownProcess.ExitCode -ne 0" in capture
-    assert "$appProcess.WaitForExit(30000)" in capture
-    assert "$appProcess.ExitCode -ne 0" in capture
-    assert "& $command --shutdown" not in capture
-    stage = next(
-        step for step in steps if step.get("name") == "Stage Windows installer evidence"
-    )
-    assert stage["if"] == "always()"
-    upload = next(
-        step
-        for step in steps
-        if step.get("name") == "Upload Windows installer-logs and screenshot"
-    )
-    assert upload["with"]["path"] == "installer-evidence/windows/"
-    assert upload["with"]["if-no-files-found"] == "error"
+
+    assert 'expected_version="${GITHUB_REF_NAME#v}"' in rendered
+    assert ".release.version == $version" in rendered
+    assert "stock-desk-${expected_version}-unsigned-x64-setup.exe" in rendered
+    assert rendered.count('test "${installers[0]}" = "$expected_installer"') == 2
 
 
 def test_release_workflow_generates_checksums_sbom_and_provenance() -> None:
     workflow_text = RELEASE_WORKFLOW.read_text(encoding="utf-8").lower()
 
     assert "sha256" in workflow_text
-    assert "sbom" in workflow_text
-    assert "actions/attest@" in workflow_text
+    assert "gh attestation verify" in workflow_text
+    assert "evidence-attestation-bundle.jsonl" in workflow_text
+    assert "windows-builder-provenance" in workflow_text
     assert "actions/attest-build-provenance@" not in workflow_text
     assert "actions/attest-sbom@" not in workflow_text
-    assert "signing" in workflow_text or "notar" in workflow_text
+    assert "unsigned prerelease" in workflow_text
     assert "pull_request" not in workflow_text
 
 
-def test_windows_compiler_is_immutable_verified_and_recorded_in_provenance() -> None:
+def test_legacy_inno_compiler_is_not_reachable_from_v11_release() -> None:
     workflow_text = RELEASE_WORKFLOW.read_text(encoding="utf-8")
     build_script = (ROOT / "scripts" / "build_installer.py").read_text(encoding="utf-8")
 
     assert "choco install innosetup" not in workflow_text
-    assert "is-6_7_3/innosetup-6.7.3.exe" in workflow_text
-    assert (
-        "9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732"
-        in workflow_text
-    )
-    assert "Get-FileHash" in workflow_text
-    assert "STOCK_DESK_INNO_SETUP_PACKAGE_SHA256" in workflow_text
+    assert "innosetup" not in workflow_text.casefold()
+    assert "build_installer.py" not in workflow_text
+    assert "STOCK_DESK_INNO_SETUP_PACKAGE_SHA256" not in workflow_text
+    # Keep the immutable v1.0 builder metadata readable for historical verification.
     assert '"build_provenance"' in build_script
     assert '"compiler_sha256"' in build_script
 
 
-def test_release_verifies_native_sidecars_and_builds_complete_manifest() -> None:
+def test_release_rechecks_one_windows_installer_and_complete_asset_checksums() -> None:
     workflow = _workflow()
-    attest_steps = workflow["jobs"]["attest"]["steps"]
-    release_steps = workflow["jobs"]["release"]["steps"]
-    native_step = next(
-        step
-        for step in attest_steps
-        if step.get("name") == "Verify native assets and prepare complete checksums"
-    )
-    upload_index = next(
-        index
-        for index, step in enumerate(attest_steps)
-        if step.get("name") == "Upload attested release assets"
-    )
-    create_index = next(
-        index
-        for index, step in enumerate(release_steps)
-        if step.get("name") == "Create GitHub release"
-    )
-    commands = native_step["run"]
+    verify_steps = workflow["jobs"]["prerelease-verify"]["steps"]
+    publish_steps = workflow["jobs"]["prerelease"]["steps"]
+    verify_commands = _commands(verify_steps)
+    publish_commands = _commands(publish_steps)
 
-    assert "*.exe.sha256" in commands
-    assert "*.dmg.sha256" in commands
-    assert 'test "$listed" = "$artifact"' in commands
-    assert 'sha256sum -c "$sidecar"' in commands
-    assert "*.exe" in commands and "*.dmg" in commands
-    assert "*.json" in commands and "*.sbom.spdx.json" in commands
-    assert "SHA256SUMS.complete" in commands
-    assert "! -name '*.sha256'" not in commands
-    assert "! -name 'SHA256SUMS'" not in commands
-    assert "wc -l < SHA256SUMS.complete" in commands
-    assert "sha256sum -c SHA256SUMS.complete" in commands
-    assert attest_steps.index(native_step) < upload_index
-
-    complete_step = next(
-        step
-        for step in release_steps
-        if step.get("name") == "Verify complete release asset checksums"
+    assert "windows-desktop-bundle.json" in verify_commands
+    assert "windows-payload-comparison.json" in verify_commands
+    assert (
+        "find \"$candidate_root\" -maxdepth 1 -type f -name '*.exe'" in verify_commands
     )
-    assert "wc -l < SHA256SUMS.complete" in complete_step["run"]
-    assert "sha256sum -c SHA256SUMS.complete" in complete_step["run"]
-    assert release_steps.index(complete_step) < create_index
+    assert ".dmg" not in verify_commands
+    assert "sha256sum -c UNSIGNED-TEST-ONLY-SHA256SUMS" in publish_commands
+    assert "--prerelease" in publish_commands
+    assert "--latest=false" in publish_commands
 
 
 def test_pyinstaller_bundle_declares_assets_migrations_and_legal_notices() -> None:
