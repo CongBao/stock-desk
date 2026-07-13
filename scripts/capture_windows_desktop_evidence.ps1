@@ -129,6 +129,17 @@ $hostPath = Join-Path $installRoot 'stock-desk-desktop.exe'
 $uninstallerPath = Join-Path $installRoot 'uninstall.exe'
 $evidenceRoot = Split-Path (Split-Path $Output -Parent) -Parent
 $webviewUserData = Join-Path $evidenceRoot "webview2-user-data-$SourceSha"
+$webviewEdgePolicy = 'HKCU:\Software\Policies\Microsoft\Edge'
+$webviewPolicyRoot = 'HKCU:\Software\Policies\Microsoft\Edge\WebView2'
+$webviewArgsPolicy = Join-Path $webviewPolicyRoot 'AdditionalBrowserArguments'
+$webviewDataPolicy = Join-Path $webviewPolicyRoot 'UserDataFolder'
+$webviewAppName = [IO.Path]::GetFileName($hostPath)
+$webviewEdgePolicyCreated = -not (Test-Path -LiteralPath $webviewEdgePolicy)
+$webviewPolicyRootCreated = -not (Test-Path -LiteralPath $webviewPolicyRoot)
+$webviewArgsPolicyCreated = -not (Test-Path -LiteralPath $webviewArgsPolicy)
+$webviewDataPolicyCreated = -not (Test-Path -LiteralPath $webviewDataPolicy)
+$webviewArgsPolicySet = $false
+$webviewDataPolicySet = $false
 $desktopProcess = $null
 $gracefulExit = $false
 try {
@@ -200,10 +211,29 @@ try {
   New-Item -ItemType Directory -Force $webviewUserData | Out-Null
   $env:WEBVIEW2_USER_DATA_FOLDER = $webviewUserData
   $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = '--remote-debugging-port=0 --remote-debugging-address=127.0.0.1'
+  New-Item -Path $webviewEdgePolicy -Force | Out-Null
+  New-Item -Path $webviewPolicyRoot -Force | Out-Null
+  foreach ($policy in @($webviewArgsPolicy, $webviewDataPolicy)) {
+    if ($null -ne (Get-ItemProperty -LiteralPath $policy -Name $webviewAppName -ErrorAction SilentlyContinue)) {
+      throw 'packaged WebView2 evidence refuses to replace an existing app policy'
+    }
+    New-Item -Path $policy -Force | Out-Null
+  }
+  New-ItemProperty -LiteralPath $webviewArgsPolicy -Name $webviewAppName -PropertyType String -Value $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS | Out-Null
+  $webviewArgsPolicySet = $true
+  New-ItemProperty -LiteralPath $webviewDataPolicy -Name $webviewAppName -PropertyType String -Value $webviewUserData | Out-Null
+  $webviewDataPolicySet = $true
   # This candidate proof owns an isolated first-run state. Removing stale state
   # makes onboarding evidence deterministic even on a reused Windows host.
   Remove-Item -Recurse -Force (Join-Path $env:LOCALAPPDATA 'Stock Desk\v1.1') -ErrorAction SilentlyContinue
-  $desktopProcess = Start-Process -FilePath $hostPath -PassThru
+  $desktopStart = [Diagnostics.ProcessStartInfo]::new()
+  $desktopStart.FileName = $hostPath
+  $desktopStart.WorkingDirectory = $installRoot
+  $desktopStart.UseShellExecute = $false
+  $desktopStart.Environment['WEBVIEW2_USER_DATA_FOLDER'] = $webviewUserData
+  $desktopStart.Environment['WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS'] = $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS
+  $desktopProcess = [Diagnostics.Process]::Start($desktopStart)
+  if ($null -eq $desktopProcess) { throw 'packaged Tauri host could not be started' }
   Wait-Until { $desktopProcess.Refresh(); if ($desktopProcess.HasExited) { throw 'packaged Tauri host exited during startup' }; if ($desktopProcess.MainWindowHandle -ne [IntPtr]::Zero) { $desktopProcess.MainWindowHandle } } 90 'packaged Tauri main window did not appear' | Out-Null
   $devToolsPortFile = Wait-Until {
     @(Get-ChildItem -LiteralPath $webviewUserData -Recurse -File -Filter 'DevToolsActivePort' -ErrorAction SilentlyContinue) | Select-Object -First 1
@@ -268,9 +298,30 @@ try {
   }
   $manifest | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $Output 'windows-desktop-evidence.json') -Encoding utf8NoBOM
 } finally {
+  if (-not $gracefulExit -and (Test-Path -LiteralPath $Output -PathType Container)) {
+    $diagnosticsRoot = Join-Path (Split-Path (Split-Path $Output -Parent) -Parent) 'diagnostics'
+    New-Item -ItemType Directory -Force $diagnosticsRoot | Out-Null
+    Get-ChildItem -LiteralPath $Output -File -Filter 'packaged-*' -ErrorAction SilentlyContinue |
+      Copy-Item -Destination $diagnosticsRoot -Force
+    $webviewProcesses = @(Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" -ErrorAction SilentlyContinue)
+    [ordered]@{
+      schema_version = 1
+      isolated_user_data_created = (Test-Path -LiteralPath $webviewUserData -PathType Container)
+      devtools_port_file_count = @(Get-ChildItem -LiteralPath $webviewUserData -Recurse -File -Filter 'DevToolsActivePort' -ErrorAction SilentlyContinue).Count
+      webview_process_count = $webviewProcesses.Count
+      webview_remote_debug_argument_observed = @($webviewProcesses | Where-Object { $_.CommandLine -like '*--remote-debugging-port=*' }).Count -gt 0
+      host_has_main_window = if ($null -ne $desktopProcess) { $desktopProcess.MainWindowHandle -ne [IntPtr]::Zero } else { $false }
+    } | ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $diagnosticsRoot 'webview-startup-summary.json') -Encoding utf8NoBOM
+  }
   Remove-Item Env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS -ErrorAction SilentlyContinue
   Remove-Item Env:WEBVIEW2_USER_DATA_FOLDER -ErrorAction SilentlyContinue
   Remove-Item Env:STOCK_DESK_DESKTOP_CDP -ErrorAction SilentlyContinue
+  if ($webviewArgsPolicySet) { Remove-ItemProperty -LiteralPath $webviewArgsPolicy -Name $webviewAppName -ErrorAction SilentlyContinue }
+  if ($webviewDataPolicySet) { Remove-ItemProperty -LiteralPath $webviewDataPolicy -Name $webviewAppName -ErrorAction SilentlyContinue }
+  if ($webviewArgsPolicyCreated) { Remove-Item -LiteralPath $webviewArgsPolicy -Force -ErrorAction SilentlyContinue }
+  if ($webviewDataPolicyCreated) { Remove-Item -LiteralPath $webviewDataPolicy -Force -ErrorAction SilentlyContinue }
+  if ($webviewPolicyRootCreated) { Remove-Item -LiteralPath $webviewPolicyRoot -Force -ErrorAction SilentlyContinue }
+  if ($webviewEdgePolicyCreated) { Remove-Item -LiteralPath $webviewEdgePolicy -Force -ErrorAction SilentlyContinue }
   if ($null -ne $desktopProcess) {
     $desktopProcess.Refresh()
     if (-not $desktopProcess.HasExited) {
@@ -282,12 +333,6 @@ try {
   if (Test-Path -LiteralPath $uninstallerPath -PathType Leaf) {
     $cleanup = Start-Process -FilePath $uninstallerPath -ArgumentList '/S' -Wait -PassThru
     if ($cleanup.ExitCode -ne 0 -and $gracefulExit) { throw 'test uninstall failed after desktop evidence' }
-  }
-  if (-not $gracefulExit -and (Test-Path -LiteralPath $Output -PathType Container)) {
-    $diagnosticsRoot = Join-Path (Split-Path (Split-Path $Output -Parent) -Parent) 'diagnostics'
-    New-Item -ItemType Directory -Force $diagnosticsRoot | Out-Null
-    Get-ChildItem -LiteralPath $Output -File -Filter 'packaged-*' -ErrorAction SilentlyContinue |
-      Copy-Item -Destination $diagnosticsRoot -Force
   }
   Remove-Item -Recurse -Force (Join-Path $env:LOCALAPPDATA 'Stock Desk\v1.1') -ErrorAction SilentlyContinue
   for ($cleanupAttempt = 1; $cleanupAttempt -le 10; $cleanupAttempt++) {

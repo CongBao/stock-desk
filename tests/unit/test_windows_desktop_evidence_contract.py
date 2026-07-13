@@ -67,7 +67,7 @@ def test_native_harness_installs_candidate_checks_shell_icons_and_exits_cleanly(
         "Remove-Item -Recurse -Force (Join-Path $env:LOCALAPPDATA 'Stock Desk\\v1.1')"
     )
     launch = source.index(
-        "$desktopProcess = Start-Process -FilePath $hostPath -PassThru"
+        "$desktopProcess = [Diagnostics.Process]::Start($desktopStart)"
     )
     assert first_run_cleanup < launch
     isolation = source.index("$env:WEBVIEW2_USER_DATA_FOLDER = $webviewUserData")
@@ -82,6 +82,19 @@ def test_native_harness_installs_candidate_checks_shell_icons_and_exits_cleanly(
     udf_cleanup = source.rindex("Remove-Item -Recurse -Force $webviewUserData")
     assert process_cleanup < udf_cleanup
     assert "for ($cleanupAttempt = 1; $cleanupAttempt -le 10" in source
+    assert "HKCU:\\Software\\Policies\\Microsoft\\Edge\\WebView2" in source
+    assert "refuses to replace an existing app policy" in source
+    assert source.count("Remove-ItemProperty -LiteralPath") == 2
+    assert "$desktopStart.UseShellExecute = $false" in source
+    assert "webview-startup-summary.json" in source
+    assert "webview_remote_debug_argument_observed" in source
+    assert "CommandLine -like '*--remote-debugging-port=*'" in source
+    assert "CommandLine =" not in source
+    diagnostics = source.index("$webviewProcesses = @(Get-CimInstance")
+    process_cleanup = source.index("Stop-Process -Id $desktopProcess.Id")
+    assert diagnostics < process_cleanup
+    assert "$webviewPolicyRootCreated" in source
+    assert "$webviewEdgePolicyCreated" in source
 
 
 def test_packaged_webview_matrix_is_explicitly_equivalent_not_real_os_dpi() -> None:
