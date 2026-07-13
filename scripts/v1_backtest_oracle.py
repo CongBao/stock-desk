@@ -11,7 +11,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
-from typing import Any
+from typing import Any, Literal, cast
 from uuid import UUID
 
 
@@ -282,8 +282,8 @@ class _IdentityRegistry:
         )
         result: list[str] = []
         for item in values:
-            self._validate(item, kind=kind, category=category)
-            key = (category, item)
+            identity = self._validate(item, kind=kind, category=category)
+            key = (category, identity)
             token = self._tokens.get(key)
             if token is None:
                 ordinal = self._counts.get(category, 0) + 1
@@ -294,7 +294,7 @@ class _IdentityRegistry:
         return result[0] if len(result) == 1 else result
 
     @staticmethod
-    def _validate(value: object, *, kind: str, category: str) -> None:
+    def _validate(value: object, *, kind: str, category: str) -> str:
         if not isinstance(value, str):
             raise OracleValidationError(f"{category} is not a string identity")
         if kind == "uuid":
@@ -314,6 +314,7 @@ class _IdentityRegistry:
                 raise OracleValidationError(f"{category} identity is invalid")
         else:
             raise OracleValidationError("oracle identity kind is unsupported")
+        return value
 
 
 def _identity_token(
@@ -342,7 +343,11 @@ def _normalize(
     if hasattr(value, "value") and isinstance(getattr(value, "value"), str):
         return getattr(value, "value")
     if is_dataclass(value):
-        return _normalize(asdict(value), identities=identities, order_event=order_event)
+        return _normalize(
+            asdict(cast(Any, value)),
+            identities=identities,
+            order_event=order_event,
+        )
     if hasattr(value, "model_dump"):
         return _normalize(
             value.model_dump(mode="python"),
@@ -718,7 +723,7 @@ def _intent(
 
     scope_id = revision = None
     symbol = symbols[0] if scope == "single" else None
-    scope_kind = "single"
+    scope_kind: Literal["single", "preset", "custom"] = "single"
     if scope == "pool":
         published = harness.pools.publish_full_a()
         scope_id, revision = published.pool_id, published.snapshot_id

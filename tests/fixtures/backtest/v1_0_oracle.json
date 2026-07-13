@@ -15885,10 +15885,10 @@
     "path": "scripts/v1_backtest_oracle.py",
     "projection_schema": "stock-desk-backtest-semantic-projection-v1",
     "schema_version": "stock-desk-v1-backtest-oracle-generator-v1",
-    "sha256": "sha256:bc2df7b543b3f97dadf9be6334cd9a0be110460f5b43d4df2a08a91a2e45597b"
+    "sha256": "sha256:89d073310720ba924be88ce1609c573bfcd596b987b4667abccda27cac707a06"
   },
   "input_digest": "sha256:2153cb9fb38702552bf8e4cafc53f281b78a3a804731a78e7c65f627f62ed9db",
-  "payload_digest": "sha256:7401492a0c341fea29b08a18c641346a42ae131906ac3e03a755e311acfdf1c9",
+  "payload_digest": "sha256:58f54eeff08dd89b7e5996e7a30b18e69e0cbd503f2f72b45c930892b0d99d59",
   "schema_version": "stock-desk-v1-backtest-oracle-v1",
   "source": {
     "commit": "cd62bd3ba87518c79c027791e8e370c359f3e645",
