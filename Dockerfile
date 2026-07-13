@@ -11,6 +11,7 @@ COPY .dockerignore Dockerfile README.md alembic.ini package.json pnpm-lock.yaml 
 COPY scripts/source_fingerprint.py ./scripts/source_fingerprint.py
 COPY migrations ./migrations
 COPY src ./src
+COPY src-tauri/Cargo.toml ./src-tauri/Cargo.toml
 COPY web ./web
 RUN python scripts/source_fingerprint.py \
     --root /source \
@@ -27,6 +28,7 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY web/package.json ./web/package.json
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
     pnpm install --frozen-lockfile
+COPY src-tauri/Cargo.toml ./src-tauri/Cargo.toml
 COPY web ./web
 RUN pnpm build
 

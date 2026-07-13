@@ -113,6 +113,12 @@ def test_deployment_contract_is_complete_and_public_only() -> None:
         "FROM node:${NODE_VERSION}-bookworm-slim AS web-builder", maxsplit=1
     )
     assert "COPY .dockerignore Dockerfile README.md" in fingerprint_stage
+    assert "COPY src-tauri/Cargo.toml ./src-tauri/Cargo.toml" in fingerprint_stage
+    web_builder = remaining_stages.split("FROM ghcr.io/astral-sh/uv:", maxsplit=1)[0]
+    assert "COPY src-tauri/Cargo.toml ./src-tauri/Cargo.toml" in web_builder
+    assert web_builder.index("COPY src-tauri/Cargo.toml") < web_builder.index(
+        "RUN pnpm build"
+    )
     python_builder = remaining_stages.split(
         "FROM python:${PYTHON_VERSION}-slim-bookworm AS python-builder", maxsplit=1
     )[1].split("FROM python:${PYTHON_VERSION}-slim-bookworm AS runtime", maxsplit=1)[0]

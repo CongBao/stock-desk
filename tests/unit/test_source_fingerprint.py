@@ -73,6 +73,7 @@ def test_public_inputs_include_every_build_surface(tmp_path: Path) -> None:
         "pyproject.toml",
         "uv.lock",
         "scripts/source_fingerprint.py",
+        "src-tauri/Cargo.toml",
         "src/stock_desk/main.py",
         "migrations/env.py",
         "package.json",
@@ -117,6 +118,20 @@ def test_fingerprint_changes_for_relevant_public_input(tmp_path: Path) -> None:
 
     (tmp_path / "src" / "stock_desk" / "main.py").write_text(
         "APP = 2\n",
+        encoding="utf-8",
+    )
+
+    assert fingerprint.compute_source_fingerprint(tmp_path) != baseline
+
+
+def test_fingerprint_binds_desktop_version_used_by_web_build(tmp_path: Path) -> None:
+    fingerprint = _fingerprint()
+    _minimal_public_tree(tmp_path, fingerprint)
+    baseline = fingerprint.compute_source_fingerprint(tmp_path)
+
+    cargo_manifest = tmp_path / "src-tauri" / "Cargo.toml"
+    cargo_manifest.write_text(
+        cargo_manifest.read_text(encoding="utf-8") + "version = '1.1.0'\n",
         encoding="utf-8",
     )
 

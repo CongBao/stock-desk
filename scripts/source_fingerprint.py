@@ -18,6 +18,7 @@ ROOT_FILES = (
     "pnpm-workspace.yaml",
     "pyproject.toml",
     "scripts/source_fingerprint.py",
+    "src-tauri/Cargo.toml",
     "uv.lock",
 )
 TREE_ROOTS = ("migrations", "src", "web")
