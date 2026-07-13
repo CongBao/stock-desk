@@ -48,6 +48,12 @@ def test_native_harness_installs_candidate_checks_shell_icons_and_exits_cleanly(
         "16 -32512",
         "32 -32512",
         "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+        "WEBVIEW2_USER_DATA_FOLDER",
+        "--remote-debugging-port=0",
+        "--remote-debugging-address=127.0.0.1",
+        "DevToolsActivePort",
+        "packaged WebView2 published an invalid isolated DevTools port",
+        "CDP endpoint does not match the isolated browser identity",
         "shortcuts_share_host_identity = $true",
         "packaged_entries_match_reviewed_identity = $true",
         "graceful_exit = $true",
@@ -64,6 +70,18 @@ def test_native_harness_installs_candidate_checks_shell_icons_and_exits_cleanly(
         "$desktopProcess = Start-Process -FilePath $hostPath -PassThru"
     )
     assert first_run_cleanup < launch
+    isolation = source.index("$env:WEBVIEW2_USER_DATA_FOLDER = $webviewUserData")
+    port_discovery = source.index("$devToolsPortFile = Wait-Until")
+    cdp_export = source.index("$env:STOCK_DESK_DESKTOP_CDP = $desktopCdp")
+    assert isolation < launch < port_discovery < cdp_export
+    assert source.count("Remove-Item -Recurse -Force $webviewUserData") == 2
+    assert "Remove-Item Env:WEBVIEW2_USER_DATA_FOLDER" in source
+    assert "--remote-allow-origins=*" not in source
+    assert "http://127.0.0.1:9222" not in source
+    process_cleanup = source.index("Stop-Process -Id $desktopProcess.Id")
+    udf_cleanup = source.rindex("Remove-Item -Recurse -Force $webviewUserData")
+    assert process_cleanup < udf_cleanup
+    assert "for ($cleanupAttempt = 1; $cleanupAttempt -le 10" in source
 
 
 def test_packaged_webview_matrix_is_explicitly_equivalent_not_real_os_dpi() -> None:

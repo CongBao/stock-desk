@@ -127,6 +127,8 @@ function Save-WindowScreenshot([Diagnostics.Process]$Process, [string]$Destinati
 $installRoot = Join-Path $env:LOCALAPPDATA 'Programs\Stock Desk'
 $hostPath = Join-Path $installRoot 'stock-desk-desktop.exe'
 $uninstallerPath = Join-Path $installRoot 'uninstall.exe'
+$evidenceRoot = Split-Path (Split-Path $Output -Parent) -Parent
+$webviewUserData = Join-Path $evidenceRoot "webview2-user-data-$SourceSha"
 $desktopProcess = $null
 $gracefulExit = $false
 try {
@@ -191,13 +193,34 @@ try {
     packaged_entries_match_reviewed_identity = $true
   }
 
-  $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = '--remote-debugging-port=9222 --remote-allow-origins=http://127.0.0.1:9222'
+  # Keep CDP outside the shipped configuration and isolate this evidence run
+  # from any reused WebView2 browser process. Port zero lets WebView2 select an
+  # unused loopback port; DevToolsActivePort is then the authoritative endpoint.
+  Remove-Item -Recurse -Force $webviewUserData -ErrorAction SilentlyContinue
+  New-Item -ItemType Directory -Force $webviewUserData | Out-Null
+  $env:WEBVIEW2_USER_DATA_FOLDER = $webviewUserData
+  $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = '--remote-debugging-port=0 --remote-debugging-address=127.0.0.1'
   # This candidate proof owns an isolated first-run state. Removing stale state
   # makes onboarding evidence deterministic even on a reused Windows host.
   Remove-Item -Recurse -Force (Join-Path $env:LOCALAPPDATA 'Stock Desk\v1.1') -ErrorAction SilentlyContinue
   $desktopProcess = Start-Process -FilePath $hostPath -PassThru
   Wait-Until { $desktopProcess.Refresh(); if ($desktopProcess.HasExited) { throw 'packaged Tauri host exited during startup' }; if ($desktopProcess.MainWindowHandle -ne [IntPtr]::Zero) { $desktopProcess.MainWindowHandle } } 90 'packaged Tauri main window did not appear' | Out-Null
-  Wait-Until { try { (Invoke-RestMethod -Uri 'http://127.0.0.1:9222/json/version' -TimeoutSec 2).webSocketDebuggerUrl } catch { $false } } 90 'packaged WebView2 CDP endpoint did not appear' | Out-Null
+  $devToolsPortFile = Wait-Until {
+    @(Get-ChildItem -LiteralPath $webviewUserData -Recurse -File -Filter 'DevToolsActivePort' -ErrorAction SilentlyContinue) | Select-Object -First 1
+  } 90 'packaged WebView2 did not publish its isolated DevTools port'
+  $devToolsPortLines = @(Get-Content -LiteralPath $devToolsPortFile.FullName -ErrorAction Stop)
+  [int]$devToolsPort = 0
+  $devToolsPath = if ($devToolsPortLines.Count -ge 2) { [string]$devToolsPortLines[1] } else { '' }
+  if ($devToolsPortLines.Count -ne 2 -or -not [int]::TryParse([string]$devToolsPortLines[0], [ref]$devToolsPort) -or $devToolsPort -lt 1 -or $devToolsPort -gt 65535 -or $devToolsPath -notmatch '^/devtools/browser/[A-Za-z0-9-]+$') {
+    throw 'packaged WebView2 published an invalid isolated DevTools port'
+  }
+  $desktopCdp = "http://127.0.0.1:$devToolsPort"
+  $devToolsVersion = Wait-Until { try { Invoke-RestMethod -Uri "$desktopCdp/json/version" -TimeoutSec 2 } catch { $false } } 90 'packaged WebView2 CDP endpoint did not appear'
+  try { $devToolsWebSocket = [Uri]$devToolsVersion.webSocketDebuggerUrl }
+  catch { throw 'packaged WebView2 published an invalid CDP browser endpoint' }
+  if ($devToolsWebSocket.Scheme -ne 'ws' -or $devToolsWebSocket.Host -ne '127.0.0.1' -or $devToolsWebSocket.Port -ne $devToolsPort -or $devToolsWebSocket.AbsolutePath -ne $devToolsPath) {
+    throw 'packaged WebView2 CDP endpoint does not match the isolated browser identity'
+  }
   $sidecar = Wait-Until { @(Get-Process -Name 'stock-desk-sidecar' -ErrorAction SilentlyContinue) | Select-Object -First 1 } 60 'packaged Python sidecar did not remain running'
 
   $nativeEvidence = Save-WindowScreenshot $desktopProcess (Join-Path $Output 'tauri-native-window.png')
@@ -209,7 +232,7 @@ try {
   $env:SOURCE_SHA = $SourceSha
   $env:SOURCE_TREE = $SourceTree
   $env:STOCK_DESK_DESKTOP_EVIDENCE_DIR = $Output
-  $env:STOCK_DESK_DESKTOP_CDP = 'http://127.0.0.1:9222'
+  $env:STOCK_DESK_DESKTOP_CDP = $desktopCdp
   & node scripts/windows_desktop_webview_evidence.mjs
   if ($LASTEXITCODE -ne 0) { throw 'packaged Tauri WebView evidence failed' }
   try {
@@ -246,6 +269,8 @@ try {
   $manifest | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $Output 'windows-desktop-evidence.json') -Encoding utf8NoBOM
 } finally {
   Remove-Item Env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS -ErrorAction SilentlyContinue
+  Remove-Item Env:WEBVIEW2_USER_DATA_FOLDER -ErrorAction SilentlyContinue
+  Remove-Item Env:STOCK_DESK_DESKTOP_CDP -ErrorAction SilentlyContinue
   if ($null -ne $desktopProcess) {
     $desktopProcess.Refresh()
     if (-not $desktopProcess.HasExited) {
@@ -265,4 +290,12 @@ try {
       Copy-Item -Destination $diagnosticsRoot -Force
   }
   Remove-Item -Recurse -Force (Join-Path $env:LOCALAPPDATA 'Stock Desk\v1.1') -ErrorAction SilentlyContinue
+  for ($cleanupAttempt = 1; $cleanupAttempt -le 10; $cleanupAttempt++) {
+    Remove-Item -Recurse -Force $webviewUserData -ErrorAction SilentlyContinue
+    if (-not (Test-Path -LiteralPath $webviewUserData)) { break }
+    Start-Sleep -Milliseconds 250
+  }
+  if ($gracefulExit -and (Test-Path -LiteralPath $webviewUserData)) {
+    throw 'isolated WebView2 evidence state could not be cleaned'
+  }
 }

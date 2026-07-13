@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+import ctypes
 import hashlib
 import inspect
 import json
 import os
 from pathlib import Path
 import re
+import subprocess
 from types import SimpleNamespace
 import sys
-from typing import BinaryIO, cast
+from typing import Any, BinaryIO, cast
 
 import pytest
 
@@ -36,6 +39,42 @@ SCHEMA_PATH = (
     / "schemas"
     / "trusted-updater-release-v1.schema.json"
 )
+
+
+class _FakeWinFunction:
+    def __init__(self, callback: Callable[..., object]) -> None:
+        self.callback = callback
+        self.calls: list[tuple[object, ...]] = []
+        self.keyword_calls: list[dict[str, object]] = []
+        self.argtypes: object = None
+        self.restype: object = None
+
+    def __call__(self, *args: object, **kwargs: object) -> object:
+        self.calls.append(args)
+        self.keyword_calls.append(kwargs)
+        return self.callback(*args, **kwargs)
+
+
+def _default_last_error() -> int:
+    return 5
+
+
+def _install_fake_win32(
+    monkeypatch: pytest.MonkeyPatch,
+    kernel32: object,
+    msvcrt: object,
+    *,
+    last_error: Callable[[], int] = _default_last_error,
+) -> None:
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(
+        ctypes,
+        "WinDLL",
+        lambda *_args, **_kwargs: kernel32,
+        raising=False,
+    )
+    monkeypatch.setattr(ctypes, "get_last_error", last_error, raising=False)
+    monkeypatch.setitem(sys.modules, "msvcrt", msvcrt)
 
 
 def _paths(tmp_path: Path) -> tuple[Path, Path, Path, EvidencePaths]:
@@ -354,6 +393,424 @@ def test_mocked_windows_success_keeps_target_absent_until_locked_publication(
     assert list(output.parent.glob(".stock-desk-verified-*")) == []
 
 
+def test_mocked_win32_create_new_retries_collision_and_owns_stream(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    errors = [80, 0]
+    invalid_handle = ctypes.c_void_p(-1).value
+
+    def create(path: str, *_args: object) -> int:
+        if len(create_file.calls) == 1:
+            return cast(int, invalid_handle)
+        return os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
+
+    def close(handle: object) -> int:
+        os.close(cast(int, handle))
+        return 1
+
+    create_file = _FakeWinFunction(create)
+    close_handle = _FakeWinFunction(close)
+    kernel32 = SimpleNamespace(CreateFileW=create_file, CloseHandle=close_handle)
+    msvcrt = SimpleNamespace(open_osfhandle=lambda handle, _flags: handle)
+    _install_fake_win32(
+        monkeypatch,
+        kernel32,
+        msvcrt,
+        last_error=lambda: errors.pop(0),
+    )
+
+    path, stream, windows_owned = trusted_release._create_staged_installer_file(
+        tmp_path
+    )
+    try:
+        stream.write(b"owned")
+        stream.flush()
+        assert path.read_bytes() == b"owned"
+        assert windows_owned is True
+    finally:
+        stream.close()
+        path.unlink()
+
+    assert len(create_file.calls) == 2
+    _, access, sharing, _, disposition, attributes, _ = create_file.calls[-1]
+    assert cast(int, access) & 0x40000000
+    assert cast(int, sharing) == 0x00000001 | 0x00000004
+    assert disposition == 1  # CREATE_NEW
+    assert attributes == 0x00000080
+
+
+@pytest.mark.parametrize("last_error", (5, 87))
+def test_mocked_win32_create_new_fails_closed_on_create_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, last_error: int
+) -> None:
+    invalid_handle = ctypes.c_void_p(-1).value
+    create_file = _FakeWinFunction(lambda *_args: invalid_handle)
+    kernel32 = SimpleNamespace(
+        CreateFileW=create_file,
+        CloseHandle=_FakeWinFunction(lambda _handle: 1),
+    )
+    _install_fake_win32(
+        monkeypatch,
+        kernel32,
+        SimpleNamespace(open_osfhandle=lambda handle, _flags: handle),
+        last_error=lambda: last_error,
+    )
+
+    with pytest.raises(TrustedUpdaterReleaseError, match="could not be created"):
+        trusted_release._create_staged_installer_file(tmp_path)
+
+    assert len(create_file.calls) == 1
+
+
+def test_mocked_win32_create_new_closes_handle_when_fd_adoption_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handles: list[int] = []
+
+    def create(path: str, *_args: object) -> int:
+        handle = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
+        handles.append(handle)
+        return handle
+
+    def close(handle: object) -> int:
+        os.close(cast(int, handle))
+        return 1
+
+    create_file = _FakeWinFunction(create)
+    close_handle = _FakeWinFunction(close)
+    kernel32 = SimpleNamespace(CreateFileW=create_file, CloseHandle=close_handle)
+
+    def reject_handle(_handle: int, _flags: int) -> int:
+        raise OSError("injected open_osfhandle failure")
+
+    _install_fake_win32(
+        monkeypatch,
+        kernel32,
+        SimpleNamespace(open_osfhandle=reject_handle),
+    )
+
+    with pytest.raises(TrustedUpdaterReleaseError, match="handle could not be created"):
+        trusted_release._create_staged_installer_file(tmp_path)
+
+    assert len(handles) == len(close_handle.calls) == 1
+    assert list(tmp_path.glob(".stock-desk-verified-*")) != []
+    for path in tmp_path.glob(".stock-desk-verified-*"):
+        path.unlink()
+
+
+def test_mocked_win32_duplicate_handle_uses_owned_object_and_minimum_rights(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "owned.exe"
+    path.write_bytes(b"verified")
+    source = path.open("rb")
+    duplicated_descriptors: list[int] = []
+
+    def duplicate(
+        _source_process: object,
+        source_handle: object,
+        _target_process: object,
+        target: object,
+        _access: object,
+        _inherit: object,
+        _options: object,
+    ) -> int:
+        descriptor = os.dup(cast(int, source_handle))
+        duplicated_descriptors.append(descriptor)
+        ctypes.cast(
+            cast(Any, target), ctypes.POINTER(ctypes.c_void_p)
+        ).contents.value = descriptor
+        return 1
+
+    def close(handle: object) -> int:
+        os.close(cast(int, handle))
+        return 1
+
+    duplicate_handle = _FakeWinFunction(duplicate)
+    close_handle = _FakeWinFunction(close)
+    kernel32 = SimpleNamespace(
+        GetCurrentProcess=_FakeWinFunction(lambda: 99),
+        DuplicateHandle=duplicate_handle,
+        CloseHandle=close_handle,
+    )
+    msvcrt = SimpleNamespace(
+        get_osfhandle=lambda descriptor: descriptor,
+        open_osfhandle=lambda handle, _flags: handle,
+    )
+    _install_fake_win32(monkeypatch, kernel32, msvcrt)
+
+    try:
+        duplicated = trusted_release._duplicate_windows_verifier_stream(source)
+        try:
+            assert duplicated.read() == b"verified"
+        finally:
+            duplicated.close()
+    finally:
+        source.close()
+
+    assert len(duplicate_handle.calls) == 1
+    call = duplicate_handle.calls[0]
+    assert call[4] == 0x80000000 | 0x00010000 | 0x00000100
+    assert call[5:] == (0, 0)
+    assert len(duplicated_descriptors) == 1
+    assert close_handle.calls == []
+
+
+@pytest.mark.parametrize("failure", ("duplicate", "null", "adopt"))
+def test_mocked_win32_duplicate_handle_failures_close_or_reject_owned_handle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    path = tmp_path / "owned.exe"
+    path.write_bytes(b"verified")
+    source = path.open("rb")
+    duplicated: list[int] = []
+    closed: list[int] = []
+
+    def duplicate(
+        _source_process: object,
+        source_handle: object,
+        _target_process: object,
+        target: object,
+        *_args: object,
+    ) -> int:
+        if failure == "duplicate":
+            return 0
+        if failure == "null":
+            return 1
+        descriptor = os.dup(cast(int, source_handle))
+        duplicated.append(descriptor)
+        ctypes.cast(
+            cast(Any, target), ctypes.POINTER(ctypes.c_void_p)
+        ).contents.value = descriptor
+        return 1
+
+    def open_handle(handle: int, _flags: int) -> int:
+        if failure == "adopt":
+            raise OSError("injected open_osfhandle failure")
+        return handle
+
+    def close(handle: object) -> int:
+        descriptor = cast(int, getattr(handle, "value", handle))
+        os.close(descriptor)
+        closed.append(descriptor)
+        return 1
+
+    kernel32 = SimpleNamespace(
+        GetCurrentProcess=_FakeWinFunction(lambda: 99),
+        DuplicateHandle=_FakeWinFunction(duplicate),
+        CloseHandle=_FakeWinFunction(close),
+    )
+    msvcrt = SimpleNamespace(
+        get_osfhandle=lambda descriptor: descriptor,
+        open_osfhandle=open_handle,
+    )
+    _install_fake_win32(monkeypatch, kernel32, msvcrt, last_error=lambda: 5)
+
+    try:
+        with pytest.raises(OSError, match="duplicated|unavailable|open_osfhandle"):
+            trusted_release._duplicate_windows_verifier_stream(source)
+    finally:
+        source.close()
+
+    if failure == "adopt":
+        assert closed == duplicated
+    else:
+        assert closed == []
+
+
+def test_mocked_win32_publication_and_handle_operations_use_durable_primitives(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    temporary = tmp_path / "temporary.exe"
+    output = tmp_path / "published.exe"
+    temporary.write_bytes(b"verified")
+    owned = temporary.open("rb")
+
+    def move(source: str, target: str, flags: int) -> int:
+        assert flags == 0x00000008  # MOVEFILE_WRITE_THROUGH, no replacement
+        Path(source).rename(target)
+        return 1
+
+    move_file = _FakeWinFunction(move)
+    set_information = _FakeWinFunction(lambda *_args: 1)
+    set_attributes = _FakeWinFunction(lambda *_args: 1)
+    kernel32 = SimpleNamespace(
+        MoveFileExW=move_file,
+        SetFileInformationByHandle=set_information,
+        SetFileAttributesW=set_attributes,
+    )
+    msvcrt = SimpleNamespace(get_osfhandle=lambda descriptor: descriptor)
+    _install_fake_win32(monkeypatch, kernel32, msvcrt)
+
+    try:
+        trusted_release._set_open_windows_file_attributes(owned, 0x00000001)
+        trusted_release._revoke_open_windows_file(owned)
+        trusted_release._publish_staged_installer(temporary, output)
+        trusted_release._clear_windows_readonly_attribute(output)
+    finally:
+        owned.close()
+
+    assert output.read_bytes() == b"verified"
+    assert len(move_file.calls) == 1
+    assert [call[1] for call in set_information.calls] == [0, 0, 4]
+    assert len(set_attributes.calls) == 1
+    assert set_attributes.calls[0] == (str(output), 0x00000080)
+
+
+@pytest.mark.parametrize(
+    ("operation", "message"),
+    (
+        ("publish", "publication failed"),
+        ("revoke", "revoked by handle"),
+        ("set_attributes", "attributes could not be changed"),
+        ("clear_readonly", "could not be reset"),
+    ),
+)
+def test_mocked_win32_primitive_failures_are_not_accepted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+    message: str,
+) -> None:
+    path = tmp_path / "owned.exe"
+    path.write_bytes(b"verified")
+    stream = path.open("rb")
+    result = 0
+    kernel32 = SimpleNamespace(
+        MoveFileExW=_FakeWinFunction(lambda *_args: result),
+        SetFileInformationByHandle=_FakeWinFunction(lambda *_args: result),
+        SetFileAttributesW=_FakeWinFunction(lambda *_args: result),
+    )
+    msvcrt = SimpleNamespace(get_osfhandle=lambda descriptor: descriptor)
+    _install_fake_win32(monkeypatch, kernel32, msvcrt, last_error=lambda: 5)
+    if operation == "revoke":
+        monkeypatch.setattr(
+            trusted_release,
+            "_set_open_windows_file_attributes",
+            lambda _stream, _attributes: None,
+        )
+
+    try:
+        with pytest.raises(OSError, match=message):
+            if operation == "publish":
+                trusted_release._publish_staged_installer(path, tmp_path / "output.exe")
+            elif operation == "revoke":
+                trusted_release._revoke_open_windows_file(stream)
+            elif operation == "set_attributes":
+                trusted_release._set_open_windows_file_attributes(stream, 1)
+            else:
+                trusted_release._clear_windows_readonly_attribute(path)
+    finally:
+        stream.close()
+
+
+def test_mocked_win32_authenticode_returns_only_complete_valid_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    installer = tmp_path / "installer.exe"
+    installer.write_bytes(b"verified")
+    result = SimpleNamespace(
+        returncode=0,
+        stdout=json.dumps(
+            {
+                "verifier": "WinVerifyTrust",
+                "status": "Valid",
+                "subject": "CN=Stock Desk",
+                "thumbprint": "A" * 40,
+                "timestamp_subject": "CN=Trusted Timestamp",
+            }
+        ),
+    )
+    monkeypatch.setattr(sys, "platform", "win32")
+    run = _FakeWinFunction(lambda *_args, **_kwargs: result)
+    monkeypatch.setattr(subprocess, "run", run)
+
+    assert trusted_release._verify_authenticode(installer) == {
+        "signer_subject": "CN=Stock Desk",
+        "certificate_thumbprint": "A" * 40,
+        "timestamp_subject": "CN=Trusted Timestamp",
+    }
+    command = cast(list[str], run.calls[0][0])
+    assert command[:4] == [
+        "powershell.exe",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+    ]
+    assert command[-1] == str(installer)
+
+
+@pytest.mark.parametrize("failure", ("process", "json", "identity"))
+def test_mocked_win32_authenticode_rejects_untrusted_results(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    installer = tmp_path / "installer.exe"
+    installer.write_bytes(b"verified")
+    record = {
+        "verifier": "WinVerifyTrust",
+        "status": "Valid",
+        "subject": "CN=Stock Desk",
+        "thumbprint": "A" * 40,
+        "timestamp_subject": "CN=Trusted Timestamp",
+    }
+    if failure == "identity":
+        record["status"] = "UnknownError"
+    result = SimpleNamespace(
+        returncode=1 if failure == "process" else 0,
+        stdout="not-json" if failure == "json" else json.dumps(record),
+    )
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(subprocess, "run", lambda *_a, **_k: result)
+
+    with pytest.raises(
+        TrustedUpdaterReleaseError,
+        match="execution failed|output is invalid|trust is not valid",
+    ):
+        trusted_release._verify_authenticode(installer)
+
+
+@pytest.mark.parametrize("failure", ("unavailable", "rejected", "json", "empty"))
+def test_attestation_failures_never_become_trusted_results(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    subject = tmp_path / "receipt.json"
+    bundle = tmp_path / "receipt.bundle.jsonl"
+    subject.write_text("{}", encoding="utf-8")
+    bundle.write_text("{}", encoding="utf-8")
+
+    def run(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        if failure == "unavailable":
+            raise OSError("gh unavailable")
+        return SimpleNamespace(
+            returncode=1 if failure == "rejected" else 0,
+            stdout=(
+                "not-json"
+                if failure == "json"
+                else "[]"
+                if failure == "empty"
+                else "[{}]"
+            ),
+        )
+
+    monkeypatch.setattr(subprocess, "run", run)
+    with pytest.raises(
+        TrustedUpdaterReleaseError, match="unavailable|failed|invalid|no trusted"
+    ):
+        trusted_release._verify_gh_attestation(
+            subject,
+            bundle,
+            "CongBao/stock-desk",
+            SOURCE_SHA,
+            ".github/workflows/windows-installed.yml",
+        )
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="requires real Win32 file APIs")
 def test_windows_production_publish_returns_the_locked_readonly_object(
     tmp_path: Path,
@@ -667,6 +1124,33 @@ def test_signpath_receipt_must_match_actual_authenticode_identity(
     with pytest.raises(TrustedUpdaterReleaseError, match="exact-SHA bound"):
         trusted_release._verify_signpath_receipt(
             receipt, SOURCE_SHA, "b" * 64, authenticode
+        )
+
+
+def test_windows_receipt_must_match_platform_source_and_payload(
+    tmp_path: Path,
+) -> None:
+    receipt = tmp_path / "windows-receipt.json"
+    payload = {
+        "schema": "stock-desk-windows-trust-receipt-v1",
+        "platform": "windows_11_x64",
+        "source_sha": SOURCE_SHA,
+        "payload_sha256": "b" * 64,
+        "verifier": "WinVerifyTrust",
+        "authenticode_status": "Valid",
+        "standard_user_install": "passed",
+    }
+    receipt.write_text(json.dumps(payload), encoding="utf-8")
+
+    trusted_release._verify_windows_receipt(
+        receipt, "windows_11_x64", SOURCE_SHA, "b" * 64
+    )
+
+    payload["source_sha"] = "c" * 40
+    receipt.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(TrustedUpdaterReleaseError, match="exact-SHA trust evidence"):
+        trusted_release._verify_windows_receipt(
+            receipt, "windows_11_x64", SOURCE_SHA, "b" * 64
         )
 
 
