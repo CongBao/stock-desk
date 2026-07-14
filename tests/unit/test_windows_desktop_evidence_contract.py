@@ -114,6 +114,22 @@ def test_native_harness_installs_candidate_checks_shell_icons_and_exits_cleanly(
     assert "StartsWith(" not in source
     assert "Get-EvidenceSidecarProcesses $baselineSidecarProcessIds" in source
     assert "Get-Process -Name 'stock-desk-sidecar'" in source
+    assert "function Get-InstalledHostSidecarProcesses" in source
+    assert 'Win32_Process -Filter "ParentProcessId=$HostProcessId"' in source
+    assert "[string]$_.ExecutablePath" in source
+    assert "[IO.Path]::GetFullPath([string]$_.ExecutablePath)" in source
+    assert "[StringComparison]::OrdinalIgnoreCase" in source
+    assert (
+        source.count(
+            "Get-InstalledHostSidecarProcesses $desktopProcess.Id "
+            "$installedSidecarPath"
+        )
+        == 4
+    )
+    assert "$beforeSidecars[0].Id -ne $sidecar.Id" in source
+    assert "$afterSidecars[0].Id -eq $sidecarBeforePid" in source
+    assert "sidecar binary identity changed before restart" in source
+    assert "old packaged sidecar OS process survived" in source
     assert "com.congbao.stockdesk" in source
     assert "$tauriDefaultWebViewDataExisted" in source
     diagnostics = source.index(

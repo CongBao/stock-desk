@@ -133,6 +133,22 @@ function Get-EvidenceSidecarProcesses([int[]]$BaselineProcessIds = @()) {
     Where-Object { $_.Id -notin $BaselineProcessIds })
 }
 
+function Get-InstalledHostSidecarProcesses([int]$HostProcessId, [string]$InstalledSidecarPath) {
+  $expectedPath = [IO.Path]::GetFullPath($InstalledSidecarPath)
+  $hostChildren = @(Get-CimInstance Win32_Process -Filter "ParentProcessId=$HostProcessId" -ErrorAction SilentlyContinue |
+    Where-Object {
+      -not [string]::IsNullOrWhiteSpace([string]$_.ExecutablePath) -and
+      [string]::Equals(
+        [IO.Path]::GetFullPath([string]$_.ExecutablePath),
+        $expectedPath,
+        [StringComparison]::OrdinalIgnoreCase
+      )
+    })
+  return @($hostChildren | ForEach-Object {
+    Get-Process -Id ([int]$_.ProcessId) -ErrorAction SilentlyContinue
+  })
+}
+
 function Save-EmbeddedIcon([string]$Source, [string]$Destination, [int]$Size, [int]$Index) {
   $handles = [IntPtr[]]::new(1)
   $ids = [uint32[]]::new(1)
@@ -354,12 +370,12 @@ try {
   if ($devToolsWebSocket.Scheme -ne 'ws' -or $devToolsWebSocket.Host -ne '127.0.0.1' -or $devToolsWebSocket.Port -ne $devToolsPort -or $devToolsWebSocket.AbsolutePath -ne $devToolsPath) {
     throw 'packaged WebView2 CDP endpoint does not match the isolated browser identity'
   }
-  $sidecar = Wait-Until { @(Get-EvidenceSidecarProcesses $baselineSidecarProcessIds) | Select-Object -First 1 } 60 'packaged Python sidecar did not remain running'
-  $initialSidecars = @(Get-EvidenceSidecarProcesses $baselineSidecarProcessIds)
+  $installedSidecarPath = Join-Path $installRoot 'stock-desk-sidecar.exe'
+  $sidecar = Wait-Until { @(Get-InstalledHostSidecarProcesses $desktopProcess.Id $installedSidecarPath) | Select-Object -First 1 } 60 'packaged Python sidecar did not remain running'
+  $initialSidecars = @(Get-InstalledHostSidecarProcesses $desktopProcess.Id $installedSidecarPath)
   if ($initialSidecars.Count -ne 1 -or $initialSidecars[0].Id -ne $sidecar.Id) {
     throw 'packaged capture did not own exactly one initial sidecar process'
   }
-  $installedSidecarPath = Join-Path $installRoot 'stock-desk-sidecar.exe'
   if ([IO.Path]::GetFullPath($sidecar.Path) -ne [IO.Path]::GetFullPath($installedSidecarPath)) {
     throw 'initial sidecar process does not belong to the installed candidate'
   }
@@ -413,10 +429,15 @@ try {
   if ($beforeMarker.runtime_state -ne 'ready') {
     throw 'pre-restart capture marker identity is invalid'
   }
-  $beforeSidecars = @(Get-EvidenceSidecarProcesses $baselineSidecarProcessIds)
+  $beforeSidecars = @(Get-InstalledHostSidecarProcesses $desktopProcess.Id $installedSidecarPath)
   if ($beforeSidecars.Count -ne 1 -or $beforeSidecars[0].Id -ne $sidecar.Id) {
     throw 'pre-restart packaged sidecar process identity changed unexpectedly'
   }
+  if ([IO.Path]::GetFullPath($beforeSidecars[0].Path) -ne [IO.Path]::GetFullPath($installedSidecarPath)) {
+    throw 'pre-restart sidecar process does not belong to the installed candidate'
+  }
+  $sidecarBeforeHash = (Get-FileHash -LiteralPath $beforeSidecars[0].Path -Algorithm SHA256).Hash.ToLowerInvariant()
+  if ($sidecarBeforeHash -ne $sidecarBinaryHash) { throw 'sidecar binary identity changed before restart' }
   $sidecarBeforePid = [int]$beforeSidecars[0].Id
   Write-CaptureAck (Join-Path $restartSyncRoot 'restart-before.ack') $captureNonce
   $afterMarkerPath = Join-Path $restartSyncRoot 'restart-after.json'
@@ -424,7 +445,7 @@ try {
   if ($afterMarker.runtime_state -ne 'ready' -or $afterMarker.run_id -ne $beforeMarker.run_id -or $afterMarker.task_id -ne $beforeMarker.task_id) {
     throw 'post-restart capture marker identity is invalid'
   }
-  $afterSidecars = @(Get-EvidenceSidecarProcesses $baselineSidecarProcessIds)
+  $afterSidecars = @(Get-InstalledHostSidecarProcesses $desktopProcess.Id $installedSidecarPath)
   if ($afterSidecars.Count -ne 1 -or $afterSidecars[0].Id -eq $sidecarBeforePid) {
     throw 'packaged sidecar did not restart as exactly one new OS process'
   }
