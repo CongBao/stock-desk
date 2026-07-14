@@ -29,6 +29,7 @@ def test_tauri_shell_is_windows_only_single_window_and_uses_bundled_assets() -> 
     ]
     assert config["app"]["security"]["capabilities"] == ["default"]
     assert "http://127.0.0.1:*" in config["app"]["security"]["csp"]
+    assert config["plugins"]["updater"] == {"endpoints": [], "pubkey": ""}
 
 
 def test_tauri_bundle_is_current_user_windows_x64_without_shell_acl() -> None:

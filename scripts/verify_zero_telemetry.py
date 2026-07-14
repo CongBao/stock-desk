@@ -218,7 +218,10 @@ def _scan(path: Path, label: str, violations: list[str]) -> str | None:
         violations.append(f"telemetry-sdk:{label}")
     if _FORBIDDEN_ENDPOINT.search(payload) is not None:
         violations.append(f"telemetry-endpoint:{label}")
-    if _FORBIDDEN_UPDATER.search(payload) is not None:
+    if _FORBIDDEN_UPDATER.search(payload) is not None and not (
+        label == "src-tauri/tauri.conf.json"
+        and _has_exact_inert_updater_config(payload)
+    ):
         violations.append(f"updater-enabled:{label}")
     if _FORBIDDEN_STABLE_IDENTIFIER.search(payload) is not None:
         violations.append(f"stable-device-identifier:{label}")
@@ -227,6 +230,20 @@ def _scan(path: Path, label: str, violations: list[str]) -> str | None:
     if _is_diagnostic_source(label) and _FORBIDDEN_DIAGNOSTIC_NETWORK.search(payload):
         violations.append(f"diagnostic-network-path:{label}")
     return payload
+
+
+def _has_exact_inert_updater_config(payload: str) -> bool:
+    try:
+        config = json.loads(payload, object_pairs_hook=_unique_json_object)
+    except (json.JSONDecodeError, ValueError):
+        return False
+    if not isinstance(config, dict):
+        return False
+    plugins = config.get("plugins")
+    return isinstance(plugins, dict) and plugins.get("updater") == {
+        "endpoints": [],
+        "pubkey": "",
+    }
 
 
 def _audit_tauri_json(root: Path, violations: list[str]) -> None:

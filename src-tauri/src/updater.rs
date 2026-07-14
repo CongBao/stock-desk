@@ -865,6 +865,24 @@ mod tests {
     }
 
     #[test]
+    fn packaged_plugin_config_is_inert_and_deserializes_with_the_locked_plugin() {
+        let application: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let updater = application
+            .get("plugins")
+            .and_then(|plugins| plugins.get("updater"))
+            .cloned()
+            .expect("packaged updater config must be explicit");
+        let config: tauri_plugin_updater::Config = serde_json::from_value(updater).unwrap();
+
+        assert!(config.endpoints.is_empty());
+        assert!(config.pubkey.is_empty());
+        assert!(!config.dangerous_insecure_transport_protocol);
+        assert!(!config.dangerous_accept_invalid_certs);
+        assert!(!config.dangerous_accept_invalid_hostnames);
+    }
+
+    #[test]
     fn disabled_confirmation_gate_has_no_prompt_or_state_side_effect() {
         let mut prompt_called = false;
         let result = gate_native_confirmation(UPDATE_RUNTIME_ENABLED, || {

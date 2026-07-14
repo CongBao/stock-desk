@@ -253,6 +253,28 @@ def test_missing_manifest_or_source_symlink_fails_closed(tmp_path: Path) -> None
             '{"plugins": {"updater": {"endpoints": ["https://example.invalid"]}}}\n',
             "updater-enabled",
         ),
+        (
+            "src-tauri/tauri.conf.json",
+            '{"plugins": {"updater": {"endpoints": [], "pubkey": "", '
+            '"dangerousAcceptInvalidCerts": true}}}\n',
+            "updater-enabled",
+        ),
+        (
+            "src-tauri/tauri.conf.json",
+            '{"plugins": {"updater": {"endpoints": [], "pubkey": "untrusted"}}}\n',
+            "updater-enabled",
+        ),
+        (
+            "src-tauri/tauri.conf.json",
+            '{"plugins": {"updater": {"endpoints": [], "pubkey": "", '
+            '"dangerousInsecureTransportProtocol": true}}}\n',
+            "updater-enabled",
+        ),
+        (
+            "src-tauri/tauri.conf.json",
+            '[{"updater": {"endpoints": [], "pubkey": ""}}]\n',
+            "updater-enabled",
+        ),
     ],
 )
 def test_device_identity_automatic_upload_or_updater_enablement_fails_closed(
