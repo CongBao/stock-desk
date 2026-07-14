@@ -239,6 +239,11 @@ pub(crate) fn stage_installer(
         .find_map(|_| {
             let path = staging_directory.join(staging_name(random_nonce().ok()?));
             let output = OpenOptions::new()
+                // Keep the portable OpenOptions contract consistent with the
+                // explicit Windows access mask: create_new requires a declared
+                // write intent before CreateFileW is reached.
+                .read(true)
+                .write(true)
                 .access_mode(GENERIC_READ | GENERIC_WRITE | DELETE)
                 .create_new(true)
                 .share_mode(FILE_SHARE_READ)
