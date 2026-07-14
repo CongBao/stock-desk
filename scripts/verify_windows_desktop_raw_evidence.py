@@ -1248,8 +1248,7 @@ def _validate_uia(value: object, *, expected_driver_sha256: str) -> dict[str, An
         or keyboard.get("tab_order_valid") is not True
         or keyboard.get("safe_escape") is not True
         or focus_observation_count < 30
-        or focus_observation_count
-        != 26 + len(validated_paths) + len(auxiliary_paths)
+        or focus_observation_count != 26 + len(validated_paths) + len(auxiliary_paths)
         or tuple(path["target_name"] for path in validated_paths) != expected_targets
     ):
         raise DesktopEvidenceError("UIA keyboard journey is incomplete")
@@ -1937,8 +1936,7 @@ def _validate_lifecycle(
         or oidc.get("repository") != expected_repository
         or re.fullmatch(r"[1-9][0-9]*", str(oidc.get("repository_id"))) is None
         or not isinstance(oidc.get("repository_id"), str)
-        or re.fullmatch(r"[1-9][0-9]*", str(oidc.get("repository_owner_id")))
-        is None
+        or re.fullmatch(r"[1-9][0-9]*", str(oidc.get("repository_owner_id"))) is None
         or not isinstance(oidc.get("repository_owner_id"), str)
         or oidc.get("ref") != "refs/heads/main"
         or oidc.get("sha") != manifest["identity"]["source_sha"]

@@ -924,8 +924,7 @@ def test_windows_ci_executes_controlled_uia_runtime_fixture() -> None:
     assert "$uiaReceipt.actual_escape_close_observed -ne $true" in workflow
     assert "$uiaReceipt.focus_region_changed -ne $true" in workflow
     assert (
-        "$uiaReceipt.focused_region_id -ceq "
-        "$uiaReceipt.unfocused_region_id" in workflow
+        "$uiaReceipt.focused_region_id -ceq $uiaReceipt.unfocused_region_id" in workflow
     )
     for raw_path in (
         "uia-runtime-probe/driver-result.json:raw-uia-runtime",
