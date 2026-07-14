@@ -121,8 +121,7 @@ def test_native_harness_installs_candidate_checks_shell_icons_and_exits_cleanly(
     assert "[StringComparison]::OrdinalIgnoreCase" in source
     assert (
         source.count(
-            "Get-InstalledHostSidecarProcesses $desktopProcess.Id "
-            "$installedSidecarPath"
+            "Get-InstalledHostSidecarProcesses $desktopProcess.Id $installedSidecarPath"
         )
         == 4
     )
