@@ -78,6 +78,8 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$WebView2ProductionGuid = '{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
+$MinimumWebView2Version = [version]'120.0.2210.91'
 Set-StrictMode -Version Latest
 
 # STOCK_DESK_BROWSER_OBSERVER_CSHARP_BEGIN
@@ -513,30 +515,36 @@ function Write-Utf8NoBom {
 
 function Get-WebViewRuntime {
   $candidates = @()
-  foreach ($root in @(
-      'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients',
-      'HKLM:\SOFTWARE\Microsoft\EdgeUpdate\Clients',
-      'HKCU:\SOFTWARE\Microsoft\EdgeUpdate\Clients'
+  foreach ($registryCandidate in @(
+      [pscustomobject]@{ Path = "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\$WebView2ProductionGuid"; Scope = 'machine' },
+      [pscustomobject]@{ Path = "HKCU:\SOFTWARE\Microsoft\EdgeUpdate\Clients\$WebView2ProductionGuid"; Scope = 'current-user' }
     )) {
-    if (Test-Path -LiteralPath $root) {
-      foreach ($key in Get-ChildItem -LiteralPath $root -ErrorAction Stop) {
-        $item = Get-ItemProperty -LiteralPath $key.PSPath -ErrorAction Stop
-        if ([string]$item.name -like '*WebView2*' -and [string]$item.pv -match '^\d+(\.\d+){3}$') {
-          $candidates += [pscustomobject]@{ Version = [string]$item.pv }
-        }
+    if (Test-Path -LiteralPath $registryCandidate.Path) {
+      $item = Get-ItemProperty -LiteralPath $registryCandidate.Path -ErrorAction Stop
+      $versionText = [string]$item.pv
+      if ($versionText -notmatch '^\d+(\.\d+){3}$' -or $versionText -eq '0.0.0.0') {
+        throw 'Production WebView2 registry version is malformed'
       }
+      $candidates += [pscustomobject]@{ Version = $versionText; Scope = $registryCandidate.Scope }
     }
   }
   if ($candidates.Count -eq 0) {
-    return [ordered]@{ state = 'absent'; version = $null; channel = $null; signer = $null; scope = $null }
+    return [ordered]@{ state = 'absent'; product_guid = $null; version = $null; channel = $null; signer = $null; scope = $null }
   }
-  $runtime = $candidates | Sort-Object { [version]$_.Version } -Descending | Select-Object -First 1
+  # Mirror the x64 NSIS lookup precedence exactly; do not let a later user
+  # registration hide an unsupported machine registration.
+  $runtime = $candidates | Select-Object -First 1
+  if ([version]$runtime.Version -lt $MinimumWebView2Version) {
+    throw 'Production WebView2 runtime is below the locked minimum version'
+  }
   $binaryCandidates = @(
     [pscustomobject]@{ Path = "${env:ProgramFiles(x86)}\Microsoft\EdgeWebView\Application\$($runtime.Version)\msedgewebview2.exe"; Scope = 'machine' },
     [pscustomobject]@{ Path = "$env:ProgramFiles\Microsoft\EdgeWebView\Application\$($runtime.Version)\msedgewebview2.exe"; Scope = 'machine' },
     [pscustomobject]@{ Path = "$env:LOCALAPPDATA\Microsoft\EdgeWebView\Application\$($runtime.Version)\msedgewebview2.exe"; Scope = 'current-user' }
   )
-  $binary = $binaryCandidates | Where-Object { Test-Path -LiteralPath $_.Path -PathType Leaf } | Select-Object -First 1
+  $binary = $binaryCandidates | Where-Object {
+    $_.Scope -eq $runtime.Scope -and (Test-Path -LiteralPath $_.Path -PathType Leaf)
+  } | Select-Object -First 1
   if (-not $binary) { throw 'WebView2 registry state has no production runtime binary' }
   $signature = Get-AuthenticodeSignature -LiteralPath $binary.Path
   if (
@@ -550,6 +558,7 @@ function Get-WebViewRuntime {
   ).Replace('-', '').ToLowerInvariant()
   return [ordered]@{
     state = 'present'
+    product_guid = $WebView2ProductionGuid
     version = $runtime.Version
     channel = 'evergreen'
     signer = [ordered]@{
@@ -557,7 +566,7 @@ function Get-WebViewRuntime {
       subject = 'CN=Microsoft Corporation'
       certificate_sha256 = $certificateDigest
     }
-    scope = $binary.Scope
+    scope = $runtime.Scope
   }
 }
 
@@ -1225,6 +1234,8 @@ $manifest = [ordered]@{
     snapshot_policy_sha256 = $SnapshotPolicySha256
     clean_snapshot_sha256 = $CleanSnapshotSha256
     image_sha256 = $ImageSha256
+    webview_product_guid = $WebView2ProductionGuid
+    minimum_webview_version = $MinimumWebView2Version.ToString()
     failure_injection = $failureInjection
     browser_window_observer = $script:BrowserObserverSummary
     redaction_version = 'stock-desk-public-redaction-v2'

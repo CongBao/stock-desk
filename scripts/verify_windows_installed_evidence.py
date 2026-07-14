@@ -42,6 +42,8 @@ MAX_EVIDENCE_BYTES: Final = 2 * 1024 * 1024
 _HEX_40: Final = re.compile(r"^[0-9a-f]{40}$")
 _HEX_64: Final = re.compile(r"^[0-9a-f]{64}$")
 _WEBVIEW_VERSION: Final = re.compile(r"^[0-9]+(?:\.[0-9]+){3}$")
+WEBVIEW2_PRODUCTION_GUID: Final = "{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
+MINIMUM_WEBVIEW2_VERSION: Final = (120, 0, 2210, 91)
 _DISPLAY_VERSION: Final = re.compile(r"^[0-9]{2}H[12]$")
 _SAFE_JOB_ID: Final = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
 _SAFE_ATTEMPT_ID: Final = re.compile(r"^[a-z0-9][a-z0-9._-]{7,127}$")
@@ -326,20 +328,34 @@ def _validate_runtime(value: object, *, field: str) -> dict[str, object]:
     runtime = _expect_object(
         value,
         field=field,
-        fields=frozenset({"state", "version", "channel", "signer"}),
+        fields=frozenset({"state", "product_guid", "version", "channel", "signer"}),
     )
     state = runtime["state"]
     if state == "present":
-        _expect_string(
+        if runtime["product_guid"] != WEBVIEW2_PRODUCTION_GUID:
+            raise InstalledEvidenceError(
+                f"{field} is not the production WebView2 Runtime"
+            )
+        version = _expect_string(
             runtime["version"], field=f"{field}.version", pattern=_WEBVIEW_VERSION
         )
+        if (
+            tuple(int(component) for component in version.split("."))
+            < MINIMUM_WEBVIEW2_VERSION
+        ):
+            raise InstalledEvidenceError(
+                f"{field} is below the locked WebView2 minimum"
+            )
         if runtime["channel"] != "evergreen":
             raise InstalledEvidenceError(
                 f"{field} must use production Evergreen WebView2"
             )
         _validate_signer(runtime["signer"], field=f"{field}.signer")
     elif state == "absent":
-        if any(runtime[name] is not None for name in ("version", "channel", "signer")):
+        if any(
+            runtime[name] is not None
+            for name in ("product_guid", "version", "channel", "signer")
+        ):
             raise InstalledEvidenceError(
                 f"{field} absent state has contradictory metadata"
             )

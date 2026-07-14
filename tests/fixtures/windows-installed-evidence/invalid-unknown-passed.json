@@ -35,6 +35,7 @@
   "webview": {
     "before": {
       "state": "present",
+      "product_guid": "{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}",
       "version": "138.0.3351.77",
       "channel": "evergreen",
       "signer": {
@@ -50,6 +51,7 @@
     },
     "after": {
       "state": "present",
+      "product_guid": "{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}",
       "version": "138.0.3351.77",
       "channel": "evergreen",
       "signer": {

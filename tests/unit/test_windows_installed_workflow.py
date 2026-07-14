@@ -561,8 +561,19 @@ def test_reference_controller_and_guest_contracts_fail_closed() -> None:
         "SetWinEventHook",
         "TreeScope]::Descendants",
         "Executed guest harness differs from the controller-reviewed file",
+        "{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}",
+        "120.0.2210.91",
+        "webview_product_guid = $WebView2ProductionGuid",
+        "minimum_webview_version = $MinimumWebView2Version.ToString()",
     ):
         assert required in guest
+    assert "Get-ChildItem -LiteralPath $root" not in guest
+    assert "-like '*WebView2*'" not in guest
+    assert "Sort-Object { [version]$_.Version }" not in guest
+    assert (
+        "HKLM:\\SOFTWARE\\Microsoft\\EdgeUpdate\\Clients\\$WebView2ProductionGuid"
+        not in guest
+    )
     assert "CopyFromScreen" not in guest
     assert "passed =" not in controller
     assert "passed =" not in guest

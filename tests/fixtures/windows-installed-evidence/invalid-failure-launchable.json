@@ -35,6 +35,7 @@
   "webview": {
     "before": {
       "state": "absent",
+      "product_guid": null,
       "version": null,
       "channel": null,
       "signer": null
@@ -46,6 +47,7 @@
     },
     "after": {
       "state": "absent",
+      "product_guid": null,
       "version": null,
       "channel": null,
       "signer": null

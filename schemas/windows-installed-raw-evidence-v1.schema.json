@@ -39,7 +39,7 @@
     },
     "capture": {
       "type": "object", "additionalProperties": false,
-      "required": ["started_at_utc", "completed_at_utc", "guest_profile", "controller_label", "guest_harness_sha256", "controller_request_sha256", "snapshot_policy_sha256", "clean_snapshot_sha256", "image_sha256", "failure_injection", "browser_window_observer", "redaction_version"],
+      "required": ["started_at_utc", "completed_at_utc", "guest_profile", "controller_label", "guest_harness_sha256", "controller_request_sha256", "snapshot_policy_sha256", "clean_snapshot_sha256", "image_sha256", "webview_product_guid", "minimum_webview_version", "failure_injection", "browser_window_observer", "redaction_version"],
       "properties": {
         "started_at_utc": { "$ref": "#/$defs/utcTimestamp" }, "completed_at_utc": { "$ref": "#/$defs/utcTimestamp" },
         "guest_profile": { "enum": ["win10-22h2", "win11"] },
@@ -47,6 +47,8 @@
         "guest_harness_sha256": { "$ref": "#/$defs/sha256" }, "controller_request_sha256": { "$ref": "#/$defs/sha256" },
         "snapshot_policy_sha256": { "$ref": "#/$defs/sha256" },
         "clean_snapshot_sha256": { "$ref": "#/$defs/sha256" }, "image_sha256": { "$ref": "#/$defs/sha256" },
+        "webview_product_guid": { "const": "{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" },
+        "minimum_webview_version": { "const": "120.0.2210.91" },
         "failure_injection": { "oneOf": [{ "type": "null" }, { "type": "object", "additionalProperties": false, "required": ["identity", "sha256"], "properties": { "identity": { "const": "stock-desk-webview2-offline-install-failure-v1" }, "sha256": { "$ref": "#/$defs/sha256" } } }] },
         "browser_window_observer": {
           "type": "object", "additionalProperties": false,
