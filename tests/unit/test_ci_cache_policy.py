@@ -144,7 +144,7 @@ def test_test_results_databases_identity_signing_and_final_artifacts_are_rejecte
         "artifact-identity",
     ],
 )
-def test_only_dependency_browser_and_compilation_intermediates_are_allowed(
+def test_only_explicit_non_conclusion_cache_classes_are_allowed(
     content_class: str,
 ) -> None:
     policy = _policy()
@@ -154,6 +154,59 @@ def test_only_dependency_browser_and_compilation_intermediates_are_allowed(
 
     with pytest.raises(CachePolicyError, match="prohibited content classes"):
         validate_cache_policy(policy)
+
+
+def test_rustsec_cache_may_hold_only_the_pinned_tool_and_advisory_database() -> None:
+    entry = _entry("cargo")
+    entry["paths"] = ["~/.cargo/bin/cargo-audit", "~/.cargo/advisory-db"]
+    entry["content_classes"] = ["audit-tool", "vulnerability-database"]
+    policy = validate_cache_policy({"schema_version": 1, "entries": [entry]})
+
+    assert policy["entries"][0]["content_classes"] == [
+        "audit-tool",
+        "vulnerability-database",
+    ]
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "~/arbitrary/.cargo/bin/cargo-audit-backup",
+        "~/.cargo/advisory-db-export",
+        "~/.cache/uv/../release-proof",
+    ],
+)
+def test_near_match_or_non_normalized_cache_path_is_rejected(path: str) -> None:
+    entry = _entry("cargo" if ".cargo" in path else "uv")
+    entry["paths"] = [path]
+
+    with pytest.raises(
+        CachePolicyError, match="not an allowed|must be normalized|cannot contain"
+    ):
+        validate_cache_policy({"schema_version": 1, "entries": [entry]})
+
+
+def test_mixed_rustsec_and_dependency_cache_requires_all_content_classes() -> None:
+    entry = _entry("cargo")
+    entry["paths"] = ["~/.cargo/bin/cargo-audit", "~/.cargo/registry"]
+    entry["content_classes"] = ["audit-tool"]
+
+    with pytest.raises(CachePolicyError, match="exactly match cache paths"):
+        validate_cache_policy({"schema_version": 1, "entries": [entry]})
+
+
+def test_workflow_inventory_rejects_near_match_rustsec_path(tmp_path: Path) -> None:
+    path = _workflow(
+        tmp_path,
+        """      - uses: actions/cache@0000000000000000000000000000000000000000
+        with:
+          path: ~/.cargo/bin/cargo-audit-backup
+          key: ${{ runner.os }}-${{ runner.arch }}-${{ env.RUST_VERSION }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+""",
+    )
+
+    with pytest.raises(CachePolicyError, match="exactly one supported ecosystem"):
+        verify_workflow_cache_policy([path])
 
 
 def test_lockfile_dimension_must_be_a_content_digest() -> None:

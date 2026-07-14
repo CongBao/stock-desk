@@ -700,7 +700,7 @@ requirements:
     category: security
     kind: security
     behavior_key: anonymous_update_and_local_diagnostics_privacy_guard
-    acceptance: "The desktop privacy boundary is machine-verifiable and fail-closed for the active pre-updater phase: diagnostics remain explicit, allowlisted, recursively redacted, local-only, and abort on unknown nested data; telemetry, automatic crash or diagnostic upload, updater enablement, and stable host or device identifiers are absent; enumerated network-capable imports and direct primitives are confined to exact reviewed paths, including aliased Python dynamic imports, Rust network-client aliases, and Web sendBeacon, and all Tauri configuration and capability files are recursively checked for updater activation and unsafe symlink ancestors; the future updater contract permits only anonymous requests without usage behavior or local-data digests, and exact candidate and main proof evidence binds the privacy policy and verifier inputs."
+    acceptance: "The desktop privacy boundary is machine-verifiable and fail-closed for the active trusted-updater-foundation phase: diagnostics remain explicit, allowlisted, recursively redacted, local-only, and abort on unknown nested data; telemetry, automatic crash or diagnostic upload, runtime updater activation, and stable host or device identifiers are absent; enumerated network-capable imports and direct primitives are confined to exact reviewed paths, including aliased Python dynamic imports, the reviewed default-off Rust updater host, Rust network-client aliases, and Web sendBeacon, and all Tauri configuration and capability files are recursively checked for updater permissions and unsafe symlink ancestors; the fixed updater contract permits only anonymous requests without usage behavior or local-data digests, requires explicit user confirmation, and exact candidate and main proof evidence binds the privacy policy, verifier, schema, and updater source inputs."
     source_refs:
       - {
           capability: desktop-user-experience,
@@ -760,7 +760,7 @@ requirements:
         kind: security
         path: tests/security/test_zero_telemetry.py
         selector: tests/security/test_zero_telemetry.py::test_device_identity_automatic_upload_or_updater_enablement_fails_closed
-        assertion: Static privacy verification rejects stable installation identity, automatic diagnostic upload, updater dependencies, updater capabilities, and updater configuration.
+        assertion: Static privacy verification rejects stable installation identity, automatic diagnostic upload, unreviewed updater dependencies, updater capabilities, and runtime updater configuration.
       - state: existing
         runner: pytest
         kind: security
@@ -773,6 +773,18 @@ requirements:
         path: tests/security/test_zero_telemetry.py
         selector: tests/security/test_zero_telemetry.py::test_phase_policy_and_recursive_tauri_json_fail_closed
         assertion: An unreviewed policy phase or updater permission hidden in any nested Tauri capability file fails the privacy gate.
+      - state: existing
+        runner: pytest
+        kind: security
+        path: tests/unit/test_trusted_updater_release.py
+        selector: tests/unit/test_trusted_updater_release.py::test_missing_fixed_production_public_key_fails_closed
+        assertion: Stable updater release eligibility remains blocked until the fixed production Tauri public key exists and real artifact verification can run.
+      - state: existing
+        runner: vitest
+        kind: component
+        path: web/src/features/desktop/DesktopUpdateNotice.test.tsx
+        selector: fails closed and hides expanded update protocol payloads
+        assertion: The desktop update UI rejects expanded host payloads, does not expose device identity, and cannot turn unreviewed data into an update offer.
       - state: existing
         runner: pytest
         kind: security

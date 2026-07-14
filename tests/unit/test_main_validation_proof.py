@@ -10,7 +10,11 @@ from typing import Any
 import pytest
 
 import scripts.main_validation_proof as proof_module
-from scripts.artifact_manifest import create_attestation_binding, manifest_digest
+from scripts.artifact_manifest import (
+    create_attestation_binding,
+    manifest_digest,
+    write_manifest,
+)
 from scripts.main_validation_proof import MainValidationProofError
 from scripts.source_fingerprint import ROOT_FILES, TREE_ROOTS
 
@@ -167,7 +171,7 @@ def _validation_evidence(
         payload_name = (
             "stock-desk-1.1.0-beta.2-unsigned-x64-setup.exe"
             if payload_kind == "tauri-unsigned"
-            else f"{policy.artifact_name}.json"
+            else f"payload-{policy.artifact_name}.json"
         )
         manifests[policy.artifact_name] = {
             "schema_version": 2,
@@ -534,6 +538,10 @@ def test_artifact_consumption_rejects_payload_substitution(tmp_path: Path) -> No
             path = root / payload["path"]
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(b"x")
+        write_manifest(root / f"{artifact_name}.json", manifest_value)
+        (root / "manifest-binding.json").write_text(
+            json.dumps(create_attestation_binding(manifest_value)), encoding="utf-8"
+        )
         roots[artifact_name] = root
         attestations[artifact_name] = create_attestation_binding(manifest_value)
 
@@ -542,10 +550,46 @@ def test_artifact_consumption_rejects_payload_substitution(tmp_path: Path) -> No
         artifact_roots=roots,
         artifact_attestations=attestations,
     )
-    substituted = roots["web-build-manifest"] / "web-build-manifest.json"
+    web_manifest = evidence["web-build-manifest"]
+    assert isinstance(web_manifest, dict)
+    substituted = roots["web-build-manifest"] / web_manifest["payloads"][0]["path"]
     substituted.write_bytes(b"y")
 
     with pytest.raises(MainValidationProofError, match="payload SHA-256 mismatch"):
+        proof_module.verify_proved_artifacts(
+            proof,
+            artifact_roots=roots,
+            artifact_attestations=attestations,
+        )
+
+
+def test_artifact_consumption_rejects_unmanifested_extra_file(tmp_path: Path) -> None:
+    repo = _repository(tmp_path / "repo")
+    proof = _proof(repo)
+    evidence = proof["validation_evidence"]
+    assert isinstance(evidence, dict)
+    roots: dict[str, Path] = {}
+    attestations: dict[str, object] = {}
+    for artifact_name, manifest_value in evidence.items():
+        assert isinstance(manifest_value, dict)
+        root = tmp_path / "artifacts" / artifact_name
+        root.mkdir(parents=True)
+        for payload in manifest_value["payloads"]:
+            path = root / payload["path"]
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"x")
+        write_manifest(root / f"{artifact_name}.json", manifest_value)
+        binding = create_attestation_binding(manifest_value)
+        (root / "manifest-binding.json").write_text(
+            json.dumps(binding), encoding="utf-8"
+        )
+        roots[artifact_name] = root
+        attestations[artifact_name] = binding
+    (roots["python-evidence-unit"] / "unlisted-debug.log").write_text(
+        "must not ship", encoding="utf-8"
+    )
+
+    with pytest.raises(MainValidationProofError, match="not manifest-closed"):
         proof_module.verify_proved_artifacts(
             proof,
             artifact_roots=roots,

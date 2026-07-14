@@ -144,3 +144,26 @@ it('keeps the 390px collapsed rail single-column and reserves two columns for ma
     /\.topbar-product-name\s*\{[^}]*white-space:\s*nowrap/su,
   );
 });
+
+it('keeps update notices in document flow and stacks actions on narrow or scaled screens', () => {
+  expect(theme).toMatch(
+    /\.desktop-update-slot\s*\{[^}]*grid-column:\s*1 \/ -1[^}]*padding-inline-end:\s*168px/su,
+  );
+  expect(theme).toMatch(
+    /\.desktop-update-notice\s*\{[^}]*position:\s*relative[^}]*width:\s*auto/su,
+  );
+  const noticeBreakpoint = theme.indexOf(
+    '@media (max-width: 600px), (resolution >= 1.75dppx)',
+  );
+  const responsiveNotice = theme.slice(
+    noticeBreakpoint,
+    theme.indexOf('@media (max-width: 480px)', noticeBreakpoint),
+  );
+  expect(responsiveNotice).toContain('.desktop-update-notice');
+  expect(responsiveNotice).toContain('flex-direction: column');
+  expect(responsiveNotice).not.toContain('position: fixed');
+  const compactChrome = theme.slice(theme.indexOf('@media (max-width: 760px)'));
+  expect(compactChrome).toMatch(
+    /\.desktop-update-slot\s*\{[^}]*padding-inline-end:\s*60px/su,
+  );
+});

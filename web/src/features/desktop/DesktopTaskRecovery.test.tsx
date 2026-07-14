@@ -10,14 +10,23 @@ import { DesktopTaskRecovery } from './DesktopTaskRecovery';
 function adapter(): DesktopAdapter {
   return {
     cancelExit: vi.fn(() => Promise.resolve()),
+    checkForUpdates: vi.fn(() =>
+      Promise.resolve({ state: 'disabled', current_version: '1.1.0' }),
+    ),
     confirmExit: vi.fn(() => Promise.resolve()),
+    confirmUpdate: vi.fn(() => Promise.resolve()),
+    dismissUpdate: vi.fn(() => Promise.resolve()),
     exportDiagnostics: vi.fn(() => Promise.resolve('saved' as const)),
     getRuntimeState: vi.fn(() => Promise.resolve({ state: 'ready' })),
+    getUpdateState: vi.fn(() =>
+      Promise.resolve({ state: 'disabled', current_version: '1.1.0' }),
+    ),
     openDiagnostics: vi.fn(() => Promise.resolve()),
     requestExit: vi.fn(() => Promise.resolve()),
     restartService: vi.fn(() => Promise.resolve()),
     subscribe: vi.fn(() => Promise.resolve(() => undefined)),
     subscribeExit: vi.fn(() => Promise.resolve(() => undefined)),
+    subscribeUpdate: vi.fn(() => Promise.resolve(() => undefined)),
   };
 }
 

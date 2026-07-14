@@ -8,6 +8,7 @@ mod exit;
 mod proxy;
 mod sidecar;
 mod uninstall;
+mod updater;
 mod windows_job;
 
 fn focus_main_window(app: &tauri::AppHandle) {
@@ -28,6 +29,10 @@ fn main() {
             focus_main_window(app);
         }))
         .plugin(tauri_plugin_shell::init())
+        // The official updater verifier is present, but the Stock Desk
+        // controller remains fail-closed until the formal signing and real
+        // Windows evidence contract is satisfied.
+        .plugin(updater::plugin())
         .invoke_handler(tauri::generate_handler![
             app::desktop_runtime_state,
             app::desktop_restart_service,
@@ -36,10 +41,15 @@ fn main() {
             proxy::desktop_api_request,
             exit::desktop_request_exit,
             exit::desktop_cancel_exit,
-            exit::desktop_confirm_exit
+            exit::desktop_confirm_exit,
+            updater::desktop_update_state,
+            updater::desktop_check_for_updates,
+            updater::desktop_dismiss_update,
+            updater::desktop_confirm_update
         ])
         .setup(|app| {
             exit::setup(app);
+            updater::setup(app);
             app::setup(app)?;
             focus_main_window(app.handle());
             Ok(())

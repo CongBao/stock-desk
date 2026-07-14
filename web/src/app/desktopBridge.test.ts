@@ -10,14 +10,23 @@ function createAdapter(
 ): DesktopAdapter {
   return {
     cancelExit: vi.fn(() => Promise.resolve()),
+    checkForUpdates: vi.fn(() =>
+      Promise.resolve({ state: 'disabled', current_version: '1.1.0' }),
+    ),
     confirmExit: vi.fn(() => Promise.resolve()),
+    confirmUpdate: vi.fn(() => Promise.resolve()),
+    dismissUpdate: vi.fn(() => Promise.resolve()),
     exportDiagnostics: vi.fn(() => Promise.resolve('saved' as const)),
     getRuntimeState: vi.fn(() => Promise.resolve({ state: 'ready' })),
+    getUpdateState: vi.fn(() =>
+      Promise.resolve({ state: 'disabled', current_version: '1.1.0' }),
+    ),
     openDiagnostics: vi.fn(() => Promise.resolve()),
     requestExit: vi.fn(() => Promise.resolve()),
     restartService: vi.fn(() => Promise.resolve()),
     subscribe: vi.fn(() => Promise.resolve(() => undefined)),
     subscribeExit: vi.fn(() => Promise.resolve(() => undefined)),
+    subscribeUpdate: vi.fn(() => Promise.resolve(() => undefined)),
     ...overrides,
   };
 }
@@ -34,13 +43,25 @@ it('uses a synchronous ready and no-op fallback outside Tauri', () => {
   expect(bridge.confirmExit()).toBeUndefined();
   expect(bridge.openDiagnostics()).toBeUndefined();
   expect(bridge.exportDiagnostics()).toBeUndefined();
+  expect(bridge.getUpdateState()).toEqual({
+    state: 'disabled',
+    currentVersion: '1.1.0-beta.2',
+  });
+  expect(bridge.checkForUpdates()).toEqual({
+    state: 'disabled',
+    currentVersion: '1.1.0-beta.2',
+  });
+  expect(bridge.dismissUpdate()).toBeUndefined();
+  expect(bridge.confirmUpdate()).toBeUndefined();
 
   const unsubscribe = bridge.subscribe(listener);
   const unsubscribeExit = bridge.subscribeExit(listener);
+  const unsubscribeUpdate = bridge.subscribeUpdate(listener);
   expect(unsubscribe).toBeTypeOf('function');
   expect(listener).not.toHaveBeenCalled();
   expect(() => unsubscribe()).not.toThrow();
   expect(() => unsubscribeExit()).not.toThrow();
+  expect(() => unsubscribeUpdate()).not.toThrow();
 });
 
 it.each<readonly [unknown, DesktopRuntimeState]>([
@@ -107,6 +128,16 @@ it('delegates desktop commands without accepting command payloads', async () => 
   await expect(bridge.confirmExit()).resolves.toBeUndefined();
   await expect(bridge.openDiagnostics()).resolves.toBeUndefined();
   await expect(bridge.exportDiagnostics()).resolves.toBe('saved');
+  await expect(bridge.getUpdateState()).resolves.toEqual({
+    state: 'disabled',
+    currentVersion: '1.1.0',
+  });
+  await expect(bridge.checkForUpdates()).resolves.toEqual({
+    state: 'disabled',
+    currentVersion: '1.1.0',
+  });
+  await expect(bridge.dismissUpdate()).resolves.toBeUndefined();
+  await expect(bridge.confirmUpdate()).resolves.toBeUndefined();
 
   expect(adapter.restartService).toHaveBeenCalledWith();
   expect(adapter.requestExit).toHaveBeenCalledWith();
@@ -114,6 +145,34 @@ it('delegates desktop commands without accepting command payloads', async () => 
   expect(adapter.confirmExit).toHaveBeenCalledWith();
   expect(adapter.openDiagnostics).toHaveBeenCalledWith();
   expect(adapter.exportDiagnostics).toHaveBeenCalledWith();
+  expect(adapter.getUpdateState).toHaveBeenCalledWith();
+  expect(adapter.checkForUpdates).toHaveBeenCalledWith();
+  expect(adapter.dismissUpdate).toHaveBeenCalledWith();
+  expect(adapter.confirmUpdate).toHaveBeenCalledWith();
+});
+
+it.each([
+  {
+    state: 'available',
+    current_version: '1.1.0',
+    version: '1.2.0+build',
+    notes: null,
+  },
+  {
+    state: 'available',
+    current_version: '1.1.0',
+    version: '1.2.0-beta.1',
+    notes: null,
+  },
+  { state: 'idle', current_version: '1.1.0-01' },
+])('rejects non-stable offers and malformed desktop versions', async (wire) => {
+  const bridge = createDesktopBridge(
+    createAdapter({ checkForUpdates: vi.fn(() => Promise.resolve(wire)) }),
+  );
+
+  await expect(bridge.checkForUpdates()).rejects.toBeInstanceOf(
+    DesktopBridgeProtocolError,
+  );
 });
 
 it('decodes subscribed events before exposing them and rejects unsafe events', async () => {
@@ -154,8 +213,13 @@ it('does not read from or write to browser persistence', async () => {
   await bridge.confirmExit();
   await bridge.openDiagnostics();
   await bridge.exportDiagnostics();
+  await bridge.getUpdateState();
+  await bridge.checkForUpdates();
+  await bridge.dismissUpdate();
+  await bridge.confirmUpdate();
   await bridge.subscribe(() => undefined);
   await bridge.subscribeExit(() => undefined);
+  await bridge.subscribeUpdate(() => undefined);
 
   expect(localGet).not.toHaveBeenCalled();
   expect(localSet).not.toHaveBeenCalled();

@@ -49,6 +49,38 @@ function Wait-Until([scriptblock]$Condition, [int]$Seconds, [string]$Failure) {
   throw $Failure
 }
 
+function Test-IsolatedWebViewCommandLine([string]$CommandLine, [string]$UserDataFolder) {
+  if ([string]::IsNullOrWhiteSpace($CommandLine)) { return $false }
+  foreach ($argument in @(
+    "--user-data-dir=$UserDataFolder",
+    "--user-data-dir=`"$UserDataFolder`""
+  )) {
+    $offset = $CommandLine.IndexOf($argument, [StringComparison]::OrdinalIgnoreCase)
+    while ($offset -ge 0) {
+      $argumentEnd = $offset + $argument.Length
+      if ($argumentEnd -eq $CommandLine.Length -or [char]::IsWhiteSpace($CommandLine[$argumentEnd])) {
+        return $true
+      }
+      $offset = $CommandLine.IndexOf(
+        $argument,
+        $argumentEnd,
+        [StringComparison]::OrdinalIgnoreCase
+      )
+    }
+  }
+  return $false
+}
+
+function Get-IsolatedWebViewProcesses([string]$UserDataFolder) {
+  return @(Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" -ErrorAction SilentlyContinue |
+    Where-Object { Test-IsolatedWebViewCommandLine ([string]$_.CommandLine) $UserDataFolder })
+}
+
+function Get-EvidenceSidecarProcesses([int[]]$BaselineProcessIds = @()) {
+  return @(Get-Process -Name 'stock-desk-sidecar' -ErrorAction SilentlyContinue |
+    Where-Object { $_.Id -notin $BaselineProcessIds })
+}
+
 function Save-EmbeddedIcon([string]$Source, [string]$Destination, [int]$Size, [int]$Index) {
   $handles = [IntPtr[]]::new(1)
   $ids = [uint32[]]::new(1)
@@ -127,6 +159,25 @@ function Save-WindowScreenshot([Diagnostics.Process]$Process, [string]$Destinati
 $installRoot = Join-Path $env:LOCALAPPDATA 'Programs\Stock Desk'
 $hostPath = Join-Path $installRoot 'stock-desk-desktop.exe'
 $uninstallerPath = Join-Path $installRoot 'uninstall.exe'
+$evidenceRoot = Split-Path (Split-Path $Output -Parent) -Parent
+$webviewUserData = Join-Path $evidenceRoot "webview2-user-data-$SourceSha"
+$webviewEdgePolicy = 'HKCU:\Software\Policies\Microsoft\Edge'
+$webviewPolicyRoot = 'HKCU:\Software\Policies\Microsoft\Edge\WebView2'
+$webviewArgsPolicy = Join-Path $webviewPolicyRoot 'AdditionalBrowserArguments'
+$webviewDataPolicy = Join-Path $webviewPolicyRoot 'UserDataFolder'
+$webviewAppName = [IO.Path]::GetFileName($hostPath)
+$webviewEdgePolicyCreated = -not (Test-Path -LiteralPath $webviewEdgePolicy)
+$webviewPolicyRootCreated = -not (Test-Path -LiteralPath $webviewPolicyRoot)
+$webviewArgsPolicyCreated = -not (Test-Path -LiteralPath $webviewArgsPolicy)
+$webviewDataPolicyCreated = -not (Test-Path -LiteralPath $webviewDataPolicy)
+$webviewArgsPolicySet = $false
+$webviewDataPolicySet = $false
+$tauriDefaultWebViewData = Join-Path $env:LOCALAPPDATA 'com.congbao.stockdesk'
+$tauriDefaultWebViewDataExisted = Test-Path -LiteralPath $tauriDefaultWebViewData
+$baselineSidecarProcessIds = @(
+  Get-Process -Name 'stock-desk-sidecar' -ErrorAction SilentlyContinue |
+    ForEach-Object { $_.Id }
+)
 $desktopProcess = $null
 $gracefulExit = $false
 try {
@@ -191,14 +242,54 @@ try {
     packaged_entries_match_reviewed_identity = $true
   }
 
-  $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = '--remote-debugging-port=9222 --remote-allow-origins=http://127.0.0.1:9222'
+  # Keep CDP outside the shipped configuration and isolate this evidence run
+  # from any reused WebView2 browser process. Port zero lets WebView2 select an
+  # unused loopback port; DevToolsActivePort is then the authoritative endpoint.
+  Remove-Item -Recurse -Force $webviewUserData -ErrorAction SilentlyContinue
+  New-Item -ItemType Directory -Force $webviewUserData | Out-Null
+  $env:WEBVIEW2_USER_DATA_FOLDER = $webviewUserData
+  $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = '--remote-debugging-port=0 --remote-debugging-address=127.0.0.1'
+  New-Item -Path $webviewEdgePolicy -Force | Out-Null
+  New-Item -Path $webviewPolicyRoot -Force | Out-Null
+  foreach ($policy in @($webviewArgsPolicy, $webviewDataPolicy)) {
+    if ($null -ne (Get-ItemProperty -LiteralPath $policy -Name $webviewAppName -ErrorAction SilentlyContinue)) {
+      throw 'packaged WebView2 evidence refuses to replace an existing app policy'
+    }
+    New-Item -Path $policy -Force | Out-Null
+  }
+  New-ItemProperty -LiteralPath $webviewArgsPolicy -Name $webviewAppName -PropertyType String -Value $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS | Out-Null
+  $webviewArgsPolicySet = $true
+  New-ItemProperty -LiteralPath $webviewDataPolicy -Name $webviewAppName -PropertyType String -Value $webviewUserData | Out-Null
+  $webviewDataPolicySet = $true
   # This candidate proof owns an isolated first-run state. Removing stale state
   # makes onboarding evidence deterministic even on a reused Windows host.
   Remove-Item -Recurse -Force (Join-Path $env:LOCALAPPDATA 'Stock Desk\v1.1') -ErrorAction SilentlyContinue
-  $desktopProcess = Start-Process -FilePath $hostPath -PassThru
+  $desktopStart = [Diagnostics.ProcessStartInfo]::new()
+  $desktopStart.FileName = $hostPath
+  $desktopStart.WorkingDirectory = $installRoot
+  $desktopStart.UseShellExecute = $false
+  $desktopStart.Environment['WEBVIEW2_USER_DATA_FOLDER'] = $webviewUserData
+  $desktopStart.Environment['WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS'] = $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS
+  $desktopProcess = [Diagnostics.Process]::Start($desktopStart)
+  if ($null -eq $desktopProcess) { throw 'packaged Tauri host could not be started' }
   Wait-Until { $desktopProcess.Refresh(); if ($desktopProcess.HasExited) { throw 'packaged Tauri host exited during startup' }; if ($desktopProcess.MainWindowHandle -ne [IntPtr]::Zero) { $desktopProcess.MainWindowHandle } } 90 'packaged Tauri main window did not appear' | Out-Null
-  Wait-Until { try { (Invoke-RestMethod -Uri 'http://127.0.0.1:9222/json/version' -TimeoutSec 2).webSocketDebuggerUrl } catch { $false } } 90 'packaged WebView2 CDP endpoint did not appear' | Out-Null
-  $sidecar = Wait-Until { @(Get-Process -Name 'stock-desk-sidecar' -ErrorAction SilentlyContinue) | Select-Object -First 1 } 60 'packaged Python sidecar did not remain running'
+  $devToolsPortFile = Wait-Until {
+    @(Get-ChildItem -LiteralPath $webviewUserData -Recurse -File -Filter 'DevToolsActivePort' -ErrorAction SilentlyContinue) | Select-Object -First 1
+  } 90 'packaged WebView2 did not publish its isolated DevTools port'
+  $devToolsPortLines = @(Get-Content -LiteralPath $devToolsPortFile.FullName -ErrorAction Stop)
+  [int]$devToolsPort = 0
+  $devToolsPath = if ($devToolsPortLines.Count -ge 2) { [string]$devToolsPortLines[1] } else { '' }
+  if ($devToolsPortLines.Count -ne 2 -or -not [int]::TryParse([string]$devToolsPortLines[0], [ref]$devToolsPort) -or $devToolsPort -lt 1 -or $devToolsPort -gt 65535 -or $devToolsPath -notmatch '^/devtools/browser/[A-Za-z0-9-]+$') {
+    throw 'packaged WebView2 published an invalid isolated DevTools port'
+  }
+  $desktopCdp = "http://127.0.0.1:$devToolsPort"
+  $devToolsVersion = Wait-Until { try { Invoke-RestMethod -Uri "$desktopCdp/json/version" -TimeoutSec 2 } catch { $false } } 90 'packaged WebView2 CDP endpoint did not appear'
+  try { $devToolsWebSocket = [Uri]$devToolsVersion.webSocketDebuggerUrl }
+  catch { throw 'packaged WebView2 published an invalid CDP browser endpoint' }
+  if ($devToolsWebSocket.Scheme -ne 'ws' -or $devToolsWebSocket.Host -ne '127.0.0.1' -or $devToolsWebSocket.Port -ne $devToolsPort -or $devToolsWebSocket.AbsolutePath -ne $devToolsPath) {
+    throw 'packaged WebView2 CDP endpoint does not match the isolated browser identity'
+  }
+  $sidecar = Wait-Until { @(Get-EvidenceSidecarProcesses $baselineSidecarProcessIds) | Select-Object -First 1 } 60 'packaged Python sidecar did not remain running'
 
   $nativeEvidence = Save-WindowScreenshot $desktopProcess (Join-Path $Output 'tauri-native-window.png')
   $virtual = [Windows.Forms.SystemInformation]::VirtualScreen
@@ -209,7 +300,7 @@ try {
   $env:SOURCE_SHA = $SourceSha
   $env:SOURCE_TREE = $SourceTree
   $env:STOCK_DESK_DESKTOP_EVIDENCE_DIR = $Output
-  $env:STOCK_DESK_DESKTOP_CDP = 'http://127.0.0.1:9222'
+  $env:STOCK_DESK_DESKTOP_CDP = $desktopCdp
   & node scripts/windows_desktop_webview_evidence.mjs
   if ($LASTEXITCODE -ne 0) { throw 'packaged Tauri WebView evidence failed' }
   try {
@@ -245,24 +336,83 @@ try {
   }
   $manifest | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $Output 'windows-desktop-evidence.json') -Encoding utf8NoBOM
 } finally {
-  Remove-Item Env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS -ErrorAction SilentlyContinue
-  if ($null -ne $desktopProcess) {
-    $desktopProcess.Refresh()
-    if (-not $desktopProcess.HasExited) {
-      Stop-Process -Id $desktopProcess.Id -Force -ErrorAction SilentlyContinue
-      Get-Process -Name 'stock-desk-sidecar' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-      if ($gracefulExit) { throw 'packaged process unexpectedly remained after graceful exit' }
-    }
-  }
-  if (Test-Path -LiteralPath $uninstallerPath -PathType Leaf) {
-    $cleanup = Start-Process -FilePath $uninstallerPath -ArgumentList '/S' -Wait -PassThru
-    if ($cleanup.ExitCode -ne 0 -and $gracefulExit) { throw 'test uninstall failed after desktop evidence' }
-  }
   if (-not $gracefulExit -and (Test-Path -LiteralPath $Output -PathType Container)) {
     $diagnosticsRoot = Join-Path (Split-Path (Split-Path $Output -Parent) -Parent) 'diagnostics'
     New-Item -ItemType Directory -Force $diagnosticsRoot | Out-Null
     Get-ChildItem -LiteralPath $Output -File -Filter 'packaged-*' -ErrorAction SilentlyContinue |
       Copy-Item -Destination $diagnosticsRoot -Force
+    $webviewProcesses = @(Get-IsolatedWebViewProcesses $webviewUserData)
+    [ordered]@{
+      schema_version = 1
+      isolated_user_data_created = (Test-Path -LiteralPath $webviewUserData -PathType Container)
+      devtools_port_file_count = @(Get-ChildItem -LiteralPath $webviewUserData -Recurse -File -Filter 'DevToolsActivePort' -ErrorAction SilentlyContinue).Count
+      webview_process_scope = 'isolated-user-data-folder'
+      webview_process_count = $webviewProcesses.Count
+      webview_remote_debug_argument_observed = @($webviewProcesses | Where-Object { $_.CommandLine -like '*--remote-debugging-port=*' }).Count -gt 0
+      host_has_main_window = if ($null -ne $desktopProcess) { $desktopProcess.MainWindowHandle -ne [IntPtr]::Zero } else { $false }
+    } | ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $diagnosticsRoot 'webview-startup-summary.json') -Encoding utf8NoBOM
+  }
+  Remove-Item Env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS -ErrorAction SilentlyContinue
+  Remove-Item Env:WEBVIEW2_USER_DATA_FOLDER -ErrorAction SilentlyContinue
+  Remove-Item Env:STOCK_DESK_DESKTOP_CDP -ErrorAction SilentlyContinue
+  if ($webviewArgsPolicySet) { Remove-ItemProperty -LiteralPath $webviewArgsPolicy -Name $webviewAppName -ErrorAction SilentlyContinue }
+  if ($webviewDataPolicySet) { Remove-ItemProperty -LiteralPath $webviewDataPolicy -Name $webviewAppName -ErrorAction SilentlyContinue }
+  if ($webviewArgsPolicyCreated) { Remove-Item -LiteralPath $webviewArgsPolicy -Force -ErrorAction SilentlyContinue }
+  if ($webviewDataPolicyCreated) { Remove-Item -LiteralPath $webviewDataPolicy -Force -ErrorAction SilentlyContinue }
+  if ($webviewPolicyRootCreated) { Remove-Item -LiteralPath $webviewPolicyRoot -Force -ErrorAction SilentlyContinue }
+  if ($webviewEdgePolicyCreated) { Remove-Item -LiteralPath $webviewEdgePolicy -Force -ErrorAction SilentlyContinue }
+  $unexpectedGracefulResidue = $false
+  if ($null -ne $desktopProcess) {
+    $desktopProcess.Refresh()
+    if (-not $desktopProcess.HasExited) {
+      if ($gracefulExit) { $unexpectedGracefulResidue = $true }
+      Stop-Process -Id $desktopProcess.Id -Force -ErrorAction SilentlyContinue
+    }
+  }
+  for ($cleanupAttempt = 1; $cleanupAttempt -le 10; $cleanupAttempt++) {
+    $evidenceSidecars = @(Get-EvidenceSidecarProcesses $baselineSidecarProcessIds)
+    if ($evidenceSidecars.Count -eq 0) { break }
+    $evidenceSidecars | Stop-Process -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 250
+  }
+  if ($gracefulExit -and @(Get-EvidenceSidecarProcesses $baselineSidecarProcessIds).Count -gt 0) {
+    $unexpectedGracefulResidue = $true
+  }
+  for ($cleanupAttempt = 1; $cleanupAttempt -le 10; $cleanupAttempt++) {
+    $isolatedWebViewProcesses = @(Get-IsolatedWebViewProcesses $webviewUserData)
+    if ($isolatedWebViewProcesses.Count -eq 0) { break }
+    $isolatedWebViewProcesses | ForEach-Object {
+      Stop-Process -Id ([int]$_.ProcessId) -Force -ErrorAction SilentlyContinue
+    }
+    Start-Sleep -Milliseconds 250
+  }
+  if ($gracefulExit -and @(Get-IsolatedWebViewProcesses $webviewUserData).Count -gt 0) {
+    $unexpectedGracefulResidue = $true
+  }
+  if (Test-Path -LiteralPath $uninstallerPath -PathType Leaf) {
+    $cleanup = Start-Process -FilePath $uninstallerPath -ArgumentList '/S' -Wait -PassThru
+    if ($cleanup.ExitCode -ne 0 -and $gracefulExit) { throw 'test uninstall failed after desktop evidence' }
   }
   Remove-Item -Recurse -Force (Join-Path $env:LOCALAPPDATA 'Stock Desk\v1.1') -ErrorAction SilentlyContinue
+  for ($cleanupAttempt = 1; $cleanupAttempt -le 10; $cleanupAttempt++) {
+    Remove-Item -Recurse -Force $webviewUserData -ErrorAction SilentlyContinue
+    if (-not (Test-Path -LiteralPath $webviewUserData)) { break }
+    Start-Sleep -Milliseconds 250
+  }
+  if (-not $tauriDefaultWebViewDataExisted) {
+    for ($cleanupAttempt = 1; $cleanupAttempt -le 10; $cleanupAttempt++) {
+      Remove-Item -Recurse -Force $tauriDefaultWebViewData -ErrorAction SilentlyContinue
+      if (-not (Test-Path -LiteralPath $tauriDefaultWebViewData)) { break }
+      Start-Sleep -Milliseconds 250
+    }
+  }
+  if ($gracefulExit -and (Test-Path -LiteralPath $webviewUserData)) {
+    throw 'isolated WebView2 evidence state could not be cleaned'
+  }
+  if ($gracefulExit -and -not $tauriDefaultWebViewDataExisted -and (Test-Path -LiteralPath $tauriDefaultWebViewData)) {
+    throw 'Tauri default WebView2 state created by evidence could not be cleaned'
+  }
+  if ($gracefulExit -and $unexpectedGracefulResidue) {
+    throw 'packaged processes unexpectedly remained after graceful exit'
+  }
 }

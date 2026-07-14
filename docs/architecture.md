@@ -61,6 +61,64 @@ it does not force-kill a healthy sidecar. The next launch offers explicit resume
 or cancel choices for incomplete work, and analysis resume requires a separate
 model-cost confirmation.
 
+The desktop host also contains a default-off trusted-update foundation. Its pure
+state machine accepts only exact stable `X.Y.Z`, increasing versions for the
+fixed Windows x64 target from this repository's exact GitHub Release asset URL;
+it rejects prereleases, build metadata, downgrades, replays, cross-repository or
+cross-tag redirects, and digest mismatches. A high unverified offer never advances
+the replay watermark. Release verification copies the installer once into a
+verifier-owned staged object; SHA-256, Minisign/Ed25519, WinVerifyTrust,
+SignPath, and exact-SHA Windows evidence all bind to that object, and only that
+exact object becomes the publishable installer. Runtime verification records a
+pending identity in memory, while the persistent anti-rollback watermark moves
+only after installation success is confirmed. A failed installation can retry
+the same verified identity. Failure to resolve the per-user local-data directory
+disables the updater without creating any relative state path.
+`latest.json` is a Stock Desk-specific envelope, not the official Tauri updater
+plugin's static JSON format. After formal activation, the Rust host—not WebView
+JavaScript and not the plugin—must fetch it under the one-hop redirect policy,
+enforce its strict schema and size bounds, and bind the embedded signature to the
+candidate identity. The host must then verify the exact payload's SHA-256,
+Minisign/Ed25519 signature, and WinVerifyTrust result before passing that verified
+payload to the official plugin's installation path. The WebView may only request
+a native confirmation prompt; only an affirmative host-owned native dialog may
+mint the private, one-use consent required to continue. A Web IPC parameter or
+event can never substitute for that consent.
+On POSIX, publication hard-links the locked staged object and fsyncs its parent
+directory. Windows does not reuse that directory-fsync model: Microsoft documents
+that `FlushFileBuffers` requires a `GENERIC_WRITE` file handle and does not list it
+as a supported directory-handle operation. Stock Desk instead fsyncs the temporary
+file before verification and retains its `CreateFileW(CREATE_NEW)` handle from the
+instant of creation. It derives the read-only verifier stream with `DuplicateHandle`
+for that same file object before closing the write stream, so no close-and-reopen
+namespace window exists. The retained handle denies concurrent writes. Stock Desk
+then moves that same object within the same directory using `MoveFileExW` with
+`MOVEFILE_WRITE_THROUGH` and without replacement. It finally rechecks the moved
+path against the still-open handle. The final path therefore remains absent until
+verification finishes, a raced destination fails closed, and Win32 does not return
+until the move is complete on disk. If publication reports an error after the move,
+cleanup unconditionally revokes the staged object through that still-open handle,
+even if another process renamed it to an unrelated third path. It never deletes a
+final or temporary pathname on this failure path, so concurrently created decoys
+remain untouched. Before the locked handle exists, cleanup may reopen the temporary
+path only to compare its file ID with the ID captured at creation and then revoke
+that opened object by handle. The production Win32 path, read-only cleanup,
+post-move error, attacker target, third-path rename with decoys, and
+identity-mismatch revocation are required tests on the pinned GitHub Windows runner.
+See Microsoft's
+[`FlushFileBuffers`](https://learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-flushfilebuffers),
+[`MoveFileEx`](https://learn.microsoft.com/windows/win32/api/winbase/nf-winbase-movefileexw),
+[`SetFileInformationByHandle`](https://learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-setfileinformationbyhandle),
+and [directory handle](https://learn.microsoft.com/windows/win32/fileio/obtaining-a-handle-to-a-directory)
+contracts.
+Rust's Cargo and Tauri package versions must match and are injected into React at
+build time; an unavailable or mismatched identity is displayed as unavailable,
+never as a hard-coded stable version. The WebView has no direct updater
+capability, and a user must explicitly confirm any future download and install.
+No private signing key is stored in this repository. The production public key,
+runtime WinVerifyTrust integration, and formal SignPath workflow are not yet
+present, so the runtime remains disabled and verification fails closed.
+
 Market payload storage follows the host's verified filesystem capabilities.
 POSIX deployments use immutable, content-addressed Parquet partitions plus the
 SQLite catalog. Native Windows stores the same canonical OHLCV rows inside the

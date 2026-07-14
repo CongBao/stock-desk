@@ -23,6 +23,8 @@ import { TaskCenterPage } from '../features/tasks/TaskCenterPage';
 import { DesktopStartup } from '../features/desktop/DesktopStartup';
 import { DesktopExitGuard } from '../features/desktop/DesktopExitGuard';
 import { DesktopTaskRecovery } from '../features/desktop/DesktopTaskRecovery';
+import { DesktopUpdateNotice } from '../features/desktop/DesktopUpdateNotice';
+import { DESKTOP_BUILD_VERSION, displayDesktopVersion } from './buildIdentity';
 import { OnboardingGate } from '../features/onboarding/OnboardingGate';
 import { useOnboardingDemoMode } from '../features/onboarding/demoMode';
 import { useMarketStore } from '../features/market/marketStore';
@@ -76,7 +78,6 @@ const workerStateLabels: Record<WorkerState, string> = {
 
 const productIdentity = {
   name: 'stock-desk',
-  version: 'v1.0.0',
   repository: 'https://github.com/CongBao/stock-desk',
 } as const;
 
@@ -84,12 +85,14 @@ type NavigationRailProps = {
   readonly collapsed: boolean;
   readonly onToggle: () => void;
   readonly readonlyDemo: boolean;
+  readonly productVersion: string;
 };
 
 function NavigationRail({
   collapsed,
   onToggle,
   readonlyDemo,
+  productVersion,
 }: NavigationRailProps) {
   return (
     <div className="navigation-rail">
@@ -155,9 +158,7 @@ function NavigationRail({
       </nav>
 
       <div className="rail-footer">
-        <span className="version-label">
-          {productIdentity.version} · Task Center
-        </span>
+        <span className="version-label">{productVersion} · Task Center</span>
         <span>本地优先 · 个人使用</span>
       </div>
     </div>
@@ -167,11 +168,13 @@ function NavigationRail({
 function AboutDialog({
   onClose,
   onExportDiagnostics,
+  productVersion,
 }: {
   readonly onClose: () => void;
   readonly onExportDiagnostics: () => Promise<
     'cancelled' | 'saved' | undefined
   >;
+  readonly productVersion: string;
 }) {
   const dialogRef = useRef<HTMLElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
@@ -255,7 +258,7 @@ function AboutDialog({
           </div>
           <div>
             <dt>版本</dt>
-            <dd>{productIdentity.version}</dd>
+            <dd>{productVersion}</dd>
           </div>
           <div>
             <dt>公开仓库</dt>
@@ -371,6 +374,9 @@ function WorkspaceShell({
   const aboutToggleRef = useRef<HTMLButtonElement>(null);
   const systemStatus = useSystemStatus();
   const [isAboutOpen, setIsAboutOpen] = useState(false);
+  const [productVersion, setProductVersion] = useState(() =>
+    displayDesktopVersion(DESKTOP_BUILD_VERSION),
+  );
   const [isNavigationCollapsed, setIsNavigationCollapsed] = useState(() =>
     typeof window.matchMedia === 'function'
       ? window.matchMedia('(max-width: 1200px)').matches
@@ -396,6 +402,26 @@ function WorkspaceShell({
     tabletQuery.addEventListener('change', followViewport);
     return () => tabletQuery.removeEventListener('change', followViewport);
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    const state = desktopBridge.getUpdateState();
+    if (state instanceof Promise) {
+      void state
+        .then((update) => {
+          if (active)
+            setProductVersion(displayDesktopVersion(update.currentVersion));
+        })
+        .catch(() => {
+          if (active) setProductVersion(displayDesktopVersion(null));
+        });
+    } else {
+      setProductVersion(displayDesktopVersion(state.currentVersion));
+    }
+    return () => {
+      active = false;
+    };
+  }, [desktopBridge]);
 
   function closeContextPanel() {
     closeContext();
@@ -429,10 +455,14 @@ function WorkspaceShell({
                   : 'default'
         }
       >
+        <div className="desktop-update-slot">
+          <DesktopUpdateNotice bridge={desktopBridge} />
+        </div>
         <NavigationRail
           collapsed={isNavigationCollapsed}
           onToggle={() => setIsNavigationCollapsed((collapsed) => !collapsed)}
           readonlyDemo={readonlyDemo}
+          productVersion={productVersion}
         />
 
         <main id="main-content" className="workspace" tabIndex={-1}>
@@ -496,6 +526,7 @@ function WorkspaceShell({
       {isAboutOpen ? (
         <AboutDialog
           onClose={closeAbout}
+          productVersion={productVersion}
           onExportDiagnostics={async () => {
             const result = await desktopBridge.exportDiagnostics();
             return result === 'saved' || result === 'cancelled'

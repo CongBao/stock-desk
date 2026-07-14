@@ -9,6 +9,7 @@ import socket
 import pytest
 
 from scripts.verify_zero_telemetry import (
+    EXPECTED_PRIVACY_POLICY,
     MANIFESTS,
     PRODUCTION_ROOTS,
     ZeroTelemetryError,
@@ -25,54 +26,7 @@ from stock_desk.runtime_identity import new_worker_id
 ROOT = Path(__file__).resolve().parents[2]
 
 
-PRIVACY_POLICY = {
-    "schema_version": 2,
-    "active_phase": "pre-updater",
-    "phases": {
-        "pre-updater": {
-            "telemetry": "disabled",
-            "automatic_crash_upload": "disabled",
-            "automatic_diagnostic_upload": "disabled",
-            "diagnostics": {
-                "creation": "explicit-user-action",
-                "upload": "never",
-            },
-            "production_network_exact_paths": {
-                "python": [
-                    "src/stock_desk/analysis/model_config.py",
-                    "src/stock_desk/analysis/model_settings.py",
-                    "src/stock_desk/analysis/providers/base.py",
-                    "src/stock_desk/analysis/providers/deepseek.py",
-                    "src/stock_desk/analysis/providers/ollama.py",
-                    "src/stock_desk/analysis/providers/openai_compatible.py",
-                    "src/stock_desk/analysis/sources/_akshare_worker.py",
-                    "src/stock_desk/analysis/sources/tushare.py",
-                    "src/stock_desk/desktop.py",
-                    "src/stock_desk/market/compositions.py",
-                    "src/stock_desk/market/providers/akshare.py",
-                    "src/stock_desk/market/providers/baostock.py",
-                    "src/stock_desk/market/providers/tushare.py",
-                ],
-                "rust": [
-                    "src-tauri/src/app.rs",
-                    "src-tauri/src/exit.rs",
-                    "src-tauri/src/proxy.rs",
-                ],
-                "web": ["web/src/shared/api/client.ts"],
-            },
-            "updater": {
-                "enabled": False,
-                "future_request": {
-                    "identity": "anonymous",
-                    "allowed_fields": ["target", "arch", "current_version"],
-                    "stable_device_identifier": False,
-                    "usage_behavior": False,
-                    "local_data_digest": False,
-                },
-            },
-        }
-    },
-}
+PRIVACY_POLICY = copy.deepcopy(EXPECTED_PRIVACY_POLICY)
 
 
 def _minimal_repository(root: Path) -> None:
@@ -80,11 +34,22 @@ def _minimal_repository(root: Path) -> None:
         path = root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("# locked dependency input\n", encoding="utf-8")
+    (root / "src-tauri/Cargo.toml").write_text(
+        "[dependencies]\n"
+        'tauri-plugin-updater = { version = "=2.10.1", '
+        'default-features = false, features = ["native-tls", "zip"] }\n'
+        'minisign-verify = { version = "=0.2.5" }\n',
+        encoding="utf-8",
+    )
+    (root / "web/package.json").parent.mkdir(parents=True, exist_ok=True)
+    (root / "web/package.json").write_text(
+        '{"dependencies": {}, "devDependencies": {}}\n', encoding="utf-8"
+    )
     for relative in PRODUCTION_ROOTS:
         path = root / relative
         path.mkdir(parents=True, exist_ok=True)
         (path / "safe.py").write_text("VALUE = 'local-only'\n", encoding="utf-8")
-    allowlist = PRIVACY_POLICY["phases"]["pre-updater"][
+    allowlist = PRIVACY_POLICY["phases"]["trusted-updater-foundation"][
         "production_network_exact_paths"
     ]
     for relative in allowlist["python"]:
@@ -99,6 +64,34 @@ def _minimal_repository(root: Path) -> None:
         path.write_text(
             "fn network() { let _ = reqwest::Client::new(); }\n", encoding="utf-8"
         )
+    updater = root / "src-tauri/src/updater.rs"
+    updater.write_text(
+        "pub const UPDATE_RUNTIME_ENABLED: bool = false;\n"
+        'pub const UPDATE_TARGET: &str = "windows-x86_64-nsis";\n'
+        'pub const UPDATE_ARCH: &str = "x86_64";\n'
+        'const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");\n'
+        "const TRUSTED_TAURI_PUBLIC_KEY: Option<&str> = None;\n"
+        "const _: () = assert!(!UPDATE_RUNTIME_ENABLED);\n"
+        'pub const UPDATE_ENDPOINT: &str = "https://github.com/CongBao/stock-desk/releases/latest/download/latest.json";\n'
+        "struct InstalledWatermark;\n"
+        'const STATE: &str = "installed-watermark.json";\n'
+        "fn pending() { let _ = verified_pending; }\n"
+        'fn verify_downloaded_candidate() { let _ = PublicKey::decode(""); '
+        "let _ = verify_authenticode(installer_path); }\n"
+        "fn plugin() { tauri_plugin_updater::Builder::new().build(); }\n"
+        "pub fn desktop_check_for_updates() { let machine = state(); "
+        "if !UPDATE_RUNTIME_ENABLED { return Ok(machine.state().clone()); } "
+        'Err("desktop_updater_trust_not_activated".to_owned()) }\n'
+        "pub fn desktop_confirm_update() { gate_native_confirmation("
+        "UPDATE_RUNTIME_ENABLED, || request_host_native_confirmation()); }\n"
+        "fn gate_native_confirmation(enabled: bool) { if !enabled { "
+        'return Err("desktop_updater_disabled"); } }\n',
+        encoding="utf-8",
+    )
+    main = root / "src-tauri/src/main.rs"
+    main.write_text(
+        "fn main() { builder.plugin(updater::plugin()); }\n", encoding="utf-8"
+    )
     for relative in allowlist["web"]:
         path = root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -119,6 +112,49 @@ def _minimal_repository(root: Path) -> None:
 
 def test_current_locked_application_has_no_telemetry_or_crash_sdk() -> None:
     assert audit_repository(ROOT) == ()
+
+
+@pytest.mark.parametrize(
+    ("original", "replacement", "commented_contract", "expected"),
+    [
+        (
+            "pub const UPDATE_RUNTIME_ENABLED: bool = false;",
+            "pub const UPDATE_RUNTIME_ENABLED: bool = true;",
+            "// pub const UPDATE_RUNTIME_ENABLED: bool = false;",
+            "runtime-contract",
+        ),
+        (
+            "https://github.com/CongBao/stock-desk/releases/latest/download/latest.json",
+            "https://example.invalid/latest.json",
+            '/* pub const UPDATE_ENDPOINT: &str = "https://github.com/CongBao/stock-desk/releases/latest/download/latest.json"; */',
+            "runtime-contract",
+        ),
+        (
+            "if !UPDATE_RUNTIME_ENABLED { return Ok(machine.state().clone()); }",
+            "if UPDATE_RUNTIME_ENABLED { return Ok(machine.state().clone()); }",
+            "// if !UPDATE_RUNTIME_ENABLED { return Ok(machine.state().clone()); }",
+            "command-guard",
+        ),
+    ],
+)
+def test_commented_updater_contract_cannot_spoof_the_runtime_gate(
+    tmp_path: Path,
+    original: str,
+    replacement: str,
+    commented_contract: str,
+    expected: str,
+) -> None:
+    _minimal_repository(tmp_path)
+    updater = tmp_path / "src-tauri/src/updater.rs"
+    source = updater.read_text(encoding="utf-8")
+    assert original in source
+    updater.write_text(
+        source.replace(original, replacement, 1) + commented_contract + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ZeroTelemetryError, match=expected):
+        verify_repository(tmp_path)
 
 
 def test_production_worker_ids_use_random_session_identity_not_host_identity() -> None:
@@ -205,7 +241,7 @@ def test_missing_manifest_or_source_symlink_fails_closed(tmp_path: Path) -> None
         (
             "src-tauri/Cargo.toml",
             'tauri-plugin-updater = "2"\n',
-            "updater-enabled",
+            "trusted-updater-dependency",
         ),
         (
             "src-tauri/capabilities/default.json",
@@ -215,6 +251,28 @@ def test_missing_manifest_or_source_symlink_fails_closed(tmp_path: Path) -> None
         (
             "src-tauri/tauri.conf.json",
             '{"plugins": {"updater": {"endpoints": ["https://example.invalid"]}}}\n',
+            "updater-enabled",
+        ),
+        (
+            "src-tauri/tauri.conf.json",
+            '{"plugins": {"updater": {"endpoints": [], "pubkey": "", '
+            '"dangerousAcceptInvalidCerts": true}}}\n',
+            "updater-enabled",
+        ),
+        (
+            "src-tauri/tauri.conf.json",
+            '{"plugins": {"updater": {"endpoints": [], "pubkey": "untrusted"}}}\n',
+            "updater-enabled",
+        ),
+        (
+            "src-tauri/tauri.conf.json",
+            '{"plugins": {"updater": {"endpoints": [], "pubkey": "", '
+            '"dangerousInsecureTransportProtocol": true}}}\n',
+            "updater-enabled",
+        ),
+        (
+            "src-tauri/tauri.conf.json",
+            '[{"updater": {"endpoints": [], "pubkey": ""}}]\n',
             "updater-enabled",
         ),
     ],
@@ -245,7 +303,7 @@ def test_privacy_policy_is_required_and_future_updates_must_remain_anonymous(
 
     _minimal_repository(tmp_path)
     unsafe = copy.deepcopy(PRIVACY_POLICY)
-    unsafe["phases"]["pre-updater"]["updater"]["future_request"]["identity"] = (
+    unsafe["phases"]["trusted-updater-foundation"]["updater"]["request"]["identity"] = (
         "stable-device"
     )
     policy_path.write_text(json.dumps(unsafe), encoding="utf-8")

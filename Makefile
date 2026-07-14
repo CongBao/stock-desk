@@ -120,5 +120,6 @@ security:
 	uv audit --locked --no-dev
 	pnpm install --lockfile-only --frozen-lockfile --ignore-scripts
 	pnpm audit --prod --audit-level high
+	cargo audit --file src-tauri/Cargo.lock --target-os windows --deny yanked
 
 release-check: test acceptance acceptance-formula acceptance-backtest acceptance-analysis acceptance-domain-contracts acceptance-full-journey performance-regressions performance e2e-foundation e2e-market e2e-formula e2e-backtest e2e-analysis e2e-task-center e2e-accessibility lint typecheck build public-tree security container-smoke

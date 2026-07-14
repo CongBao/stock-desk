@@ -836,6 +836,16 @@ def _windows_bound_operation(
         ) from error
     try:
         yield
+        try:
+            _validate_windows_root_binding(
+                root,
+                root_identity,
+                marker_identity,
+            )
+        except (OSError, ValueError) as error:
+            raise MarketLakeCorruptionError(
+                "market lake root failed transaction binding"
+            ) from error
     finally:
         stack.close()
 
@@ -3881,12 +3891,12 @@ class SqliteMarketLake(MarketLake):
     @contextmanager
     def _checked_begin(self) -> Iterator[Connection]:
         if _PLATFORM == "nt":
-            with _windows_bound_operation(
-                self._root,
-                self._root_identity,
-                self._marker_identity,
-            ):
-                with super()._checked_begin() as connection:
+            with super()._checked_begin() as connection:
+                with _windows_bound_operation(
+                    self._root,
+                    self._root_identity,
+                    self._marker_identity,
+                ):
                     yield connection
             return
         with super()._checked_begin() as connection:

@@ -372,9 +372,42 @@ def test_security_workflow_fails_closed_on_dependency_and_boundary_audits() -> N
 
     audit = workflow["jobs"]["locked-audit"]
     assert audit["permissions"] == {"contents": "read"}
+    assert "if" not in audit
+    checkout = next(
+        step
+        for step in audit["steps"]
+        if str(step.get("uses", "")).startswith("actions/checkout@")
+    )
+    assert checkout["with"] == {
+        "repository": (
+            "${{ github.event.pull_request.head.repo.full_name || github.repository }}"
+        ),
+        "ref": (
+            "${{ github.event_name == 'pull_request' && "
+            "github.event.pull_request.head.sha || github.sha }}"
+        ),
+    }
     audit_commands = "\n".join(str(step.get("run", "")) for step in audit["steps"])
     assert "uv audit --locked --no-dev" in audit_commands
     assert "pnpm audit --prod --audit-level high" in audit_commands
+    assert "cargo-audit --version" in audit_commands
+    assert "grep -Fx 'cargo-audit 0.22.2'" in audit_commands
+    assert (
+        "cargo install cargo-audit --version 0.22.2 --locked --force" in audit_commands
+    )
+    assert (
+        "cargo audit --file src-tauri/Cargo.lock --target-os windows --deny yanked"
+        in audit_commands
+    )
+    assert "--ignore" not in audit_commands
+    cache = next(
+        step
+        for step in audit["steps"]
+        if str(step.get("uses", "")).startswith("actions/cache@")
+    )
+    assert "~/.cargo/bin/cargo-audit" in cache["with"]["path"]
+    assert "~/.cargo/advisory-db" in cache["with"]["path"]
+    assert "test-results" not in cache["with"]["path"]
 
     assert set(workflow["jobs"]) == {"dependency-review", "locked-audit"}
 
@@ -423,6 +456,7 @@ def test_stage_zero_ci_has_unique_shards_frontend_reports_and_one_oci_build() ->
     assert "--coverage-precision 2" in aggregate
     assert "--inventory" in aggregate
     assert aggregate.count("normalize-frontend-junit") == 1
+    assert 'rm -rf "$out/coverage"' in aggregate
     e2e = "\n".join(str(step.get("run", "")) for step in jobs["e2e"]["steps"])
     assert e2e.count("make e2e") == 1
     assert e2e.count("normalize-frontend-junit") == 1
@@ -438,6 +472,7 @@ def test_stage_zero_ci_has_unique_shards_frontend_reports_and_one_oci_build() ->
     assert manifest_payloads
     assert all(":" in payload and "=" not in payload for payload in manifest_payloads)
     assert "docker build --pull --tag stock-desk:ci" in all_commands["container-build"]
+    assert 'rm "$out/image-digest.txt"' in all_commands["container-build"]
     for consumer in ("container-compose", "container-security"):
         assert "docker build" not in all_commands[consumer]
         assert "artifact_manifest.py verify" in all_commands[consumer]
@@ -827,6 +862,21 @@ def test_public_runtime_version_surfaces_match() -> None:
     assert api_version is not None
     assert python_version == web_version == api_version.group(1) == "1.1.0"
 
+    cargo_version = tomllib.loads(_read("src-tauri/Cargo.toml"))["package"]["version"]
+    tauri_version = json.loads(_read("src-tauri/tauri.conf.json"))["version"]
+    assert cargo_version == tauri_version == "1.1.0-beta.2"
+    updater_source = _read("src-tauri/src/updater.rs")
+    assert 'const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION")' in updater_source
+    app_source = _read("web/src/app/App.tsx")
+    assert "v1.0.0" not in app_source
+    assert "getUpdateState" in app_source
+    assert "DESKTOP_BUILD_VERSION" in app_source
+    vite_source = _read("web/vite.config.ts")
+    assert "src-tauri/Cargo.toml" in vite_source
+    assert "src-tauri/tauri.conf.json" in vite_source
+    assert "cargoVersion !== tauriVersion.version" in vite_source
+    assert "__STOCK_DESK_DESKTOP_VERSION__" in vite_source
+
 
 def test_make_test_enforces_coverage_and_writes_reports() -> None:
     makefile = _read("Makefile")
@@ -894,6 +944,7 @@ def test_security_target_audits_only_locked_production_dependencies() -> None:
         "\tuv audit --locked --no-dev",
         "\tpnpm install --lockfile-only --frozen-lockfile --ignore-scripts",
         "\tpnpm audit --prod --audit-level high",
+        "\tcargo audit --file src-tauri/Cargo.lock --target-os windows --deny yanked",
     ]
     audit_commands = [
         command for command in security_recipe.splitlines() if " audit " in command
@@ -916,6 +967,7 @@ def test_ci_and_release_run_the_canonical_dependency_audit_gate() -> None:
     }
     assert {
         "actions/checkout",
+        "actions/cache",
         "astral-sh/setup-uv",
         "pnpm/action-setup",
         "actions/setup-node",
@@ -930,6 +982,23 @@ def test_ci_and_release_run_the_canonical_dependency_audit_gate() -> None:
         "pnpm install --lockfile-only --frozen-lockfile --ignore-scripts"
         in audit_step["run"]
     )
+    assert "cargo-audit --version" in audit_step["run"]
+    assert "grep -Fx 'cargo-audit 0.22.2'" in audit_step["run"]
+    assert (
+        "cargo install cargo-audit --version 0.22.2 --locked --force"
+        in audit_step["run"]
+    )
+    assert (
+        "cargo audit --file src-tauri/Cargo.lock --target-os windows --deny yanked"
+        in audit_step["run"]
+    )
+    cargo_audit_commands = [
+        line.strip()
+        for line in audit_step["run"].splitlines()
+        if line.strip().startswith("cargo audit ")
+    ]
+    assert cargo_audit_commands
+    assert all("--ignore" not in command for command in cargo_audit_commands)
 
     ci = _load_github_actions_yaml(_read(".github/workflows/ci.yml"))
     proof = ci["jobs"]["validation-proof"]
@@ -2038,14 +2107,16 @@ def test_performance_target_ci_is_explicit_and_requirement_is_verified() -> None
     assert acceptance["env"]["PYTHON_ROOTS"] == "tests/acceptance tests/performance"
     assert "--context=" in command
     assert "--junitxml=" in command
-    return
-    assert workflow["jobs"]["python"]["steps"][0]["with"] == {"fetch-depth": 0}
     public_tree_steps = workflow["jobs"]["public-tree"]["steps"]
-    assert public_tree_steps[0]["with"] == {"fetch-depth": 0}
+    assert public_tree_steps[0]["with"] == {
+        "fetch-depth": 0,
+        "repository": "${{ github.event.pull_request.head.repo.full_name || github.repository }}",
+        "ref": "${{ env.SOURCE_SHA }}",
+    }
     expected_main_only_tools = {
-        "Set up pnpm for pre-publish evidence",
-        "Set up Node.js for pre-publish evidence",
-        "Install locked web dependencies for pre-publish evidence",
+        "Set up pnpm for main requirement collection",
+        "Set up Node.js for main requirement collection",
+        "Install locked frontend selector dependencies",
     }
     main_only_tools = {
         step["name"]: step
@@ -2057,76 +2128,22 @@ def test_performance_target_ci_is_explicit_and_requirement_is_verified() -> None
         step["if"] == "github.event_name == 'push'" for step in main_only_tools.values()
     )
     assert (
-        main_only_tools["Install locked web dependencies for pre-publish evidence"][
-            "run"
-        ]
+        main_only_tools["Install locked frontend selector dependencies"]["run"]
         == "pnpm install --frozen-lockfile"
     )
-    e2e = workflow["jobs"]["e2e"]
-    assert e2e["runs-on"] == "ubuntu-24.04"
-    stable_source_sha = (
-        "${{ github.event_name == 'pull_request' && "
-        "github.event.pull_request.head.sha || github.sha }}"
-    )
-    checkout_step = next(
-        step for step in e2e["steps"] if step.get("name") == "Check out source"
-    )
-    assert checkout_step["with"] == {
-        "repository": (
-            "${{ github.event.pull_request.head.repo.full_name || github.repository }}"
-        ),
-        "ref": stable_source_sha,
-    }
-    target_step = next(
+    public_audit = next(
         step
-        for step in e2e["steps"]
-        if step.get("name") == "Measure Ubuntu x64 4-core/16GB target baseline"
-    )
-    assert target_step["env"]["STOCK_DESK_SOURCE_REVISION"] == stable_source_sha
-    target_command = target_step["run"]
-    for required in (
-        "set -euo pipefail",
-        'test "$(git rev-parse HEAD)" = "$STOCK_DESK_SOURCE_REVISION"',
-        "test-results/performance/target-baseline.log",
-        "make performance-target 2>&1 | tee",
-    ):
-        assert required in target_command
-    import_step = next(
+        for step in public_tree_steps
+        if step.get("name") == "Audit public tree and repository contracts"
+    )["run"]
+    assert "check_public_history" in public_audit
+    main_recheck = next(
         step
-        for step in e2e["steps"]
-        if step.get("name") == "Publish target baseline import notice"
+        for step in public_tree_steps
+        if step.get("name") == "Run main-only pre-publish gates"
     )
-    assert import_step["if"] == "always()"
-    import_command = import_step["run"]
-    for required in (
-        "test-results/performance/target-baseline.json",
-        "test-results/performance/target-baseline.log",
-        "sha256sum",
-        "gzip -n -c",
-        "base64 -w0",
-        "::notice",
-        "chunk_size=2800",
-        "kind=",
-        "part=%s/%s",
-        "gzip_base64=",
-    ):
-        assert required in import_command
-    for required in (
-        'publish_evidence "test-results/performance/target-baseline.json"',
-        '"target_baseline" "Target performance JSON evidence"',
-        'publish_evidence "test-results/performance/target-baseline.log"',
-        '"measurement_log" "Target performance measurement log"',
-    ):
-        assert required in import_command
-    assert "elif [[ -f test-results/performance/target-baseline.log ]]" not in (
-        import_command
-    )
-
-    makefile = _read("Makefile")
-    target_recipe = makefile.split("\nperformance-target:\n", maxsplit=1)[1].split(
-        "\n\n", maxsplit=1
-    )[0]
-    assert "--evidence-kind target_baseline" in target_recipe
+    assert main_recheck["if"] == "github.event_name == 'push'"
+    assert "check_public_history" in main_recheck["run"]
 
     requirements = yaml.safe_load(_read("tests/acceptance/requirements.yml"))
     records = {item["id"]: item for item in requirements["requirements"]}
@@ -2157,35 +2174,6 @@ def test_python_ci_publishes_bounded_junit_failure_diagnostics() -> None:
         assert "Upload immutable shard evidence" in {
             step.get("name") for step in workflow["jobs"][key]["steps"]
         }
-    return
-    steps = workflow["jobs"]["python"]["steps"]
-    test_index = next(
-        index for index, step in enumerate(steps) if step.get("name") == "Test Python"
-    )
-    notice_index = next(
-        index
-        for index, step in enumerate(steps)
-        if step.get("name") == "Publish Python test failure notice"
-    )
-    notice = steps[notice_index]
-
-    assert notice_index == test_index + 1
-    assert notice["if"] == "failure() && needs.impact.outputs.full == 'true'"
-    command = notice["run"]
-    for required in (
-        "python-test-results.xml",
-        "python-test-failures.json",
-        "failures[:10]",
-        "text[-12_000:]",
-        "sha256sum",
-        "gzip -n -c",
-        "base64 -w0",
-        "chunk_size=2800",
-        "title=Python test failure evidence",
-        "kind=junit_failure_summary",
-        "part=%s/%s",
-    ):
-        assert required in command
 
 
 def test_python_ci_provisions_selector_tools_only_where_they_are_consumed() -> None:

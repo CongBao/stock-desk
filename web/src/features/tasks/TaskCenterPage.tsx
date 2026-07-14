@@ -420,7 +420,7 @@ export function TaskCenterPage({
     <article className="task-center-page" aria-busy={isLoading || isRefreshing}>
       <header className="task-center-header">
         <div>
-          <span className="page-kicker">v1.0.0 · Task Center</span>
+          <span className="page-kicker">STOCK DESK · Task Center</span>
           <h2 data-page-heading tabIndex={-1}>
             任务中心
           </h2>

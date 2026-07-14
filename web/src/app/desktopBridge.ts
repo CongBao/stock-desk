@@ -1,3 +1,9 @@
+import {
+  DESKTOP_BUILD_VERSION,
+  isDesktopVersion,
+  isStableDesktopVersion,
+} from './buildIdentity';
+
 export type DesktopRecoveryReason =
   | 'permission_denied'
   | 'restart_limit_reached'
@@ -23,6 +29,30 @@ export type DesktopExitState =
       readonly running: number;
     };
 export type DesktopExitListener = (state: DesktopExitState) => void;
+export type DesktopUpdateState =
+  | {
+      readonly state: 'disabled' | 'idle' | 'checking';
+      readonly currentVersion: string;
+    }
+  | {
+      readonly state: 'available';
+      readonly currentVersion: string;
+      readonly version: string;
+      readonly notes: string | null;
+    }
+  | {
+      readonly state:
+        'downloading' | 'verifying' | 'ready_to_install' | 'installing';
+      readonly currentVersion: string;
+      readonly version: string;
+    }
+  | {
+      readonly state: 'failed';
+      readonly currentVersion: string;
+      readonly code: string;
+      readonly canRetry: boolean;
+    };
+export type DesktopUpdateListener = (state: DesktopUpdateState) => void;
 export type DesktopProtocolErrorListener = () => void;
 export type DesktopUnsubscribe = () => void;
 export type DesktopDiagnosticExportResult = 'cancelled' | 'saved';
@@ -35,10 +65,17 @@ export type DesktopAdapter = {
   readonly confirmExit: () => Promise<void>;
   readonly openDiagnostics: () => Promise<void>;
   readonly exportDiagnostics: () => Promise<DesktopDiagnosticExportResult>;
+  readonly getUpdateState: () => Promise<unknown>;
+  readonly checkForUpdates: () => Promise<unknown>;
+  readonly dismissUpdate: () => Promise<void>;
+  readonly confirmUpdate: () => Promise<void>;
   readonly subscribe: (
     listener: (payload: unknown) => void,
   ) => Promise<DesktopUnsubscribe>;
   readonly subscribeExit: (
+    listener: (payload: unknown) => void,
+  ) => Promise<DesktopUnsubscribe>;
+  readonly subscribeUpdate: (
     listener: (payload: unknown) => void,
   ) => Promise<DesktopUnsubscribe>;
 };
@@ -52,12 +89,20 @@ export type BrowserDesktopBridge = {
   readonly confirmExit: () => void;
   readonly openDiagnostics: () => void;
   readonly exportDiagnostics: () => void;
+  readonly getUpdateState: () => DesktopUpdateState;
+  readonly checkForUpdates: () => DesktopUpdateState;
+  readonly dismissUpdate: () => void;
+  readonly confirmUpdate: () => void;
   readonly subscribe: (
     listener: DesktopRuntimeListener,
     onProtocolError?: DesktopProtocolErrorListener,
   ) => DesktopUnsubscribe;
   readonly subscribeExit: (
     listener: DesktopExitListener,
+    onProtocolError?: DesktopProtocolErrorListener,
+  ) => DesktopUnsubscribe;
+  readonly subscribeUpdate: (
+    listener: DesktopUpdateListener,
     onProtocolError?: DesktopProtocolErrorListener,
   ) => DesktopUnsubscribe;
 };
@@ -71,6 +116,10 @@ export type TauriDesktopBridge = {
   readonly confirmExit: () => Promise<void>;
   readonly openDiagnostics: () => Promise<void>;
   readonly exportDiagnostics: () => Promise<DesktopDiagnosticExportResult>;
+  readonly getUpdateState: () => Promise<DesktopUpdateState>;
+  readonly checkForUpdates: () => Promise<DesktopUpdateState>;
+  readonly dismissUpdate: () => Promise<void>;
+  readonly confirmUpdate: () => Promise<void>;
   readonly subscribe: (
     listener: DesktopRuntimeListener,
     onProtocolError?: DesktopProtocolErrorListener,
@@ -79,12 +128,20 @@ export type TauriDesktopBridge = {
     listener: DesktopExitListener,
     onProtocolError?: DesktopProtocolErrorListener,
   ) => Promise<DesktopUnsubscribe>;
+  readonly subscribeUpdate: (
+    listener: DesktopUpdateListener,
+    onProtocolError?: DesktopProtocolErrorListener,
+  ) => Promise<DesktopUnsubscribe>;
 };
 
 export type DesktopBridge = BrowserDesktopBridge | TauriDesktopBridge;
 
 const browserReadyState: DesktopRuntimeState = Object.freeze({
   state: 'ready',
+});
+const browserUpdateState: DesktopUpdateState = Object.freeze({
+  state: 'disabled',
+  currentVersion: DESKTOP_BUILD_VERSION ?? 'unavailable',
 });
 
 const recoveryReasons = new Set<DesktopRecoveryReason>([
@@ -177,6 +234,75 @@ function decodeExitState(value: unknown): DesktopExitState {
   };
 }
 
+function decodeUpdateState(value: unknown): DesktopUpdateState {
+  if (
+    !isRecord(value) ||
+    typeof value.state !== 'string' ||
+    !isDesktopVersion(value.current_version)
+  ) {
+    throw new DesktopBridgeProtocolError();
+  }
+  if (
+    value.state === 'disabled' ||
+    value.state === 'idle' ||
+    value.state === 'checking'
+  ) {
+    if (!hasExactKeys(value, ['state', 'current_version'])) {
+      throw new DesktopBridgeProtocolError();
+    }
+    return { state: value.state, currentVersion: value.current_version };
+  }
+  if (value.state === 'available') {
+    if (
+      !hasExactKeys(value, ['state', 'current_version', 'version', 'notes']) ||
+      !isStableDesktopVersion(value.version) ||
+      (value.notes !== null &&
+        (typeof value.notes !== 'string' || value.notes.length > 2_000))
+    ) {
+      throw new DesktopBridgeProtocolError();
+    }
+    return {
+      state: 'available',
+      currentVersion: value.current_version,
+      version: value.version,
+      notes: value.notes,
+    };
+  }
+  if (
+    value.state === 'downloading' ||
+    value.state === 'verifying' ||
+    value.state === 'ready_to_install' ||
+    value.state === 'installing'
+  ) {
+    if (
+      !hasExactKeys(value, ['state', 'current_version', 'version']) ||
+      !isStableDesktopVersion(value.version)
+    ) {
+      throw new DesktopBridgeProtocolError();
+    }
+    return {
+      state: value.state,
+      currentVersion: value.current_version,
+      version: value.version,
+    };
+  }
+  if (
+    value.state !== 'failed' ||
+    !hasExactKeys(value, ['state', 'current_version', 'code', 'can_retry']) ||
+    typeof value.code !== 'string' ||
+    !/^desktop_updater_[a-z0-9_]+$/u.test(value.code) ||
+    typeof value.can_retry !== 'boolean'
+  ) {
+    throw new DesktopBridgeProtocolError();
+  }
+  return {
+    state: 'failed',
+    currentVersion: value.current_version,
+    code: value.code,
+    canRetry: value.can_retry,
+  };
+}
+
 function handleDecodedPayload<T>(
   decode: (payload: unknown) => T,
   listener: (value: T) => void,
@@ -208,8 +334,13 @@ function createBrowserBridge(): BrowserDesktopBridge {
     confirmExit: () => undefined,
     openDiagnostics: () => undefined,
     exportDiagnostics: () => undefined,
+    getUpdateState: () => browserUpdateState,
+    checkForUpdates: () => browserUpdateState,
+    dismissUpdate: () => undefined,
+    confirmUpdate: () => undefined,
     subscribe: () => () => undefined,
     subscribeExit: () => () => undefined,
+    subscribeUpdate: () => () => undefined,
   };
 }
 
@@ -224,6 +355,12 @@ function createTauriBridge(adapter: DesktopAdapter): TauriDesktopBridge {
     confirmExit: () => adapter.confirmExit(),
     openDiagnostics: () => adapter.openDiagnostics(),
     exportDiagnostics: () => adapter.exportDiagnostics(),
+    getUpdateState: async () =>
+      decodeUpdateState(await adapter.getUpdateState()),
+    checkForUpdates: async () =>
+      decodeUpdateState(await adapter.checkForUpdates()),
+    dismissUpdate: () => adapter.dismissUpdate(),
+    confirmUpdate: () => adapter.confirmUpdate(),
     subscribe: (listener, onProtocolError) =>
       adapter.subscribe(
         handleDecodedPayload(decodeRuntimeState, listener, onProtocolError),
@@ -231,6 +368,10 @@ function createTauriBridge(adapter: DesktopAdapter): TauriDesktopBridge {
     subscribeExit: (listener, onProtocolError) =>
       adapter.subscribeExit(
         handleDecodedPayload(decodeExitState, listener, onProtocolError),
+      ),
+    subscribeUpdate: (listener, onProtocolError) =>
+      adapter.subscribeUpdate(
+        handleDecodedPayload(decodeUpdateState, listener, onProtocolError),
       ),
   };
 }

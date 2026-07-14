@@ -234,7 +234,7 @@ it('shows the product identity and all primary navigation items', () => {
   renderApp();
 
   expect(screen.getByText('stock-desk')).toBeInTheDocument();
-  expect(screen.getByText('v1.0.0 · Task Center')).toBeInTheDocument();
+  expect(screen.getByText('v1.1.0-beta.2 · Task Center')).toBeInTheDocument();
   for (const label of [
     '行情',
     '自定义公式',
@@ -245,6 +245,33 @@ it('shows the product identity and all primary navigation items', () => {
   ]) {
     expect(screen.getByRole('link', { name: label })).toBeInTheDocument();
   }
+  const shell = document.querySelector('.app-shell');
+  expect(shell?.firstElementChild).toHaveClass('desktop-update-slot');
+});
+
+it('shows version unavailable when the desktop identity query fails', async () => {
+  const adapter: DesktopAdapter = {
+    cancelExit: vi.fn(() => Promise.resolve()),
+    checkForUpdates: vi.fn(() => Promise.reject(new Error('unavailable'))),
+    confirmExit: vi.fn(() => Promise.resolve()),
+    confirmUpdate: vi.fn(() => Promise.resolve()),
+    dismissUpdate: vi.fn(() => Promise.resolve()),
+    exportDiagnostics: vi.fn(() => Promise.resolve('saved' as const)),
+    getRuntimeState: vi.fn(() => Promise.resolve({ state: 'ready' })),
+    getUpdateState: vi.fn(() => Promise.reject(new Error('unavailable'))),
+    openDiagnostics: vi.fn(() => Promise.resolve()),
+    requestExit: vi.fn(() => Promise.resolve()),
+    restartService: vi.fn(() => Promise.resolve()),
+    subscribe: vi.fn(() => Promise.resolve(() => undefined)),
+    subscribeExit: vi.fn(() => Promise.resolve(() => undefined)),
+    subscribeUpdate: vi.fn(() => Promise.resolve(() => undefined)),
+  };
+  renderApp(['/market'], false, createDesktopBridge(adapter));
+
+  expect(
+    await screen.findByText('版本不可用 · Task Center'),
+  ).toBeInTheDocument();
+  expect(screen.queryByText(/v1\.1\.0 · Task Center/u)).not.toBeInTheDocument();
 });
 
 it('offers a keyboard-accessible local diagnostic export with visible status', async () => {
@@ -252,14 +279,23 @@ it('offers a keyboard-accessible local diagnostic export with visible status', a
   const exportDiagnostics = vi.fn(() => Promise.resolve('saved' as const));
   const adapter: DesktopAdapter = {
     cancelExit: vi.fn(() => Promise.resolve()),
+    checkForUpdates: vi.fn(() =>
+      Promise.resolve({ state: 'disabled', current_version: '1.1.0' }),
+    ),
     confirmExit: vi.fn(() => Promise.resolve()),
+    confirmUpdate: vi.fn(() => Promise.resolve()),
+    dismissUpdate: vi.fn(() => Promise.resolve()),
     exportDiagnostics,
     getRuntimeState: vi.fn(() => Promise.resolve({ state: 'ready' })),
+    getUpdateState: vi.fn(() =>
+      Promise.resolve({ state: 'disabled', current_version: '1.1.0' }),
+    ),
     openDiagnostics: vi.fn(() => Promise.resolve()),
     requestExit: vi.fn(() => Promise.resolve()),
     restartService: vi.fn(() => Promise.resolve()),
     subscribe: vi.fn(() => Promise.resolve(() => undefined)),
     subscribeExit: vi.fn(() => Promise.resolve(() => undefined)),
+    subscribeUpdate: vi.fn(() => Promise.resolve(() => undefined)),
   };
   renderApp(['/market'], false, createDesktopBridge(adapter));
 
@@ -282,14 +318,23 @@ it('does not mount the workspace or request business APIs while desktop startup 
   vi.stubGlobal('fetch', fetchMock);
   const adapter: DesktopAdapter = {
     cancelExit: vi.fn(() => Promise.resolve()),
+    checkForUpdates: vi.fn(() =>
+      Promise.resolve({ state: 'disabled', current_version: '1.1.0' }),
+    ),
     confirmExit: vi.fn(() => Promise.resolve()),
+    confirmUpdate: vi.fn(() => Promise.resolve()),
+    dismissUpdate: vi.fn(() => Promise.resolve()),
     exportDiagnostics: vi.fn(() => Promise.resolve('saved' as const)),
     getRuntimeState: vi.fn(() => Promise.resolve({ state: 'starting' })),
+    getUpdateState: vi.fn(() =>
+      Promise.resolve({ state: 'disabled', current_version: '1.1.0' }),
+    ),
     openDiagnostics: vi.fn(() => Promise.resolve()),
     requestExit: vi.fn(() => Promise.resolve()),
     restartService: vi.fn(() => Promise.resolve()),
     subscribe: vi.fn(() => Promise.resolve(() => undefined)),
     subscribeExit: vi.fn(() => Promise.resolve(() => undefined)),
+    subscribeUpdate: vi.fn(() => Promise.resolve(() => undefined)),
   };
 
   renderApp(['/market'], false, createDesktopBridge(adapter));
@@ -298,6 +343,9 @@ it('does not mount the workspace or request business APIs while desktop startup 
   expect(screen.queryByRole('main', { name: '行情图表工作区' })).toBeNull();
   await waitFor(() => expect(adapter.getRuntimeState).toHaveBeenCalledOnce());
   await waitFor(() => expect(adapter.subscribeExit).toHaveBeenCalledOnce());
+  expect(adapter.getUpdateState).not.toHaveBeenCalled();
+  expect(adapter.checkForUpdates).not.toHaveBeenCalled();
+  expect(adapter.subscribeUpdate).not.toHaveBeenCalled();
   expect(fetchMock).not.toHaveBeenCalled();
 });
 
@@ -436,7 +484,8 @@ it('routes tasks to the real v1 task workspace without planned copy', async () =
     'data-workspace',
     'tasks',
   );
-  expect(screen.getAllByText('v1.0.0 · Task Center')).toHaveLength(2);
+  expect(screen.getByText('v1.1.0-beta.2 · Task Center')).toBeInTheDocument();
+  expect(screen.getByText('STOCK DESK · Task Center')).toBeInTheDocument();
 });
 
 it('supports direct refresh of a dynamic backtest run route', async () => {

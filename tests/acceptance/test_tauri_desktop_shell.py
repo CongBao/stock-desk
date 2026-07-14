@@ -29,6 +29,7 @@ def test_tauri_shell_is_windows_only_single_window_and_uses_bundled_assets() -> 
     ]
     assert config["app"]["security"]["capabilities"] == ["default"]
     assert "http://127.0.0.1:*" in config["app"]["security"]["csp"]
+    assert config["plugins"]["updater"] == {"endpoints": [], "pubkey": ""}
 
 
 def test_tauri_bundle_is_current_user_windows_x64_without_shell_acl() -> None:
@@ -104,6 +105,12 @@ def test_tauri_dependencies_are_exactly_pinned_and_single_instance_is_first() ->
     assert cargo["dependencies"]["tauri-plugin-single-instance"]["version"] == (
         "=2.4.2"
     )
+    updater = cargo["dependencies"]["tauri-plugin-updater"]
+    assert updater == {
+        "version": "=2.10.1",
+        "default-features": False,
+        "features": ["native-tls", "zip"],
+    }
 
     main_source = (TAURI_ROOT / "src" / "main.rs").read_text(encoding="utf-8")
     first_plugin = main_source.index(".plugin(")
@@ -112,6 +119,8 @@ def test_tauri_dependencies_are_exactly_pinned_and_single_instance_is_first() ->
     assert single_instance >= first_plugin
     assert next_plugin == -1 or single_instance < next_plugin
     assert "webbrowser" not in main_source.casefold()
+    assert ".plugin(updater::plugin())" in main_source
+    assert "desktop_check_for_updates" in main_source
 
 
 def test_frozen_sidecar_is_a_dedicated_binary_without_browser_assets() -> None:
