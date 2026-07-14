@@ -126,7 +126,9 @@ def prepare(destination: Path, *, source_sha: str, source_tree: str) -> dict[str
     matrix = inputs["matrix"]
     period_symbols = {period: tuple(matrix["symbols"]) for period in Period}
     all_matrix_symbols = tuple(
-        dict.fromkeys(symbol for symbols in period_symbols.values() for symbol in symbols)
+        dict.fromkeys(
+            symbol for symbols in period_symbols.values() for symbol in symbols
+        )
     )
     formula_records: dict[str, dict[str, object]] = {}
     with BacktestHarness.create(destination) as harness:

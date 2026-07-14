@@ -1386,8 +1386,7 @@ def verify_proved_artifacts(
             root = artifact_roots[artifact_name]
             try:
                 verify_packaged_backtest_promotion(
-                    root
-                    / "packaged-backtest/windows-packaged-backtest-promotion.json",
+                    root / "packaged-backtest/windows-packaged-backtest-promotion.json",
                     root=root,
                     source_sha=commit_sha,
                     source_tree=tree_sha,
