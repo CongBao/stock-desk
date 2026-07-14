@@ -284,17 +284,14 @@ def test_packaged_backtest_matrix_uses_webview_host_ipc_and_new_worker_resume() 
     submission = source.index(
         'await invoke(page, "POST", "/api/backtests", request)', backlog
     )
-    observed = source.index("await waitForCheckpointBacklog", backlog)
-    shutdown = source.index(
-        'await invoke(page, "POST", "/api/desktop/shutdown"', observed
-    )
+    shutdown = source.index("await requestCheckpoint(page, taskIds)", backlog)
     paused = source.index("const pausedTasks", shutdown)
     running = source.index("const running = pausedTasks[0]", paused)
-    assert runtime_ready < backlog < submission < observed < shutdown < paused < running
-    assert "for (let index = 0; index < 64; index += 1)" in source[backlog:observed]
-    assert "Promise.all" not in source[backlog:observed]
-    assert "100-row bound" in source[backlog:observed]
-    assert "taskIds.size !== submissions.length" in source[backlog:observed]
+    assert runtime_ready < backlog < submission < shutdown < paused < running
+    assert "for (let index = 0; index < 64; index += 1)" in source[backlog:shutdown]
+    assert "Promise.all" not in source[backlog:shutdown]
+    assert "100-row bound" in source[backlog:shutdown]
+    assert "taskIds.size !== submissions.length" in source[backlog:shutdown]
     backlog_helper = source.index("async function waitForCheckpointBacklog")
     backlog_helper_end = source.index("async function waitForCheckpointBacklogSuccess")
     assert 'item.status === "running"' in source[backlog_helper:backlog_helper_end]
@@ -303,10 +300,25 @@ def test_packaged_backtest_matrix_uses_webview_host_ipc_and_new_worker_resume() 
         "running.length === 1 && queued.length >= 8"
         in source[backlog_helper:backlog_helper_end]
     )
+    checkpoint_helper = source.index("async function requestCheckpoint")
+    checkpoint_helper_end = source.index("async function pageAll")
+    checkpoint_retry = source[checkpoint_helper:checkpoint_helper_end]
+    assert "maxAttempts = 24" in checkpoint_retry
+    assert "await waitForCheckpointBacklog(page, taskIds)" in checkpoint_retry
+    assert '"/api/desktop/shutdown"' in checkpoint_retry
+    assert 'payload?.code !== "desktop_checkpoint_timeout"' in checkpoint_retry
+    assert "payload?.retryable !== true" in checkpoint_retry
+    assert "error?.status !== 409" in checkpoint_retry
+    assert "selected.length !== taskIds.size" in checkpoint_retry
+    assert "queued.length < 8" in checkpoint_retry
+    assert "running.length > 1" in checkpoint_retry
+    assert "rejected.length > 0" in checkpoint_retry
+    assert "STOCK_DESK_CHECKPOINT_RETRY" in checkpoint_retry
+    assert "exhausted bounded retryable timeouts" in checkpoint_retry
     assert "checkpoint.running !== 1" in source[shutdown:paused]
     assert 'item.status === "running"' in source[paused:running]
     assert "pausedTasks.length !== 1" in source[paused:running]
-    assert "waitForRuntimeReady(page)" not in source[observed:shutdown]
+    assert "waitForRuntimeReady(page)" not in checkpoint_retry
     resumed = source.index("const finished = await waitForTask", running)
     drained = source.index("await waitForCheckpointBacklogSuccess", resumed)
     report = source.index('await invoke(\n    page,\n    "GET",', drained)

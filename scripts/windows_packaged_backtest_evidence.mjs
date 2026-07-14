@@ -88,9 +88,12 @@ async function invoke(page, method, requestPath, body = null) {
     throw new Error(`host IPC returned non-JSON for ${method} ${requestPath}`);
   }
   if (response.status < 200 || response.status >= 300) {
-    throw new Error(
+    const error = new Error(
       `host IPC rejected ${method} ${requestPath}: ${response.status} ${JSON.stringify(payload)}`,
     );
+    error.status = response.status;
+    error.payload = payload;
+    throw error;
   }
   return payload;
 }
@@ -183,6 +186,54 @@ async function waitForCheckpointBacklogSuccess(
   }
   throw new Error(
     `packaged checkpoint backlog did not finish successfully: ${JSON.stringify(selected)}`,
+  );
+}
+
+async function requestCheckpoint(page, taskIds, maxAttempts = 24) {
+  const retryObservations = [];
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    await waitForCheckpointBacklog(page, taskIds);
+    try {
+      return await invoke(page, "POST", "/api/desktop/shutdown", {
+        checkpoint_active: true,
+      });
+    } catch (error) {
+      const payload = error?.payload;
+      if (
+        error?.status !== 409 ||
+        payload?.code !== "desktop_checkpoint_timeout" ||
+        payload?.retryable !== true
+      ) {
+        throw error;
+      }
+      const currentTasks = await invoke(page, "GET", "/api/tasks?limit=100");
+      const selected = currentTasks.filter((item) => taskIds.has(item.id));
+      const queued = selected.filter((item) => item.status === "queued");
+      const running = selected.filter((item) => item.status === "running");
+      const rejected = selected.filter((item) =>
+        ["failed", "cancelled"].includes(item.status),
+      );
+      if (
+        selected.length !== taskIds.size ||
+        queued.length < 8 ||
+        running.length > 1 ||
+        rejected.length > 0
+      ) {
+        throw new Error(
+          `retryable packaged checkpoint lost its safe backlog: ${JSON.stringify({ attempt, queued: queued.length, running: running.length, rejected: rejected.length, selected: selected.length })}`,
+        );
+      }
+      const observation = {
+        attempt,
+        queued: queued.length,
+        running: running.length,
+      };
+      retryObservations.push(observation);
+      console.log(`STOCK_DESK_CHECKPOINT_RETRY ${JSON.stringify(observation)}`);
+    }
+  }
+  throw new Error(
+    `packaged checkpoint exhausted bounded retryable timeouts: ${JSON.stringify(retryObservations)}`,
   );
 }
 
@@ -432,10 +483,7 @@ async function checkpointEvidence(page, seed, baseline) {
   if (taskIds.size !== submissions.length) {
     throw new Error("packaged checkpoint backlog reused a task identity");
   }
-  await waitForCheckpointBacklog(page, taskIds);
-  const checkpoint = await invoke(page, "POST", "/api/desktop/shutdown", {
-    checkpoint_active: true,
-  });
+  const checkpoint = await requestCheckpoint(page, taskIds);
   if (!checkpoint.recovery_required || checkpoint.running !== 1) {
     throw new Error(
       "packaged custom pool did not create a recovery checkpoint",
