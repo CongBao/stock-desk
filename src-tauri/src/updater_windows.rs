@@ -772,24 +772,12 @@ fn bind_handle_to_lexical_path(
     expected: &Path,
     error: &'static str,
 ) -> Result<(), &'static str> {
-    use std::os::windows::ffi::OsStrExt as _;
     use std::os::windows::io::AsRawHandle as _;
     use windows_sys::Win32::Storage::FileSystem::{
         GetFinalPathNameByHandleW, FILE_NAME_NORMALIZED, VOLUME_NAME_DOS,
     };
 
-    let expected = std::path::absolute(expected).map_err(|_| error)?;
-    let expected: Vec<u16> = expected
-        .as_os_str()
-        .encode_wide()
-        .map(|unit| {
-            if unit == b'/' as u16 {
-                b'\\' as u16
-            } else {
-                unit
-            }
-        })
-        .collect();
+    let expected = long_windows_lexical_path(expected).map_err(|_| error)?;
     // SAFETY: a zero-length probe with a null buffer returns the required
     // UTF-16 capacity for the live directory handle.
     let required = unsafe {
@@ -823,6 +811,32 @@ fn bind_handle_to_lexical_path(
         return Err(error);
     }
     Ok(())
+}
+
+#[cfg(windows)]
+fn long_windows_lexical_path(path: &Path) -> std::io::Result<Vec<u16>> {
+    use std::os::windows::ffi::OsStrExt as _;
+    use windows_sys::Win32::Storage::FileSystem::GetLongPathNameW;
+
+    let absolute = std::path::absolute(path)?;
+    let input: Vec<u16> = absolute.as_os_str().encode_wide().chain(Some(0)).collect();
+    // GitHub's Windows temp directory may be supplied through an 8.3 alias,
+    // while the final-path API reports the long spelling. Expand only the
+    // lexical spelling before binding it to the already-open directory handle.
+    let required = unsafe { GetLongPathNameW(input.as_ptr(), std::ptr::null_mut(), 0) };
+    if required == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let mut expanded = vec![0_u16; required as usize];
+    // SAFETY: `input` is NUL terminated and `expanded` has the probed capacity;
+    // both buffers remain live for the synchronous call.
+    let written =
+        unsafe { GetLongPathNameW(input.as_ptr(), expanded.as_mut_ptr(), expanded.len() as u32) };
+    if written == 0 || written as usize >= expanded.len() {
+        return Err(std::io::Error::last_os_error());
+    }
+    expanded.truncate(written as usize);
+    Ok(expanded)
 }
 
 #[cfg(windows)]

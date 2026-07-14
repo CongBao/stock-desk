@@ -518,24 +518,12 @@ fn open_windows_directory(path: &Path, _code_prefix: &'static str) -> Result<Fil
 
 #[cfg(windows)]
 fn bind_windows_directory_to_lexical_path(file: &File, expected: &Path) -> std::io::Result<()> {
-    use std::os::windows::ffi::OsStrExt as _;
     use std::os::windows::io::AsRawHandle as _;
     use windows_sys::Win32::Storage::FileSystem::{
         GetFinalPathNameByHandleW, FILE_NAME_NORMALIZED, VOLUME_NAME_DOS,
     };
 
-    let expected = std::path::absolute(expected)?;
-    let expected: Vec<u16> = expected
-        .as_os_str()
-        .encode_wide()
-        .map(|unit| {
-            if unit == b'/' as u16 {
-                b'\\' as u16
-            } else {
-                unit
-            }
-        })
-        .collect();
+    let expected = long_windows_lexical_path(expected)?;
     // SAFETY: a null/zero-capacity probe returns the required UTF-16 size for
     // this live directory handle.
     let required = unsafe {
@@ -577,6 +565,33 @@ fn bind_windows_directory_to_lexical_path(file: &File, expected: &Path) -> std::
         ));
     }
     Ok(())
+}
+
+#[cfg(windows)]
+fn long_windows_lexical_path(path: &Path) -> std::io::Result<Vec<u16>> {
+    use std::os::windows::ffi::OsStrExt as _;
+    use windows_sys::Win32::Storage::FileSystem::GetLongPathNameW;
+
+    let absolute = std::path::absolute(path)?;
+    let input: Vec<u16> = absolute.as_os_str().encode_wide().chain(Some(0)).collect();
+    // Windows runners can expose the temp root through an 8.3 alias such as
+    // RUNNER~1 while GetFinalPathNameByHandleW returns the long spelling. Expand
+    // only that lexical spelling before comparing it with the already-open,
+    // non-reparse directory handle.
+    let required = unsafe { GetLongPathNameW(input.as_ptr(), std::ptr::null_mut(), 0) };
+    if required == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let mut expanded = vec![0_u16; required as usize];
+    // SAFETY: `input` is NUL terminated and `expanded` has the capacity probed
+    // by the preceding call. Both buffers remain live for this call.
+    let written =
+        unsafe { GetLongPathNameW(input.as_ptr(), expanded.as_mut_ptr(), expanded.len() as u32) };
+    if written == 0 || written as usize >= expanded.len() {
+        return Err(std::io::Error::last_os_error());
+    }
+    expanded.truncate(written as usize);
+    Ok(expanded)
 }
 
 #[cfg(windows)]
