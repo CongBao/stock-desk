@@ -150,10 +150,14 @@ def test_native_harness_installs_candidate_checks_shell_icons_and_exits_cleanly(
         "packaged child processes did not complete the tested graceful exit"
     )
     host_exit_code = source.index("$desktopProcess.ExitCode -ne 0")
-    sidecar_exit_code = source.index("$sidecarAfterProcess.ExitCode -ne 0")
+    retained_sidecar_handle = source.index(
+        "$sidecarAfterHandle = [StockDeskEvidenceNative]::OpenProcess"
+    )
+    sidecar_exit_code = source.rindex("GetExitCodeProcess($sidecarAfterHandle")
     graceful_exit_proof = source.index("$gracefulExit = $true")
     assert (
-        host_exit_code
+        retained_sidecar_handle
+        < host_exit_code
         < child_exit_wait
         < sidecar_exit_code
         < graceful_exit_proof
@@ -165,7 +169,24 @@ def test_native_harness_installs_candidate_checks_shell_icons_and_exits_cleanly(
     )
     assert "$desktopProcess.ExitCode -ne 0" in source
     assert "$sidecarAfterProcess = $afterSidecars[0]" in source
-    assert "$sidecarExited = $sidecarAfterProcess.HasExited" in source
+    assert "OpenProcess(0x1000, $false, [uint32]$sidecarAfterPid)" in source
+    assert "restarted sidecar process handle is unavailable" in source
+    assert "$observedSidecarExitCode -ne 259" in source
+    assert "GetExitCodeProcess($sidecarAfterHandle" in source
+    assert "$sidecarAfterExitCode -eq 259" in source
+    assert "$sidecarAfterExitCode -ne 0" in source
+    assert "sidecar exit code is unavailable" in source
+    assert "CloseHandle($sidecarAfterHandle)" in source
+    assert "bool GetExitCodeProcess(IntPtr process, out uint exitCode)" in source
+    assert "IntPtr OpenProcess(uint processAccess, bool inheritHandle" in source
+    assert "bool CloseHandle(IntPtr handle)" in source
+    final_exit_read = source.rindex("GetExitCodeProcess($sidecarAfterHandle")
+    unavailable_exit = source.index("sidecar exit code is unavailable", final_exit_read)
+    active_exit = source.index("$sidecarAfterExitCode -eq 259", unavailable_exit)
+    nonzero_exit = source.index("$sidecarAfterExitCode -ne 0", active_exit)
+    assert final_exit_read < unavailable_exit < active_exit < nonzero_exit
+    close_handle = source.index("CloseHandle($sidecarAfterHandle)", nonzero_exit)
+    assert nonzero_exit < graceful_exit_proof < close_handle
     assert "Get-IsolatedWebViewProcesses $webviewUserData -Strict" in source
     assert "$queryErrorAction = if ($Strict) { 'Stop' }" in source
     assert "sidecar_ids=$($remainingSidecarIds -join ',')" in source

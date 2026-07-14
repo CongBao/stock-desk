@@ -33,6 +33,12 @@ public static class StockDeskEvidenceNative {
   public static extern bool SetForegroundWindow(IntPtr hWnd);
   [DllImport("user32.dll")]
   public static extern bool ShowWindow(IntPtr hWnd, int command);
+  [DllImport("kernel32.dll", SetLastError=true)]
+  public static extern bool GetExitCodeProcess(IntPtr process, out uint exitCode);
+  [DllImport("kernel32.dll", SetLastError=true)]
+  public static extern IntPtr OpenProcess(uint processAccess, bool inheritHandle, uint processId);
+  [DllImport("kernel32.dll", SetLastError=true)]
+  public static extern bool CloseHandle(IntPtr handle);
   [DllImport("user32.dll", CharSet=CharSet.Unicode)]
   public static extern uint PrivateExtractIcons(string file, int index, int width, int height, IntPtr[] icons, uint[] ids, uint count, uint flags);
   [DllImport("user32.dll")]
@@ -266,6 +272,7 @@ $baselineSidecarProcessIds = @(
 )
 $desktopProcess = $null
 $nodeProcess = $null
+$sidecarAfterHandle = [IntPtr]::Zero
 $gracefulExit = $false
 try {
   if (Test-Path -LiteralPath $uninstallerPath -PathType Leaf) {
@@ -472,6 +479,13 @@ try {
   if ($sidecarAfterHash -ne $sidecarBinaryHash) { throw 'sidecar binary identity changed across restart' }
   $sidecarAfterProcess = $afterSidecars[0]
   $sidecarAfterPid = [int]$afterSidecars[0].Id
+  # Retain the least-privilege native process handle while the sidecar is alive.
+  # Windows keeps the process object and its exit status available until this
+  # handle is closed, even after the process has terminated.
+  $sidecarAfterHandle = [StockDeskEvidenceNative]::OpenProcess(0x1000, $false, [uint32]$sidecarAfterPid)
+  if ($sidecarAfterHandle -eq [IntPtr]::Zero) {
+    throw 'restarted sidecar process handle is unavailable'
+  }
   Write-CaptureAck (Join-Path $restartSyncRoot 'restart-after.ack') $captureNonce
   foreach ($fixtureRequest in @(
     @('matrix_1w','matrix_1w'),
@@ -504,8 +518,11 @@ try {
   }
   try {
     Wait-Until {
-      $sidecarAfterProcess.Refresh()
-      $sidecarExited = $sidecarAfterProcess.HasExited
+      [uint32]$observedSidecarExitCode = 259
+      if (-not [StockDeskEvidenceNative]::GetExitCodeProcess($sidecarAfterHandle, [ref]$observedSidecarExitCode)) {
+        throw 'packaged sidecar native exit status became unavailable'
+      }
+      $sidecarExited = $observedSidecarExitCode -ne 259
       $remainingWebViews = @(Get-IsolatedWebViewProcesses $webviewUserData -Strict)
       if ($sidecarExited -and $remainingWebViews.Count -eq 0) { $true } else { $false }
     } 30 'packaged child processes did not complete the tested graceful exit' | Out-Null
@@ -518,9 +535,16 @@ try {
     )
     throw "packaged child processes did not complete the tested graceful exit; reason=$childExitFailure; sidecar_ids=$($remainingSidecarIds -join ','); webview_ids=$($remainingWebViewIds -join ',')"
   }
-  $sidecarAfterProcess.Refresh()
-  if ($sidecarAfterProcess.ExitCode -ne 0) {
-    throw "packaged sidecar exited with a non-zero code during the tested graceful exit: $($sidecarAfterProcess.ExitCode)"
+  [uint32]$sidecarAfterExitCode = 0
+  if (-not [StockDeskEvidenceNative]::GetExitCodeProcess($sidecarAfterHandle, [ref]$sidecarAfterExitCode)) {
+    $sidecarExitCodeError = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+    throw "packaged sidecar exit code is unavailable after the tested graceful exit: win32=$sidecarExitCodeError"
+  }
+  if ($sidecarAfterExitCode -eq 259) {
+    throw 'packaged sidecar native handle remained active after the tested graceful exit'
+  }
+  if ($sidecarAfterExitCode -ne 0) {
+    throw "packaged sidecar exited with a non-zero code during the tested graceful exit: $sidecarAfterExitCode"
   }
   $gracefulExit = $true
 
@@ -587,6 +611,10 @@ try {
   }
   $manifest | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $Output 'windows-desktop-evidence.json') -Encoding utf8NoBOM
 } finally {
+  if ($sidecarAfterHandle -ne [IntPtr]::Zero) {
+    [StockDeskEvidenceNative]::CloseHandle($sidecarAfterHandle) | Out-Null
+    $sidecarAfterHandle = [IntPtr]::Zero
+  }
   if (-not $gracefulExit -and (Test-Path -LiteralPath $Output -PathType Container)) {
     $diagnosticsRoot = Join-Path (Split-Path (Split-Path $Output -Parent) -Parent) 'diagnostics'
     New-Item -ItemType Directory -Force $diagnosticsRoot | Out-Null
