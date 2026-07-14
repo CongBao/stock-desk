@@ -119,7 +119,7 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path, Path, Path, Path, Path]:
                 "task_id": f"55555555-5555-4555-8555-{index:012d}",
                 "snapshot_id": "sha256:" + "d" * 64,
                 "result_hash": "sha256:" + "e" * 64,
-                "worker_id": "tauri-sidecar-" + "a" * 32,
+                "worker_id": "tauri-sidecar-" + ("a" if period == "1d" else "b") * 32,
                 "oracle_semantic_digest": oracle["cases"][case_id]["semantic_digest"],
                 "preflight_sha256": "1" * 64,
                 "overview_sha256": "2" * 64,
@@ -353,6 +353,73 @@ def test_packaged_backtest_evidence_verifier_accepts_complete_bound_matrix(
         source_tree=SOURCE_TREE,
         candidate_sha256=CANDIDATE,
     )
+
+
+def _rewrite_evidence_and_bindings(
+    evidence: Path,
+    host: Path,
+    desktop: Path,
+    payload: dict[str, object],
+) -> None:
+    evidence.write_text(json.dumps(payload), encoding="utf-8")
+    host_payload = json.loads(host.read_text(encoding="utf-8"))
+    host_payload["evidence_sha256"] = _sha(evidence)
+    host.write_text(json.dumps(host_payload), encoding="utf-8")
+    desktop_payload = json.loads(desktop.read_text(encoding="utf-8"))
+    desktop_payload["packaged_backtests"]["sha256"] = _sha(evidence)
+    desktop_payload["packaged_backtests"]["host_observation_sha256"] = _sha(host)
+    desktop.write_text(json.dumps(desktop_payload), encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("target", "expected_error"),
+    (
+        ("daily-cell", "pre-restart Worker"),
+        ("special-case", "pre-restart Worker"),
+        ("checkpoint-baseline", "pre-restart Worker"),
+        ("weekly-cell", "post-restart Worker"),
+        ("intraday-cell", "post-restart Worker"),
+    ),
+)
+def test_packaged_backtest_evidence_verifier_rejects_worker_generation_splicing(
+    tmp_path: Path,
+    target: str,
+    expected_error: str,
+) -> None:
+    evidence, seed, host, desktop, installer, bundle = _fixture(tmp_path)
+    payload = json.loads(evidence.read_text(encoding="utf-8"))
+    worker_before = payload["checkpoint"]["worker_before"]
+    worker_after = payload["checkpoint"]["worker_after"]
+    if target == "daily-cell":
+        next(cell for cell in payload["cells"] if cell["period"] == "1d")[
+            "worker_id"
+        ] = worker_after
+    elif target == "special-case":
+        payload["special_cases"][0]["worker_id"] = worker_after
+    elif target == "checkpoint-baseline":
+        payload["checkpoint"]["baseline_worker_id"] = worker_after
+    elif target == "weekly-cell":
+        next(cell for cell in payload["cells"] if cell["period"] == "1w")[
+            "worker_id"
+        ] = worker_before
+    else:
+        next(cell for cell in payload["cells"] if cell["period"] == "60m")[
+            "worker_id"
+        ] = worker_before
+    _rewrite_evidence_and_bindings(evidence, host, desktop, payload)
+
+    with pytest.raises(EvidenceError, match=expected_error):
+        verify(
+            evidence,
+            seed,
+            host,
+            desktop,
+            installer,
+            bundle,
+            source_sha=SOURCE_SHA,
+            source_tree=SOURCE_TREE,
+            candidate_sha256=CANDIDATE,
+        )
 
 
 @pytest.mark.parametrize(

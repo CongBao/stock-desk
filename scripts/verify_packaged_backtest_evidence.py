@@ -619,7 +619,9 @@ def verify(
         )
     run_ids: set[str] = set()
     task_ids: set[str] = set()
-    matrix_workers: set[str] = set()
+    matrix_workers_by_period: dict[str, set[str]] = {
+        period: set() for period in ("1d", "1w", "60m")
+    }
     for case_id in sorted(expected_ids):
         cell = by_id[case_id]
         if set(cell) != {
@@ -680,7 +682,7 @@ def verify(
         task_ids.add(cast(str, cell["task_id"]))
         if _WORKER.fullmatch(str(cell.get("worker_id", ""))) is None:
             raise EvidenceError(f"missing packaged Worker identity: {case_id}")
-        matrix_workers.add(cast(str, cell["worker_id"]))
+        matrix_workers_by_period[period].add(cast(str, cell["worker_id"]))
     if len(run_ids) != 12 or len(task_ids) != 12:
         raise EvidenceError("packaged matrix run/task identities are not unique")
 
@@ -811,13 +813,21 @@ def verify(
     for key in ("worker_before", "worker_after"):
         if _WORKER.fullmatch(str(checkpoint.get(key, ""))) is None:
             raise EvidenceError(f"invalid checkpoint {key}")
+    worker_before = cast(str, checkpoint["worker_before"])
+    worker_after = cast(str, checkpoint["worker_after"])
     if (
-        matrix_workers != {checkpoint["worker_before"]}
-        or special_workers != matrix_workers
-        or checkpoint.get("baseline_worker_id") != checkpoint.get("worker_before")
+        matrix_workers_by_period["1d"] != {worker_before}
+        or special_workers != {worker_before}
+        or checkpoint.get("baseline_worker_id") != worker_before
     ):
         raise EvidenceError(
             "packaged cases were not executed by the pre-restart Worker"
+        )
+    if matrix_workers_by_period["1w"] != {worker_after} or matrix_workers_by_period[
+        "60m"
+    ] != {worker_after}:
+        raise EvidenceError(
+            "packaged cases were not executed by the post-restart Worker"
         )
     for key in ("baseline_snapshot_id", "baseline_result_hash"):
         if _DIGEST.fullmatch(str(checkpoint.get(key, ""))) is None:
