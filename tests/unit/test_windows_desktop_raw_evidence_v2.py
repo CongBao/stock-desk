@@ -955,11 +955,12 @@ def test_windows_ci_executes_controlled_uia_runtime_fixture() -> None:
     assert (
         "$uiaReceipt.focused_region_id -ceq $uiaReceipt.unfocused_region_id" in workflow
     )
-    for raw_path in (
-        "uia-runtime-probe/driver-result.json:raw-uia-runtime",
-        "uia-runtime-probe/uia-actions.json:raw-uia-runtime",
-        "uia-runtime-probe/uia-tree.json:raw-uia-runtime",
-        "uia-runtime-probe/runtime-probe-window.png:raw-uia-runtime",
-        "uia-runtime-probe/focus-region-contact-sheet.png:raw-uia-runtime",
+    assert "raw-uia-runtime" not in workflow
+    for provenance_path in (
+        "uia-runtime-probe/driver-result.json:provenance",
+        "uia-runtime-probe/uia-actions.json:provenance",
+        "uia-runtime-probe/uia-tree.json:provenance",
+        "uia-runtime-probe/runtime-probe-window.png:provenance",
+        "uia-runtime-probe/focus-region-contact-sheet.png:provenance",
     ):
-        assert raw_path in workflow
+        assert provenance_path in workflow

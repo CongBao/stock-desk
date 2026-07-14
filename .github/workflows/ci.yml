@@ -186,11 +186,11 @@ jobs:
             --job-id $env:GITHUB_JOB --job-name 'Execute Windows browser and UIA observer integrations' `
             --payload 'observer-evidence.json:provenance' `
             --payload 'uia-driver-evidence.json:provenance' `
-            --payload 'uia-runtime-probe/driver-result.json:raw-uia-runtime' `
-            --payload 'uia-runtime-probe/uia-actions.json:raw-uia-runtime' `
-            --payload 'uia-runtime-probe/uia-tree.json:raw-uia-runtime' `
-            --payload 'uia-runtime-probe/runtime-probe-window.png:raw-uia-runtime' `
-            --payload 'uia-runtime-probe/focus-region-contact-sheet.png:raw-uia-runtime' `
+            --payload 'uia-runtime-probe/driver-result.json:provenance' `
+            --payload 'uia-runtime-probe/uia-actions.json:provenance' `
+            --payload 'uia-runtime-probe/uia-tree.json:provenance' `
+            --payload 'uia-runtime-probe/runtime-probe-window.png:provenance' `
+            --payload 'uia-runtime-probe/focus-region-contact-sheet.png:provenance' `
             --critical-input "scripts/windows_installed_guest_harness.ps1=$guestHash" `
             --critical-input "tests/windows/windows_browser_observer_integration.ps1=$testHash" `
             --critical-input "scripts/windows_desktop_uia_driver.ps1=$uiaHash" `
