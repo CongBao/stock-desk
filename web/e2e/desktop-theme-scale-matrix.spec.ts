@@ -423,8 +423,34 @@ function criticalAction(route: CoreRoute, page: Page) {
     return {
       activate: async () => {
         await expect(target).toHaveText('刷新任务');
+        let releaseTaskList = () => {};
+        const taskListGate = new Promise<void>((resolve) => {
+          releaseTaskList = resolve;
+        });
+        await page.route(
+          '**/api/tasks?**',
+          async (taskListRoute) => {
+            await taskListGate;
+            await taskListRoute.fallback();
+          },
+          { times: 1 },
+        );
+        const refreshRequest = page.waitForRequest((request) => {
+          const url = new URL(request.url());
+          return (
+            request.method() === 'GET' &&
+            url.pathname === '/api/tasks' &&
+            url.searchParams.get('limit') === '100'
+          );
+        });
         await page.keyboard.press('Enter');
-        await expect(target).toHaveText('刷新中…');
+        await refreshRequest;
+        try {
+          await expect(target).toHaveText('刷新中…');
+          await expect(target).toBeDisabled();
+        } finally {
+          releaseTaskList();
+        }
         await expect(target).toHaveText('刷新任务');
         await expect(target).toBeEnabled();
         await expect(page.locator('.task-detail-panel')).toBeVisible();
