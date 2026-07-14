@@ -1,10 +1,17 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 
 import { MarketOperationsPanel } from './MarketOperationsPanel';
 import type { JsonValue } from '../../shared/api/client';
+import type { MarketApi } from './marketApi';
 import type {
   MarketTask,
   MarketTaskEvent,
@@ -32,7 +39,14 @@ const queued: MarketTask = {
   finishedAt: null,
 };
 
-function renderPanel(api: MarketWorkflowApi) {
+function renderPanel(
+  api: MarketWorkflowApi,
+  marketApiClient = {
+    searchInstruments: vi.fn(
+      () => new Promise<readonly never[]>(() => undefined),
+    ),
+  } as unknown as MarketApi,
+) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
@@ -42,6 +56,7 @@ function renderPanel(api: MarketWorkflowApi) {
         <MemoryRouter>
           <MarketOperationsPanel
             api={api}
+            marketApiClient={marketApiClient}
             period="1d"
             adjustment="qfq"
             selectedInstrument={{ symbol: '600000.SH', name: '浦发银行' }}
@@ -58,6 +73,16 @@ function renderPanel(api: MarketWorkflowApi) {
     ),
     queryClient,
   };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, reject, resolve };
 }
 
 it('links the visible market selection and date range to a refreshable backtest prefill', async () => {
@@ -138,6 +163,173 @@ it('creates a custom pool from searched selections and launches a cache update',
     expect.objectContaining({ signal: expect.any(AbortSignal) as unknown }),
   );
   expect(screen.getByText('排队中')).toBeInTheDocument();
+});
+
+it('keeps an in-flight create in one locked dialog session', async () => {
+  const user = userEvent.setup();
+  const pendingCreate = deferred<unknown>();
+  const createPool = vi.fn(() => pendingCreate.promise);
+  renderPanel({
+    createPool,
+    getDailySchedule: vi.fn(() => Promise.reject(new Error('missing'))),
+  } as unknown as MarketWorkflowApi);
+
+  await user.click(screen.getByRole('button', { name: '新建自定义池' }));
+  await user.type(
+    screen.getByRole('textbox', { name: '股票池名称' }),
+    '旧会话草稿',
+  );
+  await user.click(screen.getByRole('button', { name: /加入浦发银行/u }));
+  const submit = screen.getByRole('button', { name: '创建股票池' });
+  fireEvent.click(submit);
+  fireEvent.click(submit);
+
+  await waitFor(() => expect(createPool).toHaveBeenCalledTimes(1));
+  expect(createPool).toHaveBeenCalledWith(
+    { name: '旧会话草稿', symbols: ['600000.SH'] },
+    expect.objectContaining({ signal: expect.any(AbortSignal) as unknown }),
+  );
+  const status = screen.getByRole('status');
+  expect(status).toHaveTextContent('正在创建股票池');
+  expect(status).toHaveFocus();
+  expect(submit).toBeDisabled();
+
+  await user.click(screen.getByRole('button', { name: '取消' }));
+  expect(screen.getByRole('dialog', { name: '新建自定义池' })).toBeVisible();
+  expect(
+    screen.queryByRole('alertdialog', { name: '放弃新股票池草稿？' }),
+  ).not.toBeInTheDocument();
+  expect(status).toHaveFocus();
+  await user.keyboard('{Escape}');
+  expect(screen.getByRole('dialog', { name: '新建自定义池' })).toBeVisible();
+  expect(status).toHaveFocus();
+  expect(createPool).toHaveBeenCalledTimes(1);
+
+  await act(async () => {
+    pendingCreate.resolve({});
+    await pendingCreate.promise;
+  });
+  await waitFor(() =>
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument(),
+  );
+  expect(createPool).toHaveBeenCalledTimes(1);
+});
+
+it('keeps an in-flight update in one locked dialog session', async () => {
+  const user = userEvent.setup();
+  const pendingUpdate = deferred<unknown>();
+  const updatePool = vi.fn(() => pendingUpdate.promise);
+  renderPanel({
+    updatePool,
+    getDailySchedule: vi.fn(() => Promise.reject(new Error('missing'))),
+  } as unknown as MarketWorkflowApi);
+
+  await user.click(screen.getByRole('button', { name: '编辑当前股票池' }));
+  const oldName = screen.getByRole('textbox', { name: '股票池名称' });
+  await user.clear(oldName);
+  await user.type(oldName, '旧版本草稿');
+  const submit = screen.getByRole('button', { name: '保存股票池' });
+  fireEvent.click(submit);
+  fireEvent.click(submit);
+
+  await waitFor(() => expect(updatePool).toHaveBeenCalledTimes(1));
+  expect(updatePool).toHaveBeenCalledWith(
+    'custom-watch',
+    {
+      expectedRevision: 1,
+      name: '旧版本草稿',
+      symbols: ['600000.SH'],
+    },
+    expect.objectContaining({ signal: expect.any(AbortSignal) as unknown }),
+  );
+  const status = screen.getByRole('status');
+  expect(status).toHaveTextContent('正在保存股票池');
+  expect(status).toHaveFocus();
+  expect(submit).toBeDisabled();
+
+  await user.click(screen.getByRole('button', { name: '取消' }));
+  expect(screen.getByRole('dialog', { name: '编辑自定义池' })).toBeVisible();
+  expect(
+    screen.queryByRole('alertdialog', { name: '放弃股票池更改？' }),
+  ).not.toBeInTheDocument();
+  expect(status).toHaveFocus();
+  await user.keyboard('{Escape}');
+  expect(screen.getByRole('dialog', { name: '编辑自定义池' })).toBeVisible();
+  expect(status).toHaveFocus();
+  expect(updatePool).toHaveBeenCalledTimes(1);
+
+  await act(async () => {
+    pendingUpdate.resolve({});
+    await pendingUpdate.promise;
+  });
+  await waitFor(() =>
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument(),
+  );
+  expect(updatePool).toHaveBeenCalledTimes(1);
+});
+
+it('protects a changed create draft and restores the confirmation origin on Escape', async () => {
+  const user = userEvent.setup();
+  renderPanel({
+    getDailySchedule: vi.fn(() => Promise.reject(new Error('missing'))),
+  } as unknown as MarketWorkflowApi);
+
+  const trigger = screen.getByRole('button', { name: '新建自定义池' });
+  await user.click(trigger);
+  const name = screen.getByRole('textbox', { name: '股票池名称' });
+  await user.type(name, '待确认草稿');
+  const cancel = screen.getByRole('button', { name: '取消' });
+  await user.click(cancel);
+
+  expect(
+    screen.getByRole('alertdialog', { name: '放弃新股票池草稿？' }),
+  ).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: '继续编辑' })).toHaveFocus();
+
+  await user.keyboard('{Escape}');
+  await waitFor(() => expect(cancel).toHaveFocus());
+  expect(name).toHaveValue('待确认草稿');
+
+  await user.click(cancel);
+  await user.click(screen.getByRole('button', { name: '放弃更改' }));
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  await waitFor(() => expect(trigger).toHaveFocus());
+
+  await user.click(trigger);
+  expect(screen.getByRole('textbox', { name: '股票池名称' })).toHaveValue('');
+});
+
+it('protects edited pool fields, members, and search draft before closing', async () => {
+  const user = userEvent.setup();
+  renderPanel({
+    getDailySchedule: vi.fn(() => Promise.reject(new Error('missing'))),
+  } as unknown as MarketWorkflowApi);
+
+  const trigger = screen.getByRole('button', {
+    name: '编辑当前股票池',
+  });
+  await user.click(trigger);
+  const name = screen.getByRole('textbox', { name: '股票池名称' });
+  await user.clear(name);
+  await user.type(name, '改名观察池');
+  const search = screen.getByRole('textbox', { name: '编辑池搜索证券' });
+  fireEvent.change(search, { target: { value: ' ' } });
+  search.focus();
+  await user.keyboard('{Escape}');
+
+  expect(
+    screen.getByRole('alertdialog', { name: '放弃股票池更改？' }),
+  ).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: '继续编辑' })).toHaveFocus();
+  await user.keyboard('{Escape}');
+  await waitFor(() => expect(search).toHaveFocus());
+  expect(name).toHaveValue('改名观察池');
+  expect(search).toHaveValue(' ');
+
+  await user.click(screen.getByRole('button', { name: '取消' }));
+  await user.click(screen.getByRole('button', { name: '放弃更改' }));
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  await waitFor(() => expect(trigger).toHaveFocus());
 });
 
 it('saves an Asia/Shanghai schedule with an explicit frozen pool snapshot', async () => {
@@ -291,9 +483,17 @@ it('requires an explicit second confirmation before deleting a custom pool', asy
   renderPanel(api);
 
   await user.click(screen.getByRole('button', { name: '编辑当前股票池' }));
-  await user.click(screen.getByRole('button', { name: '删除股票池' }));
+  const deleteTrigger = screen.getByRole('button', { name: '删除股票池' });
+  await user.click(deleteTrigger);
   expect(deletePool).not.toHaveBeenCalled();
-  expect(screen.getByRole('alert')).toHaveTextContent('删除后无法撤销');
+  expect(screen.getByRole('alertdialog')).toHaveTextContent('删除后无法撤销');
+  expect(screen.getByRole('button', { name: '保留股票池' })).toHaveFocus();
+
+  await user.keyboard('{Escape}');
+  await waitFor(() => expect(deleteTrigger).toHaveFocus());
+  expect(deletePool).not.toHaveBeenCalled();
+
+  await user.click(deleteTrigger);
 
   await user.click(screen.getByRole('button', { name: '确认删除' }));
   await waitFor(() => expect(deletePool).toHaveBeenCalledTimes(1));
@@ -301,5 +501,59 @@ it('requires an explicit second confirmation before deleting a custom pool', asy
     'custom-watch',
     1,
     expect.objectContaining({ signal: expect.any(AbortSignal) as unknown }),
+  );
+});
+
+it('locks a pending delete, reports failure, and allows a safe retry', async () => {
+  const user = userEvent.setup();
+  const pendingDelete = deferred<void>();
+  const deletePool = vi
+    .fn()
+    .mockImplementationOnce(() => pendingDelete.promise)
+    .mockImplementationOnce(() => Promise.resolve());
+  const updatePool = vi.fn();
+  renderPanel({
+    deletePool,
+    updatePool,
+    getDailySchedule: vi.fn(() => Promise.reject(new Error('missing'))),
+  } as unknown as MarketWorkflowApi);
+
+  await user.click(screen.getByRole('button', { name: '编辑当前股票池' }));
+  await user.click(screen.getByRole('button', { name: '删除股票池' }));
+  await user.click(screen.getByRole('button', { name: '确认删除' }));
+  await waitFor(() => expect(deletePool).toHaveBeenCalledTimes(1));
+
+  const status = screen.getByRole('status');
+  expect(status).toHaveTextContent('正在删除股票池');
+  expect(status).toHaveFocus();
+  expect(screen.getByRole('button', { name: '保留股票池' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: '确认删除' })).toBeDisabled();
+
+  await user.keyboard('{Escape}');
+  expect(
+    screen.getByRole('alertdialog', { name: '确认删除股票池？' }),
+  ).toBeVisible();
+  expect(status).toHaveFocus();
+  expect(screen.queryByRole('textbox', { name: '股票池名称' })).toBeNull();
+  expect(updatePool).not.toHaveBeenCalled();
+
+  await act(async () => {
+    pendingDelete.reject(new Error('offline'));
+    await pendingDelete.promise.catch(() => undefined);
+  });
+  expect(await screen.findByRole('alert')).toHaveTextContent(
+    '股票池删除失败，请重试或返回编辑。',
+  );
+  expect(screen.getByRole('button', { name: '保留股票池' })).toBeEnabled();
+  expect(screen.getByRole('button', { name: '确认删除' })).toBeEnabled();
+
+  await user.click(screen.getByRole('button', { name: '保留股票池' }));
+  const deleteTrigger = screen.getByRole('button', { name: '删除股票池' });
+  await waitFor(() => expect(deleteTrigger).toHaveFocus());
+  await user.click(deleteTrigger);
+  await user.click(screen.getByRole('button', { name: '确认删除' }));
+  await waitFor(() => expect(deletePool).toHaveBeenCalledTimes(2));
+  await waitFor(() =>
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument(),
   );
 });

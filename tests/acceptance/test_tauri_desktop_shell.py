@@ -21,8 +21,8 @@ def test_tauri_shell_is_windows_only_single_window_and_uses_bundled_assets() -> 
             "title": "Stock Desk",
             "width": 1440,
             "height": 900,
-            "minWidth": 960,
-            "minHeight": 640,
+            "minWidth": 640,
+            "minHeight": 360,
             "center": True,
             "visible": False,
         }

@@ -3,6 +3,7 @@ import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { PropsWithChildren } from 'react';
 
+import theme from '../../app/theme.css?raw';
 import type { MarketApi, MarketPoolDetail, MarketPoolPage } from './marketApi';
 import { StockPoolPanel } from './StockPoolPanel';
 
@@ -82,6 +83,24 @@ const detail = {
     },
   ],
 } as const satisfies MarketPoolDetail;
+
+it('uses shared theme tokens for pool rows, members, and kind labels', () => {
+  const poolStyles = theme.slice(
+    theme.indexOf('.pool-list button,'),
+    theme.indexOf('.pool-guidance,'),
+  );
+
+  expect(poolStyles).toContain('background: var(--surface-0)');
+  expect(poolStyles).toContain('color: var(--text-primary)');
+  expect(poolStyles).toContain('color: var(--text-muted)');
+  expect(poolStyles).toContain('color: var(--accent)');
+  expect(poolStyles).toContain(
+    'color: color-mix(in srgb, var(--warning) 88%, var(--text-primary))',
+  );
+  expect(poolStyles).not.toContain('rgba(7, 17, 31');
+  expect(poolStyles).not.toContain('#7dd3fc');
+  expect(poolStyles).not.toContain('#c4b5fd');
+});
 
 function wrapper({ children }: PropsWithChildren) {
   return (

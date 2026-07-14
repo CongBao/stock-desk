@@ -8,6 +8,7 @@ import {
 } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
+import theme from '../../app/theme.css?raw';
 import { AnalysisPage } from './AnalysisPage';
 import type {
   AnalysisApi,
@@ -20,6 +21,22 @@ const digest = (value: string) => `sha256:${value.repeat(64).slice(0, 64)}`;
 const runId = '11111111-1111-1111-1111-111111111111';
 const childRunId = '22222222-2222-2222-2222-222222222222';
 const now = '2026-07-08T08:00:00Z';
+
+it('uses theme surfaces instead of dark translucent layers for analysis reports', () => {
+  const reportStyles = theme.slice(
+    theme.indexOf('.analysis-rating {'),
+    theme.indexOf('.model-settings-backdrop {'),
+  );
+
+  expect(reportStyles).toContain('background: var(--surface-2)');
+  expect(reportStyles).toContain(
+    ".analysis-claim-section button[aria-pressed='true'] small",
+  );
+  expect(reportStyles).toContain(
+    'background: color-mix(in srgb, var(--warning) 8%, var(--surface-1))',
+  );
+  expect(reportStyles).not.toContain('background: rgba(7, 17, 31, 0.48)');
+});
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -425,7 +442,6 @@ it('creates an immutable successor and keeps the original model configuration', 
 });
 
 it('uses the tested revision when explicitly disabling a model', async () => {
-  vi.spyOn(window, 'confirm').mockReturnValue(true);
   const disableModel = vi.fn().mockResolvedValue({
     ...model,
     status: 'disabled',
@@ -441,7 +457,13 @@ it('uses the tested revision when explicitly disabling a model', async () => {
   );
   await waitFor(() => expect(client.testModel).toHaveBeenCalled());
   await userEvent.click(screen.getByRole('button', { name: '禁用 研究模型' }));
-  expect(window.confirm).toHaveBeenCalled();
+  const confirmation = screen.getByRole('alertdialog', {
+    name: '确认禁用模型配置？',
+  });
+  expect(confirmation).toHaveTextContent('禁用“研究模型”');
+  expect(screen.getByRole('button', { name: '取消禁用' })).toHaveFocus();
+  expect(disableModel).not.toHaveBeenCalled();
+  await userEvent.click(screen.getByRole('button', { name: '确认禁用' }));
   expect(disableModel).toHaveBeenCalledWith(model.id, 2);
   await waitFor(() =>
     expect(

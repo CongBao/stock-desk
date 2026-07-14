@@ -386,12 +386,18 @@ function assertUsableState(state, label) {
   }
 }
 
-async function dismissAutomaticGuidance(page) {
+async function dismissAutomaticGuidance(page, route) {
   const dialog = page.locator(".guidance-dialog");
-  // Every route below is a first visit in a fresh packaged data root. The
-  // automatic tour is therefore required to appear before the route can be
-  // measured. A missing or late preference response must fail closed instead
-  // of allowing a delayed dialog to race the layout matrix.
+  if (!route.guidanceExpected) {
+    if ((await dialog.count()) !== 0) {
+      throw new Error(`unexpected automatic guidance on ${route.path}`);
+    }
+    return "not-applicable-no-tour";
+  }
+  // Every guidance-enabled route below is a first visit in a fresh packaged
+  // data root. Its tour must appear before the route can be measured. A missing
+  // or late preference response fails closed instead of allowing a delayed
+  // dialog to race the layout matrix.
   await dialog.waitFor({ state: "visible", timeout: 15_000 });
 
   const skip = dialog.getByRole("button", { name: "跳过引导" });
@@ -437,11 +443,12 @@ const effectiveMatrix = [
 ];
 
 const coreRoutes = [
-  { label: "行情", path: "/market" },
-  { label: "自定义公式", path: "/formulas" },
-  { label: "策略回测", path: "/backtests" },
-  { label: "智能分析", path: "/analysis" },
-  { label: "任务中心", path: "/tasks" },
+  { label: "行情", path: "/market", guidanceExpected: true },
+  { label: "自定义公式", path: "/formulas", guidanceExpected: true },
+  { label: "策略回测", path: "/backtests", guidanceExpected: true },
+  { label: "智能分析", path: "/analysis", guidanceExpected: true },
+  { label: "任务中心", path: "/tasks", guidanceExpected: true },
+  { label: "设置", path: "/settings", guidanceExpected: false },
 ];
 
 const themeCases = [
@@ -584,7 +591,10 @@ try {
     await page.locator("#main-content h1, #main-content h2").first().waitFor({
       state: "visible",
     });
-    const automaticGuidanceDisposition = await dismissAutomaticGuidance(page);
+    const automaticGuidanceDisposition = await dismissAutomaticGuidance(
+      page,
+      route,
+    );
 
     for (const themeCase of themeCases) {
       await cdp.send("Emulation.setEmulatedMedia", {

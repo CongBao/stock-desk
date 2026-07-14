@@ -3,14 +3,17 @@ import {
   act,
   fireEvent,
   render,
+  renderHook,
   screen,
   waitFor,
 } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { StrictMode, type ComponentProps } from 'react';
 
+import theme from '../../app/theme.css?raw';
 import { ApiError } from '../../shared/api/client';
 import type { MarketApi, MarketBarsResponse } from '../market/marketApi';
+import { resetMarketStore, useMarketStore } from '../market/marketStore';
 import {
   FormulaStudioPage,
   type FormulaStudioPageProps,
@@ -42,6 +45,27 @@ vi.mock('@monaco-editor/react', () => ({
     />
   ),
 }));
+
+beforeEach(() => resetMarketStore());
+
+it('keeps the global theme control in its reserved top-bar slot', () => {
+  const controlStyles = theme.slice(
+    theme.indexOf('.global-theme-control {'),
+    theme.indexOf('.workspace-topbar .topbar-actions'),
+  );
+  const responsiveStart = theme.lastIndexOf('.global-theme-control {');
+  const responsiveStyles = theme.slice(
+    responsiveStart,
+    theme.indexOf('.theme-selector-label', responsiveStart),
+  );
+
+  expect(controlStyles).toContain('position: absolute');
+  expect(controlStyles).not.toContain('position: fixed');
+  expect(theme).toContain('.workspace-topbar .topbar-actions');
+  expect(theme).toContain('margin-right: 150px');
+  expect(responsiveStyles).toContain('right: 8px');
+  expect(theme).toContain('margin-right: 48px');
+});
 
 vi.mock('../market/MarketChart', () => ({
   MarketChart: ({
@@ -419,6 +443,9 @@ it('saves a valid formula revision before running an explicit aligned preview', 
   expect(screen.getByRole('img', { name: '公式预览图' })).toHaveTextContent(
     'BUY',
   );
+  expect(
+    renderHook(() => useMarketStore((state) => state.subchart)).result.current,
+  ).toEqual({ kind: 'formula', formulaVersionId: 'version-1' });
 });
 
 it('persists an invalid existing formula as a revisioned draft without publishing it', async () => {

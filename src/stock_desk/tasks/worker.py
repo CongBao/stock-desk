@@ -34,6 +34,8 @@ _DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 5.0
 _DEFAULT_HEARTBEAT_START_TIMEOUT_SECONDS = 15.0
 _DEFAULT_HEARTBEAT_STOP_TIMEOUT_SECONDS = 1.0
 _DEFAULT_HEARTBEAT_IO_TIMEOUT_SECONDS = 1.0
+_DEFAULT_HEARTBEAT_CONTENTION_GRACE_SECONDS = 8.0
+_HEARTBEAT_CONTENTION_RETRY_SECONDS = 0.25
 _PARENT_LIVENESS_POLL_SECONDS = 0.05
 _LOGGER = logging.getLogger(__name__)
 
@@ -106,6 +108,7 @@ def _heartbeat_process_main(
     worker_id: str,
     interval: float,
     io_timeout: float,
+    contention_grace: float,
     stop_event: Any,
     status_sender: Any,
     parent_liveness_receiver: Any,
@@ -135,25 +138,45 @@ def _heartbeat_process_main(
             timeout_seconds=io_timeout,
         )
         status_sender.send(("ready", None))
-        transient_contention_seen = False
-        while not stop_event.wait(interval):
+        contention_deadline: float | None = None
+        last_contention_error: BaseException | None = None
+        wait_seconds = interval
+        while not stop_event.wait(wait_seconds):
+            now = time.monotonic()
+            if contention_deadline is not None and now >= contention_deadline:
+                assert last_contention_error is not None
+                raise last_contention_error
+            attempt_timeout = (
+                io_timeout
+                if contention_deadline is None
+                else min(io_timeout, max(contention_deadline - now, 0.001))
+            )
             try:
                 repository.record_worker_heartbeat(
                     worker_id,
-                    timeout_seconds=io_timeout,
+                    timeout_seconds=attempt_timeout,
                 )
             except BaseException as error:
                 if stop_event.is_set():
                     return
-                if (
-                    _is_transient_sqlite_contention(error)
-                    and not transient_contention_seen
-                ):
-                    transient_contention_seen = True
-                    continue
+                if _is_transient_sqlite_contention(error):
+                    now = time.monotonic()
+                    if contention_deadline is None:
+                        contention_deadline = now + contention_grace
+                    last_contention_error = error
+                    remaining = contention_deadline - now
+                    if remaining > 0:
+                        wait_seconds = min(
+                            interval,
+                            _HEARTBEAT_CONTENTION_RETRY_SECONDS,
+                            remaining,
+                        )
+                        continue
                 raise
             else:
-                transient_contention_seen = False
+                contention_deadline = None
+                last_contention_error = None
+                wait_seconds = interval
     except BaseException as error:
         try:
             status_sender.send(("error", _heartbeat_failure_payload(error)))
@@ -178,6 +201,7 @@ class _HeartbeatProcessController:
         start_timeout: float,
         stop_timeout: float,
         io_timeout: float,
+        contention_grace: float = _DEFAULT_HEARTBEAT_CONTENTION_GRACE_SECONDS,
     ) -> None:
         context = multiprocessing.get_context("spawn")
         receiver, sender = context.Pipe(duplex=False)
@@ -194,6 +218,7 @@ class _HeartbeatProcessController:
                 worker_id,
                 interval,
                 io_timeout,
+                contention_grace,
                 self._stop_event,
                 sender,
                 parent_liveness_receiver,
@@ -320,6 +345,9 @@ class TaskWorker:
         heartbeat_start_timeout: float = _DEFAULT_HEARTBEAT_START_TIMEOUT_SECONDS,
         heartbeat_stop_timeout: float = _DEFAULT_HEARTBEAT_STOP_TIMEOUT_SECONDS,
         heartbeat_io_timeout: float = _DEFAULT_HEARTBEAT_IO_TIMEOUT_SECONDS,
+        heartbeat_contention_grace: float = (
+            _DEFAULT_HEARTBEAT_CONTENTION_GRACE_SECONDS
+        ),
         diagnostic_event_sink: DiagnosticEventSink | None = None,
     ) -> None:
         if not worker_id or worker_id != worker_id.strip() or len(worker_id) > 255:
@@ -332,6 +360,7 @@ class TaskWorker:
             (heartbeat_start_timeout, "start"),
             (heartbeat_stop_timeout, "stop"),
             (heartbeat_io_timeout, "I/O"),
+            (heartbeat_contention_grace, "contention grace"),
         ):
             if isinstance(value, bool) or not math.isfinite(value) or value <= 0:
                 raise ValueError(
@@ -344,6 +373,7 @@ class TaskWorker:
         self._heartbeat_start_timeout = heartbeat_start_timeout
         self._heartbeat_stop_timeout = heartbeat_stop_timeout
         self._heartbeat_io_timeout = heartbeat_io_timeout
+        self._heartbeat_contention_grace = heartbeat_contention_grace
         self._diagnostic_event_sink = diagnostic_event_sink
         self._handlers: dict[str, TaskHandler] = {}
         self._claimed_handlers: dict[str, ClaimedTaskHandler] = {}
@@ -454,6 +484,7 @@ class TaskWorker:
             start_timeout=self._heartbeat_start_timeout,
             stop_timeout=self._heartbeat_stop_timeout,
             io_timeout=self._heartbeat_io_timeout,
+            contention_grace=self._heartbeat_contention_grace,
         )
         heartbeat.start()
         try:

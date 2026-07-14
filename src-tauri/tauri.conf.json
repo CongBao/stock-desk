@@ -16,8 +16,8 @@
         "title": "Stock Desk",
         "width": 1440,
         "height": 900,
-        "minWidth": 960,
-        "minHeight": 640,
+        "minWidth": 640,
+        "minHeight": 360,
         "center": true,
         "visible": false
       }

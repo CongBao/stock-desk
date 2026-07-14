@@ -239,10 +239,20 @@ async function requestCheckpoint(page, taskIds, maxAttempts = 24) {
 
 async function waitForTask(page, taskId, statuses, timeout = 90_000) {
   const deadline = Date.now() + timeout;
+  let nextWorkerHealthCheck = 0;
   let latest;
   while (Date.now() < deadline) {
     latest = await task(page, taskId);
     if (statuses.includes(latest.status)) return latest;
+    if (latest.status === "queued" && Date.now() >= nextWorkerHealthCheck) {
+      const worker = await invoke(page, "GET", "/api/tasks/worker-status");
+      if (worker.state !== "running") {
+        throw new Error(
+          `packaged Worker disappeared while task remained queued: ${JSON.stringify({ task_id: taskId, worker_state: worker.state })}`,
+        );
+      }
+      nextWorkerHealthCheck = Date.now() + 1_000;
+    }
     await page.waitForTimeout(150);
   }
   throw new Error(

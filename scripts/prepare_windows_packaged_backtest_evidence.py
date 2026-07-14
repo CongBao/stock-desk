@@ -305,46 +305,53 @@ def switch_fixture(destination: Path, fixture_id: str) -> None:
     if not (destination / "stock-desk.db").is_file():
         raise ValueError("packaged fixture database is missing")
     with _open_packaged_harness(destination) as harness:
-        if fixture_id.startswith("matrix_"):
-            period = Period(fixture_id.removeprefix("matrix_"))
-            values = _timeline(period)
-            for offset, symbol in enumerate(("600000.SH", "000001.SZ")):
-                harness.seed_symbol(symbol, period, values, phase_offset=offset * 3)
-            return
-        if fixture_id == "a_share_constraints_60m":
-            timestamps = intraday_timestamps(date(2024, 1, 2), trading_days=5)
-            days = tuple(dict.fromkeys(timestamp.date() for timestamp in timestamps))
-            closes = [Decimal("10")] * len(timestamps)
-            closes[0], closes[1], closes[7], closes[13] = (
-                Decimal("11"),
-                Decimal("9"),
-                Decimal("11"),
-                Decimal("9"),
-            )
-            bars = routed_bars_from_closes(
-                "600000.SH", Period.MIN60, timestamps, tuple(closes)
-            )
-            harness.market.write(bars)
-            harness.statuses.write(
-                routed_status(
-                    "600000.SH",
-                    Period.MIN60,
-                    bars,
-                    suspended_days=frozenset({days[2]}),
-                    raw_open_overrides={
-                        timestamps[1]: Decimal("12"),
-                        timestamps[12]: Decimal("12"),
-                        timestamps[16]: Decimal("8"),
-                    },
+        # The installed sidecar polls TaskRepository.claim_next() in a separate
+        # process. Coordinate evidence-only catalog publication through the same
+        # cross-process gate used by production backup/restore so a SQLite write
+        # lock cannot terminate that polling loop between fixture handshakes.
+        with harness.tasks.hold_claim_gate(timeout_seconds=30):
+            if fixture_id.startswith("matrix_"):
+                period = Period(fixture_id.removeprefix("matrix_"))
+                values = _timeline(period)
+                for offset, symbol in enumerate(("600000.SH", "000001.SZ")):
+                    harness.seed_symbol(symbol, period, values, phase_offset=offset * 3)
+                return
+            if fixture_id == "a_share_constraints_60m":
+                timestamps = intraday_timestamps(date(2024, 1, 2), trading_days=5)
+                days = tuple(
+                    dict.fromkeys(timestamp.date() for timestamp in timestamps)
                 )
-            )
-            return
-        if fixture_id == "open_position_costs_1d":
-            days = weekday_range(date(2024, 1, 1), date(2024, 3, 1))
+                closes = [Decimal("10")] * len(timestamps)
+                closes[0], closes[1], closes[7], closes[13] = (
+                    Decimal("11"),
+                    Decimal("9"),
+                    Decimal("11"),
+                    Decimal("9"),
+                )
+                bars = routed_bars_from_closes(
+                    "600000.SH", Period.MIN60, timestamps, tuple(closes)
+                )
+                harness.market.write(bars)
+                harness.statuses.write(
+                    routed_status(
+                        "600000.SH",
+                        Period.MIN60,
+                        bars,
+                        suspended_days=frozenset({days[2]}),
+                        raw_open_overrides={
+                            timestamps[1]: Decimal("12"),
+                            timestamps[12]: Decimal("12"),
+                            timestamps[16]: Decimal("8"),
+                        },
+                    )
+                )
+                return
+            if fixture_id == "open_position_costs_1d":
+                days = weekday_range(date(2024, 1, 1), date(2024, 3, 1))
+                harness.seed_symbol("600000.SH", Period.DAY, days)
+                return
+            days = weekday_range(date(2024, 1, 1), date(2024, 5, 1))
             harness.seed_symbol("600000.SH", Period.DAY, days)
-            return
-        days = weekday_range(date(2024, 1, 1), date(2024, 5, 1))
-        harness.seed_symbol("600000.SH", Period.DAY, days)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 
@@ -45,9 +45,20 @@ it('shows stock-desk name version and repository in about information', async ()
   await user.click(screen.getByRole('button', { name: '关于 stock-desk' }));
 
   const about = screen.getByRole('dialog', { name: '关于 stock-desk' });
+  expect(about.tagName).toBe('DIALOG');
   expect(about).toHaveTextContent('stock-desk');
   expect(about).toHaveTextContent('v1.1.0-beta.2');
   expect(
     screen.getByRole('link', { name: 'github.com/CongBao/stock-desk' }),
   ).toHaveAttribute('href', 'https://github.com/CongBao/stock-desk');
+
+  const close = screen.getByRole('button', { name: '关闭关于信息' });
+  expect(close).toHaveFocus();
+  await user.keyboard('{Escape}');
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  await waitFor(() =>
+    expect(
+      screen.getByRole('button', { name: '关于 stock-desk' }),
+    ).toHaveFocus(),
+  );
 });

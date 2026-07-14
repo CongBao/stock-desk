@@ -454,6 +454,132 @@ requirements:
         path: tests/unit/test_windows_desktop_evidence_contract.py
         selector: tests/unit/test_windows_desktop_evidence_contract.py::test_packaged_webview_matrix_is_explicitly_equivalent_not_real_os_dpi
         assertion: The automated matrix covers 100 through 200 percent effective viewports while explicitly separating CDP evidence from the remaining real Windows 10 and 11 DPI confirmation.
+      - state: existing
+        runner: pytest
+        kind: contract
+        path: tests/acceptance/test_tauri_desktop_shell.py
+        selector: tests/acceptance/test_tauri_desktop_shell.py::test_tauri_shell_is_windows_only_single_window_and_uses_bundled_assets
+        assertion: The native host declares 640 by 360 as the supported minimum logical window; browser and installed evidence separately determine operability, and this configuration check is not Windows OS DPI proof.
+      - state: existing
+        runner: playwright
+        kind: acceptance
+        path: web/e2e/desktop-theme-scale-matrix.spec.ts
+        selector: 行情 light remains usable through the 100-200 percent effective viewport matrix
+        assertion: Market renders the deterministic K-line canvas and OHLCV state, keeps the explicit no-formula default subchart reachable, and stays keyboard-reachable and non-overlapping in Light mode across every CSS-equivalent viewport without claiming Windows OS DPI.
+      - state: existing
+        runner: playwright
+        kind: acceptance
+        path: web/e2e/desktop-theme-scale-matrix.spec.ts
+        selector: 行情 dark remains usable through the 100-200 percent effective viewport matrix
+        assertion: Market renders the deterministic K-line canvas and OHLCV state, keeps the explicit no-formula default subchart reachable, and stays keyboard-reachable and non-overlapping in Dark mode across every CSS-equivalent viewport without claiming Windows OS DPI.
+      - state: existing
+        runner: playwright
+        kind: acceptance
+        path: web/e2e/desktop-theme-scale-matrix.spec.ts
+        selector: 行情 System follows both color schemes without restart through the 100-200 percent effective viewport matrix
+        assertion: Market follows both emulated System color schemes without restart at every CSS-equivalent viewport while retaining its rendered K-line, OHLCV, responsive, and accessibility contracts; this is not Windows theme or OS DPI proof.
+      - state: existing
+        runner: playwright
+        kind: acceptance
+        path: web/e2e/desktop-theme-scale-matrix.spec.ts
+        selector: 自定义公式 light remains usable through the 100-200 percent effective viewport matrix
+        assertion: Formula Studio renders its actual K-line preview, formula subchart, and buy and sell signals while remaining keyboard-reachable and non-overlapping in Light mode at every CSS-equivalent viewport.
+      - state: existing
+        runner: playwright
+        kind: acceptance
+        path: web/e2e/desktop-theme-scale-matrix.spec.ts
+        selector: 自定义公式 dark remains usable through the 100-200 percent effective viewport matrix
+        assertion: Formula Studio renders its actual K-line preview, formula subchart, and buy and sell signals while remaining keyboard-reachable and non-overlapping in Dark mode at every CSS-equivalent viewport.
+      - state: existing
+        runner: playwright
+        kind: acceptance
+        path: web/e2e/desktop-theme-scale-matrix.spec.ts
+        selector: 自定义公式 System follows both color schemes without restart through the 100-200 percent effective viewport matrix
+        assertion: Formula Studio follows both emulated System color schemes without restart at every CSS-equivalent viewport while retaining its actual K-line, formula subchart, signal, responsive, and accessibility contracts.
+      - state: existing
+        runner: playwright
+        kind: acceptance
+        path: web/e2e/desktop-theme-scale-matrix.spec.ts
+        selector: 策略回测 light remains usable through the 100-200 percent effective viewport matrix
+        assertion: Backtests complete the deterministic run, expose the report and populated trade-detail table, and remain keyboard-reachable and non-overlapping in Light mode at every CSS-equivalent viewport.
+      - state: existing
+        runner: playwright
+        kind: acceptance
+        path: web/e2e/desktop-theme-scale-matrix.spec.ts
+        selector: 策略回测 dark remains usable through the 100-200 percent effective viewport matrix
+        assertion: Backtests complete the deterministic run, expose the report and populated trade-detail table, and remain keyboard-reachable and non-overlapping in Dark mode at every CSS-equivalent viewport.
+      - state: existing
+        runner: playwright
+        kind: acceptance
+        path: web/e2e/desktop-theme-scale-matrix.spec.ts
+        selector: 策略回测 System follows both color schemes without restart through the 100-200 percent effective viewport matrix
+        assertion: Backtests follow both emulated System color schemes without restart at every CSS-equivalent viewport while retaining the completed report, trade-detail, responsive, and accessibility contracts.
+      - state: existing
+        runner: playwright
+        kind: acceptance
+        path: web/e2e/desktop-theme-scale-matrix.spec.ts
+        selector: 智能分析 light remains usable through the 100-200 percent effective viewport matrix
+        assertion: Analysis completes the deterministic report, opens and closes both process and evidence drawers with focus restoration, and remains non-overlapping in Light mode at every CSS-equivalent viewport.
+      - state: existing
+        runner: playwright
+        kind: acceptance
+        path: web/e2e/desktop-theme-scale-matrix.spec.ts
+        selector: 智能分析 dark remains usable through the 100-200 percent effective viewport matrix
+        assertion: Analysis completes the deterministic report, opens and closes both process and evidence drawers with focus restoration, and remains non-overlapping in Dark mode at every CSS-equivalent viewport.
+      - state: existing
+        runner: playwright
+        kind: acceptance
+        path: web/e2e/desktop-theme-scale-matrix.spec.ts
+        selector: 智能分析 System follows both color schemes without restart through the 100-200 percent effective viewport matrix
+        assertion: Analysis follows both emulated System color schemes without restart at every CSS-equivalent viewport while retaining the completed report, both drawers, responsive, and accessibility contracts.
+      - state: existing
+        runner: playwright
+        kind: acceptance
+        path: web/e2e/desktop-theme-scale-matrix.spec.ts
+        selector: 任务中心 light remains usable through the 100-200 percent effective viewport matrix
+        assertion: Task Center renders its dense metrics, filters, recent-task list, selected detail, status, and timeline without overlap in Light mode at every CSS-equivalent viewport.
+      - state: existing
+        runner: playwright
+        kind: acceptance
+        path: web/e2e/desktop-theme-scale-matrix.spec.ts
+        selector: 任务中心 dark remains usable through the 100-200 percent effective viewport matrix
+        assertion: Task Center renders its dense metrics, filters, recent-task list, selected detail, status, and timeline without overlap in Dark mode at every CSS-equivalent viewport.
+      - state: existing
+        runner: playwright
+        kind: acceptance
+        path: web/e2e/desktop-theme-scale-matrix.spec.ts
+        selector: 任务中心 System follows both color schemes without restart through the 100-200 percent effective viewport matrix
+        assertion: Task Center follows both emulated System color schemes without restart at every CSS-equivalent viewport while retaining its dense detail, responsive, and accessibility contracts.
+      - state: existing
+        runner: playwright
+        kind: acceptance
+        path: web/e2e/desktop-theme-scale-matrix.spec.ts
+        selector: 设置 light remains usable through the 100-200 percent effective viewport matrix
+        assertion: Settings renders all source cards, daily priority controls, and the save bar without overlap in Light mode at every CSS-equivalent viewport.
+      - state: existing
+        runner: playwright
+        kind: acceptance
+        path: web/e2e/desktop-theme-scale-matrix.spec.ts
+        selector: 设置 dark remains usable through the 100-200 percent effective viewport matrix
+        assertion: Settings renders all source cards, daily priority controls, and the save bar without overlap in Dark mode at every CSS-equivalent viewport.
+      - state: existing
+        runner: playwright
+        kind: acceptance
+        path: web/e2e/desktop-theme-scale-matrix.spec.ts
+        selector: 设置 System follows both color schemes without restart through the 100-200 percent effective viewport matrix
+        assertion: Settings follows both emulated System color schemes without restart at every CSS-equivalent viewport while retaining its dense source, priority, save, responsive, and accessibility contracts.
+      - state: existing
+        runner: playwright
+        kind: acceptance
+        path: web/e2e/desktop-dialog-matrix.spec.ts
+        selector: web workspace dialogs remain bounded, modal, keyboard-safe, and restore focus
+        assertion: Guidance, About, model settings and disable confirmation, search popup, and market-pool dialogs use the native top layer where applicable; across Light, Dark, and both System resolutions at the 100 through 200 percent CSS-equivalent viewports plus the 640 by 360 logical minimum, they remain bounded, preserve natural DOM and visual Tab order without test-injected focus, keep dirty state behind safe confirmations, and restore initiating focus. This is not Windows OS DPI proof.
+      - state: existing
+        runner: playwright
+        kind: acceptance
+        path: web/e2e/desktop-dialog-matrix.spec.ts
+        selector: desktop recovery, update, and exit dialogs use the same native safety contract
+        assertion: Recovery and model-cost confirmation, update normal and pending states, and exit confirm, blocked, checkpointing, and timeout states keep safe component-selected focus, bounded actions, natural bidirectional Tab containment, fail-closed Escape behavior, and initiating-focus restoration across Light, Dark, and both System resolutions at the complete CSS-equivalent viewport matrix plus the logical minimum. This is browser top-layer evidence, not Windows OS DPI proof.
   - id: V11-R-013
     category: platform
     kind: user_visible

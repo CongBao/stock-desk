@@ -90,6 +90,20 @@ function Write-CaptureAck([string]$Path, [string]$Nonce) {
   }
 }
 
+function Copy-DiagnosticRuntimeLog([string]$Path, [string]$Destination) {
+  if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+  for ($attempt = 1; $attempt -le 5; $attempt++) {
+    try {
+      if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
+      Copy-Item -LiteralPath $Path -Destination $Destination -Force -ErrorAction Stop
+      return $true
+    } catch {
+      Start-Sleep -Milliseconds 100
+    }
+  }
+  return $false
+}
+
 function Remove-EvidenceDirectory([string]$Path) {
   for ($attempt = 1; $attempt -le 10; $attempt++) {
     Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction SilentlyContinue
@@ -272,6 +286,9 @@ $baselineSidecarProcessIds = @(
 )
 $desktopProcess = $null
 $nodeProcess = $null
+$nodeStdout = $null
+$nodeStderr = $null
+$diagnosticsRoot = $null
 $sidecarAfterHandle = [IntPtr]::Zero
 $gracefulExit = $false
 try {
@@ -650,6 +667,12 @@ try {
     if (-not $nodeProcess.HasExited) {
       if ($gracefulExit) { $unexpectedGracefulResidue += "node:$($nodeProcess.Id)" }
       Stop-Process -Id $nodeProcess.Id -Force -ErrorAction SilentlyContinue
+    }
+    try { $nodeProcess.WaitForExit(5000) | Out-Null } catch { }
+  }
+  if (-not $gracefulExit -and $null -ne $diagnosticsRoot) {
+    foreach ($runtimeLog in @($nodeStdout, $nodeStderr)) {
+      Copy-DiagnosticRuntimeLog -Path $runtimeLog -Destination $diagnosticsRoot | Out-Null
     }
   }
   if ($null -ne $desktopProcess) {

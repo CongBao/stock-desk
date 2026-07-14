@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
+import theme from '../../app/theme.css?raw';
 import type {
   BacktestReport,
   BacktestReportApi,
@@ -9,6 +10,20 @@ import type {
 import { BacktestReportPage } from './BacktestReportPage';
 
 const disclaimer = 'independent trade samples, not portfolio return';
+
+it('uses shared theme surfaces and text tokens throughout the report', () => {
+  const reportStyles = theme.slice(
+    theme.indexOf('/* Conclusion-first backtest report */'),
+    theme.indexOf('/* Intelligent analysis workspace */'),
+  );
+
+  expect(reportStyles).toContain('color: var(--text-primary)');
+  expect(reportStyles).toContain('color: var(--text-muted)');
+  expect(reportStyles).toContain('color: var(--accent)');
+  expect(reportStyles).toContain('background: var(--surface-2)');
+  expect(reportStyles).toContain('background: var(--surface-0)');
+  expect(reportStyles).not.toContain('background: rgba(7, 17, 31');
+});
 
 function report(realizedCount = 2): BacktestReport {
   const hasRealized = realizedCount > 0;

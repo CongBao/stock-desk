@@ -325,3 +325,36 @@ it('uses click for mouse selection and reopens current results with ArrowUp', as
   await user.keyboard('{Enter}');
   expect(onSelect).toHaveBeenLastCalledWith(secondInstrument);
 });
+
+it('consumes the first Escape while results are open and lets the next reach a parent dialog', async () => {
+  const user = userEvent.setup();
+  const parentKeyDown = vi.fn();
+  render(
+    <dialog open aria-label="父级对话框" onKeyDown={parentKeyDown}>
+      <StockSearch
+        api={
+          {
+            searchInstruments: vi.fn(() => Promise.resolve([instrument])),
+          } as unknown as MarketApi
+        }
+        debounceMs={10}
+        onSelect={vi.fn()}
+      />
+    </dialog>,
+    { wrapper },
+  );
+
+  const input = screen.getByRole('combobox', { name: '搜索证券' });
+  await user.type(input, '浦发');
+  await screen.findByRole('option', { name: /浦发银行.*600000\.SH/u });
+  parentKeyDown.mockClear();
+
+  await user.keyboard('{Escape}');
+  expect(parentKeyDown).not.toHaveBeenCalled();
+  expect(input).toHaveAttribute('aria-expanded', 'false');
+  expect(screen.queryByRole('option')).not.toBeInTheDocument();
+
+  await user.keyboard('{Escape}');
+  expect(parentKeyDown).toHaveBeenCalledOnce();
+  expect(parentKeyDown.mock.calls[0]?.[0]).toHaveProperty('key', 'Escape');
+});

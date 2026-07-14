@@ -247,5 +247,6 @@ it('applies the explicit shared Monaco theme and accessible high-scale editor op
     automaticLayout: true,
     fontSize: 14,
     lineHeight: 24,
+    tabFocusMode: true,
   });
 });

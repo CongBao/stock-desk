@@ -6,6 +6,7 @@ import {
   type ApiClient,
   type JsonValue,
 } from '../../shared/api/client';
+import { ModalDialog } from '../../shared/ModalDialog';
 
 const desktopRecoveryApi = createApiClient();
 
@@ -89,6 +90,7 @@ export function DesktopTaskRecovery({
   const [confirmAnalysisResume, setConfirmAnalysisResume] = useState(false);
   const [loadAttempt, setLoadAttempt] = useState(0);
   const cancelRef = useRef<HTMLButtonElement>(null);
+  const returnRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     if (!bridge.isDesktop) return;
@@ -107,8 +109,9 @@ export function DesktopTaskRecovery({
   }, [api, bridge.isDesktop, loadAttempt]);
 
   useEffect(() => {
-    if (typeof status === 'object' && status.required)
-      cancelRef.current?.focus();
+    if (typeof status === 'object' && status.required) {
+      (confirmAnalysisResume ? returnRef : cancelRef).current?.focus();
+    }
   }, [status, confirmAnalysisResume]);
 
   if (!bridge.isDesktop || (typeof status === 'object' && !status.required))
@@ -196,10 +199,11 @@ export function DesktopTaskRecovery({
       className="desktop-task-recovery"
       aria-labelledby="task-recovery-title"
     >
-      <section
-        role="dialog"
-        aria-modal="true"
+      <ModalDialog
+        backdropClassName="desktop-task-recovery-backdrop"
+        className="desktop-task-recovery-dialog"
         aria-labelledby="task-recovery-title"
+        initialFocusRef={cancelRef}
       >
         <span className="panel-kicker">STOCK DESK / RECOVERY</span>
         <h1 id="task-recovery-title">发现上次未完成的任务</h1>
@@ -230,6 +234,7 @@ export function DesktopTaskRecovery({
           {confirmAnalysisResume ? (
             <>
               <button
+                ref={returnRef}
                 type="button"
                 disabled={pending}
                 onClick={() => setConfirmAnalysisResume(false)}
@@ -254,7 +259,7 @@ export function DesktopTaskRecovery({
             </button>
           )}
         </div>
-      </section>
+      </ModalDialog>
     </main>
   );
 }

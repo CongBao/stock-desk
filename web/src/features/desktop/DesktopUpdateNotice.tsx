@@ -1,17 +1,11 @@
-import {
-  useEffect,
-  useLayoutEffect,
-  useRef,
-  useState,
-  type KeyboardEvent as ReactKeyboardEvent,
-  type RefObject,
-} from 'react';
+import { useEffect, useRef, useState, type RefObject } from 'react';
 
 import type {
   DesktopBridge,
   DesktopUpdateState,
   TauriDesktopBridge,
 } from '../../app/desktopBridge';
+import { ModalDialog } from '../../shared/ModalDialog';
 
 function progressLabel(state: DesktopUpdateState): string | null {
   if (state.state === 'downloading') return `正在下载更新 ${state.version}`;
@@ -36,82 +30,40 @@ function UpdateConfirmation({
   readonly fallbackFocusRef: RefObject<HTMLElement | null>;
   readonly returnFocusRef: RefObject<HTMLButtonElement | null>;
 }) {
-  const dialogRef = useRef<HTMLDialogElement>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
 
-  useLayoutEffect(() => {
-    cancelRef.current?.focus();
-    return () => {
-      const dialog = dialogRef.current;
-      const ownedFocus =
-        dialog !== null && dialog.contains(document.activeElement);
-      if (!ownedFocus) return;
-      window.setTimeout(() => {
-        if (document.activeElement === document.body)
-          (returnFocusRef.current ?? fallbackFocusRef.current)?.focus();
-      }, 0);
-    };
-  }, [fallbackFocusRef, returnFocusRef]);
-
-  function containFocus(event: ReactKeyboardEvent<HTMLDialogElement>) {
-    if (event.key === 'Escape' && !pending) {
-      event.preventDefault();
-      event.stopPropagation();
-      onCancel();
-      return;
-    }
-    if (event.key !== 'Tab') return;
-    const controls = Array.from(
-      event.currentTarget.querySelectorAll<HTMLButtonElement>(
-        'button:not([disabled])',
-      ),
-    );
-    const first = controls[0];
-    const last = controls.at(-1);
-    if (first === undefined || last === undefined) {
-      event.preventDefault();
-    } else if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault();
-      first.focus();
-    }
-  }
-
   return (
-    <div className="desktop-update-dialog-backdrop" role="presentation">
-      <dialog
-        ref={dialogRef}
-        className="desktop-update-dialog"
-        open
-        aria-modal="true"
-        aria-labelledby="desktop-update-confirm-title"
-        aria-describedby="desktop-update-confirm-description"
-        tabIndex={-1}
-        onKeyDown={containFocus}
-      >
-        <h2 id="desktop-update-confirm-title">确认安装更新</h2>
-        <p id="desktop-update-confirm-description">
-          Stock Desk 将下载版本 {version}，依次验证 Tauri 更新签名、SHA-256 和
-          Windows 可信签名。验证通过后才会保存工作区并安全退出安装。
-        </p>
-        <p>不会静默强制更新；任何验证失败都会保留当前版本和本地数据。</p>
-        <div className="desktop-update-dialog-actions">
-          <button
-            ref={cancelRef}
-            type="button"
-            disabled={pending}
-            onClick={onCancel}
-          >
-            暂不安装
-          </button>
-          <button type="button" disabled={pending} onClick={onConfirm}>
-            {pending ? '正在请求…' : '确认下载并安装'}
-          </button>
-        </div>
-      </dialog>
-    </div>
+    <ModalDialog
+      backdropClassName="desktop-update-dialog-backdrop"
+      className="desktop-update-dialog"
+      aria-labelledby="desktop-update-confirm-title"
+      aria-describedby="desktop-update-confirm-description"
+      tabIndex={-1}
+      initialFocusRef={cancelRef}
+      returnFocusRef={returnFocusRef}
+      fallbackFocusRef={fallbackFocusRef}
+      onEscape={pending ? undefined : onCancel}
+    >
+      <h2 id="desktop-update-confirm-title">确认安装更新</h2>
+      <p id="desktop-update-confirm-description">
+        Stock Desk 将下载版本 {version}，依次验证 Tauri 更新签名、SHA-256 和
+        Windows 可信签名。验证通过后才会保存工作区并安全退出安装。
+      </p>
+      <p>不会静默强制更新；任何验证失败都会保留当前版本和本地数据。</p>
+      <div className="desktop-update-dialog-actions">
+        <button
+          ref={cancelRef}
+          type="button"
+          disabled={pending}
+          onClick={onCancel}
+        >
+          暂不安装
+        </button>
+        <button type="button" disabled={pending} onClick={onConfirm}>
+          {pending ? '正在请求…' : '确认下载并安装'}
+        </button>
+      </div>
+    </ModalDialog>
   );
 }
 

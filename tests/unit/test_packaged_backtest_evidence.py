@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
+from copy import deepcopy
+from datetime import datetime, timedelta
+from decimal import Decimal
 import hashlib
 import json
 from pathlib import Path
-from copy import deepcopy
 import shutil
-from datetime import datetime, timedelta
-from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
@@ -846,6 +847,25 @@ def test_packaged_fixture_switches_reproduce_all_fifteen_oracle_semantics(
     # append-only market catalog must treat that deterministic switch as
     # idempotent while all prior run snapshots remain queryable.
     switch_fixture(tmp_path, "matrix_1d")
+
+
+def test_packaged_fixture_switch_waits_for_the_cross_process_claim_gate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prepare(tmp_path, source_sha=SOURCE_SHA, source_tree=SOURCE_TREE)
+    observed_timeouts: list[float | None] = []
+
+    @contextmanager
+    def observed_claim_gate(
+        _self: TaskRepository, *, timeout_seconds: float | None = None
+    ):
+        observed_timeouts.append(timeout_seconds)
+        yield
+
+    monkeypatch.setattr(TaskRepository, "hold_claim_gate", observed_claim_gate)
+    switch_fixture(tmp_path, "matrix_1d")
+    assert observed_timeouts == [30]
 
 
 def test_packaged_checkpoint_projection_matches_uninterrupted_v1_semantics(

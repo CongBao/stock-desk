@@ -70,6 +70,9 @@ export function StockSearch({
 
   function handleKeyDown(event: KeyboardEvent<HTMLInputElement>) {
     if (event.key === 'Escape') {
+      if (!showResults) return;
+      event.preventDefault();
+      event.stopPropagation();
       setIsOpen(false);
       setActiveIndex(-1);
       return;

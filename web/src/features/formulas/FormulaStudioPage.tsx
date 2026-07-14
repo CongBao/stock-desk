@@ -9,7 +9,11 @@ import {
   type MarketApi,
   type MarketBar,
 } from '../market/marketApi';
-import type { MarketAdjustment, MarketPeriod } from '../market/marketStore';
+import {
+  useMarketStore,
+  type MarketAdjustment,
+  type MarketPeriod,
+} from '../market/marketStore';
 import { FormulaEditor, type FormulaEditorHandle } from './FormulaEditor';
 import { FormulaPreview } from './FormulaPreview';
 import { FunctionLibrary } from './FunctionLibrary';
@@ -136,6 +140,7 @@ export function FormulaStudioPage({
   marketApiClient = marketApi,
   validationDebounceMs = 350,
 }: FormulaStudioPageProps) {
+  const setSubchart = useMarketStore((state) => state.setSubchart);
   const editorRef = useRef<FormulaEditorHandle>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
   const adoptedTemplate = useRef(false);
@@ -700,6 +705,12 @@ export function FormulaStudioPage({
         return;
       setBars(market.bars);
       setPreview(result);
+      if (placement === 'subchart') {
+        setSubchart({
+          kind: 'formula',
+          formulaVersionId: result.formulaVersionId,
+        });
+      }
       setNotice(`预览已完成：v${String(result.formulaVersion)}`);
     } catch (error) {
       if (

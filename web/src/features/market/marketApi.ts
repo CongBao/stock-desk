@@ -310,7 +310,8 @@ export type MarketApi = {
         }
       | {
           readonly formulaVersionId: string;
-          readonly formulaParameters: Readonly<Record<string, number>>;
+          /** Omit to use the immutable version's declared default parameters. */
+          readonly formulaParameters?: Readonly<Record<string, number>>;
         }
     ),
   ): Promise<MarketBarsResponse>;
@@ -1569,13 +1570,15 @@ function decodeBarsResponse(
       ),
     'bars.formula.timestamps',
   );
-  protocolAssert(
-    sameFormulaParameters(
-      expectedRequest.formulaParameters ?? {},
-      formula.parameters,
-    ),
-    'bars.formula.parameters',
-  );
+  if (expectedRequest.formulaParameters !== undefined) {
+    protocolAssert(
+      sameFormulaParameters(
+        expectedRequest.formulaParameters,
+        formula.parameters,
+      ),
+      'bars.formula.parameters',
+    );
+  }
   return { ...result, formula };
 }
 
@@ -1664,10 +1667,7 @@ export function createMarketApi(
       formulaParameters,
       signal,
     }) {
-      if (
-        (formulaParameters === undefined) !==
-        (formulaVersionId === undefined)
-      ) {
+      if (formulaParameters !== undefined && formulaVersionId === undefined) {
         throw new MarketProtocolError('request.formula_version_id');
       }
       if (

@@ -384,6 +384,7 @@ def test_transient_sqlite_heartbeat_lock_recovers_without_stopping_worker(
         heartbeat_interval=0.01,
         heartbeat_stop_timeout=0.3,
         heartbeat_io_timeout=0.05,
+        heartbeat_contention_grace=0.3,
     )
     monkeypatch.setattr(worker, "run_once", lambda *, stop_event=None: None)
     stop_event = threading.Event()
@@ -404,7 +405,9 @@ def test_transient_sqlite_heartbeat_lock_recovers_without_stopping_worker(
         assert before_lock is not None
 
         blocker.execute("BEGIN EXCLUSIVE")
-        threading.Event().wait(0.08)
+        # This spans at least two heartbeat I/O timeouts. The prior one-miss
+        # policy killed the worker before the legitimate writer released.
+        threading.Event().wait(0.14)
         blocker.rollback()
 
         _wait_until(lambda: repository.worker_status().last_seen_at > before_lock)
@@ -437,9 +440,10 @@ def test_persistent_sqlite_heartbeat_lock_fails_bounded_with_diagnostics(
         repository,
         worker_id="persistent-heartbeat-lock",
         poll_interval=0.01,
-        heartbeat_interval=0.01,
+        heartbeat_interval=0.5,
         heartbeat_stop_timeout=0.3,
         heartbeat_io_timeout=0.05,
+        heartbeat_contention_grace=0.1,
     )
     monkeypatch.setattr(worker, "run_once", lambda *, stop_event=None: None)
     stop_event = threading.Event()
@@ -458,7 +462,9 @@ def test_persistent_sqlite_heartbeat_lock_fails_bounded_with_diagnostics(
         _wait_until(lambda: repository.worker_status().state == "running")
         blocker.execute("BEGIN EXCLUSIVE")
 
-        _wait_until(lambda: not runner.is_alive(), timeout=1.0)
+        # A persistent lock must fail at the contention deadline instead of
+        # sleeping for the next regular 500 ms heartbeat interval.
+        _wait_until(lambda: not runner.is_alive(), timeout=0.9)
         assert len(errors) == 1
         message = str(errors[0])
         assert "sqlalchemy.exc.OperationalError" in message
@@ -1437,6 +1443,7 @@ def test_worker_rejects_invalid_heartbeat_interval(
         ("heartbeat_start_timeout", True),
         ("heartbeat_stop_timeout", math.nan),
         ("heartbeat_io_timeout", math.inf),
+        ("heartbeat_contention_grace", -0.1),
     ],
 )
 def test_worker_rejects_invalid_heartbeat_process_timeout(
@@ -1462,6 +1469,7 @@ def test_default_heartbeat_startup_budget_tolerates_saturated_desktop_spawn(
         worker = TaskWorker(repository, worker_id="worker")
 
         assert worker._heartbeat_start_timeout == 15.0  # noqa: SLF001
+        assert worker._heartbeat_contention_grace == 8.0  # noqa: SLF001
     finally:
         repository.close()
 

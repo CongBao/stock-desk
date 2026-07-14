@@ -1,5 +1,11 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import {
+  act,
+  render,
+  renderHook,
+  screen,
+  waitFor,
+} from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 
@@ -17,6 +23,7 @@ import type {
 } from './marketNavigationApi';
 import {
   resetMarketStore,
+  useMarketStore,
   type MarketAdjustment,
   type MarketPeriod,
 } from './marketStore';
@@ -25,10 +32,15 @@ vi.mock('./MarketChart', () => ({
   MarketChart: ({
     bars,
     errorMessage,
+    formula,
     isLoading,
   }: {
     bars: readonly { symbol: string }[] | undefined;
     errorMessage?: string;
+    formula?: {
+      readonly placement: string;
+      readonly numericOutputs: readonly unknown[];
+    };
     isLoading?: boolean;
   }) => (
     <>
@@ -37,7 +49,11 @@ vi.mock('./MarketChart', () => ({
           ? '正在读取本地 K 线缓存'
           : (errorMessage ?? bars?.[0]?.symbol ?? '未选择证券')}
       </section>
-      <section aria-label="公式结果副图">公式能力将在后续阶段接入</section>
+      <section aria-label="公式结果副图">
+        {formula === undefined
+          ? '尚未启用公式副图'
+          : `${formula.placement}:${String(formula.numericOutputs.length)}`}
+      </section>
     </>
   ),
 }));
@@ -282,7 +298,7 @@ it('focuses prominent Market search and persists recent/watchlist operations', a
   );
 });
 
-it('opens stock pools as a separate keyboard-dismissible workflow', async () => {
+it('opens stock pools as a trapped keyboard-dismissible workflow and restores its trigger', async () => {
   const user = userEvent.setup();
   const api = {
     searchInstruments: vi.fn(() => Promise.resolve([])),
@@ -294,12 +310,27 @@ it('opens stock pools as a separate keyboard-dismissible workflow', async () => 
 
   const open = screen.getByRole('button', { name: '打开股票池' });
   await user.click(open);
-  expect(
-    screen.getByRole('dialog', { name: '股票池独立流程' }),
-  ).toBeInTheDocument();
+  const dialog = screen.getByRole('dialog', {
+    name: '选择或管理股票池',
+  });
+  const close = screen.getByRole('button', { name: '关闭股票池' });
+  expect(close).toHaveFocus();
+
+  const controls = Array.from(
+    dialog.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    ),
+  ).filter((element) => !element.hidden);
+  const last = controls.at(-1);
+  expect(last).toBeDefined();
+  await user.keyboard('{Shift>}{Tab}{/Shift}');
+  expect(last).toHaveFocus();
+  await user.keyboard('{Tab}');
+  expect(close).toHaveFocus();
+
   await user.keyboard('{Escape}');
   expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-  expect(open).toHaveFocus();
+  await waitFor(() => expect(open).toHaveFocus());
 });
 
 it('does not request bars before selection and refetches by period and adjustment', async () => {
@@ -360,6 +391,88 @@ it('does not request bars before selection and refetches by period and adjustmen
       expect.objectContaining({ period: '60m', adjustment: 'hfq' }),
     ),
   );
+});
+
+it('restores a saved formula version as the Market subchart and can safely disable it', async () => {
+  const user = userEvent.setup();
+  const store = renderHook(() => useMarketStore((state) => state));
+  act(() =>
+    store.result.current.setSubchart({
+      kind: 'formula',
+      formulaVersionId: 'version-1',
+    }),
+  );
+  const response = {
+    ...barsResponse('1d', 'qfq'),
+    formula: {
+      schemaVersion: 'stock-desk-signal-series-v1',
+      signalSeriesId: `sha256:${'d'.repeat(64)}`,
+      formulaId: 'formula-1',
+      formulaVersionId: 'version-1',
+      formulaVersion: 1,
+      formulaChecksum: DIGEST,
+      engineVersion: 'formula-engine-v1',
+      compatibilityVersion: 'tdx-v1',
+      symbol: '600000.SH',
+      period: '1d',
+      adjustment: 'qfq',
+      source: 'baostock',
+      datasetVersion: DIGEST,
+      routeVersion: DIGEST,
+      manifestRecordId: DIGEST,
+      dataCutoff: '2024-01-03T07:00:00Z',
+      queryStart: '2024-01-02T00:00:00Z',
+      queryEnd: '2024-01-04T00:00:00Z',
+      timestamps: ['2024-01-02T16:00:00Z'],
+      parameters: [],
+      numericOutputs: [{ name: 'MACD', values: [0.2], warmupNullCount: 0 }],
+      signals: [
+        { name: 'BUY', values: [true], warmupNullCount: 0 },
+        { name: 'SELL', values: [false], warmupNullCount: 0 },
+      ],
+      runtimeDiagnostics: [],
+    },
+  } as const satisfies MarketBarsResponse;
+  const getBars = vi.fn((options: { readonly formulaVersionId?: string }) =>
+    Promise.resolve(
+      options.formulaVersionId === undefined
+        ? barsResponse('1d', 'qfq')
+        : response,
+    ),
+  );
+  const api = {
+    searchInstruments: vi.fn(() => Promise.resolve([instrument])),
+    getPools: vi.fn(() => Promise.resolve({ items: [], nextCursor: null })),
+    getPool: vi.fn(),
+    getBars,
+  } as unknown as MarketApi;
+  renderPage(api);
+
+  await user.type(screen.getByRole('combobox', { name: '搜索证券' }), '浦发');
+  await user.click(
+    await screen.findByRole('option', { name: /浦发银行.*600000\.SH/u }),
+  );
+
+  await waitFor(() =>
+    expect(getBars).toHaveBeenCalledWith({
+      symbol: '600000.SH',
+      period: '1d',
+      adjustment: 'qfq',
+      formulaVersionId: 'version-1',
+      signal: expect.any(AbortSignal) as unknown,
+    }),
+  );
+  expect(await screen.findByText('subchart:1')).toBeVisible();
+
+  await user.click(screen.getByRole('button', { name: '关闭公式副图' }));
+  await waitFor(() => expect(getBars).toHaveBeenCalledTimes(2));
+  expect(getBars).toHaveBeenLastCalledWith({
+    symbol: '600000.SH',
+    period: '1d',
+    adjustment: 'qfq',
+    signal: expect.any(AbortSignal) as unknown,
+  });
+  expect(screen.getByText('尚未启用公式副图')).toBeVisible();
 });
 
 it('shows a cache-only 404 with an honest settings path', async () => {
