@@ -123,9 +123,24 @@ function Test-IsolatedWebViewCommandLine([string]$CommandLine, [string]$UserData
   return $false
 }
 
-function Get-IsolatedWebViewProcesses([string]$UserDataFolder) {
-  return @(Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" -ErrorAction SilentlyContinue |
+function Get-IsolatedWebViewProcesses([string]$UserDataFolder, [switch]$Strict) {
+  $queryErrorAction = if ($Strict) { 'Stop' } else { 'SilentlyContinue' }
+  return @(Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" -ErrorAction $queryErrorAction |
     Where-Object { Test-IsolatedWebViewCommandLine ([string]$_.CommandLine) $UserDataFolder })
+}
+
+function Test-ProcessExitedStrict([int]$ProcessId) {
+  try {
+    $candidate = [Diagnostics.Process]::GetProcessById($ProcessId)
+    try {
+      $candidate.Refresh()
+      return $candidate.HasExited
+    } finally {
+      $candidate.Dispose()
+    }
+  } catch [ArgumentException] {
+    return $true
+  }
 }
 
 function Get-EvidenceSidecarProcesses([int[]]$BaselineProcessIds = @()) {
@@ -455,6 +470,7 @@ try {
   }
   $sidecarAfterHash = (Get-FileHash -LiteralPath $afterSidecars[0].Path -Algorithm SHA256).Hash.ToLowerInvariant()
   if ($sidecarAfterHash -ne $sidecarBinaryHash) { throw 'sidecar binary identity changed across restart' }
+  $sidecarAfterProcess = $afterSidecars[0]
   $sidecarAfterPid = [int]$afterSidecars[0].Id
   Write-CaptureAck (Join-Path $restartSyncRoot 'restart-after.ack') $captureNonce
   foreach ($fixtureRequest in @(
@@ -481,6 +497,30 @@ try {
     $desktopProcess.Refresh()
     $sidecarAlive = @(Get-Process -Name 'stock-desk-sidecar' -ErrorAction SilentlyContinue).Count -gt 0
     throw "packaged app did not complete the tested graceful exit; host_alive=$(-not $desktopProcess.HasExited); sidecar_alive=$sidecarAlive"
+  }
+  $desktopProcess.Refresh()
+  if ($desktopProcess.ExitCode -ne 0) {
+    throw "packaged app exited with a non-zero code during the tested graceful exit: $($desktopProcess.ExitCode)"
+  }
+  try {
+    Wait-Until {
+      $sidecarAfterProcess.Refresh()
+      $sidecarExited = $sidecarAfterProcess.HasExited
+      $remainingWebViews = @(Get-IsolatedWebViewProcesses $webviewUserData -Strict)
+      if ($sidecarExited -and $remainingWebViews.Count -eq 0) { $true } else { $false }
+    } 30 'packaged child processes did not complete the tested graceful exit' | Out-Null
+  } catch {
+    $childExitFailure = $_.Exception.Message
+    $remainingSidecarIds = if (Test-ProcessExitedStrict $sidecarAfterPid) { @() } else { @($sidecarAfterPid) }
+    $remainingWebViewIds = @(
+      Get-IsolatedWebViewProcesses $webviewUserData |
+        ForEach-Object { [int]$_.ProcessId }
+    )
+    throw "packaged child processes did not complete the tested graceful exit; reason=$childExitFailure; sidecar_ids=$($remainingSidecarIds -join ','); webview_ids=$($remainingWebViewIds -join ',')"
+  }
+  $sidecarAfterProcess.Refresh()
+  if ($sidecarAfterProcess.ExitCode -ne 0) {
+    throw "packaged sidecar exited with a non-zero code during the tested graceful exit: $($sidecarAfterProcess.ExitCode)"
   }
   $gracefulExit = $true
 
@@ -576,18 +616,18 @@ try {
   if ($webviewDataPolicyCreated) { Remove-Item -LiteralPath $webviewDataPolicy -Force -ErrorAction SilentlyContinue }
   if ($webviewPolicyRootCreated) { Remove-Item -LiteralPath $webviewPolicyRoot -Force -ErrorAction SilentlyContinue }
   if ($webviewEdgePolicyCreated) { Remove-Item -LiteralPath $webviewEdgePolicy -Force -ErrorAction SilentlyContinue }
-  $unexpectedGracefulResidue = $false
+  $unexpectedGracefulResidue = @()
   if ($null -ne $nodeProcess) {
     $nodeProcess.Refresh()
     if (-not $nodeProcess.HasExited) {
-      if ($gracefulExit) { $unexpectedGracefulResidue = $true }
+      if ($gracefulExit) { $unexpectedGracefulResidue += "node:$($nodeProcess.Id)" }
       Stop-Process -Id $nodeProcess.Id -Force -ErrorAction SilentlyContinue
     }
   }
   if ($null -ne $desktopProcess) {
     $desktopProcess.Refresh()
     if (-not $desktopProcess.HasExited) {
-      if ($gracefulExit) { $unexpectedGracefulResidue = $true }
+      if ($gracefulExit) { $unexpectedGracefulResidue += "host:$($desktopProcess.Id)" }
       Stop-Process -Id $desktopProcess.Id -Force -ErrorAction SilentlyContinue
     }
   }
@@ -597,8 +637,11 @@ try {
     $evidenceSidecars | Stop-Process -Force -ErrorAction SilentlyContinue
     Start-Sleep -Milliseconds 250
   }
-  if ($gracefulExit -and @(Get-EvidenceSidecarProcesses $baselineSidecarProcessIds).Count -gt 0) {
-    $unexpectedGracefulResidue = $true
+  $remainingEvidenceSidecars = @(Get-EvidenceSidecarProcesses $baselineSidecarProcessIds)
+  if ($gracefulExit -and $remainingEvidenceSidecars.Count -gt 0) {
+    $unexpectedGracefulResidue += @(
+      $remainingEvidenceSidecars | ForEach-Object { "sidecar:$($_.Id)" }
+    )
   }
   for ($cleanupAttempt = 1; $cleanupAttempt -le 10; $cleanupAttempt++) {
     $isolatedWebViewProcesses = @(Get-IsolatedWebViewProcesses $webviewUserData)
@@ -608,8 +651,11 @@ try {
     }
     Start-Sleep -Milliseconds 250
   }
-  if ($gracefulExit -and @(Get-IsolatedWebViewProcesses $webviewUserData).Count -gt 0) {
-    $unexpectedGracefulResidue = $true
+  $remainingIsolatedWebViews = @(Get-IsolatedWebViewProcesses $webviewUserData)
+  if ($gracefulExit -and $remainingIsolatedWebViews.Count -gt 0) {
+    $unexpectedGracefulResidue += @(
+      $remainingIsolatedWebViews | ForEach-Object { "webview:$($_.ProcessId)" }
+    )
   }
   if (Test-Path -LiteralPath $uninstallerPath -PathType Leaf) {
     $cleanup = Start-Process -FilePath $uninstallerPath -ArgumentList '/S' -Wait -PassThru
@@ -641,7 +687,7 @@ try {
   if ($gracefulExit -and -not $tauriDefaultWebViewDataExisted -and (Test-Path -LiteralPath $tauriDefaultWebViewData)) {
     throw 'Tauri default WebView2 state created by evidence could not be cleaned'
   }
-  if ($gracefulExit -and $unexpectedGracefulResidue) {
-    throw 'packaged processes unexpectedly remained after graceful exit'
+  if ($gracefulExit -and $unexpectedGracefulResidue.Count -gt 0) {
+    throw "packaged processes unexpectedly remained after graceful exit: $($unexpectedGracefulResidue -join ',')"
   }
 }

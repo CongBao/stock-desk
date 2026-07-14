@@ -146,6 +146,30 @@ def test_native_harness_installs_candidate_checks_shell_icons_and_exits_cleanly(
     )
     assert process_cleanup < sidecar_cleanup < isolated_webview_cleanup
     assert isolated_webview_cleanup < uninstall_cleanup < udf_cleanup
+    child_exit_wait = source.index(
+        "packaged child processes did not complete the tested graceful exit"
+    )
+    host_exit_code = source.index("$desktopProcess.ExitCode -ne 0")
+    sidecar_exit_code = source.index("$sidecarAfterProcess.ExitCode -ne 0")
+    graceful_exit_proof = source.index("$gracefulExit = $true")
+    assert (
+        host_exit_code
+        < child_exit_wait
+        < sidecar_exit_code
+        < graceful_exit_proof
+        < process_cleanup
+    )
+    assert (
+        "} 30 'packaged child processes did not complete the tested graceful exit'"
+        in source
+    )
+    assert "$desktopProcess.ExitCode -ne 0" in source
+    assert "$sidecarAfterProcess = $afterSidecars[0]" in source
+    assert "$sidecarExited = $sidecarAfterProcess.HasExited" in source
+    assert "Get-IsolatedWebViewProcesses $webviewUserData -Strict" in source
+    assert "$queryErrorAction = if ($Strict) { 'Stop' }" in source
+    assert "sidecar_ids=$($remainingSidecarIds -join ',')" in source
+    assert "webview_ids=$($remainingWebViewIds -join ',')" in source
     assert "packaged processes unexpectedly remained after graceful exit" in source
     assert (
         "Tauri default WebView2 state created by evidence could not be cleaned"
