@@ -908,6 +908,20 @@ def test_runtime_dialog_lookup_remains_process_bound_and_top_level() -> None:
     assert "TreeScope]::Children" not in dialog_finder
 
 
+def test_focus_contact_sheet_uses_explicit_bounded_dimensions() -> None:
+    source = Path("scripts/windows_desktop_uia_driver.ps1").read_text(encoding="utf-8")
+    contact_sheet = source.split("function Write-FocusRegionContactSheet", 1)[1].split(
+        "function Move-FocusToElementByTab", 1
+    )[0]
+
+    assert "Measure-Object" not in contact_sheet
+    assert "foreach ($capture in $script:FocusRegionCaptures)" in contact_sheet
+    assert "$captureWidth = [int]$capture.width" in contact_sheet
+    assert "$captureHeight = [int]$capture.height" in contact_sheet
+    assert "$sheetHeight = [long]0" in contact_sheet
+    assert "$sheetHeight -gt 32768" in contact_sheet
+
+
 def test_windows_ci_executes_controlled_uia_runtime_fixture() -> None:
     integration = Path(
         "tests/windows/windows_desktop_uia_driver_integration.ps1"

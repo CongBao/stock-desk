@@ -278,12 +278,21 @@ function Save-ElementFocusRegion {
 function Write-FocusRegionContactSheet {
   param([string]$Path)
   if ($script:FocusRegionCaptures.Count -lt 2) { throw 'Focus-region evidence is incomplete' }
-  $sheetWidth = [int](($script:FocusRegionCaptures | Measure-Object -Property width -Maximum).Maximum)
-  $sheetHeight = [int](($script:FocusRegionCaptures | Measure-Object -Property height -Sum).Sum)
-  if ($sheetWidth -lt 2 -or $sheetWidth -gt 2048 -or $sheetHeight -lt 4 -or $sheetHeight -gt 32768) {
-    throw 'Focus-region contact sheet exceeds its closed bounds'
+  $sheetWidth = 0
+  $sheetHeight = [long]0
+  foreach ($capture in $script:FocusRegionCaptures) {
+    $captureWidth = [int]$capture.width
+    $captureHeight = [int]$capture.height
+    if (
+      $captureWidth -lt 2 -or $captureWidth -gt 2048 -or
+      $captureHeight -lt 2 -or $captureHeight -gt 2048
+    ) { throw 'Focus-region capture exceeds its closed bounds' }
+    $sheetWidth = [Math]::Max($sheetWidth, $captureWidth)
+    $sheetHeight += [long]$captureHeight
+    if ($sheetHeight -gt 32768) { throw 'Focus-region contact sheet exceeds its closed bounds' }
   }
-  $sheet = [Drawing.Bitmap]::new($sheetWidth, $sheetHeight, [Drawing.Imaging.PixelFormat]::Format24bppRgb)
+  if ($sheetWidth -lt 2 -or $sheetHeight -lt 4) { throw 'Focus-region evidence is incomplete' }
+  $sheet = [Drawing.Bitmap]::new($sheetWidth, [int]$sheetHeight, [Drawing.Imaging.PixelFormat]::Format24bppRgb)
   $graphics = [Drawing.Graphics]::FromImage($sheet)
   $graphics.Clear([Drawing.Color]::Black)
   $entries = [Collections.Generic.List[object]]::new()
