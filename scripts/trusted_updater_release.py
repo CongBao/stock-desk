@@ -431,16 +431,6 @@ def _blake2b_stream(stream: BinaryIO) -> bytes:
     return digest.digest()
 
 
-def _stat_identity(value: os.stat_result) -> tuple[int, int, int, int, int]:
-    return (
-        value.st_dev,
-        value.st_ino,
-        value.st_size,
-        value.st_mtime_ns,
-        value.st_ctime_ns,
-    )
-
-
 def _open_locked_staged_installer(path: Path) -> BinaryIO:
     """Open and cooperatively lock the POSIX verifier object."""
 
@@ -578,6 +568,31 @@ def _same_file_object(left: os.stat_result, right: os.stat_result) -> bool:
         and left.st_dev == right.st_dev
         and left.st_ino == right.st_ino
         and left.st_size == right.st_size
+    )
+
+
+def _sha256_descriptor(descriptor: int) -> str:
+    duplicate = os.dup(descriptor)
+    try:
+        with os.fdopen(duplicate, "rb") as stream:
+            duplicate = -1
+            return _sha256_stream(stream)
+    finally:
+        if duplicate >= 0:
+            os.close(duplicate)
+
+
+def _source_matches(
+    descriptor: int,
+    initial: os.stat_result,
+    path_identity: os.stat_result,
+    expected_sha256: str,
+) -> bool:
+    return (
+        (initial.st_dev, initial.st_ino) != (0, 0)
+        and _same_file_object(initial, os.fstat(descriptor))
+        and _same_file_object(initial, path_identity)
+        and _sha256_descriptor(descriptor) == expected_sha256
     )
 
 
@@ -759,16 +774,20 @@ def _stage_installer(source: Path, verified_output: Path) -> Iterator[StagedInst
         staged_stream.flush()
         os.fsync(staged_stream.fileno())
 
-        source_after = os.fstat(source_fd)
+        source_digest = digest.hexdigest()
         try:
             source_path_after = source.stat(follow_symlinks=False)
+            source_is_unchanged = _source_matches(
+                source_fd,
+                source_before,
+                source_path_after,
+                source_digest,
+            )
         except OSError as error:
             raise TrustedUpdaterReleaseError(
                 "installer source changed while it was staged"
             ) from error
-        if _stat_identity(source_before) != _stat_identity(
-            source_after
-        ) or _stat_identity(source_before) != _stat_identity(source_path_after):
+        if not source_is_unchanged:
             raise TrustedUpdaterReleaseError(
                 "installer source changed while it was staged"
             )
@@ -801,20 +820,24 @@ def _stage_installer(source: Path, verified_output: Path) -> Iterator[StagedInst
         staged = StagedInstaller(
             path=temporary_path,
             stream=staged_stream,
-            sha256=digest.hexdigest(),
+            sha256=source_digest,
             initial_stat=initial_stat,
         )
         yield staged
 
         try:
             source_path_final = source.stat(follow_symlinks=False)
+            source_is_unchanged = _source_matches(
+                source_fd,
+                source_before,
+                source_path_final,
+                source_digest,
+            )
         except OSError as error:
             raise TrustedUpdaterReleaseError(
                 "installer source changed during verification"
             ) from error
-        if _stat_identity(source_before) != _stat_identity(
-            os.fstat(source_fd)
-        ) or _stat_identity(source_before) != _stat_identity(source_path_final):
+        if not source_is_unchanged:
             raise TrustedUpdaterReleaseError(
                 "installer source changed during verification"
             )

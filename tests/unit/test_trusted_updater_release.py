@@ -320,6 +320,48 @@ def test_owned_file_identity_ignores_benign_timestamp_metadata_changes(
 
     assert trusted_release._same_file_object(initial, changed_timestamps)
 
+    unavailable_fields = list(initial)
+    unavailable_fields[1] = 0
+    unavailable_fields[2] = 0
+    unavailable_identity = os.stat_result(unavailable_fields)
+    assert not trusted_release._source_matches(
+        -1,
+        unavailable_identity,
+        unavailable_identity,
+        hashlib.sha256(b"verified").hexdigest(),
+    )
+
+
+def test_source_timestamp_change_with_identical_bytes_does_not_block_publication(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.exe"
+    source.write_bytes(b"verified")
+    output = _verified_path(tmp_path)
+
+    with trusted_release._stage_installer(source, output):
+        metadata = source.stat()
+        os.utime(
+            source,
+            ns=(metadata.st_atime_ns + 1_000_000, metadata.st_mtime_ns + 1_000_000),
+        )
+
+    assert output.read_bytes() == b"verified"
+
+
+def test_same_size_source_mutation_during_verification_aborts_publication(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.exe"
+    source.write_bytes(b"original")
+    output = _verified_path(tmp_path)
+
+    with pytest.raises(TrustedUpdaterReleaseError, match="source changed"):
+        with trusted_release._stage_installer(source, output):
+            source.write_bytes(b"mutated!")
+
+    assert not output.exists()
+
 
 def test_post_link_failure_revokes_readonly_output_and_temporary_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
