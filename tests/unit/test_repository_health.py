@@ -482,11 +482,11 @@ def test_stage_zero_ci_has_unique_shards_frontend_reports_and_one_oci_build() ->
     evidence_attestation = next(
         step
         for step in proof_steps
-        if step.get("name") == "Attest all eleven exact-SHA evidence manifests"
+        if step.get("name") == "Attest all twelve exact-SHA evidence manifests"
     )
     assert str(evidence_attestation["uses"]).startswith("actions/attest@")
     subjects = evidence_attestation["with"]["subject-path"].splitlines()
-    assert len(subjects) == 11
+    assert len(subjects) == 12
     assert all(subject.endswith(".json") for subject in subjects)
     verification = next(
         step
@@ -1004,6 +1004,7 @@ def test_ci_and_release_run_the_canonical_dependency_audit_gate() -> None:
     proof = ci["jobs"]["validation-proof"]
     assert proof["if"] == "github.event_name == 'push'"
     assert set(proof["needs"]) == {
+        "windows-browser-observer",
         "windows-desktop-builder-a",
         "windows-desktop-builder-b",
         "windows-desktop-compare",

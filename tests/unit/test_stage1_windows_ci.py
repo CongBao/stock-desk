@@ -209,6 +209,7 @@ def test_comparison_promotes_only_a_and_main_proof_attests_both_identities() -> 
     ):
         assert critical_input in commands
     assert set(proof["needs"]) >= {
+        "windows-browser-observer",
         "windows-desktop-builder-a",
         "windows-desktop-builder-b",
         "windows-desktop-compare",
@@ -216,6 +217,7 @@ def test_comparison_promotes_only_a_and_main_proof_attests_both_identities() -> 
     proof_commands = _commands(proof)
     assert "windows-payload-comparison-manifest=" in proof_commands
     assert "windows-desktop-alpha-candidate-manifest=" in proof_commands
+    assert "windows-browser-observer-evidence=" in proof_commands
     proof_steps = proof["steps"]
     assert isinstance(proof_steps, list)
     names = [str(step.get("name")) for step in proof_steps if isinstance(step, dict)]
@@ -232,6 +234,7 @@ def test_comparison_promotes_only_a_and_main_proof_attests_both_identities() -> 
     policies = main_validation_proof.EVIDENCE_POLICIES
     assert policies["windows-payload-comparison"].job_id == "windows-desktop-compare"
     assert policies["windows-alpha-candidate"].job_id == "windows-desktop-compare"
+    assert policies["windows-browser-observer"].job_id == ("windows-browser-observer")
     assert {
         "packaging/stock-desk-sidecar.spec",
         "scripts/build_windows_desktop.py",

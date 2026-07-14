@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/CongBao/stock-desk/schemas/windows-vm-snapshot-policy-v1.schema.json",
+  "title": "Stock Desk protected Windows VM snapshot policy",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "assignments"],
+  "properties": {
+    "schema": { "const": "stock-desk-windows-vm-snapshot-policy-v1" },
+    "assignments": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "guest_profile", "controller_label", "scenario", "snapshot_id",
+          "snapshot_sha256", "image_sha256", "system", "webview_initial_state",
+          "failure_injection"
+        ],
+        "properties": {
+          "guest_profile": { "enum": ["win10-22h2", "win11"] },
+          "controller_label": { "type": "string", "pattern": "^stock-desk-vm-controller-(win10-22h2|win11)$" },
+          "scenario": { "enum": ["webview-preinstalled", "webview-absent", "webview-install-failure"] },
+          "snapshot_id": { "type": "string", "pattern": "^[A-Za-z0-9_.-]{1,128}$" },
+          "snapshot_sha256": { "$ref": "#/$defs/sha256" },
+          "image_sha256": { "$ref": "#/$defs/sha256" },
+          "system": {
+            "type": "object", "additionalProperties": false,
+            "required": ["family", "display_version", "build_number", "update_build_revision", "architecture"],
+            "properties": {
+              "family": { "enum": ["windows-10", "windows-11"] },
+              "display_version": { "type": "string", "minLength": 1, "maxLength": 32 },
+              "build_number": { "type": "integer", "minimum": 1 },
+              "update_build_revision": { "type": "integer", "minimum": 0 },
+              "architecture": { "const": "x86_64" }
+            }
+          },
+          "webview_initial_state": { "enum": ["present", "absent"] },
+          "failure_injection": {
+            "oneOf": [
+              { "type": "null" },
+              {
+                "type": "object", "additionalProperties": false,
+                "required": ["identity", "sha256"],
+                "properties": {
+                  "identity": { "const": "stock-desk-webview2-offline-install-failure-v1" },
+                  "sha256": { "$ref": "#/$defs/sha256" }
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  },
+  "$defs": { "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" } }
+}

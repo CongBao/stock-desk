@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 import yaml  # type: ignore[import-untyped]
 
+from scripts.main_validation_proof import CRITICAL_INPUTS
 from scripts.windows_installed_environment_policy import (
     EnvironmentPolicyError,
     bootstrap_payload,
@@ -495,3 +496,73 @@ def test_bootstrap_payload_preserves_reviewers_but_forces_protected_main_policy(
     malformed["protection_rules"] = [{"type": "required_reviewers", "reviewers": []}]
     with pytest.raises(EnvironmentPolicyError):
         bootstrap_payload(malformed)
+
+
+def test_raw_evidence_contracts_are_signed_inputs_but_not_active_runner_wiring() -> (
+    None
+):
+    required = {
+        "schemas/windows-installed-raw-evidence-v1.schema.json",
+        "schemas/windows-vm-snapshot-policy-v1.schema.json",
+        "scripts/verify_windows_raw_evidence.py",
+        "scripts/windows_installed_guest_harness.ps1",
+        "scripts/windows_installed_vm_harness.ps1",
+        "tests/windows/windows_browser_observer_integration.ps1",
+    }
+    assert required <= set(CRITICAL_INPUTS)
+
+    workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
+    assert "runs-on: windows-2025" in workflow
+    assert "Persistent repository runners are forbidden" in workflow
+    assert "STOCK_DESK_WINDOWS_VM_ADAPTER" not in workflow
+    assert "verify_windows_raw_evidence.py" not in workflow
+
+
+def test_browser_observer_fixture_uses_supported_windows_executable_compiler() -> None:
+    integration = (
+        ROOT / "tests" / "windows" / "windows_browser_observer_integration.ps1"
+    ).read_text(encoding="utf-8")
+
+    assert "Framework64\\v4.0.30319\\csc.exe" in integration
+    assert "'/target:winexe'" in integration
+    assert "System.Diagnostics.Process.GetCurrentProcess().Id" in integration
+    assert "Add-Type -TypeDefinition $fixtureSource -OutputAssembly" not in integration
+
+
+def test_reference_controller_and_guest_contracts_fail_closed() -> None:
+    controller = (ROOT / "scripts" / "windows_installed_vm_harness.ps1").read_text(
+        encoding="utf-8"
+    )
+    guest = (ROOT / "scripts" / "windows_installed_guest_harness.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    for required in (
+        "controller-unavailable-diagnostic",
+        "Protected snapshot policy is not externally approved",
+        "Protected VM adapter is not externally approved",
+        "$maximumJsonBytes = 1MB",
+        "$maximumRecordBytes = 8MB",
+        "$maximumPackageBytes = 16MB",
+        "$maximumPublicTextBytes = 2MB",
+        "Assert-NoReparsePath",
+        "@arguments *> $privateLogPath",
+        "LeaseTtlSeconds = $leaseTtlSeconds",
+        "released-after-restore",
+        "cancellation watchdog lease",
+        "Cleanup restored the snapshot but cannot publish an incomplete acceptance lifecycle",
+    ):
+        assert required in controller
+    for required in (
+        'EntryPoint = "PrintWindow"',
+        "PW_RENDERFULLCONTENT",
+        "PrintWindowContent($WindowHandle, $targetDc)",
+        "EnumWindows",
+        "SetWinEventHook",
+        "TreeScope]::Descendants",
+        "Executed guest harness differs from the controller-reviewed file",
+    ):
+        assert required in guest
+    assert "CopyFromScreen" not in guest
+    assert "passed =" not in controller
+    assert "passed =" not in guest
