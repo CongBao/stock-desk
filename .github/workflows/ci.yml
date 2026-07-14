@@ -88,7 +88,7 @@ jobs:
           retention-days: 7
 
   windows-browser-observer:
-    name: Verify Windows browser observer integration
+    name: Execute Windows browser and UIA observer integrations
     runs-on: windows-2025
     timeout-minutes: 10
     steps:
@@ -101,7 +101,7 @@ jobs:
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-      - name: Execute the production Win32 browser observer
+      - name: Execute production Win32 observer and reviewed UIA runtime fixture
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -111,6 +111,8 @@ jobs:
           New-Item -ItemType Directory -Force $out | Out-Null
           & tests\windows\windows_browser_observer_integration.ps1 -OutputPath (Join-Path $out 'observer-evidence.json')
           if ($LASTEXITCODE -ne 0) { throw 'production Win32 browser observer integration failed' }
+          & tests\windows\windows_desktop_uia_driver_integration.ps1 -OutputPath (Join-Path $out 'uia-driver-evidence.json')
+          if ($LASTEXITCODE -ne 0) { throw 'reviewed UIA driver integration failed' }
       - name: Bind observer evidence to exact source and producer
         shell: pwsh
         run: |
@@ -119,6 +121,8 @@ jobs:
           $tree = (git rev-parse 'HEAD^{tree}').Trim()
           $guestHash = (Get-FileHash scripts\windows_installed_guest_harness.ps1 -Algorithm SHA256).Hash.ToLowerInvariant()
           $testHash = (Get-FileHash tests\windows\windows_browser_observer_integration.ps1 -Algorithm SHA256).Hash.ToLowerInvariant()
+          $uiaHash = (Get-FileHash scripts\windows_desktop_uia_driver.ps1 -Algorithm SHA256).Hash.ToLowerInvariant()
+          $uiaTestHash = (Get-FileHash tests\windows\windows_desktop_uia_driver_integration.ps1 -Algorithm SHA256).Hash.ToLowerInvariant()
           $workflowHash = (Get-FileHash .github\workflows\ci.yml -Algorithm SHA256).Hash.ToLowerInvariant()
           $lockHash = (Get-FileHash uv.lock -Algorithm SHA256).Hash.ToLowerInvariant()
           $receipt = Get-Content -LiteralPath (Join-Path $out 'observer-evidence.json') -Raw | ConvertFrom-Json
@@ -138,14 +142,59 @@ jobs:
             $receipt.unhook_failure_failed_closed -ne $true -or
             $null -ne $receipt.unhook_failure_stopped_timestamp
           ) { throw 'observer integration receipt is not exact-SHA fail-closed evidence' }
+          $uiaReceipt = Get-Content -LiteralPath (Join-Path $out 'uia-driver-evidence.json') -Raw | ConvertFrom-Json
+          $uiaProbeRoot = Join-Path $out 'uia-runtime-probe'
+          $runtimeProbeHash = (Get-FileHash -LiteralPath (Join-Path $uiaProbeRoot 'driver-result.json') -Algorithm SHA256).Hash.ToLowerInvariant()
+          $runtimeActionsHash = (Get-FileHash -LiteralPath (Join-Path $uiaProbeRoot 'uia-actions.json') -Algorithm SHA256).Hash.ToLowerInvariant()
+          $runtimeTreeHash = (Get-FileHash -LiteralPath (Join-Path $uiaProbeRoot 'uia-tree.json') -Algorithm SHA256).Hash.ToLowerInvariant()
+          $runtimeCaptureHash = (Get-FileHash -LiteralPath (Join-Path $uiaProbeRoot 'runtime-probe-window.png') -Algorithm SHA256).Hash.ToLowerInvariant()
+          $focusContactHash = (Get-FileHash -LiteralPath (Join-Path $uiaProbeRoot 'focus-region-contact-sheet.png') -Algorithm SHA256).Hash.ToLowerInvariant()
+          if (
+            $uiaReceipt.schema -ne 'stock-desk-windows-uia-driver-integration-v1' -or
+            $uiaReceipt.evidence_kind -ne 'github-hosted-contract-not-real-vm' -or
+            $uiaReceipt.source_sha -cne $env:SOURCE_SHA -or $uiaReceipt.source_tree -cne $tree -or
+            $uiaReceipt.workflow_ref -cne $env:GITHUB_WORKFLOW_REF -or
+            $uiaReceipt.workflow_sha -cne $env:GITHUB_WORKFLOW_SHA -or
+            $uiaReceipt.run_id -ne [long]$env:GITHUB_RUN_ID -or
+            $uiaReceipt.run_attempt -ne [int]$env:GITHUB_RUN_ATTEMPT -or
+            $uiaReceipt.job_id -cne $env:GITHUB_JOB -or
+            $uiaReceipt.uia_driver_sha256 -cne $uiaHash -or
+            $uiaReceipt.parsed_on_windows -ne $true -or
+            $uiaReceipt.executed_on_windows -ne $true -or
+            $uiaReceipt.controlled_uia_fixture -ne $true -or
+            $uiaReceipt.target_hwnd_dpi_contract -ne $true -or
+            $uiaReceipt.real_tab_input_contract -ne $true -or
+            $uiaReceipt.real_escape_input_contract -ne $true -or
+            $uiaReceipt.actual_tab_activation_observed -ne $true -or
+            $uiaReceipt.actual_escape_close_observed -ne $true -or
+            $uiaReceipt.focus_observation_method -ne 'uia-focused-element-after-real-tab' -or
+            $uiaReceipt.focus_region_changed -ne $true -or
+            $uiaReceipt.unfocused_region_id -cnotmatch '^focus-region-[0-9]{3}$' -or
+            $uiaReceipt.focused_region_id -cnotmatch '^focus-region-[0-9]{3}$' -or
+            $uiaReceipt.focused_region_id -ceq $uiaReceipt.unfocused_region_id -or
+            $uiaReceipt.focus_region_contact_sheet_sha256 -cne $focusContactHash -or
+            $uiaReceipt.runtime_probe_sha256 -cne $runtimeProbeHash -or
+            $uiaReceipt.runtime_actions_sha256 -cne $runtimeActionsHash -or
+            $uiaReceipt.runtime_tree_sha256 -cne $runtimeTreeHash -or
+            $uiaReceipt.target_window_capture_sha256 -cne $runtimeCaptureHash -or
+            $uiaReceipt.raw_only -ne $true -or $uiaReceipt.real_vm_acceptance -ne $false
+          ) { throw 'UIA driver integration receipt is not exact-SHA non-VM contract evidence' }
           python scripts\artifact_manifest.py create `
             --root $out --output (Join-Path $out 'windows-browser-observer-evidence.json') `
             --source-sha $env:SOURCE_SHA --source-tree $tree `
             --workflow CI --run-id $env:GITHUB_RUN_ID --run-attempt $env:GITHUB_RUN_ATTEMPT `
-            --job-id $env:GITHUB_JOB --job-name 'Verify Windows browser observer integration' `
+            --job-id $env:GITHUB_JOB --job-name 'Execute Windows browser and UIA observer integrations' `
             --payload 'observer-evidence.json:provenance' `
+            --payload 'uia-driver-evidence.json:provenance' `
+            --payload 'uia-runtime-probe/driver-result.json:provenance' `
+            --payload 'uia-runtime-probe/uia-actions.json:provenance' `
+            --payload 'uia-runtime-probe/uia-tree.json:provenance' `
+            --payload 'uia-runtime-probe/runtime-probe-window.png:provenance' `
+            --payload 'uia-runtime-probe/focus-region-contact-sheet.png:provenance' `
             --critical-input "scripts/windows_installed_guest_harness.ps1=$guestHash" `
             --critical-input "tests/windows/windows_browser_observer_integration.ps1=$testHash" `
+            --critical-input "scripts/windows_desktop_uia_driver.ps1=$uiaHash" `
+            --critical-input "tests/windows/windows_desktop_uia_driver_integration.ps1=$uiaTestHash" `
             --critical-input ".github/workflows/ci.yml=$workflowHash" `
             --toolchain "powershell=$($PSVersionTable.PSVersion)" `
             --lockfile "uv.lock=$lockHash"

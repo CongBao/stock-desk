@@ -803,7 +803,8 @@ def test_generation_requires_exact_windows_observer_gate(
             job
             for job in values
             if isinstance(job, dict)
-            and job.get("name") == "Verify Windows browser observer integration"
+            and job.get("name")
+            == "Execute Windows browser and UIA observer integrations"
         )
         observer_job["conclusion"] = "failure"
     else:

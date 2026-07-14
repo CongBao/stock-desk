@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/CongBao/stock-desk/schemas/windows-vm-lifecycle-receipt-v2.schema.json",
+  "title": "Stock Desk signed external Windows VM lifecycle receipt v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "status", "raw_only", "case_id", "source_sha",
+    "snapshot_policy_sha256", "adapter_sha256", "broker_public_key_sha256",
+    "controller_request_sha256", "guest_harness_sha256", "uia_driver_sha256",
+    "workflow_sha256", "snapshot_sha256", "image_sha256", "raw_manifest_sha256",
+    "force_kill", "restored_before_at_utc", "acceptance_completed_at_utc",
+    "cleanup_restored_at_utc", "lease_expires_at_utc", "lease_released_at_utc",
+    "watchdog_armed_during_run", "lease_state", "lease_digest",
+    "broker_request_nonce_sha256", "request_job_id", "oidc_jti_sha256", "oidc"
+  ],
+  "properties": {
+    "schema": { "const": "stock-desk-windows-vm-lifecycle-receipt-v2" },
+    "status": { "const": "completed" },
+    "raw_only": { "const": true },
+    "case_id": { "type": "string", "pattern": "^(win10-22h2|win11)-dpi-(100|125|150|175|200)(-webview-offline)?$" },
+    "source_sha": { "$ref": "#/$defs/gitObject" },
+    "snapshot_policy_sha256": { "$ref": "#/$defs/sha256" },
+    "adapter_sha256": { "$ref": "#/$defs/sha256" },
+    "broker_public_key_sha256": { "$ref": "#/$defs/sha256" },
+    "controller_request_sha256": { "$ref": "#/$defs/sha256" },
+    "guest_harness_sha256": { "$ref": "#/$defs/sha256" },
+    "uia_driver_sha256": { "$ref": "#/$defs/sha256" },
+    "workflow_sha256": { "$ref": "#/$defs/sha256" },
+    "snapshot_sha256": { "$ref": "#/$defs/sha256" },
+    "image_sha256": { "$ref": "#/$defs/sha256" },
+    "raw_manifest_sha256": { "$ref": "#/$defs/sha256" },
+    "force_kill": { "const": false },
+    "restored_before_at_utc": { "$ref": "#/$defs/timestamp" },
+    "acceptance_completed_at_utc": { "$ref": "#/$defs/timestamp" },
+    "cleanup_restored_at_utc": { "$ref": "#/$defs/timestamp" },
+    "lease_expires_at_utc": { "$ref": "#/$defs/timestamp" },
+    "lease_released_at_utc": { "$ref": "#/$defs/timestamp" },
+    "watchdog_armed_during_run": { "const": true },
+    "lease_state": { "const": "released-after-restore" },
+    "lease_digest": { "$ref": "#/$defs/sha256" },
+    "broker_request_nonce_sha256": { "$ref": "#/$defs/sha256" },
+    "request_job_id": { "type": "string", "pattern": "^windows-installed-(win10-22h2|win11)-dpi-(100|125|150|175|200)(-webview-offline)?$" },
+    "oidc_jti_sha256": { "$ref": "#/$defs/sha256" },
+    "oidc": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "issuer", "audience", "repository", "repository_id", "repository_owner_id",
+        "ref", "sha", "workflow_ref", "workflow_sha", "run_id", "run_attempt",
+        "check_run_id", "runner_environment", "environment", "sub"
+      ],
+      "properties": {
+        "issuer": { "const": "https://token.actions.githubusercontent.com" },
+        "audience": { "const": "stock-desk-windows-installed-acceptance" },
+        "repository": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" },
+        "repository_id": { "$ref": "#/$defs/positiveDecimal" },
+        "repository_owner_id": { "$ref": "#/$defs/positiveDecimal" },
+        "ref": { "const": "refs/heads/main" },
+        "sha": { "$ref": "#/$defs/gitObject" },
+        "workflow_ref": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/.github/workflows/windows-installed.yml@refs/heads/main$" },
+        "workflow_sha": { "$ref": "#/$defs/gitObject" },
+        "run_id": { "$ref": "#/$defs/positiveDecimal" },
+        "run_attempt": { "const": "1" },
+        "check_run_id": { "$ref": "#/$defs/positiveDecimal" },
+        "runner_environment": { "const": "github-hosted" },
+        "environment": { "const": "windows-installed-acceptance" },
+        "sub": { "type": "string", "pattern": "^repo:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+:environment:windows-installed-acceptance$" }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "gitObject": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "positiveDecimal": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+    "timestamp": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$" }
+  }
+}

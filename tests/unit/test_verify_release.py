@@ -1566,6 +1566,18 @@ def test_release_leak_scanner_does_not_treat_regex_syntax_as_a_profile() -> None
     scanner.finish()
 
 
+def test_windows_evidence_verifier_source_is_release_scan_safe() -> None:
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "scripts"
+        / "verify_windows_desktop_raw_evidence.py"
+    )
+    scanner = ReleaseLeakScanner(label=source.name)
+
+    scanner.feed(source.read_bytes())
+    scanner.finish()
+
+
 def test_release_leak_scanner_detects_tokens_split_across_chunks() -> None:
     token = b"OPENAI_API_" + b"KEY=sk-" + b"Q7" * 24
     token_value_start = token.index(b"sk-") + len(b"sk-")

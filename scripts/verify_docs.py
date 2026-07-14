@@ -2532,8 +2532,11 @@ REQUIRED_PUBLIC_SNIPPETS = {
         "Native installers",
         "Source development",
         "Container deployment",
+        "v1.1 Windows desktop",
+        r"%LOCALAPPDATA%\Stock Desk\v1.1",
         r"%LOCALAPPDATA%\stock-desk",
         "~/Library/Application Support/stock-desk",
+        "external browser",
         "config/master.key",
     ),
 }

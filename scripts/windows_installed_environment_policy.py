@@ -49,13 +49,51 @@ def verify_environment_policy(
     rules = document.get("protection_rules")
     if not isinstance(rules, Sequence) or isinstance(rules, (str, bytes)):
         raise EnvironmentPolicyError("environment protection_rules must be an array")
-    rule_types = {
-        rule.get("type")
-        for rule in rules
-        if isinstance(rule, Mapping) and isinstance(rule.get("type"), str)
-    }
-    if "branch_policy" not in rule_types:
-        raise EnvironmentPolicyError("environment branch policy rule is missing")
+    branch_rule_count = 0
+    reviewer_rules: list[Mapping[str, Any]] = []
+    for raw_rule in rules:
+        rule = _object(raw_rule, "environment protection rule")
+        rule_type = rule.get("type")
+        if not isinstance(rule_type, str):
+            raise EnvironmentPolicyError("environment protection rule type is invalid")
+        if rule_type == "branch_policy":
+            branch_rule_count += 1
+        elif rule_type == "required_reviewers":
+            reviewer_rules.append(rule)
+    if branch_rule_count != 1:
+        raise EnvironmentPolicyError(
+            "exactly one environment branch policy rule is required"
+        )
+    if len(reviewer_rules) != 1:
+        raise EnvironmentPolicyError(
+            "exactly one environment required reviewer rule is required"
+        )
+    reviewer_rule = reviewer_rules[0]
+    if reviewer_rule.get("prevent_self_review") is not True:
+        raise EnvironmentPolicyError(
+            "environment reviewer policy must prevent self review"
+        )
+    reviewers = reviewer_rule.get("reviewers")
+    if (
+        not isinstance(reviewers, Sequence)
+        or isinstance(reviewers, (str, bytes))
+        or not reviewers
+    ):
+        raise EnvironmentPolicyError(
+            "environment reviewer policy requires at least one reviewer"
+        )
+    for raw_reviewer in reviewers:
+        reviewer_entry = _object(raw_reviewer, "environment reviewer")
+        if reviewer_entry.get("type") not in {"User", "Team"}:
+            raise EnvironmentPolicyError(
+                "environment reviewer must be a GitHub user or team"
+            )
+        reviewer = _object(
+            reviewer_entry.get("reviewer"), "environment reviewer identity"
+        )
+        reviewer_id = reviewer.get("id")
+        if not isinstance(reviewer_id, int) or isinstance(reviewer_id, bool):
+            raise EnvironmentPolicyError("environment reviewer id is invalid")
     policy_document = _object(branch_policies, "branch policies")
     policies = policy_document.get("branch_policies")
     if (

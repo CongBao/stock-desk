@@ -144,14 +144,26 @@ _INSTALLER_TEST_NAMES = frozenset(
         "test_verify_windows_desktop_bundle.py",
         "test_windows_bundle_verifier.py",
         "test_windows_desktop_packaging.py",
+        "test_windows_desktop_raw_evidence_v2.py",
+        "test_windows_installed_workflow.py",
     }
 )
 _HIGH_RISK_INSTALLER_FILES = frozenset(
     {
         ".github/workflows/windows-installed.yml",
+        "config/windows-vm-broker-public-key.pem",
+        "schemas/windows-installed-evidence-v2.schema.json",
+        "schemas/windows-installed-raw-evidence-v2.schema.json",
+        "schemas/windows-vm-lifecycle-receipt-v2.schema.json",
+        "schemas/windows-vm-snapshot-policy-v2.schema.json",
+        "scripts/verify_windows_desktop_raw_evidence.py",
         "scripts/verify_windows_installed_evidence.py",
+        "scripts/windows_desktop_uia_driver.ps1",
         "scripts/windows_installed_environment_policy.py",
+        "scripts/windows_installed_guest_harness.ps1",
         "scripts/windows_installed_vm_harness.ps1",
+        "scripts/windows_vm_broker_client.py",
+        "tests/windows/windows_desktop_uia_driver_integration.ps1",
     }
 )
 _PACKAGED_BACKTEST_PROOF_FILES = frozenset(
