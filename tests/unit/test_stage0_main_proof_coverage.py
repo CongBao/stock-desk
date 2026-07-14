@@ -144,12 +144,18 @@ class _PagedClient(proof.GitHubApiClient):
 
 
 def test_workflow_evidence_paginates_until_exact_total() -> None:
-    run = {"id": 42}
+    run = {"id": 42, "run_attempt": 1}
     client = _PagedClient(
         [
             run,
-            {"total_count": 3, "jobs": [{"id": 1}, {"id": 2}]},
-            {"total_count": 3, "jobs": [{"id": 3}]},
+            {
+                "total_count": 3,
+                "jobs": [
+                    {"id": 1, "run_attempt": 1},
+                    {"id": 2, "run_attempt": 1},
+                ],
+            },
+            {"total_count": 3, "jobs": [{"id": 3, "run_attempt": 1}]},
         ]
     )
 
@@ -157,9 +163,19 @@ def test_workflow_evidence_paginates_until_exact_total() -> None:
 
     assert result == {
         "run": run,
-        "jobs": {"total_count": 3, "jobs": [{"id": 1}, {"id": 2}, {"id": 3}]},
+        "jobs": {
+            "total_count": 3,
+            "jobs": [
+                {"id": 1, "run_attempt": 1},
+                {"id": 2, "run_attempt": 1},
+                {"id": 3, "run_attempt": 1},
+            ],
+        },
     }
-    assert client.calls[-1][1] == {"filter": "latest", "per_page": "100", "page": "2"}
+    assert client.calls[-1] == (
+        "/repos/owner/repo/actions/runs/42/attempts/1/jobs",
+        {"per_page": "100", "page": "2"},
+    )
 
 
 @pytest.mark.parametrize(
@@ -187,7 +203,13 @@ def test_workflow_evidence_paginates_until_exact_total() -> None:
 def test_workflow_evidence_rejects_inconsistent_pages(
     pages: list[dict[str, Any]], message: str
 ) -> None:
-    client = _PagedClient([{"id": 42}, *pages])
+    for page in pages:
+        jobs = page.get("jobs")
+        if isinstance(jobs, list):
+            for job in jobs:
+                if isinstance(job, dict):
+                    job["run_attempt"] = 1
+    client = _PagedClient([{"id": 42, "run_attempt": 1}, *pages])
     with pytest.raises(proof.MainValidationProofError, match=message):
         client.workflow_evidence(repository="owner/repo", run_id=42)
 

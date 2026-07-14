@@ -75,6 +75,7 @@ def _job(
     return {
         "id": job_id,
         "run_id": run_id,
+        "run_attempt": 1,
         "head_sha": commit_sha,
         "name": name,
         "status": status,
@@ -205,6 +206,73 @@ def _validation_evidence(
     return manifests
 
 
+def _mixed_attempt_ci_evidence(
+    repo: Path,
+) -> tuple[dict[str, object], dict[str, object]]:
+    """Model a failed-jobs rerun whose artifacts span two workflow attempts."""
+
+    api_evidence = _api_evidence(repo)
+    ci = api_evidence["CI"]
+    assert isinstance(ci, dict)
+    run = ci["run"]
+    jobs_response = ci["jobs"]
+    assert isinstance(run, dict)
+    assert isinstance(jobs_response, dict)
+    jobs = jobs_response["jobs"]
+    assert isinstance(jobs, list)
+
+    run["run_attempt"] = 2
+    rerun_result_names = {
+        "Python acceptance and performance shard",
+        "Aggregate Python evidence and coverage",
+        "Publish immutable main validation proof",
+    }
+    attempt_two_jobs: list[dict[str, object]] = []
+    for job_value in jobs:
+        assert isinstance(job_value, dict)
+        job_value["run_attempt"] = 1
+        rerun_job = deepcopy(job_value)
+        rerun_job["id"] = int(job_value["id"]) + 1_000_000
+        rerun_job["run_attempt"] = 2
+        if job_value["name"] == "Publish immutable main validation proof":
+            job_value.update(
+                status="completed",
+                conclusion="skipped",
+                completed_at="2026-07-10T04:01:00Z",
+            )
+            rerun_job.update(status="in_progress", conclusion=None, completed_at=None)
+        elif job_value["name"] in rerun_result_names:
+            job_value.update(
+                status="completed",
+                conclusion=(
+                    "failure"
+                    if job_value["name"] == "Python acceptance and performance shard"
+                    else "skipped"
+                ),
+                completed_at="2026-07-10T04:01:00Z",
+            )
+            rerun_job.update(
+                status="completed",
+                conclusion="success",
+                completed_at="2026-07-10T04:03:00Z",
+            )
+        attempt_two_jobs.append(rerun_job)
+    jobs.extend(attempt_two_jobs)
+    jobs_response["total_count"] = len(jobs)
+
+    manifests = _validation_evidence(repo, api_evidence)
+    attempt_two_artifacts = {
+        "python-evidence-acceptance-performance",
+        "python-evidence-aggregate",
+    }
+    for artifact_name, manifest_value in manifests.items():
+        assert isinstance(manifest_value, dict)
+        producer = manifest_value["producer"]
+        assert isinstance(producer, dict)
+        producer["run_attempt"] = 2 if artifact_name in attempt_two_artifacts else 1
+    return api_evidence, manifests
+
+
 def _proof(repo: Path, evidence: dict[str, object] | None = None) -> dict[str, object]:
     api_evidence = evidence if evidence is not None else _api_evidence(repo)
     return proof_module.generate_proof(
@@ -322,6 +390,172 @@ def test_generation_rejects_partial_api_job_page(tmp_path: Path) -> None:
 
     with pytest.raises(MainValidationProofError, match="incomplete"):
         _proof(repo, evidence)
+
+
+def test_generation_selects_each_artifacts_exact_job_from_mixed_rerun_attempts(
+    tmp_path: Path,
+) -> None:
+    repo = _repository(tmp_path)
+    api_evidence, manifests = _mixed_attempt_ci_evidence(repo)
+
+    proof = proof_module.generate_proof(
+        repo_root=repo,
+        repository=REPOSITORY,
+        ref=REF,
+        api_evidence=api_evidence,
+        validation_evidence=manifests,
+    )
+
+    workflows = proof["workflows"]
+    assert isinstance(workflows, dict)
+    ci = workflows["CI"]
+    assert isinstance(ci, dict)
+    required_jobs = ci["required_jobs"]
+    assert isinstance(required_jobs, list)
+    jobs_by_name = {job["name"]: job for job in required_jobs if isinstance(job, dict)}
+    assert jobs_by_name["Chromium E2E immutable snapshot"]["run_attempt"] == 1
+    assert jobs_by_name["Python acceptance and performance shard"]["run_attempt"] == 2
+    assert jobs_by_name["Aggregate Python evidence and coverage"]["run_attempt"] == 2
+    assert (
+        jobs_by_name["Build and verify Windows desktop candidate A"]["run_attempt"] == 2
+    )
+    generation_job = ci["generation_job"]
+    assert isinstance(generation_job, dict)
+    assert generation_job["run_attempt"] == 2
+
+    validation_evidence = proof["validation_evidence"]
+    assert isinstance(validation_evidence, dict)
+    assert (
+        validation_evidence["e2e-evidence"]["producer"]["run_attempt"] == 1  # type: ignore[index]
+    )
+    assert (
+        validation_evidence["python-evidence-acceptance-performance"]["producer"][
+            "run_attempt"
+        ]
+        == 2  # type: ignore[index]
+    )
+    assert (
+        validation_evidence["python-evidence-aggregate"]["producer"]["run_attempt"] == 2  # type: ignore[index]
+    )
+
+
+@pytest.mark.parametrize(
+    "attack",
+    [
+        "nonexistent-attempt",
+        "failed-producer-job",
+        "duplicate-attempt-name",
+        "missing-current-job",
+    ],
+)
+def test_generation_rejects_ambiguous_or_invalid_mixed_rerun_producer(
+    tmp_path: Path, attack: str
+) -> None:
+    repo = _repository(tmp_path)
+    api_evidence, manifests = _mixed_attempt_ci_evidence(repo)
+
+    # The unmodified mixed-attempt topology is valid. Keeping this assertion in
+    # every attack case prevents an unrelated global duplicate-name rejection
+    # from making these fail-closed tests pass for the wrong reason.
+    proof_module.generate_proof(
+        repo_root=repo,
+        repository=REPOSITORY,
+        ref=REF,
+        api_evidence=api_evidence,
+        validation_evidence=manifests,
+    )
+
+    ci = api_evidence["CI"]
+    assert isinstance(ci, dict)
+    jobs_response = ci["jobs"]
+    assert isinstance(jobs_response, dict)
+    jobs = jobs_response["jobs"]
+    assert isinstance(jobs, list)
+    e2e_job = next(
+        job
+        for job in jobs
+        if isinstance(job, dict)
+        and job.get("name") == "Chromium E2E immutable snapshot"
+        and job.get("run_attempt") == 1
+    )
+    if attack == "nonexistent-attempt":
+        e2e_manifest = manifests["e2e-evidence"]
+        assert isinstance(e2e_manifest, dict)
+        producer = e2e_manifest["producer"]
+        assert isinstance(producer, dict)
+        producer["run_attempt"] = 3
+    elif attack == "failed-producer-job":
+        e2e_job["conclusion"] = "failure"
+    elif attack == "duplicate-attempt-name":
+        duplicate = deepcopy(e2e_job)
+        duplicate["id"] = int(e2e_job["id"]) + 2_000_000
+        jobs.append(duplicate)
+        jobs_response["total_count"] = len(jobs)
+    else:
+        jobs.remove(
+            next(
+                job
+                for job in jobs
+                if isinstance(job, dict)
+                and job.get("name") == "Build and verify Windows desktop candidate A"
+                and job.get("run_attempt") == 2
+            )
+        )
+        jobs_response["total_count"] = len(jobs)
+
+    with pytest.raises(MainValidationProofError):
+        proof_module.generate_proof(
+            repo_root=repo,
+            repository=REPOSITORY,
+            ref=REF,
+            api_evidence=api_evidence,
+            validation_evidence=manifests,
+        )
+
+
+def test_github_client_fetches_every_run_attempt_and_marks_each_job() -> None:
+    run_path = f"/repos/{REPOSITORY}/actions/runs/4242"
+
+    class FakeGitHubClient(proof_module.GitHubApiClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls: list[tuple[str, dict[str, str]]] = []
+
+        def get_object(
+            self, path: str, *, query: dict[str, str] | None = None
+        ) -> dict[str, Any]:
+            self.calls.append((path, dict(query or {})))
+            if path == run_path:
+                return {"id": 4242, "run_attempt": 2}
+            if path == f"{run_path}/attempts/1/jobs":
+                return {
+                    "total_count": 1,
+                    "jobs": [{"id": 101, "name": "attempt-one", "run_attempt": 1}],
+                }
+            if path == f"{run_path}/attempts/2/jobs":
+                return {
+                    "total_count": 1,
+                    "jobs": [{"id": 201, "name": "attempt-two", "run_attempt": 2}],
+                }
+            raise AssertionError(f"unexpected GitHub API request: {path}")
+
+    client = FakeGitHubClient()
+
+    evidence = client.workflow_evidence(repository=REPOSITORY, run_id=4242)
+
+    assert client.calls == [
+        (run_path, {}),
+        (f"{run_path}/attempts/1/jobs", {"per_page": "100", "page": "1"}),
+        (f"{run_path}/attempts/2/jobs", {"per_page": "100", "page": "1"}),
+    ]
+    assert all("filter" not in query for _, query in client.calls)
+    assert evidence["jobs"] == {
+        "total_count": 2,
+        "jobs": [
+            {"id": 101, "name": "attempt-one", "run_attempt": 1},
+            {"id": 201, "name": "attempt-two", "run_attempt": 2},
+        ],
+    }
 
 
 def test_verification_rejects_tampering_before_local_checks(tmp_path: Path) -> None:
@@ -490,7 +724,9 @@ def test_generation_rejects_manifest_from_another_job(tmp_path: Path) -> None:
     producer = manifest["producer"]
     assert isinstance(producer, dict)
     producer["job_id"] = "999999"
-    with pytest.raises(MainValidationProofError, match="GitHub job identity"):
+    with pytest.raises(
+        MainValidationProofError, match="GitHub (job|workflow) identity"
+    ):
         proof_module.generate_proof(
             repo_root=repo,
             repository=REPOSITORY,

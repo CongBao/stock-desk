@@ -29,7 +29,7 @@ from scripts.artifact_manifest import (
 
 
 LEGACY_SCHEMA: Final = "stock-desk-main-validation-proof-v1"
-SCHEMA: Final = "stock-desk-main-validation-proof-v3"
+SCHEMA: Final = "stock-desk-main-validation-proof-v4"
 POST_GH_VERIFY_BINDING_SCHEMA: Final = "stock-desk-main-proof-post-gh-verify-binding-v1"
 SHA256_PATTERN: Final = re.compile(r"^[0-9a-f]{64}$")
 GIT_SHA_PATTERN: Final = re.compile(r"^[0-9a-f]{40}$")
@@ -343,33 +343,45 @@ class GitHubApiClient:
         repository_path = "/".join(repository.split("/"))
         run_path = f"/repos/{repository_path}/actions/runs/{run_id}"
         run = self.get_object(run_path)
+        run_attempt = _integer(run.get("run_attempt"), "GitHub workflow run attempt")
         jobs: list[Any] = []
-        expected_total: int | None = None
-        page = 1
-        while True:
-            page_payload = self.get_object(
-                f"{run_path}/jobs",
-                query={"filter": "latest", "per_page": "100", "page": str(page)},
-            )
-            page_jobs = page_payload.get("jobs")
-            total_count = page_payload.get("total_count")
-            if not isinstance(page_jobs, list) or not _is_int(total_count):
-                raise MainValidationProofError("GitHub jobs response is incomplete")
-            if expected_total is None:
-                expected_total = total_count
-            elif total_count != expected_total:
-                raise MainValidationProofError(
-                    "GitHub jobs total changed during pagination"
+        for attempt in range(1, run_attempt + 1):
+            expected_attempt_total: int | None = None
+            attempt_jobs: list[Any] = []
+            page = 1
+            while True:
+                page_payload = self.get_object(
+                    f"{run_path}/attempts/{attempt}/jobs",
+                    query={"per_page": "100", "page": str(page)},
                 )
-            jobs.extend(page_jobs)
-            if len(jobs) >= expected_total:
-                break
-            if not page_jobs:
-                raise MainValidationProofError("GitHub jobs pagination ended early")
-            page += 1
-        if len(jobs) != expected_total:
-            raise MainValidationProofError("GitHub jobs response count is inconsistent")
-        return {"run": run, "jobs": {"total_count": expected_total, "jobs": jobs}}
+                page_jobs = page_payload.get("jobs")
+                total_count = page_payload.get("total_count")
+                if not isinstance(page_jobs, list) or not _is_int(total_count):
+                    raise MainValidationProofError("GitHub jobs response is incomplete")
+                if expected_attempt_total is None:
+                    expected_attempt_total = total_count
+                elif total_count != expected_attempt_total:
+                    raise MainValidationProofError(
+                        "GitHub jobs total changed during pagination"
+                    )
+                for job_value in page_jobs:
+                    job = _object(job_value, "GitHub job")
+                    if job.get("run_attempt") != attempt:
+                        raise MainValidationProofError(
+                            "GitHub job run attempt does not match the requested attempt"
+                        )
+                    attempt_jobs.append(job)
+                if len(attempt_jobs) >= expected_attempt_total:
+                    break
+                if not page_jobs:
+                    raise MainValidationProofError("GitHub jobs pagination ended early")
+                page += 1
+            if len(attempt_jobs) != expected_attempt_total:
+                raise MainValidationProofError(
+                    "GitHub jobs response count is inconsistent"
+                )
+            jobs.extend(attempt_jobs)
+        return {"run": run, "jobs": {"total_count": len(jobs), "jobs": jobs}}
 
 
 def _is_int(value: object) -> TypeGuard[int]:
@@ -550,6 +562,9 @@ def _validate_job(
     )
     proof_job: dict[str, object] = {
         "id": _integer(job.get("id"), f"{workflow}/{name} id"),
+        "run_attempt": _integer(
+            job.get("run_attempt"), f"{workflow}/{name} run attempt"
+        ),
         "name": name,
         "head_sha": commit_sha,
         "status": status,
@@ -561,6 +576,69 @@ def _validate_job(
     return name, proof_job
 
 
+def _evidence_producer_attempts(
+    values: Mapping[str, object],
+    *,
+    api_evidence: Mapping[str, object],
+) -> dict[str, dict[str, int]]:
+    expected_artifacts = {policy.artifact_name for policy in EVIDENCE_POLICIES.values()}
+    if set(values) != expected_artifacts:
+        raise MainValidationProofError(
+            "validation evidence set is invalid; "
+            f"missing={sorted(expected_artifacts - set(values))}, "
+            f"unknown={sorted(set(values) - expected_artifacts)}"
+        )
+    policies_by_artifact = {
+        policy.artifact_name: policy for policy in EVIDENCE_POLICIES.values()
+    }
+    attempts: dict[str, dict[str, int]] = {
+        workflow: {} for workflow in WORKFLOW_POLICIES
+    }
+    for artifact_name in sorted(expected_artifacts):
+        policy = policies_by_artifact[artifact_name]
+        try:
+            manifest = validate_manifest(values[artifact_name])
+        except ManifestError as error:
+            raise MainValidationProofError(
+                f"{artifact_name} manifest is invalid: {error}"
+            ) from error
+        producer = _object(manifest["producer"], f"{artifact_name} producer")
+        workflow_evidence = _object(
+            api_evidence.get(policy.workflow), f"{policy.workflow} API evidence"
+        )
+        run = _object(workflow_evidence.get("run"), f"{policy.workflow} run")
+        current_attempt = _integer(
+            run.get("run_attempt"), f"{policy.workflow} run attempt"
+        )
+        producer_attempt = _integer(
+            producer.get("run_attempt"), f"{artifact_name} producer run attempt"
+        )
+        expected_identity = {
+            "workflow": policy.workflow,
+            "run_id": _integer(run.get("id"), f"{policy.workflow} run id"),
+            "job_id": policy.job_id,
+            "job_name": policy.job_name,
+        }
+        actual_identity = {
+            "workflow": producer.get("workflow"),
+            "run_id": producer.get("run_id"),
+            "job_id": producer.get("job_id"),
+            "job_name": producer.get("job_name"),
+        }
+        if actual_identity != expected_identity or producer_attempt > current_attempt:
+            raise MainValidationProofError(
+                f"{artifact_name} producer does not match its GitHub workflow identity"
+            )
+        previous = attempts[policy.workflow].setdefault(
+            policy.job_name, producer_attempt
+        )
+        if previous != producer_attempt:
+            raise MainValidationProofError(
+                f"{policy.workflow}/{policy.job_name} artifacts disagree on run attempt"
+            )
+    return attempts
+
+
 def _workflow_proof(
     *,
     workflow: str,
@@ -569,6 +647,7 @@ def _workflow_proof(
     branch: str,
     commit_sha: str,
     tree_sha: str,
+    producer_attempts: Mapping[str, int],
 ) -> dict[str, object]:
     policy = WORKFLOW_POLICIES[workflow]
     evidence = _object(evidence_value, f"{workflow} evidence")
@@ -622,7 +701,8 @@ def _workflow_proof(
                 f"{workflow} run {key} does not match the required main validation"
             )
 
-    jobs_by_name: dict[str, dict[str, object]] = {}
+    run_attempt = _integer(run.get("run_attempt"), f"{workflow} run_attempt")
+    jobs_by_identity: dict[tuple[str, int], dict[str, object]] = {}
     for job_value in jobs_value:
         name, proof_job = _validate_job(
             job_value,
@@ -630,20 +710,50 @@ def _workflow_proof(
             run_id=run_id,
             commit_sha=commit_sha,
         )
-        if name in jobs_by_name:
-            raise MainValidationProofError(f"{workflow} contains duplicate job {name}")
-        jobs_by_name[name] = proof_job
+        attempt = _integer(
+            proof_job.get("run_attempt"), f"{workflow}/{name} run attempt"
+        )
+        if attempt > run_attempt:
+            raise MainValidationProofError(
+                f"{workflow}/{name} belongs to a future run attempt"
+            )
+        identity = (name, attempt)
+        if identity in jobs_by_identity:
+            raise MainValidationProofError(
+                f"{workflow} contains duplicate job {name} in attempt {attempt}"
+            )
+        jobs_by_identity[identity] = proof_job
 
     required_names = set(policy.required_jobs)
     if policy.generation_job is not None:
         required_names.add(policy.generation_job)
-    missing = required_names - jobs_by_name.keys()
-    unknown = jobs_by_name.keys() - required_names - policy.allowed_skipped_jobs
+    available_names = {name for name, _ in jobs_by_identity}
+    missing = required_names - available_names
+    unknown = available_names - required_names - policy.allowed_skipped_jobs
     if missing or unknown:
         raise MainValidationProofError(
             f"{workflow} job set is invalid; missing={sorted(missing)}, "
             f"unknown={sorted(unknown)}"
         )
+    jobs_by_name: dict[str, dict[str, object]] = {}
+    for name in sorted(required_names | set(policy.allowed_skipped_jobs)):
+        candidates = [
+            job for (job_name, _), job in jobs_by_identity.items() if job_name == name
+        ]
+        if not candidates:
+            continue
+        expected_attempt = producer_attempts.get(name)
+        if expected_attempt is None:
+            expected_attempt = run_attempt
+        matches = [
+            job for job in candidates if job.get("run_attempt") == expected_attempt
+        ]
+        if len(matches) != 1:
+            raise MainValidationProofError(
+                f"{workflow}/{name} does not have one job in attempt {expected_attempt}"
+            )
+        jobs_by_name[name] = matches[0]
+
     for name, job in jobs_by_name.items():
         conclusion = job["conclusion"]
         status = job["status"]
@@ -670,7 +780,7 @@ def _workflow_proof(
     return {
         "workflow_id": _integer(run.get("workflow_id"), f"{workflow} workflow_id"),
         "run_id": run_id,
-        "run_attempt": _integer(run.get("run_attempt"), f"{workflow} run_attempt"),
+        "run_attempt": run_attempt,
         "name": workflow,
         "path": policy.path,
         "event": "push",
@@ -747,11 +857,13 @@ def _validation_evidence(
         workflow = _object(
             workflows.get(policy.workflow), f"stored {policy.workflow} workflow"
         )
-        _required_job(workflows, workflow=policy.workflow, job_name=policy.job_name)
+        required_job = _required_job(
+            workflows, workflow=policy.workflow, job_name=policy.job_name
+        )
         expected_producer = {
             "workflow": policy.workflow,
             "run_id": workflow["run_id"],
-            "run_attempt": workflow["run_attempt"],
+            "run_attempt": required_job["run_attempt"],
             "job_id": policy.job_id,
             "job_name": policy.job_name,
         }
@@ -805,6 +917,9 @@ def generate_proof(
         raise MainValidationProofError(
             "unable to compute source fingerprint"
         ) from error
+    producer_attempts = _evidence_producer_attempts(
+        validation_evidence, api_evidence=api_evidence
+    )
     workflows = {
         workflow: _workflow_proof(
             workflow=workflow,
@@ -813,6 +928,7 @@ def generate_proof(
             branch=branch,
             commit_sha=commit_sha,
             tree_sha=tree_sha,
+            producer_attempts=producer_attempts[workflow],
         )
         for workflow in sorted(WORKFLOW_POLICIES)
     }
@@ -846,12 +962,13 @@ def _validate_stored_job(
     commit_sha: str,
     conclusion: str | None,
     status: str = "completed",
-) -> None:
+) -> int:
     job = _object(value, f"stored {workflow}/{expected_name}")
     _exact_keys(
         job,
         {
             "id",
+            "run_attempt",
             "name",
             "head_sha",
             "status",
@@ -864,6 +981,7 @@ def _validate_stored_job(
     )
     if _integer(job["id"], "stored job id") <= 0:
         raise MainValidationProofError("stored job id is invalid")
+    run_attempt = _integer(job["run_attempt"], "stored job run attempt")
     if job["name"] != expected_name or job["head_sha"] != commit_sha:
         raise MainValidationProofError("stored job identity does not match proof")
     if job["status"] != status or job["conclusion"] != conclusion:
@@ -874,6 +992,7 @@ def _validate_stored_job(
     elif job["completed_at"] is not None:
         raise MainValidationProofError("running proof job has a completion timestamp")
     _string(job["html_url"], "stored job html_url")
+    return run_attempt
 
 
 def _validate_stored_workflow(
@@ -916,6 +1035,7 @@ def _validate_stored_workflow(
         raise MainValidationProofError(f"stored {workflow} result is invalid")
     for key in ("workflow_id", "run_id", "run_attempt"):
         _integer(stored[key], f"stored {workflow} {key}")
+    workflow_attempt = _integer(stored["run_attempt"], f"stored {workflow} run_attempt")
     _timestamp(stored["created_at"], f"stored {workflow} created_at")
     _timestamp(stored["updated_at"], f"stored {workflow} updated_at")
     _string(stored["html_url"], f"stored {workflow} html_url")
@@ -928,13 +1048,17 @@ def _validate_stored_workflow(
         job_object = _object(job, f"stored {workflow} required job")
         name = _string(job_object.get("name"), "stored required job name")
         required_names.append(name)
-        _validate_stored_job(
+        job_attempt = _validate_stored_job(
             job,
             workflow=workflow,
             expected_name=name,
             commit_sha=commit_sha,
             conclusion="success",
         )
+        if job_attempt > workflow_attempt:
+            raise MainValidationProofError(
+                f"stored {workflow}/{name} belongs to a future run attempt"
+            )
     if required_names != sorted(policy.required_jobs):
         raise MainValidationProofError(f"stored {workflow} required jobs are invalid")
     skipped_names = []
@@ -942,13 +1066,17 @@ def _validate_stored_workflow(
         job_object = _object(job, f"stored {workflow} skipped job")
         name = _string(job_object.get("name"), "stored skipped job name")
         skipped_names.append(name)
-        _validate_stored_job(
+        job_attempt = _validate_stored_job(
             job,
             workflow=workflow,
             expected_name=name,
             commit_sha=commit_sha,
             conclusion="skipped",
         )
+        if job_attempt > workflow_attempt:
+            raise MainValidationProofError(
+                f"stored {workflow}/{name} belongs to a future run attempt"
+            )
     if skipped_names != sorted(set(skipped_names)) or not set(skipped_names) <= set(
         policy.allowed_skipped_jobs
     ):
@@ -960,7 +1088,7 @@ def _validate_stored_workflow(
                 f"stored {workflow} must not contain a generation job"
             )
     else:
-        _validate_stored_job(
+        generation_attempt = _validate_stored_job(
             generation_job,
             workflow=workflow,
             expected_name=policy.generation_job,
@@ -968,6 +1096,10 @@ def _validate_stored_workflow(
             conclusion=None,
             status="in_progress",
         )
+        if generation_attempt != workflow_attempt:
+            raise MainValidationProofError(
+                f"stored {workflow} generation job is from another run attempt"
+            )
 
 
 def verify_proof(
