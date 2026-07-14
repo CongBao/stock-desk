@@ -1,0 +1,330 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/CongBao/stock-desk/schemas/packaged-backtest-evidence-v1.schema.json",
+  "title": "Stock Desk packaged backtest evidence v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "source_sha",
+    "source_tree",
+    "candidate_sha256",
+    "capture_nonce",
+    "actual_packaged_tauri",
+    "actual_tauri_webview",
+    "authenticated_host_ipc",
+    "packaged_sidecar_worker",
+    "read_only_demo",
+    "submission_surface",
+    "seed",
+    "oracle",
+    "cells",
+    "special_cases",
+    "checkpoint"
+  ],
+  "properties": {
+    "schema_version": { "const": "stock-desk-packaged-backtest-evidence-v1" },
+    "source_sha": { "$ref": "#/$defs/gitObject" },
+    "source_tree": { "$ref": "#/$defs/gitObject" },
+    "candidate_sha256": { "$ref": "#/$defs/sha256" },
+    "capture_nonce": { "$ref": "#/$defs/uuid4" },
+    "actual_packaged_tauri": { "const": true },
+    "actual_tauri_webview": { "const": true },
+    "authenticated_host_ipc": { "const": true },
+    "packaged_sidecar_worker": { "const": true },
+    "read_only_demo": { "const": false },
+    "submission_surface": { "const": "installed-tauri-webview-host-ipc" },
+    "seed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file", "sha256"],
+      "properties": {
+        "file": { "const": "packaged-backtest-seed.json" },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "oracle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "oracle_sha256",
+        "inputs_sha256",
+        "generator_sha256",
+        "payload_digest"
+      ],
+      "properties": {
+        "source": { "type": "object" },
+        "oracle_sha256": { "$ref": "#/$defs/sha256" },
+        "inputs_sha256": { "$ref": "#/$defs/sha256" },
+        "generator_sha256": { "$ref": "#/$defs/sha256" },
+        "payload_digest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "cells": {
+      "type": "array",
+      "minItems": 12,
+      "maxItems": 12,
+      "items": { "$ref": "#/$defs/cell" }
+    },
+    "special_cases": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": { "$ref": "#/$defs/specialCase" }
+    },
+    "checkpoint": { "$ref": "#/$defs/checkpoint" }
+  },
+  "$defs": {
+    "gitObject": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "uuid4": { "$ref": "#/$defs/uuid" },
+    "cell": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case_id",
+        "formula",
+        "scope",
+        "period",
+        "run_id",
+        "task_id",
+        "snapshot_id",
+        "result_hash",
+        "worker_id",
+        "oracle_semantic_digest",
+        "preflight_sha256",
+        "overview_sha256",
+        "report_sha256",
+        "collections_sha256",
+        "report_semantics",
+        "semantic_projection"
+      ],
+      "properties": {
+        "case_id": { "type": "string" },
+        "formula": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "version_id", "checksum", "parameters"],
+          "properties": {
+            "kind": { "enum": ["macd", "custom"] },
+            "version_id": { "$ref": "#/$defs/uuid" },
+            "checksum": { "$ref": "#/$defs/digest" },
+            "parameters": { "type": "object" }
+          }
+        },
+        "scope": { "enum": ["single", "pool"] },
+        "period": { "enum": ["1d", "1w", "60m"] },
+        "run_id": { "$ref": "#/$defs/uuid" },
+        "task_id": { "$ref": "#/$defs/uuid" },
+        "snapshot_id": { "$ref": "#/$defs/digest" },
+        "result_hash": { "$ref": "#/$defs/digest" },
+        "worker_id": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "oracle_semantic_digest": { "$ref": "#/$defs/digest" },
+        "preflight_sha256": { "$ref": "#/$defs/sha256" },
+        "overview_sha256": { "$ref": "#/$defs/sha256" },
+        "report_sha256": { "$ref": "#/$defs/sha256" },
+        "collections_sha256": { "$ref": "#/$defs/sha256" },
+        "semantic_projection": { "$ref": "#/$defs/semanticProjection" },
+        "report_semantics": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "formula_checksum",
+            "formula_parameters",
+            "formula_engine_version",
+            "compatibility_version",
+            "backtest_engine_version",
+            "symbol_count",
+            "runnable_count",
+            "gap_count",
+            "signal_source_ids",
+            "execution_source_ids",
+            "status_source_ids",
+            "period",
+            "adjustment",
+            "quantity_shares",
+            "commission_bps",
+            "minimum_commission",
+            "sell_tax_bps",
+            "slippage_bps",
+            "execution_rules_version",
+            "cost_model_version",
+            "sizing_version",
+            "warmup_policy_version",
+            "metrics",
+            "disclaimer",
+            "outcomes"
+          ],
+          "properties": {
+            "formula_checksum": { "$ref": "#/$defs/digest" },
+            "formula_parameters": { "type": "array" },
+            "formula_engine_version": { "type": "string" },
+            "compatibility_version": { "type": "string" },
+            "backtest_engine_version": { "type": "string" },
+            "symbol_count": { "type": "integer", "minimum": 1 },
+            "runnable_count": { "type": "integer", "minimum": 1 },
+            "gap_count": { "type": "integer", "minimum": 0 },
+            "signal_source_ids": { "type": "array" },
+            "execution_source_ids": { "type": "array" },
+            "status_source_ids": { "type": "array" },
+            "period": { "enum": ["1d", "1w", "60m"] },
+            "adjustment": { "const": "none" },
+            "quantity_shares": { "type": "integer", "minimum": 100 },
+            "commission_bps": { "type": "string" },
+            "minimum_commission": { "type": "string" },
+            "sell_tax_bps": { "type": "string" },
+            "slippage_bps": { "type": "string" },
+            "execution_rules_version": { "type": "string" },
+            "cost_model_version": { "type": "string" },
+            "sizing_version": { "type": "string" },
+            "warmup_policy_version": { "type": "string" },
+            "metrics": { "type": "object" },
+            "disclaimer": { "type": "string" },
+            "outcomes": { "type": "object" }
+          }
+        }
+      }
+    },
+    "specialCase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case_id",
+        "run_id",
+        "task_id",
+        "snapshot_id",
+        "result_hash",
+        "worker_id",
+        "oracle_semantic_digest",
+        "preflight_sha256",
+        "overview_sha256",
+        "report_sha256",
+        "collections_sha256",
+        "semantic_projection"
+      ],
+      "properties": {
+        "case_id": {
+          "enum": [
+            "a_share_constraints_60m",
+            "open_position_costs_1d",
+            "partial_pool_gap_1d"
+          ]
+        },
+        "run_id": { "$ref": "#/$defs/uuid" },
+        "task_id": { "$ref": "#/$defs/uuid" },
+        "snapshot_id": { "$ref": "#/$defs/digest" },
+        "result_hash": { "$ref": "#/$defs/digest" },
+        "worker_id": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "oracle_semantic_digest": { "$ref": "#/$defs/digest" },
+        "preflight_sha256": { "$ref": "#/$defs/sha256" },
+        "overview_sha256": { "$ref": "#/$defs/sha256" },
+        "report_sha256": { "$ref": "#/$defs/sha256" },
+        "collections_sha256": { "$ref": "#/$defs/sha256" },
+        "semantic_projection": { "$ref": "#/$defs/semanticProjection" }
+      }
+    },
+    "semanticProjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "identity_graph",
+        "run",
+        "snapshot",
+        "symbols",
+        "report",
+        "collections",
+        "order_events"
+      ],
+      "properties": {
+        "identity_graph": { "type": "object" },
+        "run": { "type": "object" },
+        "snapshot": { "type": "object" },
+        "symbols": { "type": "array" },
+        "report": { "type": "object" },
+        "collections": { "type": "object" },
+        "order_events": { "type": "array" }
+      }
+    },
+    "checkpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case_id",
+        "run_id",
+        "task_id",
+        "snapshot_id",
+        "result_hash",
+        "worker_before",
+        "worker_after",
+        "runtime_state_before",
+        "runtime_state_recovery",
+        "runtime_state_after",
+        "runtime_restart_observed",
+        "recovery_required",
+        "report_sha256",
+        "baseline_run_id",
+        "baseline_task_id",
+        "baseline_snapshot_id",
+        "baseline_result_hash",
+        "baseline_worker_id",
+        "uninterrupted_semantic_projection",
+        "resumed_semantic_projection",
+        "resumed_normalized_projection",
+        "normalization"
+      ],
+      "properties": {
+        "case_id": { "const": "custom_pool_1d_checkpoint_resume" },
+        "run_id": { "$ref": "#/$defs/uuid" },
+        "task_id": { "$ref": "#/$defs/uuid" },
+        "snapshot_id": { "$ref": "#/$defs/digest" },
+        "result_hash": { "$ref": "#/$defs/digest" },
+        "worker_before": { "type": "string", "minLength": 1 },
+        "worker_after": { "type": "string", "minLength": 1 },
+        "runtime_state_before": { "const": "ready" },
+        "runtime_state_recovery": { "const": "recovery" },
+        "runtime_state_after": { "const": "ready" },
+        "runtime_restart_observed": { "const": true },
+        "recovery_required": { "const": true },
+        "report_sha256": { "$ref": "#/$defs/sha256" },
+        "baseline_run_id": { "$ref": "#/$defs/uuid" },
+        "baseline_task_id": { "$ref": "#/$defs/uuid" },
+        "baseline_snapshot_id": { "$ref": "#/$defs/digest" },
+        "baseline_result_hash": { "$ref": "#/$defs/digest" },
+        "baseline_worker_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "uninterrupted_semantic_projection": {
+          "$ref": "#/$defs/semanticProjection"
+        },
+        "resumed_semantic_projection": { "$ref": "#/$defs/semanticProjection" },
+        "resumed_normalized_projection": {
+          "$ref": "#/$defs/semanticProjection"
+        },
+        "normalization": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "allowed_difference_id",
+            "removed_log",
+            "renumbered_field"
+          ],
+          "properties": {
+            "allowed_difference_id": {
+              "const": "desktop-checkpoint-extension-v1.1"
+            },
+            "removed_log": { "type": "object" },
+            "renumbered_field": { "const": "collections.logs[].ordinal" }
+          }
+        }
+      }
+    }
+  }
+}

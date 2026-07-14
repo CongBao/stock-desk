@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 import yaml  # type: ignore[import-untyped]
+
+from scripts.main_validation_proof import EVIDENCE_POLICIES
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -48,6 +51,37 @@ def test_v11_release_has_only_exact_proof_reuse_and_unsigned_publish_jobs() -> N
         "--latest=false",
     ):
         assert required in commands
+
+
+def test_v11_release_consumes_the_complete_main_proof_evidence_set() -> None:
+    source = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+    commands = _commands(_workflow())
+    expected = {policy.artifact_name for policy in EVIDENCE_POLICIES.values()}
+    blocks = re.findall(r"evidence_names=\(\n(?P<body>.*?)\n\s*\)", source, re.DOTALL)
+    consumed = [
+        {line.strip() for line in block.splitlines() if line.strip()}
+        for block in blocks
+    ]
+
+    # The observer manifest is downloaded, attested, and passed to the offline
+    # release verifier.  Keep the explicit cardinality checks synchronized with
+    # the twelve-artifact exact-main proof contract.
+    assert len(consumed) == 3
+    candidate = "windows-desktop-alpha-candidate-manifest"
+    assert consumed[0] == expected - {candidate}
+    assert consumed[1:] == [expected, expected]
+    assert "windows-desktop-alpha-candidate-$GITHUB_SHA" in commands
+    assert len(expected) == 12
+    assert commands.count("windows-browser-observer-evidence") == 4
+    assert commands.count("-eq 12") == 2
+    assert "-eq 11" not in commands
+    assert source.count("windows-browser-observer-evidence") == 4
+    assert (
+        "windows-browser-observer-evidence"
+        in commands.split(
+            "UNSIGNED-TEST-ONLY-proved-artifacts-$GITHUB_REF_NAME.tar", 1
+        )[1]
+    )
 
 
 def test_v11_release_cannot_rebuild_retest_or_publish_legacy_platforms() -> None:

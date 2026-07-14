@@ -101,6 +101,7 @@ jobs:
             oci-image-manifest
             oci-security-evidence
             windows-payload-comparison-manifest
+            windows-browser-observer-evidence
           )
           mkdir -p "$PROOF_ROOT" "$EVIDENCE_ROOT"
           gh run download "$MAIN_RUN_ID" \
@@ -140,7 +141,7 @@ jobs:
           test "${installers[0]}" = "$expected_installer"
           test -s "$candidate_root/${installers[0]}"
           echo "INSTALLER_NAME=${installers[0]}" >> "$GITHUB_ENV"
-          test "$(find "$EVIDENCE_ROOT" -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 11
+          test "$(find "$EVIDENCE_ROOT" -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 12
       - name: Verify GitHub proof attestation
         shell: bash
         env:
@@ -173,6 +174,7 @@ jobs:
             oci-image-manifest
             oci-security-evidence
             windows-payload-comparison-manifest
+            windows-browser-observer-evidence
             windows-desktop-alpha-candidate-manifest
           )
           receipt_root="$RUNNER_TEMP/evidence-attestation-verification"
@@ -189,7 +191,7 @@ jobs:
               --format json > "$receipt_root/$name.json"
             jq -e 'length >= 1' "$receipt_root/$name.json" >/dev/null
           done
-          test "$(find "$receipt_root" -maxdepth 1 -type f -name '*.json' | wc -l)" -eq 11
+          test "$(find "$receipt_root" -maxdepth 1 -type f -name '*.json' | wc -l)" -eq 12
       - name: Verify proved release inputs without rebuilding or rerunning tests
         shell: bash
         run: |
@@ -205,6 +207,7 @@ jobs:
             oci-image-manifest
             oci-security-evidence
             windows-payload-comparison-manifest
+            windows-browser-observer-evidence
             windows-desktop-alpha-candidate-manifest
           )
           arguments=(
@@ -253,7 +256,8 @@ jobs:
             python-evidence-acceptance-performance python-evidence-security \
             python-evidence-aggregate web-build-manifest e2e-evidence \
             oci-image-manifest oci-security-evidence \
-            windows-payload-comparison-manifest
+            windows-payload-comparison-manifest \
+            windows-browser-observer-evidence
           cat > "$asset_root/UNSIGNED-TEST-ONLY-WINDOWS-INSTALLER.txt" <<'MARKER'
           UNSIGNED PRERELEASE / 未签名预发布
           This prerelease contains one Windows x64 installer reused from the exact-SHA main candidate.

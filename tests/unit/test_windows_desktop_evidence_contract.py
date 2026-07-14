@@ -14,6 +14,22 @@ def test_windows_candidate_runs_packaged_tauri_and_binds_visual_evidence() -> No
     assert "Launch packaged Tauri and capture Windows desktop evidence" in workflow
     assert "capture_windows_desktop_evidence.ps1" in workflow
     assert "windows_desktop_webview_evidence.mjs" in workflow
+    assert "windows_packaged_backtest_evidence.mjs" in workflow
+    assert "verify_packaged_backtest_evidence.py" in workflow
+    assert "--bundle-manifest" in workflow
+    assert "--comparison" in workflow
+    assert "--output-promotion" in workflow
+    assert "packaged-backtest-evidence.json:provenance" in workflow
+    for promoted in (
+        "packaged-backtest/windows-desktop-evidence.json:provenance",
+        "packaged-backtest/tauri-webview-evidence.json:provenance",
+        "packaged-backtest/packaged-backtest-evidence.json:provenance",
+        "packaged-backtest/packaged-backtest-seed.json:provenance",
+        "packaged-backtest/packaged-backtest-host-observation.json:provenance",
+        "packaged-backtest/windows-packaged-backtest-promotion.json:provenance",
+    ):
+        assert promoted in workflow
+    assert "schemas/windows-packaged-backtest-promotion-v1.schema.json" in workflow
     assert "tauri-native-window.png:provenance" in workflow
     assert "tauri-webview-effective-200.png:provenance" in workflow
     assert "windows-icon-light-dark-contact-sheet.png:provenance" in workflow
@@ -63,13 +79,12 @@ def test_native_harness_installs_candidate_checks_shell_icons_and_exits_cleanly(
     assert "not an OS DPI change" in source
     assert source.count("'16' = [ordered]@{") == 2
     assert source.count("'32' = [ordered]@{") == 2
-    first_run_cleanup = source.index(
-        "Remove-Item -Recurse -Force (Join-Path $env:LOCALAPPDATA 'Stock Desk\\v1.1')"
-    )
+    first_run_cleanup = source.index("Remove-EvidenceDirectory $packagedDataRoot")
+    fixture_prepare = source.index("prepare_windows_packaged_backtest_evidence.py")
     launch = source.index(
         "$desktopProcess = [Diagnostics.Process]::Start($desktopStart)"
     )
-    assert first_run_cleanup < launch
+    assert first_run_cleanup < fixture_prepare < launch
     isolation = source.index("$env:WEBVIEW2_USER_DATA_FOLDER = $webviewUserData")
     port_discovery = source.index("$devToolsPortFile = Wait-Until")
     cdp_export = source.index("$env:STOCK_DESK_DESKTOP_CDP = $desktopCdp")
@@ -151,13 +166,11 @@ def test_packaged_webview_matrix_is_explicitly_equivalent_not_real_os_dpi() -> N
     assert "packaged exit dialog did not focus the safe cancel action" in source
     assert "horizontal overflow" in source
     assert "not Windows OS DPI" in source
-    assert 'name: "先看只读演示"' in source
-    assert 'name: "欢迎使用 stock-desk"' in source
-    assert 'getByText("默认打开上证指数 000001.SS"' in source
-    assert 'return "first-run-readonly-demo"' in source
-    assert 'globalThis.history.pushState({}, "", pathName)' in source
-    assert 'new PopStateEvent("popstate")' in source
-    assert 'transition = "readonly-demo-router"' in source
+    assert "packaged backtest evidence refuses read-only demo mode" in source
+    assert 'return "hash-bound-public-fixture-real-mode"' in source
+    assert "throw new Error(`packaged navigation link is missing:" in source
+    assert "history.pushState" not in source
+    assert "readonly-demo-router" not in source
     assert 'return internals.invoke("desktop_runtime_state")' in source
     assert 'latestState.state === "ready"' in source
     assert "packaged desktop entered recovery before onboarding" in source
@@ -166,6 +179,155 @@ def test_packaged_webview_matrix_is_explicitly_equivalent_not_real_os_dpi() -> N
     assert "desktop_runtime: desktopRuntime" in source
     assert "workspace_entry_mode: workspaceEntryMode" in source
     assert "routeTransition" in source
+
+
+def test_packaged_backtest_matrix_uses_webview_host_ipc_and_new_worker_resume() -> None:
+    source = (ROOT / "scripts" / "windows_packaged_backtest_evidence.mjs").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'internals.invoke("desktop_api_request"' in source
+    assert 'globalThis.__TAURI_INTERNALS__.invoke("desktop_runtime_state"' in source
+    assert 'globalThis.__TAURI_INTERNALS__.invoke("desktop_restart_service")' in source
+    assert '"/api/desktop/shutdown"' in source
+    assert '"/api/desktop/shutdown/commit"' in source
+    assert '"/api/desktop/recovery/resume"' in source
+    assert "waitForRuntimeRecovery" in source
+    assert 'captureHandshake("restart-before"' in source
+    assert 'captureHandshake("restart-after"' in source
+    assert 'for (const formulaId of ["macd", "custom"])' in source
+    assert 'for (const scope of ["single", "pool"])' in source
+    assert 'for (const period of ["1d", "1w", "60m"])' in source
+    assert 'submission_surface: "installed-tauri-webview-host-ipc"' in source
+    assert "read_only_demo: false" in source
+    assert "running.worker_id === finished.worker_id" in source
+    powershell = (ROOT / "scripts" / "capture_windows_desktop_evidence.ps1").read_text(
+        encoding="utf-8"
+    )
+    assert "sidecarBeforePid" in powershell
+    assert "sidecarAfterPid" in powershell
+    assert "old packaged sidecar OS process survived" in powershell
+    assert "packaged-backtest-host-observation.json" in powershell
+    assert "host_observation_sha256" in powershell
+    runtime_ready = source.index(
+        "const runtimeBefore = await waitForRuntimeReady(page)"
+    )
+    submission = source.index(
+        'await invoke(page, "POST", "/api/backtests", request)', runtime_ready
+    )
+    running = source.index("const running = await waitForTask", submission)
+    shutdown = source.index(
+        'await invoke(page, "POST", "/api/desktop/shutdown"', running
+    )
+    assert runtime_ready < submission < running < shutdown
+    assert "waitForRuntimeReady(page)" not in source[running:shutdown]
+
+
+def test_packaged_backtest_marker_protocol_is_atomic_and_retries_partial_or_stale_data() -> (
+    None
+):
+    webview = (ROOT / "scripts" / "windows_packaged_backtest_evidence.mjs").read_text(
+        encoding="utf-8"
+    )
+    powershell = (ROOT / "scripts" / "capture_windows_desktop_evidence.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    marker_write = webview.index("await writeFile(")
+    marker_rename = webview.index("await rename(temporaryMarker, marker)")
+    assert marker_write < marker_rename
+    assert "path.join(syncDir, `.${name}.${nonce}.tmp`)" in webview
+    assert "while (Date.now() < deadline)" in webview
+    assert '(await readFile(acknowledgment, "utf8")).trim() === nonce' in webview
+    assert "setTimeout(resolve, 100)" in webview
+    for error_code in ("ENOENT", "EACCES", "EPERM", "EBUSY"):
+        assert f'"{error_code}"' in webview
+    assert "RETRYABLE_FILE_ERROR_CODES.has(error?.code)" in webview
+
+    assert "function Wait-CaptureMarker" in powershell
+    assert "ConvertFrom-Json -ErrorAction Stop" in powershell
+    assert "if ($candidate.capture_nonce -eq $Nonce)" in powershell
+    assert "return $false" in powershell
+    ack_write = powershell.index("$Nonce | Set-Content -LiteralPath $temporary")
+    ack_rename = powershell.index(
+        "Move-Item -LiteralPath $temporary -Destination $Path -Force"
+    )
+    assert ack_write < ack_rename
+    assert "for ($attempt = 1; $attempt -le 10; $attempt++)" in powershell
+    assert (
+        "capture acknowledgment could not be published after bounded retries"
+        in powershell
+    )
+    assert "Remove-Item -LiteralPath $temporary" in powershell
+    assert "transiently deny a read. Retry until the bounded deadline" in powershell
+
+
+def test_packaged_evidence_cleanup_retries_and_rejects_residual_state() -> None:
+    powershell = (ROOT / "scripts" / "capture_windows_desktop_evidence.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    assert "function Remove-EvidenceDirectory" in powershell
+    assert "Remove-Item -LiteralPath $Path -Recurse -Force" in powershell
+    assert "stale packaged backtest data state could not be cleaned" in powershell
+    assert (
+        "stale packaged backtest synchronization state could not be cleaned"
+        in powershell
+    )
+    assert (
+        "$packagedDataCleaned = Remove-EvidenceDirectory $packagedDataRoot"
+        in powershell
+    )
+    assert (
+        "$restartSyncCleaned = Remove-EvidenceDirectory $restartSyncRoot" in powershell
+    )
+    assert "packaged backtest data state could not be cleaned" in powershell
+    assert "packaged backtest synchronization state could not be cleaned" in powershell
+
+
+def test_fixture_marker_producer_and_consumer_use_the_same_deadlock_free_order() -> (
+    None
+):
+    webview = (ROOT / "scripts" / "windows_packaged_backtest_evidence.mjs").read_text(
+        encoding="utf-8"
+    )
+    powershell = (ROOT / "scripts" / "capture_windows_desktop_evidence.ps1").read_text(
+        encoding="utf-8"
+    )
+    ordered = (
+        "a_share_constraints_60m",
+        "open_position_costs_1d",
+        "partial_pool_gap_1d",
+        "matrix_1d",
+        "matrix_1w",
+        "matrix_60m",
+    )
+    powershell_positions = []
+    for fixture_id in ordered:
+        powershell_positions.append(
+            powershell.index(f"@('{fixture_id}','{fixture_id}')")
+        )
+    assert powershell_positions == sorted(powershell_positions)
+    special_start = webview.index("const specialCases = []")
+    cells_start = webview.index("const cells = []")
+    checkpoint_start = webview.index(
+        'await selectFixture("matrix_1d", "checkpoint-matrix-1d")'
+    )
+    assert special_start < cells_start < checkpoint_start
+    special_positions = [
+        webview.index(f'"{fixture_id}"', special_start, cells_start)
+        for fixture_id in ordered[:3]
+    ]
+    assert special_positions == sorted(special_positions)
+    assert (
+        'for (const period of ["1d", "1w", "60m"])'
+        in webview[cells_start:checkpoint_start]
+    )
+    assert 'await selectFixture("matrix_1d", "checkpoint-matrix-1d")' in webview
+    assert "@('checkpoint-matrix-1d','matrix_1d')" in powershell
+    assert powershell.index("@('matrix_60m','matrix_60m')") < powershell.index(
+        "@('checkpoint-matrix-1d','matrix_1d')"
+    )
 
 
 def test_nsis_installer_and_uninstaller_use_the_reviewed_windows_icon() -> None:

@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/CongBao/stock-desk/schemas/packaged-backtest-host-observation-v1.schema.json",
+  "title": "Stock Desk packaged backtest host observation v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "source_sha",
+    "source_tree",
+    "candidate_sha256",
+    "capture_nonce",
+    "capture_scope",
+    "host_ipc_command",
+    "host_pid",
+    "main_window_handle",
+    "installed_host_sha256",
+    "isolated_webview_process_ids",
+    "sidecar_before",
+    "sidecar_after",
+    "checkpoint",
+    "evidence_sha256"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "stock-desk-packaged-backtest-host-observation-v1"
+    },
+    "source_sha": { "$ref": "#/$defs/gitObject" },
+    "source_tree": { "$ref": "#/$defs/gitObject" },
+    "candidate_sha256": { "$ref": "#/$defs/sha256" },
+    "capture_nonce": { "$ref": "#/$defs/uuid4" },
+    "capture_scope": { "const": "installed-current-user-tauri-webview" },
+    "host_ipc_command": { "const": "desktop_api_request" },
+    "host_pid": { "$ref": "#/$defs/processId" },
+    "main_window_handle": { "type": "integer", "minimum": 1 },
+    "installed_host_sha256": { "$ref": "#/$defs/sha256" },
+    "isolated_webview_process_ids": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/processId" }
+    },
+    "sidecar_before": { "$ref": "#/$defs/sidecar" },
+    "sidecar_after": { "$ref": "#/$defs/sidecar" },
+    "checkpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "task_id"],
+      "properties": {
+        "run_id": { "$ref": "#/$defs/uuid4" },
+        "task_id": { "$ref": "#/$defs/uuid4" }
+      }
+    },
+    "evidence_sha256": { "$ref": "#/$defs/sha256" }
+  },
+  "$defs": {
+    "gitObject": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "uuid4": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "processId": { "type": "integer", "minimum": 1 },
+    "sidecar": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pid", "executable_sha256"],
+      "properties": {
+        "pid": { "$ref": "#/$defs/processId" },
+        "executable_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    }
+  }
+}

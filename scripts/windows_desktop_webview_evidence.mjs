@@ -4,6 +4,8 @@ import path from "node:path";
 
 import { chromium } from "@playwright/test";
 
+import { runPackagedBacktestEvidence } from "./windows_packaged_backtest_evidence.mjs";
+
 const sourceSha = process.env.SOURCE_SHA ?? "";
 const sourceTree = process.env.SOURCE_TREE ?? "";
 const outputDir = process.env.STOCK_DESK_DESKTOP_EVIDENCE_DIR ?? "";
@@ -454,24 +456,33 @@ const themeCases = [
 
 async function ensureWorkspaceReady(page) {
   const navigation = page.locator("#primary-navigation");
-  await page
-    .getByRole("heading", { name: "欢迎使用 stock-desk", exact: true })
-    .waitFor({ state: "visible" });
-  await page
-    .getByText("默认打开上证指数 000001.SS", { exact: true })
-    .waitFor({ state: "visible" });
-  const demoEntry = page.getByRole("button", {
-    name: "先看只读演示",
-    exact: true,
-  });
-  await demoEntry.waitFor({ state: "visible" });
-  await demoEntry.click();
   await navigation.waitFor({ state: "visible" });
-  await page
-    .getByRole("status")
-    .filter({ hasText: "只读演示" })
-    .waitFor({ state: "visible" });
-  return "first-run-readonly-demo";
+  if ((await page.getByText("只读演示", { exact: true }).count()) > 0) {
+    throw new Error("packaged backtest evidence refuses read-only demo mode");
+  }
+  const onboarding = await page.evaluate(async () => {
+    const response = await globalThis.__TAURI_INTERNALS__.invoke(
+      "desktop_api_request",
+      {
+        request: {
+          method: "GET",
+          path: "/api/v1/onboarding/state",
+          body: null,
+        },
+      },
+    );
+    return { status: response.status, body: JSON.parse(response.body) };
+  });
+  if (
+    onboarding.status !== 200 ||
+    onboarding.body.status !== "completed" ||
+    onboarding.body.demo_mode !== false
+  ) {
+    throw new Error(
+      "packaged backtest evidence requires completed real-mode setup",
+    );
+  }
+  return "hash-bound-public-fixture-real-mode";
 }
 
 async function waitForDesktopReady(page) {
@@ -508,11 +519,7 @@ async function navigateToCoreRoute(page, route) {
     await link.click();
     transition = "navigation-link";
   } else {
-    await page.evaluate((pathName) => {
-      globalThis.history.pushState({}, "", pathName);
-      globalThis.dispatchEvent(new PopStateEvent("popstate"));
-    }, route.path);
-    transition = "readonly-demo-router";
+    throw new Error(`packaged navigation link is missing: ${route.path}`);
   }
   await page.waitForFunction(
     (expectedPath) => globalThis.location.pathname === expectedPath,
@@ -649,6 +656,8 @@ try {
   await cdp.send("Emulation.clearDeviceMetricsOverride");
   await cdp.send("Emulation.setEmulatedMedia", { features: [] });
 
+  const packagedBacktests = await runPackagedBacktestEvidence(page, outputDir);
+
   await navigateToCoreRoute(page, coreRoutes[0]);
   await dismissAutomaticGuidance(page);
   await page.getByRole("combobox", { name: "界面主题" }).selectOption("system");
@@ -692,6 +701,12 @@ try {
     themes: screenshotRecords,
     effective_scale_matrix: effectiveScreenshotRecords,
     core_route_theme_scale_matrix: matrixRecords,
+    packaged_backtests: {
+      manifest: "packaged-backtest-evidence.json",
+      schema_version: packagedBacktests.schema_version,
+      cell_count: packagedBacktests.cells.length,
+      checkpoint_run_id: packagedBacktests.checkpoint.run_id,
+    },
     limitations: [
       "Every 100-200 percent matrix row uses CDP CSS viewport equivalence inside the packaged Tauri WebView; it is not Windows OS DPI and does not prove native Windows DPI behavior.",
       "System Light/Dark rows emulate prefers-color-scheme through CDP; they are not a Windows theme setting or native theme-change event.",

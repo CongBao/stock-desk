@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://stock-desk.local/schemas/windows-packaged-backtest-promotion-v1.schema.json",
+  "title": "Stock Desk Windows packaged backtest promotion v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "source_sha",
+    "source_tree",
+    "installer",
+    "bundle_manifest",
+    "comparison",
+    "packaged_backtest",
+    "binding_sha256"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "stock-desk-windows-packaged-backtest-promotion-v1"
+    },
+    "source_sha": { "$ref": "#/$defs/gitSha" },
+    "source_tree": { "$ref": "#/$defs/gitSha" },
+    "installer": { "$ref": "#/$defs/record" },
+    "bundle_manifest": { "$ref": "#/$defs/bundleRecord" },
+    "comparison": { "$ref": "#/$defs/comparisonRecord" },
+    "packaged_backtest": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 5,
+      "items": { "$ref": "#/$defs/record" }
+    },
+    "binding_sha256": { "$ref": "#/$defs/sha256" }
+  },
+  "$defs": {
+    "gitSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "size", "sha256", "role"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "size": { "type": "integer", "minimum": 0 },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "role": { "type": "string", "minLength": 1 }
+      }
+    },
+    "bundleRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "size", "sha256", "role", "manifest_sha256"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "size": { "type": "integer", "minimum": 0 },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "role": { "const": "bundle-manifest" },
+        "manifest_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "comparisonRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "size",
+        "sha256",
+        "role",
+        "left_manifest_sha256",
+        "left_installer_sha256"
+      ],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "size": { "type": "integer", "minimum": 0 },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "role": { "const": "reproducibility-comparison" },
+        "left_manifest_sha256": { "$ref": "#/$defs/sha256" },
+        "left_installer_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    }
+  }
+}

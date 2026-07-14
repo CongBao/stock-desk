@@ -173,7 +173,7 @@ def test_github_hosted_preflight_proves_main_candidate_and_digest_identity() -> 
         "--deny-self-hosted-runners",
         "scripts/main_validation_proof.py verify",
         "verify_post_gh_attestation_binding",
-        'proof["validation_evidence"]["windows-alpha-candidate"]',
+        'proof["validation_evidence"]["windows-desktop-alpha-candidate-manifest"]',
         "scripts/artifact_manifest.py verify",
         "manifest-binding.json",
         "main-proof.json",
@@ -189,6 +189,7 @@ def test_github_hosted_preflight_proves_main_candidate_and_digest_identity() -> 
         'test "$GITHUB_RUN_ATTEMPT" = "1"',
     ):
         assert required in commands
+    assert 'proof["validation_evidence"]["windows-alpha-candidate"]' not in commands
 
     checkout = next(
         step

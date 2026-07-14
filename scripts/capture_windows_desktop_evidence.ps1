@@ -13,6 +13,7 @@ if ($SourceSha -notmatch '^[0-9a-f]{40}$' -or $SourceTree -notmatch '^[0-9a-f]{4
   throw 'desktop evidence requires exact lowercase source SHA and tree ids'
 }
 $Installer = (Resolve-Path -LiteralPath $Installer).Path
+$candidateSha256 = (Get-FileHash -LiteralPath $Installer -Algorithm SHA256).Hash.ToLowerInvariant()
 $Output = [IO.Path]::GetFullPath($Output)
 New-Item -ItemType Directory -Force $Output | Out-Null
 
@@ -47,6 +48,49 @@ function Wait-Until([scriptblock]$Condition, [int]$Seconds, [string]$Failure) {
     Start-Sleep -Milliseconds 500
   } while ([DateTime]::UtcNow -lt $deadline)
   throw $Failure
+}
+
+function Wait-CaptureMarker([string]$Path, [Diagnostics.Process]$NodeProcess, [string]$Nonce, [int]$Seconds, [string]$Failure) {
+  return Wait-Until {
+    $NodeProcess.Refresh()
+    if ($NodeProcess.HasExited) {
+      throw "packaged WebView evidence exited before capture marker: $(Get-Content -LiteralPath $nodeStderr -Raw -ErrorAction SilentlyContinue)"
+    }
+    if (Test-Path -LiteralPath $Path -PathType Leaf) {
+      try {
+        $candidate = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+        if ($candidate.capture_nonce -eq $Nonce) { return $candidate }
+      } catch {
+        # A writer may only publish with atomic rename, but antivirus/indexing can
+        # still transiently deny a read. Retry until the bounded deadline.
+      }
+    }
+    return $false
+  } $Seconds $Failure
+}
+
+function Write-CaptureAck([string]$Path, [string]$Nonce) {
+  $temporary = Join-Path (Split-Path $Path -Parent) ".$(Split-Path $Path -Leaf).$Nonce.tmp"
+  for ($attempt = 1; $attempt -le 10; $attempt++) {
+    try {
+      $Nonce | Set-Content -LiteralPath $temporary -Encoding utf8NoBOM
+      Move-Item -LiteralPath $temporary -Destination $Path -Force
+      return
+    } catch {
+      Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
+      if ($attempt -eq 10) { throw "capture acknowledgment could not be published after bounded retries: $Path" }
+      Start-Sleep -Milliseconds 100
+    }
+  }
+}
+
+function Remove-EvidenceDirectory([string]$Path) {
+  for ($attempt = 1; $attempt -le 10; $attempt++) {
+    Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction SilentlyContinue
+    if (-not (Test-Path -LiteralPath $Path)) { return $true }
+    Start-Sleep -Milliseconds 250
+  }
+  return -not (Test-Path -LiteralPath $Path)
 }
 
 function Test-IsolatedWebViewCommandLine([string]$CommandLine, [string]$UserDataFolder) {
@@ -161,6 +205,8 @@ $hostPath = Join-Path $installRoot 'stock-desk-desktop.exe'
 $uninstallerPath = Join-Path $installRoot 'uninstall.exe'
 $evidenceRoot = Split-Path (Split-Path $Output -Parent) -Parent
 $webviewUserData = Join-Path $evidenceRoot "webview2-user-data-$SourceSha"
+$restartSyncRoot = Join-Path $evidenceRoot "packaged-backtest-sync-$SourceSha"
+$captureNonce = [Guid]::NewGuid().ToString('D')
 $webviewEdgePolicy = 'HKCU:\Software\Policies\Microsoft\Edge'
 $webviewPolicyRoot = 'HKCU:\Software\Policies\Microsoft\Edge\WebView2'
 $webviewArgsPolicy = Join-Path $webviewPolicyRoot 'AdditionalBrowserArguments'
@@ -174,11 +220,13 @@ $webviewArgsPolicySet = $false
 $webviewDataPolicySet = $false
 $tauriDefaultWebViewData = Join-Path $env:LOCALAPPDATA 'com.congbao.stockdesk'
 $tauriDefaultWebViewDataExisted = Test-Path -LiteralPath $tauriDefaultWebViewData
+$packagedDataRoot = Join-Path $env:LOCALAPPDATA 'Stock Desk\v1.1'
 $baselineSidecarProcessIds = @(
   Get-Process -Name 'stock-desk-sidecar' -ErrorAction SilentlyContinue |
     ForEach-Object { $_.Id }
 )
 $desktopProcess = $null
+$nodeProcess = $null
 $gracefulExit = $false
 try {
   if (Test-Path -LiteralPath $uninstallerPath -PathType Leaf) {
@@ -261,9 +309,18 @@ try {
   $webviewArgsPolicySet = $true
   New-ItemProperty -LiteralPath $webviewDataPolicy -Name $webviewAppName -PropertyType String -Value $webviewUserData | Out-Null
   $webviewDataPolicySet = $true
-  # This candidate proof owns an isolated first-run state. Removing stale state
-  # makes onboarding evidence deterministic even on a reused Windows host.
-  Remove-Item -Recurse -Force (Join-Path $env:LOCALAPPDATA 'Stock Desk\v1.1') -ErrorAction SilentlyContinue
+  # This candidate proof owns an isolated public fixture. Removing stale state
+  # prevents a reused Windows host from changing the packaged backtest matrix.
+  if (-not (Remove-EvidenceDirectory $packagedDataRoot)) {
+    throw 'stale packaged backtest data state could not be cleaned'
+  }
+  & $python (Join-Path $PSScriptRoot 'prepare_windows_packaged_backtest_evidence.py') `
+    --destination $packagedDataRoot --source-sha $SourceSha --source-tree $SourceTree
+  if ($LASTEXITCODE -ne 0) { throw 'packaged backtest evidence fixture preparation failed' }
+  $packagedBacktestSeed = Join-Path $packagedDataRoot 'packaged-backtest-seed.json'
+  if (-not (Test-Path -LiteralPath $packagedBacktestSeed -PathType Leaf)) {
+    throw 'packaged backtest evidence seed manifest is missing'
+  }
   $desktopStart = [Diagnostics.ProcessStartInfo]::new()
   $desktopStart.FileName = $hostPath
   $desktopStart.WorkingDirectory = $installRoot
@@ -290,19 +347,93 @@ try {
     throw 'packaged WebView2 CDP endpoint does not match the isolated browser identity'
   }
   $sidecar = Wait-Until { @(Get-EvidenceSidecarProcesses $baselineSidecarProcessIds) | Select-Object -First 1 } 60 'packaged Python sidecar did not remain running'
+  $initialSidecars = @(Get-EvidenceSidecarProcesses $baselineSidecarProcessIds)
+  if ($initialSidecars.Count -ne 1 -or $initialSidecars[0].Id -ne $sidecar.Id) {
+    throw 'packaged capture did not own exactly one initial sidecar process'
+  }
+  $installedSidecarPath = Join-Path $installRoot 'stock-desk-sidecar.exe'
+  if ([IO.Path]::GetFullPath($sidecar.Path) -ne [IO.Path]::GetFullPath($installedSidecarPath)) {
+    throw 'initial sidecar process does not belong to the installed candidate'
+  }
+  $sidecarBinaryHash = (Get-FileHash -LiteralPath $sidecar.Path -Algorithm SHA256).Hash.ToLowerInvariant()
+  $isolatedWebViews = @(Get-IsolatedWebViewProcesses $webviewUserData)
+  if ($isolatedWebViews.Count -lt 1) { throw 'isolated packaged WebView2 process is missing' }
 
   $nativeEvidence = Save-WindowScreenshot $desktopProcess (Join-Path $Output 'tauri-native-window.png')
   $virtual = [Windows.Forms.SystemInformation]::VirtualScreen
   $nativeEvidence['screen'] = [ordered]@{ x=$virtual.X; y=$virtual.Y; width=$virtual.Width; height=$virtual.Height }
   $nativeEvidence['host_pid'] = $desktopProcess.Id
   $nativeEvidence['sidecar_pid'] = $sidecar.Id
+  $hostMainWindowHandle = [int64]$desktopProcess.MainWindowHandle
 
   $env:SOURCE_SHA = $SourceSha
   $env:SOURCE_TREE = $SourceTree
   $env:STOCK_DESK_DESKTOP_EVIDENCE_DIR = $Output
   $env:STOCK_DESK_DESKTOP_CDP = $desktopCdp
-  & node scripts/windows_desktop_webview_evidence.mjs
-  if ($LASTEXITCODE -ne 0) { throw 'packaged Tauri WebView evidence failed' }
+  $env:STOCK_DESK_PACKAGED_BACKTEST_SEED = $packagedBacktestSeed
+  $env:STOCK_DESK_CANDIDATE_SHA256 = $candidateSha256
+  if (-not (Remove-EvidenceDirectory $restartSyncRoot)) {
+    throw 'stale packaged backtest synchronization state could not be cleaned'
+  }
+  New-Item -ItemType Directory -Force $restartSyncRoot | Out-Null
+  $env:STOCK_DESK_RESTART_SYNC_DIR = $restartSyncRoot
+  $env:STOCK_DESK_CAPTURE_NONCE = $captureNonce
+  $nodeStdout = Join-Path $restartSyncRoot 'node-stdout.log'
+  $nodeStderr = Join-Path $restartSyncRoot 'node-stderr.log'
+  $nodeProcess = Start-Process -FilePath 'node' -ArgumentList @('scripts/windows_desktop_webview_evidence.mjs') -WorkingDirectory $PWD.Path -RedirectStandardOutput $nodeStdout -RedirectStandardError $nodeStderr -PassThru
+  foreach ($fixtureRequest in @(
+    @('a_share_constraints_60m','a_share_constraints_60m'),
+    @('open_position_costs_1d','open_position_costs_1d'),
+    @('partial_pool_gap_1d','partial_pool_gap_1d'),
+    @('matrix_1d','matrix_1d'),
+    @('matrix_1w','matrix_1w'),
+    @('matrix_60m','matrix_60m'),
+    @('checkpoint-matrix-1d','matrix_1d')
+  )) {
+    $markerName = $fixtureRequest[0]
+    $fixtureId = $fixtureRequest[1]
+    $fixtureMarkerPath = Join-Path $restartSyncRoot "fixture-$markerName.json"
+    $fixtureMarker = Wait-CaptureMarker $fixtureMarkerPath $nodeProcess $captureNonce 300 "packaged fixture switch did not arrive: $fixtureId"
+    if ($fixtureMarker.fixture_id -ne $fixtureId) { throw "packaged fixture switch identity is invalid: $fixtureId" }
+    & $python (Join-Path $PSScriptRoot 'prepare_windows_packaged_backtest_evidence.py') `
+      --destination $packagedDataRoot --source-sha $SourceSha --source-tree $SourceTree --switch-fixture $fixtureId
+    if ($LASTEXITCODE -ne 0) { throw "packaged fixture switch failed: $fixtureId" }
+    Write-CaptureAck (Join-Path $restartSyncRoot "fixture-$markerName.ack") $captureNonce
+  }
+  $beforeMarkerPath = Join-Path $restartSyncRoot 'restart-before.json'
+  $beforeMarker = Wait-CaptureMarker $beforeMarkerPath $nodeProcess $captureNonce 300 'packaged checkpoint did not reach the sidecar restart boundary'
+  if ($beforeMarker.runtime_state -ne 'ready') {
+    throw 'pre-restart capture marker identity is invalid'
+  }
+  $beforeSidecars = @(Get-EvidenceSidecarProcesses $baselineSidecarProcessIds)
+  if ($beforeSidecars.Count -ne 1 -or $beforeSidecars[0].Id -ne $sidecar.Id) {
+    throw 'pre-restart packaged sidecar process identity changed unexpectedly'
+  }
+  $sidecarBeforePid = [int]$beforeSidecars[0].Id
+  Write-CaptureAck (Join-Path $restartSyncRoot 'restart-before.ack') $captureNonce
+  $afterMarkerPath = Join-Path $restartSyncRoot 'restart-after.json'
+  $afterMarker = Wait-CaptureMarker $afterMarkerPath $nodeProcess $captureNonce 120 'packaged sidecar restart did not reach the ready boundary'
+  if ($afterMarker.runtime_state -ne 'ready' -or $afterMarker.run_id -ne $beforeMarker.run_id -or $afterMarker.task_id -ne $beforeMarker.task_id) {
+    throw 'post-restart capture marker identity is invalid'
+  }
+  $afterSidecars = @(Get-EvidenceSidecarProcesses $baselineSidecarProcessIds)
+  if ($afterSidecars.Count -ne 1 -or $afterSidecars[0].Id -eq $sidecarBeforePid) {
+    throw 'packaged sidecar did not restart as exactly one new OS process'
+  }
+  if (Get-Process -Id $sidecarBeforePid -ErrorAction SilentlyContinue) {
+    throw 'old packaged sidecar OS process survived the runtime restart'
+  }
+  if ([IO.Path]::GetFullPath($afterSidecars[0].Path) -ne [IO.Path]::GetFullPath($installedSidecarPath)) {
+    throw 'restarted sidecar process does not belong to the installed candidate'
+  }
+  $sidecarAfterHash = (Get-FileHash -LiteralPath $afterSidecars[0].Path -Algorithm SHA256).Hash.ToLowerInvariant()
+  if ($sidecarAfterHash -ne $sidecarBinaryHash) { throw 'sidecar binary identity changed across restart' }
+  $sidecarAfterPid = [int]$afterSidecars[0].Id
+  Write-CaptureAck (Join-Path $restartSyncRoot 'restart-after.ack') $captureNonce
+  Wait-Until { $nodeProcess.Refresh(); if ($nodeProcess.HasExited) { $true } else { $false } } 300 'packaged Tauri WebView evidence did not finish after restart observation' | Out-Null
+  if ($nodeProcess.ExitCode -ne 0) {
+    throw "packaged Tauri WebView evidence failed: $(Get-Content -LiteralPath $nodeStderr -Raw -ErrorAction SilentlyContinue)"
+  }
   try {
     Wait-Until { $desktopProcess.Refresh(); if ($desktopProcess.HasExited) { $true } else { $false } } 25 'packaged app did not complete the tested graceful exit' | Out-Null
   } catch {
@@ -316,16 +447,55 @@ try {
   if (-not (Test-Path -LiteralPath $webviewManifest -PathType Leaf)) {
     throw 'packaged WebView evidence manifest is missing'
   }
+  $packagedBacktestManifest = Join-Path $Output 'packaged-backtest-evidence.json'
+  if (-not (Test-Path -LiteralPath $packagedBacktestManifest -PathType Leaf)) {
+    throw 'packaged backtest evidence manifest is missing'
+  }
+  & $python (Join-Path $PSScriptRoot 'capture_packaged_backtest_semantics.py') `
+    --data-root $packagedDataRoot --evidence $packagedBacktestManifest
+  if ($LASTEXITCODE -ne 0) { throw 'packaged canonical semantic capture failed' }
+  $packagedBacktest = Get-Content -LiteralPath $packagedBacktestManifest -Raw | ConvertFrom-Json
+  if ($packagedBacktest.capture_nonce -ne $captureNonce -or $packagedBacktest.checkpoint.run_id -ne $beforeMarker.run_id -or $packagedBacktest.checkpoint.task_id -ne $beforeMarker.task_id) {
+    throw 'packaged backtest evidence is not bound to the Windows process observation'
+  }
+  $hostObservation = [ordered]@{
+    schema_version = 'stock-desk-packaged-backtest-host-observation-v1'
+    source_sha = $SourceSha
+    source_tree = $SourceTree
+    candidate_sha256 = $candidateSha256
+    capture_nonce = $captureNonce
+    capture_scope = 'installed-current-user-tauri-webview'
+    host_ipc_command = 'desktop_api_request'
+    host_pid = [int]$desktopProcess.Id
+    main_window_handle = $hostMainWindowHandle
+    installed_host_sha256 = (Get-FileHash -LiteralPath $hostPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    isolated_webview_process_ids = @($isolatedWebViews | ForEach-Object { [int]$_.ProcessId } | Sort-Object -Unique)
+    sidecar_before = [ordered]@{ pid=$sidecarBeforePid; executable_sha256=$sidecarBinaryHash }
+    sidecar_after = [ordered]@{ pid=$sidecarAfterPid; executable_sha256=$sidecarAfterHash }
+    checkpoint = [ordered]@{ run_id=[string]$beforeMarker.run_id; task_id=[string]$beforeMarker.task_id }
+    evidence_sha256 = (Get-FileHash -LiteralPath $packagedBacktestManifest -Algorithm SHA256).Hash.ToLowerInvariant()
+  }
+  $hostObservation | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $Output 'packaged-backtest-host-observation.json') -Encoding utf8NoBOM
+  Copy-Item -LiteralPath $packagedBacktestSeed -Destination (Join-Path $Output 'packaged-backtest-seed.json') -Force
   $manifest = [ordered]@{
     schema_version = 'stock-desk-windows-desktop-evidence-v1'
     source_sha = $SourceSha
     source_tree = $SourceTree
+    candidate_sha256 = $candidateSha256
     actual_packaged_tauri = $true
     native = $nativeEvidence
     icons = $iconEvidence
     webview = [ordered]@{
       manifest = 'tauri-webview-evidence.json'
       sha256 = (Get-FileHash -LiteralPath $webviewManifest -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
+    packaged_backtests = [ordered]@{
+      manifest = 'packaged-backtest-evidence.json'
+      sha256 = (Get-FileHash -LiteralPath $packagedBacktestManifest -Algorithm SHA256).Hash.ToLowerInvariant()
+      seed = 'packaged-backtest-seed.json'
+      seed_sha256 = (Get-FileHash -LiteralPath $packagedBacktestSeed -Algorithm SHA256).Hash.ToLowerInvariant()
+      host_observation = 'packaged-backtest-host-observation.json'
+      host_observation_sha256 = (Get-FileHash -LiteralPath (Join-Path $Output 'packaged-backtest-host-observation.json') -Algorithm SHA256).Hash.ToLowerInvariant()
     }
     graceful_exit = $true
     hosted_runner_limitations = @(
@@ -355,6 +525,10 @@ try {
   Remove-Item Env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS -ErrorAction SilentlyContinue
   Remove-Item Env:WEBVIEW2_USER_DATA_FOLDER -ErrorAction SilentlyContinue
   Remove-Item Env:STOCK_DESK_DESKTOP_CDP -ErrorAction SilentlyContinue
+  Remove-Item Env:STOCK_DESK_PACKAGED_BACKTEST_SEED -ErrorAction SilentlyContinue
+  Remove-Item Env:STOCK_DESK_CANDIDATE_SHA256 -ErrorAction SilentlyContinue
+  Remove-Item Env:STOCK_DESK_RESTART_SYNC_DIR -ErrorAction SilentlyContinue
+  Remove-Item Env:STOCK_DESK_CAPTURE_NONCE -ErrorAction SilentlyContinue
   if ($webviewArgsPolicySet) { Remove-ItemProperty -LiteralPath $webviewArgsPolicy -Name $webviewAppName -ErrorAction SilentlyContinue }
   if ($webviewDataPolicySet) { Remove-ItemProperty -LiteralPath $webviewDataPolicy -Name $webviewAppName -ErrorAction SilentlyContinue }
   if ($webviewArgsPolicyCreated) { Remove-Item -LiteralPath $webviewArgsPolicy -Force -ErrorAction SilentlyContinue }
@@ -362,6 +536,13 @@ try {
   if ($webviewPolicyRootCreated) { Remove-Item -LiteralPath $webviewPolicyRoot -Force -ErrorAction SilentlyContinue }
   if ($webviewEdgePolicyCreated) { Remove-Item -LiteralPath $webviewEdgePolicy -Force -ErrorAction SilentlyContinue }
   $unexpectedGracefulResidue = $false
+  if ($null -ne $nodeProcess) {
+    $nodeProcess.Refresh()
+    if (-not $nodeProcess.HasExited) {
+      if ($gracefulExit) { $unexpectedGracefulResidue = $true }
+      Stop-Process -Id $nodeProcess.Id -Force -ErrorAction SilentlyContinue
+    }
+  }
   if ($null -ne $desktopProcess) {
     $desktopProcess.Refresh()
     if (-not $desktopProcess.HasExited) {
@@ -393,12 +574,13 @@ try {
     $cleanup = Start-Process -FilePath $uninstallerPath -ArgumentList '/S' -Wait -PassThru
     if ($cleanup.ExitCode -ne 0 -and $gracefulExit) { throw 'test uninstall failed after desktop evidence' }
   }
-  Remove-Item -Recurse -Force (Join-Path $env:LOCALAPPDATA 'Stock Desk\v1.1') -ErrorAction SilentlyContinue
+  $packagedDataCleaned = Remove-EvidenceDirectory $packagedDataRoot
   for ($cleanupAttempt = 1; $cleanupAttempt -le 10; $cleanupAttempt++) {
     Remove-Item -Recurse -Force $webviewUserData -ErrorAction SilentlyContinue
     if (-not (Test-Path -LiteralPath $webviewUserData)) { break }
     Start-Sleep -Milliseconds 250
   }
+  $restartSyncCleaned = Remove-EvidenceDirectory $restartSyncRoot
   if (-not $tauriDefaultWebViewDataExisted) {
     for ($cleanupAttempt = 1; $cleanupAttempt -le 10; $cleanupAttempt++) {
       Remove-Item -Recurse -Force $tauriDefaultWebViewData -ErrorAction SilentlyContinue
@@ -408,6 +590,12 @@ try {
   }
   if ($gracefulExit -and (Test-Path -LiteralPath $webviewUserData)) {
     throw 'isolated WebView2 evidence state could not be cleaned'
+  }
+  if ($gracefulExit -and -not $packagedDataCleaned) {
+    throw 'packaged backtest data state could not be cleaned'
+  }
+  if ($gracefulExit -and -not $restartSyncCleaned) {
+    throw 'packaged backtest synchronization state could not be cleaned'
   }
   if ($gracefulExit -and -not $tauriDefaultWebViewDataExisted -and (Test-Path -LiteralPath $tauriDefaultWebViewData)) {
     throw 'Tauri default WebView2 state created by evidence could not be cleaned'

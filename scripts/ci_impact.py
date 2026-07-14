@@ -154,6 +154,23 @@ _HIGH_RISK_INSTALLER_FILES = frozenset(
         "scripts/windows_installed_vm_harness.ps1",
     }
 )
+_PACKAGED_BACKTEST_PROOF_FILES = frozenset(
+    {
+        "schemas/packaged-backtest-evidence-v1.schema.json",
+        "schemas/packaged-backtest-host-observation-v1.schema.json",
+        "schemas/windows-packaged-backtest-promotion-v1.schema.json",
+        "scripts/capture_packaged_backtest_semantics.py",
+        "scripts/capture_windows_desktop_evidence.ps1",
+        "scripts/main_validation_proof.py",
+        "scripts/prepare_windows_packaged_backtest_evidence.py",
+        "scripts/v1_backtest_oracle.py",
+        "scripts/verify_packaged_backtest_evidence.py",
+        "scripts/windows_desktop_webview_evidence.mjs",
+        "scripts/windows_packaged_backtest_evidence.mjs",
+        "tests/fixtures/backtest/v1_0_oracle.json",
+        "tests/fixtures/backtest/v1_0_oracle_inputs.json",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -207,6 +224,8 @@ def _path_domain(path: str) -> str | None:
     Order is security-sensitive: delivery/proof inputs are recognized before the
     broad scripts/tests prefixes so they always fail closed.
     """
+    if path in _PACKAGED_BACKTEST_PROOF_FILES:
+        return "delivery"
     if path in _HIGH_RISK_INSTALLER_FILES:
         return "installer"
     if path in _DEPENDENCY_FILES:
