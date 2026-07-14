@@ -241,13 +241,11 @@ test('keyboard selection and cancellation send one POST and announce reflection'
   const backtest = page.getByRole('button', { name: /股票池回测/u }).first();
   await expect(backtest).toHaveAttribute('aria-current', 'true');
   const analysis = page.getByRole('button', { name: /智能分析/u });
-  await analysis.focus();
+  await analysis.press('Space');
   await expect(analysis).toBeFocused();
-  await page.keyboard.press('Space');
   await expect(analysis).toHaveAttribute('aria-current', 'true');
-  await backtest.focus();
+  await backtest.press('Space');
   await expect(backtest).toBeFocused();
-  await page.keyboard.press('Space');
   await page.getByRole('button', { name: '取消任务' }).click();
   await expect(page.getByRole('button', { name: '已请求取消' })).toBeDisabled();
   await page.waitForTimeout(2_500);
