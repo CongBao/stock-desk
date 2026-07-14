@@ -490,7 +490,7 @@ fn open_windows_directory(path: &Path, _code_prefix: &'static str) -> Result<Fil
     use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
     use windows_sys::Win32::Storage::FileSystem::{
         CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
-        FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_TRAVERSE, OPEN_EXISTING,
+        FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TRAVERSE, OPEN_EXISTING,
     };
 
     let wide = wide_path(path);
@@ -500,7 +500,10 @@ fn open_windows_directory(path: &Path, _code_prefix: &'static str) -> Result<Fil
         CreateFileW(
             wide.as_ptr(),
             FILE_TRAVERSE | FILE_READ_ATTRIBUTES,
-            FILE_SHARE_READ,
+            // Keep delete sharing denied so the guarded directory cannot be
+            // renamed or replaced, while allowing namespace writes required
+            // by the updater's own atomic publish operation.
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
             std::ptr::null(),
             OPEN_EXISTING,
             FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
@@ -830,18 +833,23 @@ fn rename_windows_file_by_handle(
 ) -> std::io::Result<()> {
     use std::os::windows::ffi::OsStrExt as _;
     use std::os::windows::io::AsRawHandle as _;
-    use windows_sys::Win32::Storage::FileSystem::{
-        FileRenameInfo, SetFileInformationByHandle, FILE_RENAME_INFO,
+    use windows_sys::Wdk::Storage::FileSystem::{
+        FileRenameInformation, NtSetInformationFile, FILE_RENAME_INFORMATION,
     };
+    use windows_sys::Win32::Foundation::RtlNtStatusToDosError;
+    use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
 
+    // Keep the target relative to the already-validated parent handle. The
+    // Win32 wrapper's full-path form would re-resolve mutable ancestors and
+    // reintroduce a path-swap window between validation and publication.
     let destination: Vec<u16> = destination_name.encode_wide().collect();
-    // Windows requires at least the complete fixed FILE_RENAME_INFO structure
+    // Windows requires at least the complete fixed rename-information structure
     // plus FileNameLength bytes, not merely the offset of the trailing field.
-    let byte_length =
-        std::mem::size_of::<FILE_RENAME_INFO>() + destination.len() * std::mem::size_of::<u16>();
+    let byte_length = std::mem::size_of::<FILE_RENAME_INFORMATION>()
+        + destination.len() * std::mem::size_of::<u16>();
     let word_length = byte_length.div_ceil(std::mem::size_of::<usize>());
     let mut buffer = vec![0_usize; word_length];
-    let information = buffer.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+    let information = buffer.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
     // SAFETY: `buffer` is usize-aligned and large enough for the fixed header
     // plus every UTF-16 code unit copied into the trailing FileName storage.
     unsafe {
@@ -854,20 +862,26 @@ fn rename_windows_file_by_handle(
             destination.len(),
         );
     }
-    // SAFETY: the source handle owns DELETE access, RootDirectory remains live,
-    // and `buffer` contains a valid FILE_RENAME_INFO for the synchronous call.
-    if unsafe {
-        SetFileInformationByHandle(
+    let mut io_status = IO_STATUS_BLOCK::default();
+    // SAFETY: both source and parent handles remain live, the source owns
+    // DELETE access, and `buffer` contains a valid native relative rename
+    // record for this synchronous file handle.
+    let status = unsafe {
+        NtSetInformationFile(
             file.as_raw_handle(),
-            FileRenameInfo,
+            &mut io_status,
             information.cast(),
             byte_length as u32,
+            FileRenameInformation,
         )
-    } == 0
-    {
-        Err(std::io::Error::last_os_error())
-    } else {
+    };
+    if status >= 0 {
         Ok(())
+    } else {
+        // SAFETY: the failed call returned a valid NTSTATUS that ntdll maps to
+        // the public Win32 error domain used by std::io::Error.
+        let win32_error = unsafe { RtlNtStatusToDosError(status) };
+        Err(std::io::Error::from_raw_os_error(win32_error as i32))
     }
 }
 
@@ -1391,6 +1405,8 @@ mod tests {
 
         let root = temp_root("windows-temp-lock");
         let path = root.join(PENDING_INSTALL_FILE);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(&path, b"superseded journal").unwrap();
         let guard = open_windows_parent_guard(&path, true, "desktop_updater_pending")
             .unwrap()
             .unwrap();

@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 const MAX_INSTALLER_BYTES: u64 = crate::updater_transport::MAX_ASSET_BYTES as u64;
 const STAGING_ATTEMPTS: usize = 16;
 #[cfg(windows)]
-const STAGE_REOPEN_ATTEMPTS: usize = 10;
+const STAGE_REOPEN_ATTEMPTS: usize = 40;
 #[cfg(windows)]
 const STAGE_REOPEN_DELAY_MILLIS: u64 = 50;
 
@@ -674,18 +674,19 @@ fn open_directory_guard(path: &Path) -> Result<SecureDirectoryGuard, &'static st
     use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
     use windows_sys::Win32::Storage::FileSystem::{
         CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
-        OPEN_EXISTING,
+        FILE_SHARE_WRITE, OPEN_EXISTING,
     };
 
     let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
     // SAFETY: `wide` is NUL terminated. Desired access zero is sufficient for
-    // identity queries; FILE_SHARE_READ deliberately denies write/delete opens
-    // of this directory while the updater resolves and launches its child.
+    // identity queries. Delete sharing remains denied so the directory cannot
+    // be renamed or replaced, while write sharing permits the updater's own
+    // child-file namespace operations.
     let handle = unsafe {
         CreateFileW(
             wide.as_ptr(),
             0,
-            FILE_SHARE_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
             std::ptr::null(),
             OPEN_EXISTING,
             FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
@@ -741,7 +742,11 @@ fn open_readonly_stage(path: &Path) -> Result<File, &'static str> {
 
 #[cfg(windows)]
 fn is_transient_stage_reopen_error(error: &std::io::Error) -> bool {
-    matches!(error.raw_os_error(), Some(32) | Some(33))
+    // Endpoint security can transiently return access denied while inspecting
+    // a newly closed executable, in addition to the documented sharing/lock
+    // violations. Retrying never bypasses the restrictive final open or any
+    // identity, reparse, digest, or directory-guard verification.
+    matches!(error.raw_os_error(), Some(5) | Some(32) | Some(33))
 }
 
 #[cfg(windows)]
@@ -760,7 +765,7 @@ fn open_directory_guard_once(path: &Path) -> Result<File, &'static str> {
     use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
     use windows_sys::Win32::Storage::FileSystem::{
         CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
-        OPEN_EXISTING,
+        FILE_SHARE_WRITE, OPEN_EXISTING,
     };
 
     let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
@@ -770,7 +775,7 @@ fn open_directory_guard_once(path: &Path) -> Result<File, &'static str> {
         CreateFileW(
             wide.as_ptr(),
             0,
-            FILE_SHARE_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
             std::ptr::null(),
             OPEN_EXISTING,
             FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
@@ -1149,18 +1154,55 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn staged_file_reopen_retries_only_transient_windows_locks() {
-        assert!(is_transient_stage_reopen_error(
-            &std::io::Error::from_raw_os_error(32)
-        ));
-        assert!(is_transient_stage_reopen_error(
-            &std::io::Error::from_raw_os_error(33)
-        ));
-        for code in [2, 5, 87] {
+    fn staged_file_reopen_retries_only_transient_windows_access_errors() {
+        for code in [5, 32, 33] {
+            assert!(is_transient_stage_reopen_error(
+                &std::io::Error::from_raw_os_error(code)
+            ));
+        }
+        for code in [2, 87] {
             assert!(!is_transient_stage_reopen_error(
                 &std::io::Error::from_raw_os_error(code)
             ));
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn staged_file_reopen_waits_for_a_transient_conflicting_handle() {
+        use std::fs::OpenOptions;
+        use std::os::windows::fs::OpenOptionsExt as _;
+        use windows_sys::Win32::Foundation::GENERIC_WRITE;
+        use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_WRITE;
+
+        let root = std::env::temp_dir().join(format!(
+            "stock-desk-stage-reopen-{}-{}",
+            std::process::id(),
+            hex_digest(random_nonce().unwrap())
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("pending.exe");
+        let payload = b"locked updater payload";
+        std::fs::write(&path, payload).unwrap();
+        let writer = OpenOptions::new()
+            .write(true)
+            .access_mode(GENERIC_WRITE)
+            .share_mode(FILE_SHARE_WRITE)
+            .open(&path)
+            .unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(125));
+            drop(writer);
+        });
+
+        let mut readonly = open_readonly_stage(&path).unwrap();
+        release.join().unwrap();
+        assert_eq!(
+            hash_open_file(&mut readonly).unwrap(),
+            hex_digest(Sha256::digest(payload))
+        );
+        drop(readonly);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[cfg(windows)]

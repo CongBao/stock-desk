@@ -266,6 +266,44 @@ it('filters the latest 100 client-side and preserves a stable selection', async 
   expect(screen.getByText('筛选范围：最近 100 项')).toBeVisible();
 });
 
+it('keeps the keyed task button focused when Space changes selection', async () => {
+  const user = userEvent.setup();
+  const first = task();
+  const second = task({
+    id: SECOND_ID,
+    kind: 'analysis.run',
+    status: 'succeeded',
+    progress: 1,
+    startedAt: '2026-07-08T00:00:01Z',
+    finishedAt: '2026-07-08T00:00:04Z',
+    durationMs: 3_000,
+    presentation: {
+      label: '智能分析',
+      stage: null,
+      processed: null,
+      total: null,
+      failed: null,
+      target: null,
+    },
+  });
+  const client = api({
+    listTasks: vi.fn(() => Promise.resolve([first, second])),
+    getTask: vi.fn((id) => Promise.resolve(id === SECOND_ID ? second : first)),
+  });
+  renderPage(client);
+
+  const analysis = await screen.findByRole('button', { name: /智能分析/u });
+  analysis.focus();
+  expect(analysis).toHaveFocus();
+  await user.keyboard(' ');
+
+  expect(analysis).toHaveFocus();
+  expect(analysis).toHaveAttribute('aria-current', 'true');
+  expect(
+    screen.getByRole('heading', { level: 3, name: '智能分析' }),
+  ).toBeVisible();
+});
+
 it('keeps detached selected detail without pinning it into the latest 100', async () => {
   const user = userEvent.setup();
   const selected = task();
