@@ -24,6 +24,8 @@ LOCAL_REPRODUCIBLE_TIMESTAMP_PATCH = (
 )
 USER_DATA_ROOT = r"$LOCALAPPDATA\Stock Desk\v1.1"
 LEGACY_DATA_ROOT = r"$LOCALAPPDATA\stock-desk"
+WEBVIEW2_PRODUCTION_GUID = "{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
+MINIMUM_WEBVIEW2_VERSION = "120.0.2210.91"
 
 
 def _config() -> dict[str, object]:
@@ -74,6 +76,57 @@ def test_nsis_configuration_has_no_reachable_admin_install_mode() -> None:
     assert (
         '!if "${INSTALLMODE}" == "perMachine"\n  RequestExecutionLevel admin' in source
     )
+
+
+def test_webview2_post_install_verification_is_fail_closed_and_never_ignorable() -> (
+    None
+):
+    config = _config()
+    hooks = NSIS_HOOKS.read_text(encoding="utf-8")
+    source = NSIS_TEMPLATE.read_text(encoding="utf-8")
+    languages = {
+        path.name: path.read_text(encoding="utf-8")
+        for path in sorted(NSIS_LANGUAGES.glob("*.nsh"))
+    }
+
+    windows = config["bundle"]["windows"]  # type: ignore[index]
+    assert windows["webviewInstallMode"] == {"type": "offlineInstaller"}
+    assert "minimumWebview2Version" not in windows
+    assert f'!define STOCK_DESK_WEBVIEW2_APP_GUID "{WEBVIEW2_PRODUCTION_GUID}"' in hooks
+    assert (
+        f'!define STOCK_DESK_MINIMUM_WEBVIEW2_VERSION "{MINIMUM_WEBVIEW2_VERSION}"'
+        in hooks
+    )
+    assert "!macro NSIS_HOOK_PREINSTALL" in hooks
+    assert (
+        source.index("Section WebView2")
+        < source.index("!insertmacro NSIS_HOOK_PREINSTALL")
+        < source.index("; Copy main executable")
+    )
+    assert "WOW6432Node\\Microsoft\\EdgeUpdate\\Clients" in hooks
+    assert 'HKCU "SOFTWARE\\Microsoft\\EdgeUpdate\\Clients' in hooks
+    assert '== "0.0.0.0"' in hooks
+    assert "$StockDeskWebView2SegmentDigits > 9" in hooks
+    assert "${VersionCompare}" in hooks
+    assert "MB_RETRYCANCEL|MB_ICONSTOP" in hooks
+    assert "IDRETRY stock_desk_verify_webview2" in hooks
+    assert "IDCANCEL stock_desk_webview2_cancel" in hooks
+    assert "SetErrorLevel ${STOCK_DESK_WEBVIEW2_VERIFY_EXIT_CODE}" in hooks
+    preinstall = hooks.split("!macro NSIS_HOOK_PREINSTALL", maxsplit=1)[1].split(
+        "!macroend", maxsplit=1
+    )[0]
+    assert "IDIGNORE" not in preinstall
+    assert "needsadmin" not in preinstall
+    assert "MB_ABORTRETRYIGNORE" not in preinstall
+    assert set(languages) == {"English.nsh", "SimpChinese.nsh"}
+    for language in languages.values():
+        assert "stockDeskWebView2VerificationFailed" in language
+        assert "SD-WV2-VERIFY-01" in language
+        assert "${STOCK_DESK_MINIMUM_WEBVIEW2_VERSION}" in language
+        assert "$StockDeskWebView2Version" in language
+        assert "x64 Evergreen" in language
+        assert "restart Windows" in language or "重启 Windows" in language
+        assert "https://developer.microsoft.com/microsoft-edge/webview2/" in language
 
 
 def test_program_and_data_roots_are_physically_separate_and_uninstall_is_safe() -> None:

@@ -199,6 +199,25 @@ def test_webview_scenario_state_contradictions_are_rejected(mutation: str) -> No
         _verify(evidence)
 
 
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        ("product_guid", "{26A24AE4-039D-4CA4-87B4-2F64180138F0}"),
+        ("version", "0.0.0.0"),
+        ("version", "119.0.9999.9999"),
+        ("version", "120.0.bad.91"),
+    ],
+)
+def test_only_supported_production_webview_runtime_is_accepted(
+    field: str, replacement: str
+) -> None:
+    evidence = _load("valid-preinstalled.json")
+    evidence["webview"]["before"][field] = replacement
+
+    with pytest.raises(verifier.InstalledEvidenceError, match="WebView2|webview"):
+        _verify(evidence)
+
+
 def test_webview_failure_cannot_leave_launchable_or_partial_application() -> None:
     evidence = _load("valid-failure.json")
     evidence["install"].update(

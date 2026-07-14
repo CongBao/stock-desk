@@ -267,10 +267,11 @@
     "webviewRuntime": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["state", "version", "channel", "signer"],
+      "required": ["state", "product_guid", "version", "channel", "signer"],
       "properties": {
         "state": { "enum": ["present", "absent"] },
-        "version": { "type": ["string", "null"], "maxLength": 64 },
+        "product_guid": { "enum": ["{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}", null] },
+        "version": { "type": ["string", "null"], "pattern": "^[0-9]+(?:\\.[0-9]+){3}$", "maxLength": 64 },
         "channel": { "enum": ["evergreen", null] },
         "signer": { "anyOf": [{ "$ref": "#/$defs/signer" }, { "type": "null" }] }
       }

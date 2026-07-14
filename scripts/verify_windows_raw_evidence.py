@@ -38,6 +38,9 @@ _SAFE_PATH: Final = re.compile(r"^raw/[a-z0-9][a-z0-9._-]{0,63}$")
 _SAFE_ID: Final = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
 _SAFE_ATTEMPT: Final = re.compile(r"^[a-z0-9][a-z0-9._-]{7,127}$")
 _RFC3339_UTC: Final = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+_WEBVIEW_VERSION: Final = re.compile(r"^[0-9]+(?:\.[0-9]+){3}$")
+WEBVIEW2_PRODUCTION_GUID: Final = "{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
+MINIMUM_WEBVIEW2_VERSION: Final = (120, 0, 2210, 91)
 _PUBLIC_SECRET: Final = re.compile(
     r"(?i)(authorization\s*:|bearer\s+[a-z0-9._-]+|"
     r"(?:api[_-]?key|token|password|secret)\s*[=:]\s*[^\s,]+|github[_-]?token)"
@@ -431,6 +434,8 @@ def _validate_capture(
                 "snapshot_policy_sha256",
                 "clean_snapshot_sha256",
                 "image_sha256",
+                "webview_product_guid",
+                "minimum_webview_version",
                 "failure_injection",
                 "browser_window_observer",
                 "redaction_version",
@@ -472,6 +477,12 @@ def _validate_capture(
         raise RawEvidenceError(
             "capture is not bound to independently recomputed inputs"
         )
+    if capture["webview_product_guid"] != WEBVIEW2_PRODUCTION_GUID:
+        raise RawEvidenceError("capture is not bound to the production WebView2 GUID")
+    if capture["minimum_webview_version"] != ".".join(
+        str(component) for component in MINIMUM_WEBVIEW2_VERSION
+    ):
+        raise RawEvidenceError("capture is not bound to the locked WebView2 minimum")
     injection = capture["failure_injection"]
     if scenario == "webview-install-failure":
         injection_value = _object(
@@ -638,17 +649,31 @@ def _validate_runtime(value: object, *, field: str) -> dict[str, object]:
     runtime = _value_fields(
         value,
         field=field,
-        fields=frozenset({"state", "version", "channel", "signer", "scope"}),
+        fields=frozenset(
+            {"state", "product_guid", "version", "channel", "signer", "scope"}
+        ),
     )
     state = runtime["state"]
     if state == "absent":
         if any(
             runtime[name] is not None
-            for name in ("version", "channel", "signer", "scope")
+            for name in ("product_guid", "version", "channel", "signer", "scope")
         ):
             raise RawEvidenceError(f"{field} absent state is contradictory")
     elif state == "present":
-        _string(runtime["version"], field=f"{field}.version", maximum=64)
+        if runtime["product_guid"] != WEBVIEW2_PRODUCTION_GUID:
+            raise RawEvidenceError(f"{field} is not the production WebView2 GUID")
+        version = _string(
+            runtime["version"],
+            field=f"{field}.version",
+            maximum=64,
+            pattern=_WEBVIEW_VERSION,
+        )
+        if (
+            tuple(int(component) for component in version.split("."))
+            < MINIMUM_WEBVIEW2_VERSION
+        ):
+            raise RawEvidenceError(f"{field} is below the locked WebView2 minimum")
         if runtime["channel"] != "evergreen":
             raise RawEvidenceError(f"{field} is not Evergreen WebView2")
         signer = _value_fields(

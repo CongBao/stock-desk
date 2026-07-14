@@ -368,6 +368,10 @@ def _write_raw_fixture(
             "snapshot_policy_sha256": SNAPSHOT_POLICY_SHA256,
             "clean_snapshot_sha256": "6" * 64,
             "image_sha256": image_sha256,
+            "webview_product_guid": verifier.WEBVIEW2_PRODUCTION_GUID,
+            "minimum_webview_version": ".".join(
+                str(component) for component in verifier.MINIMUM_WEBVIEW2_VERSION
+            ),
             "failure_injection": injection,
             "browser_window_observer": browser_observer,
             "redaction_version": "stock-desk-public-redaction-v2",
@@ -515,6 +519,13 @@ def test_raw_manifest_schema_is_closed_and_has_no_pass_field() -> None:
     assert observer["additionalProperties"] is False
     assert observer["properties"]["api"]["const"] == (
         "Win32 EnumWindows + SetWinEventHook"
+    )
+    capture = schema["properties"]["capture"]
+    assert capture["properties"]["webview_product_guid"]["const"] == (
+        verifier.WEBVIEW2_PRODUCTION_GUID
+    )
+    assert capture["properties"]["minimum_webview_version"]["const"] == (
+        "120.0.2210.91"
     )
 
 
@@ -686,6 +697,8 @@ def test_combined_public_text_size_attack_fails_closed(tmp_path: Path) -> None:
         "matrix",
         "profile",
         "policy",
+        "webview-guid",
+        "webview-minimum",
         "observer-hook",
         "observer-digest",
         "unknown-field",
@@ -710,6 +723,12 @@ def test_manifest_identity_and_workflow_attacks_fail_closed(
         manifest["capture"]["guest_profile"] = "win11"
     elif mutation == "policy":
         manifest["capture"]["snapshot_policy_sha256"] = "0" * 64
+    elif mutation == "webview-guid":
+        manifest["capture"]["webview_product_guid"] = (
+            "{00000000-0000-0000-0000-000000000000}"
+        )
+    elif mutation == "webview-minimum":
+        manifest["capture"]["minimum_webview_version"] = "119.0.0.0"
     elif mutation == "observer-hook":
         manifest["capture"]["browser_window_observer"]["hook_started_at_utc"] = (
             "2026-07-14T00:00:02Z"
@@ -887,6 +906,9 @@ def test_observation_and_capture_attacks_fail_closed(
         "system-build",
         "runtime-absent-metadata",
         "runtime-channel",
+        "runtime-guid",
+        "runtime-version-low",
+        "runtime-version-malformed",
         "runtime-signer",
         "runtime-scope",
         "runtime-state",
@@ -924,6 +946,14 @@ def test_raw_semantic_contradictions_fail_before_derivation(
         by_kind["webview-before"]["value"]["version"] = "1.0"
     elif mutation == "runtime-channel":
         by_kind["webview-after"]["value"]["channel"] = "fixed"
+    elif mutation == "runtime-guid":
+        by_kind["webview-after"]["value"]["product_guid"] = (
+            "{00000000-0000-0000-0000-000000000000}"
+        )
+    elif mutation == "runtime-version-low":
+        by_kind["webview-after"]["value"]["version"] = "119.0.9999.9999"
+    elif mutation == "runtime-version-malformed":
+        by_kind["webview-after"]["value"]["version"] = "120.0.bad.91"
     elif mutation == "runtime-signer":
         by_kind["webview-after"]["value"]["signer"]["status"] = "UnknownError"
     elif mutation == "runtime-scope":

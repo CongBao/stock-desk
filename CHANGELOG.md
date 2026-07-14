@@ -45,6 +45,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Security
 
+- The current-user Windows installer now verifies the production WebView2
+  Evergreen registration and locked minimum version after the bundled offline
+  installer runs. Missing, malformed, sentinel, or outdated runtimes stop
+  installation without an Ignore path and provide bilingual recovery code
+  `SD-WV2-VERIFY-01`.
 - A machine-readable desktop privacy policy and fail-closed repository guard
   now reject known telemetry or crash SDK signatures, automatic diagnostic
   upload, premature updater enablement, stable device identifiers, and

@@ -33,13 +33,13 @@
     "profile_path_contains_space": true
   },
   "webview": {
-    "before": { "state": "absent", "version": null, "channel": null, "signer": null },
+    "before": { "state": "absent", "product_guid": null, "version": null, "channel": null, "signer": null },
     "installation": {
       "attempted": true,
       "exit_code": 1603,
       "installer_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
     },
-    "after": { "state": "absent", "version": null, "channel": null, "signer": null }
+    "after": { "state": "absent", "product_guid": null, "version": null, "channel": null, "signer": null }
   },
   "processes": {
     "installer": { "started": true, "elevated": false },
