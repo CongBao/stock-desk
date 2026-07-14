@@ -164,8 +164,11 @@ test('real local market workflow stays cached, traceable, and interactive', asyn
   await page.getByRole('button', { name: '关闭股票池' }).click();
   await page.getByRole('button', { name: '编辑当前股票池' }).click();
   await page.getByRole('button', { name: '删除股票池' }).click();
-  await expect(page.getByRole('alert')).toContainText('删除后无法撤销');
-  await page.getByRole('button', { name: '确认删除' }).click();
+  const deleteConfirmation = page.getByRole('alertdialog', {
+    name: '确认删除股票池？',
+  });
+  await expect(deleteConfirmation).toContainText('删除后无法撤销');
+  await deleteConfirmation.getByRole('button', { name: '确认删除' }).click();
   await page.getByRole('button', { name: '打开股票池' }).click();
   await expect(page.getByRole('button', { name: /E2E 观察池/u })).toHaveCount(
     0,
