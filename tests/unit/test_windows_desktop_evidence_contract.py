@@ -173,6 +173,19 @@ def test_packaged_webview_matrix_is_explicitly_equivalent_not_real_os_dpi() -> N
     assert "tauri-webview-cdp-system-media-not-windows-theme" in source
     for route in ("/market", "/formulas", "/backtests", "/analysis", "/tasks"):
         assert f'path: "{route}"' in source
+    guidance_helper = source[
+        source.index("async function dismissAutomaticGuidance") : source.index(
+            "async function focusEvidence"
+        )
+    ]
+    assert '.waitFor({ state: "visible", timeout: 15_000 })' in source
+    assert 'dialog.getByRole("button", { name: "跳过引导" })' in source
+    assert "await skip.click()" in source
+    assert 'dialog.waitFor({ state: "hidden", timeout: 15_000 })' in source
+    assert ".catch(() => false)" not in guidance_helper
+    assert 'return "fresh-page-dismissed"' in guidance_helper
+    assert "automaticGuidanceDisposition" in source
+    assert source.count("await dismissAutomaticGuidance(page)") == 1
     for preference in ("light", "dark", "system"):
         assert f'preference: "{preference}"' in source
     assert "core_route_theme_scale_matrix" in source

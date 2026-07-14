@@ -388,10 +388,17 @@ function assertUsableState(state, label) {
 
 async function dismissAutomaticGuidance(page) {
   const dialog = page.locator(".guidance-dialog");
-  if (await dialog.isVisible().catch(() => false)) {
-    await page.keyboard.press("Escape");
-    await dialog.waitFor({ state: "hidden" });
-  }
+  // Every route below is a first visit in a fresh packaged data root. The
+  // automatic tour is therefore required to appear before the route can be
+  // measured. A missing or late preference response must fail closed instead
+  // of allowing a delayed dialog to race the layout matrix.
+  await dialog.waitFor({ state: "visible", timeout: 15_000 });
+
+  const skip = dialog.getByRole("button", { name: "跳过引导" });
+  await skip.waitFor({ state: "visible", timeout: 5_000 });
+  await skip.click();
+  await dialog.waitFor({ state: "hidden", timeout: 15_000 });
+  return "fresh-page-dismissed";
 }
 
 async function focusEvidence(page) {
@@ -562,7 +569,7 @@ try {
     await page.locator("#main-content h1, #main-content h2").first().waitFor({
       state: "visible",
     });
-    await dismissAutomaticGuidance(page);
+    const automaticGuidanceDisposition = await dismissAutomaticGuidance(page);
 
     for (const themeCase of themeCases) {
       await cdp.send("Emulation.setEmulatedMedia", {
@@ -603,6 +610,7 @@ try {
           route: route.path,
           routeLabel: route.label,
           routeTransition,
+          automaticGuidanceDisposition,
           preference: themeCase.preference,
           resolvedTheme: themeCase.resolved,
           systemScheme: themeCase.systemScheme,
@@ -659,7 +667,6 @@ try {
   const packagedBacktests = await runPackagedBacktestEvidence(page, outputDir);
 
   await navigateToCoreRoute(page, coreRoutes[0]);
-  await dismissAutomaticGuidance(page);
   await page.getByRole("combobox", { name: "界面主题" }).selectOption("system");
   const finalKeyboard = await focusEvidence(page);
   const keyboardStart = finalKeyboard.start;
