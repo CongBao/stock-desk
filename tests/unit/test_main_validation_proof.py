@@ -500,6 +500,47 @@ def test_generation_rejects_manifest_from_another_job(tmp_path: Path) -> None:
         )
 
 
+@pytest.mark.parametrize("attack", ["missing-manifest", "failed-job", "wrong-producer"])
+def test_generation_requires_exact_windows_observer_gate(
+    tmp_path: Path, attack: str
+) -> None:
+    repo = _repository(tmp_path)
+    api_evidence = _api_evidence(repo)
+    manifests = _validation_evidence(repo, api_evidence)
+    artifact = "windows-browser-observer-evidence"
+    if attack == "missing-manifest":
+        manifests.pop(artifact)
+    elif attack == "failed-job":
+        workflow = api_evidence["CI"]
+        assert isinstance(workflow, dict)
+        jobs = workflow["jobs"]
+        assert isinstance(jobs, dict)
+        values = jobs["jobs"]
+        assert isinstance(values, list)
+        observer_job = next(
+            job
+            for job in values
+            if isinstance(job, dict)
+            and job.get("name") == "Verify Windows browser observer integration"
+        )
+        observer_job["conclusion"] = "failure"
+    else:
+        manifest = manifests[artifact]
+        assert isinstance(manifest, dict)
+        producer = manifest["producer"]
+        assert isinstance(producer, dict)
+        producer["job_id"] = "windows-browser-observer-forged"
+        manifest["manifest_sha256"] = manifest_digest(manifest)
+    with pytest.raises(MainValidationProofError):
+        proof_module.generate_proof(
+            repo_root=repo,
+            repository=REPOSITORY,
+            ref=REF,
+            api_evidence=api_evidence,
+            validation_evidence=manifests,
+        )
+
+
 def test_verification_rejects_resigned_artifact_substitution(tmp_path: Path) -> None:
     repo = _repository(tmp_path)
     proof = _proof(repo)
