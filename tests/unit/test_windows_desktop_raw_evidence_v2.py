@@ -893,6 +893,21 @@ def test_reviewed_uia_driver_observes_real_tab_escape_and_target_window_dpi() ->
     assert ".SetFocus()" not in source
 
 
+def test_runtime_dialog_lookup_remains_process_bound_and_top_level() -> None:
+    source = Path("scripts/windows_desktop_uia_driver.ps1").read_text(encoding="utf-8")
+    dialog_finder = source.split("function Find-TopLevelWindow", 1)[1].split(
+        "function Add-Action", 1
+    )[0]
+
+    assert "TreeScope]::Descendants" in dialog_finder
+    assert "ProcessIdProperty" in dialog_finder
+    assert "ControlTypeProperty" in dialog_finder
+    assert "NameProperty" in dialog_finder
+    assert "GetAncestor" in dialog_finder
+    assert "GA_ROOT" in dialog_finder
+    assert "TreeScope]::Children" not in dialog_finder
+
+
 def test_windows_ci_executes_controlled_uia_runtime_fixture() -> None:
     integration = Path(
         "tests/windows/windows_desktop_uia_driver_integration.ps1"

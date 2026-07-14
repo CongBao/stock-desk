@@ -43,6 +43,7 @@ public static class StockDeskDesktopEvidenceNative {
   [DllImport("user32.dll", SetLastError=true)] public static extern bool ClientToScreen(IntPtr hwnd, ref POINT point);
   [DllImport("user32.dll", SetLastError=true)] public static extern bool SetWindowPos(IntPtr hwnd, IntPtr after, int x, int y, int cx, int cy, uint flags);
   [DllImport("user32.dll", SetLastError=true)] public static extern bool SetForegroundWindow(IntPtr hwnd);
+  [DllImport("user32.dll", SetLastError=true)] public static extern IntPtr GetAncestor(IntPtr hwnd, uint flags);
   [DllImport("user32.dll", SetLastError=true, EntryPoint="PrintWindow")] public static extern bool PrintWindow(IntPtr hwnd, IntPtr dc, uint flags);
   [DllImport("user32.dll")] public static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint flags);
   [DllImport("shcore.dll")] public static extern int GetDpiForMonitor(IntPtr monitor, int type, out uint x, out uint y);
@@ -52,6 +53,7 @@ public static class StockDeskDesktopEvidenceNative {
   public const uint SWP_NOZORDER = 0x0004;
   public const uint SWP_NOACTIVATE = 0x0010;
   public const uint MONITOR_DEFAULTTONEAREST = 2;
+  public const uint GA_ROOT = 2;
 }
 '@
 
@@ -147,17 +149,36 @@ function Find-Element {
 
 function Find-TopLevelWindow {
   param([string]$Name, [int]$TimeoutSeconds = 10, [switch]$Optional)
+  $condition = [System.Windows.Automation.AndCondition]::new(
+    [System.Windows.Automation.Condition[]]@(
+      [System.Windows.Automation.PropertyCondition]::new(
+        [System.Windows.Automation.AutomationElement]::ProcessIdProperty,
+        $ExpectedProcessId
+      ),
+      [System.Windows.Automation.PropertyCondition]::new(
+        [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+        [System.Windows.Automation.ControlType]::Window
+      ),
+      [System.Windows.Automation.PropertyCondition]::new(
+        [System.Windows.Automation.AutomationElement]::NameProperty,
+        $Name
+      )
+    )
+  )
   $deadline = [DateTimeOffset]::UtcNow.AddSeconds($TimeoutSeconds)
   do {
-    $windows = [System.Windows.Automation.AutomationElement]::RootElement.FindAll(
-      [System.Windows.Automation.TreeScope]::Children,
-      [System.Windows.Automation.Condition]::TrueCondition
+    $candidate = [System.Windows.Automation.AutomationElement]::RootElement.FindFirst(
+      [System.Windows.Automation.TreeScope]::Descendants,
+      $condition
     )
-    foreach ($candidate in $windows) {
+    if ($null -ne $candidate) {
+      $candidateHwnd = [IntPtr][long]$candidate.Current.NativeWindowHandle
       if (
-        $candidate.Current.ProcessId -eq $ExpectedProcessId -and
-        $candidate.Current.ControlType -eq [System.Windows.Automation.ControlType]::Window -and
-        ([string]$candidate.Current.Name).Trim() -eq $Name
+        $candidateHwnd -ne [IntPtr]::Zero -and
+        [StockDeskDesktopEvidenceNative]::GetAncestor(
+          $candidateHwnd,
+          [StockDeskDesktopEvidenceNative]::GA_ROOT
+        ) -eq $candidateHwnd
       ) { return $candidate }
     }
     Start-Sleep -Milliseconds 100

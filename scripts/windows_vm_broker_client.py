@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 from collections.abc import Sequence
 import hashlib
+from http.client import HTTPMessage
 import io
 import json
 import os
@@ -26,6 +27,7 @@ import re
 import ssl
 import sys
 import time
+from typing import Any, IO, cast
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -48,13 +50,19 @@ class BrokerError(RuntimeError):
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
     def redirect_request(
-        self, request: object, *args: object, **kwargs: object
-    ) -> None:
-        del request, args, kwargs
+        self,
+        req: urllib.request.Request,
+        fp: IO[bytes],
+        code: int,
+        msg: str,
+        headers: HTTPMessage,
+        newurl: str,
+    ) -> urllib.request.Request | None:
+        del req, fp, code, msg, headers, newurl
         return None
 
 
-def _urlopen(request: urllib.request.Request, *, timeout: int):
+def _urlopen(request: urllib.request.Request, *, timeout: int) -> Any:
     opener = urllib.request.build_opener(
         urllib.request.HTTPSHandler(context=ssl.create_default_context()),
         _NoRedirectHandler(),
@@ -232,7 +240,7 @@ def _download(url: str, *, endpoint: str, token: str) -> bytes:
     try:
         with _urlopen(request, timeout=120) as response:
             _assert_response_origin(response, endpoint=endpoint, label="result")
-            data = response.read(MAX_RESULT_BYTES + 1)
+            data = cast(bytes, response.read(MAX_RESULT_BYTES + 1))
     except (urllib.error.URLError, TimeoutError) as error:
         raise BrokerError("protected VM raw result download failed") from error
     if not data or len(data) > MAX_RESULT_BYTES:

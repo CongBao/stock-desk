@@ -743,6 +743,7 @@ def _validate_display(value: object, *, dpi_percent: int) -> dict[str, Any]:
         "display observation",
     )
     expected_dpi = dpi_percent * 96 // 100
+    roundtrip_error = display.get("logical_to_physical_roundtrip_max_error_px")
     if (
         display.get("requested_scale_percent") != dpi_percent
         or display.get("get_dpi_for_window") != expected_dpi
@@ -751,10 +752,8 @@ def _validate_display(value: object, *, dpi_percent: int) -> dict[str, Any]:
         or display.get("get_dpi_for_monitor_y") != expected_dpi
         or display.get("window_dpi_awareness_context") != "per-monitor-v2"
         or display.get("dpi_virtualized") is not False
-        or not isinstance(
-            display.get("logical_to_physical_roundtrip_max_error_px"), (int, float)
-        )
-        or display.get("logical_to_physical_roundtrip_max_error_px") > 1
+        or not isinstance(roundtrip_error, (int, float))
+        or roundtrip_error > 1
     ):
         raise DesktopEvidenceError(
             "Win32 DPI APIs do not prove the assigned physical scale"
@@ -1333,6 +1332,7 @@ def _validate_uia(value: object, *, expected_driver_sha256: str) -> dict[str, An
         ),
         "UIA narrow sidebar evidence",
     )
+    chart_x_shift = sidebar.get("chart_x_shift")
     if (
         sidebar.get("logical_size") != {"width": 640, "height": 360}
         or sidebar.get("collapsed_before") is not True
@@ -1340,8 +1340,8 @@ def _validate_uia(value: object, *, expected_driver_sha256: str) -> dict[str, An
         or sidebar.get("toggle_semantic_name") not in ("展开导航", "展开自选与最近访问")
         or sidebar.get("expanded_after") is not True
         or sidebar.get("expanded_reflow") is not True
-        or not isinstance(sidebar.get("chart_x_shift"), int)
-        or sidebar.get("chart_x_shift") <= 0
+        or not isinstance(chart_x_shift, int)
+        or chart_x_shift <= 0
         or sidebar.get("sidebar_chart_overlap_pixels") != 0
     ):
         raise DesktopEvidenceError(
