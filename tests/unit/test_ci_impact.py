@@ -123,6 +123,7 @@ def test_cross_domain_changes_fail_closed_to_full(paths: list[str]) -> None:
         "scripts/artifact_manifest.py",
         "scripts/verify_ci_cache_policy.py",
         "config/desktop-network-privacy.json",
+        "config/tauri-updater-runtime.json",
         "tests/unit/test_ci_impact.py",
         "tests/unit/test_artifact_manifest.py",
     ],
@@ -144,6 +145,7 @@ def test_workflow_dependency_permission_signing_and_proof_paths_are_full(
         (".github/workflows/ci.yml", "delivery"),
         (".github/CODEOWNERS", "permissions"),
         ("config/desktop-network-privacy.json", "delivery"),
+        ("config/tauri-updater-runtime.json", "delivery"),
         ("scripts/signpath_contract.py", "signing"),
     ],
 )

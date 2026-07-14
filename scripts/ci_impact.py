@@ -111,6 +111,7 @@ _DELIVERY_FILES = frozenset(
         ".gitattributes",
         ".gitignore",
         "config/desktop-network-privacy.json",
+        "config/tauri-updater-runtime.json",
     }
 )
 _HIGH_RISK_DOMAINS = frozenset({"delivery", "dependency", "permissions", "signing"})
