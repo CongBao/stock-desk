@@ -169,14 +169,10 @@ it('keeps a host-retained verified installer retryable after a failed handoff', 
   });
   render(<DesktopUpdateNotice bridge={createDesktopBridge(desktopAdapter)} />);
 
-  await user.click(
-    await screen.findByRole('button', { name: '重新尝试安装' }),
-  );
+  await user.click(await screen.findByRole('button', { name: '重新尝试安装' }));
 
   await waitFor(() => expect(getUpdateState).toHaveBeenCalledTimes(2));
-  expect(
-    screen.getByRole('button', { name: '重新尝试安装' }),
-  ).toBeEnabled();
+  expect(screen.getByRole('button', { name: '重新尝试安装' })).toBeEnabled();
   expect(screen.getByRole('status')).toHaveTextContent('更新 1.2.0 已验证');
 });
 
