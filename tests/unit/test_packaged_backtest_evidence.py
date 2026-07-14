@@ -5,8 +5,9 @@ import json
 from pathlib import Path
 from copy import deepcopy
 import shutil
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 
@@ -14,8 +15,11 @@ from scripts.v1_backtest_oracle import load_inputs, load_oracle
 from scripts.v1_backtest_oracle import project_completed
 from scripts.capture_packaged_backtest_semantics import normalize_resumed_semantics
 from scripts.prepare_windows_packaged_backtest_evidence import prepare, switch_fixture
+from stock_desk.backtest.pool_runner import PoolBacktestRunner
 from stock_desk.backtest.service import BacktestIntent
 from stock_desk.market.types import Adjustment, Period
+from stock_desk.tasks.models import TaskClaim
+from stock_desk.tasks.repository import DesktopCheckpointPause, TaskRepository
 from tests.backtest_test_helpers import BacktestHarness
 from scripts.verify_packaged_backtest_evidence import (
     EvidenceError,
@@ -775,3 +779,90 @@ def test_packaged_fixture_switches_reproduce_all_fifteen_oracle_semantics(
     # append-only market catalog must treat that deterministic switch as
     # idempotent while all prior run snapshots remain queryable.
     switch_fixture(tmp_path, "matrix_1d")
+
+
+def test_packaged_checkpoint_projection_matches_uninterrupted_v1_semantics(
+    tmp_path: Path,
+) -> None:
+    seed = prepare(tmp_path, source_sha=SOURCE_SHA, source_tree=SOURCE_TREE)
+    oracle = load_oracle(ORACLE_PATH, inputs_path=INPUTS_PATH)
+    switch_fixture(tmp_path, "matrix_1d")
+    packaged_database = tmp_path / "stock-desk.db"
+    harness_database = tmp_path / "backtest-harness.db"
+    packaged_database.replace(harness_database)
+    try:
+        with BacktestHarness.create(tmp_path) as harness:
+            period_seed = seed["periods"]["1d"]
+            pool = seed["pools"]["1d"]
+            formula = seed["formulas"]["custom"]
+            costs = seed["costs"]
+            intent = BacktestIntent(
+                scope_kind="preset",
+                symbol=None,
+                scope_id=str(pool["pool_id"]),
+                scope_revision_or_snapshot_id=str(pool["snapshot_id"]),
+                formula_version_id=str(formula["version_id"]),
+                formula_parameters=formula["parameters"],  # type: ignore[arg-type]
+                period=Period.DAY,
+                adjustment=Adjustment.NONE,
+                scoring_start=datetime.fromisoformat(period_seed["scoring_start"]),
+                scoring_end=datetime.fromisoformat(period_seed["scoring_end"]),
+                quantity_shares=int(costs["quantity_shares"]),
+                commission_bps=Decimal(str(costs["commission_bps"])),
+                minimum_commission=Decimal(str(costs["minimum_commission"])),
+                sell_tax_bps=Decimal(str(costs["sell_tax_bps"])),
+                slippage_bps=Decimal(str(costs["slippage_bps"])),
+            )
+            baseline = harness._run(intent)
+            service = baseline.service
+            submitted = service.submit(intent)
+            harness.tasks.request_desktop_checkpoint()
+            original = harness.tasks.claim_next(
+                "packaged-worker-before", lease_duration=timedelta(seconds=30)
+            )
+            assert isinstance(original, TaskClaim)
+            runner = PoolBacktestRunner(
+                engine=harness.engine,
+                tasks=harness.tasks,
+                repository=harness.repository,
+                market_lake=harness.market,
+                status_lake=harness.statuses,
+                formulas=baseline.formulas,
+                heartbeat_interval_seconds=1,
+                heartbeat_lease_duration=timedelta(seconds=30),
+            )
+            with pytest.raises(DesktopCheckpointPause):
+                runner(original)
+            restarted_tasks = TaskRepository(harness.engine)
+            assert restarted_tasks.resume_desktop_recovery() == 1
+            replacement = restarted_tasks.claim_next(
+                "packaged-worker-after", lease_duration=timedelta(seconds=30)
+            )
+            assert isinstance(replacement, TaskClaim)
+            resumed_runner = PoolBacktestRunner(
+                engine=harness.engine,
+                tasks=restarted_tasks,
+                repository=harness.repository,
+                market_lake=harness.market,
+                status_lake=harness.statuses,
+                formulas=baseline.formulas,
+                heartbeat_interval_seconds=1,
+                heartbeat_lease_duration=timedelta(seconds=30),
+            )
+            resumed_runner(replacement)
+            baseline_projection = project_completed(baseline, harness)
+            resumed_run = harness.repository.get_run(submitted.run_id)
+            resumed_projection = project_completed(
+                SimpleNamespace(
+                    run=resumed_run,
+                    report=service.report(submitted.run_id),
+                ),
+                harness,
+            )
+            normalized, _difference = normalize_resumed_semantics(resumed_projection)
+    finally:
+        harness_database.replace(packaged_database)
+
+    expected = oracle["cases"]["custom_pool_1d"]["semantic"]
+    assert baseline_projection == expected
+    assert normalized == expected

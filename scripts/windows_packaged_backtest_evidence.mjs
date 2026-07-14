@@ -474,6 +474,7 @@ export async function runPackagedBacktestEvidence(page, outputDir) {
     specialCases.push(await specialEvidence(page, seed, caseId));
   }
   const cells = [];
+  let checkpoint;
   for (const period of ["1d", "1w", "60m"]) {
     await selectFixture(`matrix_${period}`);
     for (const formulaId of ["macd", "custom"]) {
@@ -483,10 +484,26 @@ export async function runPackagedBacktestEvidence(page, outputDir) {
         );
       }
     }
+    // Capture the daily restart before the weekly fixture publishes its
+    // longer daily execution companion into the shared immutable catalog.
+    // Otherwise a later daily submission can correctly select that newer
+    // execution dataset while the daily status fixture still ends at June,
+    // producing an intentionally fail-closed but non-oracle input pairing.
+    if (period === "1d") {
+      await selectFixture("matrix_1d", "checkpoint-matrix-1d");
+      const baseline = await completedEvidence(
+        page,
+        seed,
+        "custom",
+        "pool",
+        "1d",
+      );
+      checkpoint = await checkpointEvidence(page, seed, baseline);
+    }
   }
-  await selectFixture("matrix_1d", "checkpoint-matrix-1d");
-  const baseline = await completedEvidence(page, seed, "custom", "pool", "1d");
-  const checkpoint = await checkpointEvidence(page, seed, baseline);
+  if (checkpoint === undefined) {
+    throw new Error("packaged daily checkpoint evidence is missing");
+  }
   const manifest = {
     schema_version: "stock-desk-packaged-backtest-evidence-v1",
     source_sha: seed.source_sha,

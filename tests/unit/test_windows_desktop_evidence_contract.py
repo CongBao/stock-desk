@@ -338,39 +338,65 @@ def test_fixture_marker_producer_and_consumer_use_the_same_deadlock_free_order()
     powershell = (ROOT / "scripts" / "capture_windows_desktop_evidence.ps1").read_text(
         encoding="utf-8"
     )
-    ordered = (
+    before_restart = (
         "a_share_constraints_60m",
         "open_position_costs_1d",
         "partial_pool_gap_1d",
         "matrix_1d",
+        "checkpoint-matrix-1d",
+    )
+    after_restart = (
         "matrix_1w",
         "matrix_60m",
     )
-    powershell_positions = []
-    for fixture_id in ordered:
-        powershell_positions.append(
-            powershell.index(f"@('{fixture_id}','{fixture_id}')")
+    before_positions = [
+        powershell.index(
+            "@('checkpoint-matrix-1d','matrix_1d')"
+            if fixture_id == "checkpoint-matrix-1d"
+            else f"@('{fixture_id}','{fixture_id}')"
         )
-    assert powershell_positions == sorted(powershell_positions)
+        for fixture_id in before_restart
+    ]
+    after_positions = [
+        powershell.index(f"@('{fixture_id}','{fixture_id}')")
+        for fixture_id in after_restart
+    ]
+    restart_ack = powershell.index(
+        "Write-CaptureAck (Join-Path $restartSyncRoot 'restart-after.ack')"
+    )
+    restart_before_wait = powershell.index(
+        "$beforeMarkerPath = Join-Path $restartSyncRoot 'restart-before.json'"
+    )
+    assert before_positions == sorted(before_positions)
+    assert max(before_positions) < restart_before_wait < restart_ack
+    assert restart_ack < min(after_positions)
     special_start = webview.index("const specialCases = []")
     cells_start = webview.index("const cells = []")
     checkpoint_start = webview.index(
         'await selectFixture("matrix_1d", "checkpoint-matrix-1d")'
     )
+    period_loop = webview.index('for (const period of ["1d", "1w", "60m"])')
+    checkpoint_branch = webview.index('if (period === "1d")', period_loop)
+    checkpoint_guard = webview.index("if (checkpoint === undefined)")
     assert special_start < cells_start < checkpoint_start
+    assert period_loop < checkpoint_branch < checkpoint_start < checkpoint_guard
+    assert (
+        webview.index(
+            "checkpoint = await checkpointEvidence(page, seed, baseline);",
+            checkpoint_start,
+        )
+        < checkpoint_guard
+    )
     special_positions = [
         webview.index(f'"{fixture_id}"', special_start, cells_start)
-        for fixture_id in ordered[:3]
+        for fixture_id in before_restart[:3]
     ]
     assert special_positions == sorted(special_positions)
-    assert (
-        'for (const period of ["1d", "1w", "60m"])'
-        in webview[cells_start:checkpoint_start]
-    )
+    assert 'for (const period of ["1d", "1w", "60m"])' in webview[cells_start:]
     assert 'await selectFixture("matrix_1d", "checkpoint-matrix-1d")' in webview
     assert "@('checkpoint-matrix-1d','matrix_1d')" in powershell
-    assert powershell.index("@('matrix_60m','matrix_60m')") < powershell.index(
-        "@('checkpoint-matrix-1d','matrix_1d')"
+    assert powershell.index("@('checkpoint-matrix-1d','matrix_1d')") < powershell.index(
+        "@('matrix_1w','matrix_1w')"
     )
 
 

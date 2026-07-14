@@ -410,8 +410,6 @@ try {
     @('open_position_costs_1d','open_position_costs_1d'),
     @('partial_pool_gap_1d','partial_pool_gap_1d'),
     @('matrix_1d','matrix_1d'),
-    @('matrix_1w','matrix_1w'),
-    @('matrix_60m','matrix_60m'),
     @('checkpoint-matrix-1d','matrix_1d')
   )) {
     $markerName = $fixtureRequest[0]
@@ -459,6 +457,20 @@ try {
   if ($sidecarAfterHash -ne $sidecarBinaryHash) { throw 'sidecar binary identity changed across restart' }
   $sidecarAfterPid = [int]$afterSidecars[0].Id
   Write-CaptureAck (Join-Path $restartSyncRoot 'restart-after.ack') $captureNonce
+  foreach ($fixtureRequest in @(
+    @('matrix_1w','matrix_1w'),
+    @('matrix_60m','matrix_60m')
+  )) {
+    $markerName = $fixtureRequest[0]
+    $fixtureId = $fixtureRequest[1]
+    $fixtureMarkerPath = Join-Path $restartSyncRoot "fixture-$markerName.json"
+    $fixtureMarker = Wait-CaptureMarker $fixtureMarkerPath $nodeProcess $captureNonce 300 "packaged fixture switch did not arrive after restart: $fixtureId"
+    if ($fixtureMarker.fixture_id -ne $fixtureId) { throw "packaged fixture switch identity is invalid after restart: $fixtureId" }
+    & $python (Join-Path $PSScriptRoot 'prepare_windows_packaged_backtest_evidence.py') `
+      --destination $packagedDataRoot --source-sha $SourceSha --source-tree $SourceTree --switch-fixture $fixtureId
+    if ($LASTEXITCODE -ne 0) { throw "packaged fixture switch failed after restart: $fixtureId" }
+    Write-CaptureAck (Join-Path $restartSyncRoot "fixture-$markerName.ack") $captureNonce
+  }
   Wait-Until { $nodeProcess.Refresh(); if ($nodeProcess.HasExited) { $true } else { $false } } 300 'packaged Tauri WebView evidence did not finish after restart observation' | Out-Null
   if ($nodeProcess.ExitCode -ne 0) {
     throw "packaged Tauri WebView evidence failed: $(Get-Content -LiteralPath $nodeStderr -Raw -ErrorAction SilentlyContinue)"
