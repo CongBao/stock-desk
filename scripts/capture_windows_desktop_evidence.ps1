@@ -95,21 +95,29 @@ function Remove-EvidenceDirectory([string]$Path) {
 
 function Test-IsolatedWebViewCommandLine([string]$CommandLine, [string]$UserDataFolder) {
   if ([string]::IsNullOrWhiteSpace($CommandLine)) { return $false }
-  foreach ($argument in @(
-    "--user-data-dir=$UserDataFolder",
-    "--user-data-dir=`"$UserDataFolder`""
+  # WebView2 appends EBWebView to an explicitly configured UDF. Accept only
+  # the configured root or that exact runtime-owned suffix; sibling and prefix
+  # paths must remain outside this evidence process scope.
+  foreach ($candidateUserDataFolder in @(
+    $UserDataFolder,
+    (Join-Path $UserDataFolder 'EBWebView')
   )) {
-    $offset = $CommandLine.IndexOf($argument, [StringComparison]::OrdinalIgnoreCase)
-    while ($offset -ge 0) {
-      $argumentEnd = $offset + $argument.Length
-      if ($argumentEnd -eq $CommandLine.Length -or [char]::IsWhiteSpace($CommandLine[$argumentEnd])) {
-        return $true
+    foreach ($argument in @(
+      "--user-data-dir=$candidateUserDataFolder",
+      "--user-data-dir=`"$candidateUserDataFolder`""
+    )) {
+      $offset = $CommandLine.IndexOf($argument, [StringComparison]::OrdinalIgnoreCase)
+      while ($offset -ge 0) {
+        $argumentEnd = $offset + $argument.Length
+        if ($argumentEnd -eq $CommandLine.Length -or [char]::IsWhiteSpace($CommandLine[$argumentEnd])) {
+          return $true
+        }
+        $offset = $CommandLine.IndexOf(
+          $argument,
+          $argumentEnd,
+          [StringComparison]::OrdinalIgnoreCase
+        )
       }
-      $offset = $CommandLine.IndexOf(
-        $argument,
-        $argumentEnd,
-        [StringComparison]::OrdinalIgnoreCase
-      )
     }
   }
   return $false

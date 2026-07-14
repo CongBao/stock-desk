@@ -107,9 +107,11 @@ def test_native_harness_installs_candidate_checks_shell_icons_and_exits_cleanly(
     assert "CommandLine -like '*--remote-debugging-port=*'" in source
     assert "CommandLine =" not in source
     assert "Get-IsolatedWebViewProcesses $webviewUserData" in source
-    assert "--user-data-dir=$UserDataFolder" in source
+    assert "Join-Path $UserDataFolder 'EBWebView'" in source
+    assert "--user-data-dir=$candidateUserDataFolder" in source
     assert "[StringComparison]::OrdinalIgnoreCase" in source
     assert "[char]::IsWhiteSpace($CommandLine[$argumentEnd])" in source
+    assert "StartsWith(" not in source
     assert "Get-EvidenceSidecarProcesses $baselineSidecarProcessIds" in source
     assert "Get-Process -Name 'stock-desk-sidecar'" in source
     assert "com.congbao.stockdesk" in source
