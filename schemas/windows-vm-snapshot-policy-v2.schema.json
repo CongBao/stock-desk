@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/CongBao/stock-desk/schemas/windows-vm-snapshot-policy-v2.schema.json",
+  "title": "Stock Desk protected Windows VM desktop acceptance policy v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "broker", "assignments"],
+  "properties": {
+    "schema": { "const": "stock-desk-windows-vm-snapshot-policy-v2" },
+    "broker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["identity", "oidc_audience", "lease_ttl_seconds", "restore_after_each_case", "raw_only"],
+      "properties": {
+        "identity": { "const": "stock-desk-ephemeral-windows-vm-broker-v1" },
+        "oidc_audience": { "const": "stock-desk-windows-installed-acceptance" },
+        "lease_ttl_seconds": { "type": "integer", "minimum": 2700, "maximum": 3600 },
+        "restore_after_each_case": { "const": true },
+        "raw_only": { "const": true }
+      }
+    },
+    "assignments": {
+      "type": "array",
+      "minItems": 11,
+      "maxItems": 11,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/assignment" }
+    }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "system": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["family", "display_version", "build_number", "update_build_revision", "architecture"],
+      "properties": {
+        "family": { "enum": ["windows-10", "windows-11"] },
+        "display_version": { "type": "string", "minLength": 1, "maxLength": 32 },
+        "build_number": { "type": "integer", "minimum": 1 },
+        "update_build_revision": { "type": "integer", "minimum": 0 },
+        "architecture": { "const": "x86_64" }
+      }
+    },
+    "failureInjection": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["identity", "sha256"],
+          "properties": {
+            "identity": { "const": "stock-desk-webview2-offline-install-failure-v1" },
+            "sha256": { "$ref": "#/$defs/sha256" }
+          }
+        }
+      ]
+    },
+    "assignment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case_id", "guest_profile", "controller_label", "scenario", "dpi_percent",
+        "snapshot_id", "snapshot_sha256", "image_sha256", "system",
+        "webview_initial_state", "failure_injection", "data_path", "network", "account",
+        "logical_window_sizes"
+      ],
+      "properties": {
+        "case_id": { "type": "string", "pattern": "^(win10-22h2|win11)-dpi-(100|125|150|175|200)(-webview-offline)?$" },
+        "guest_profile": { "enum": ["win10-22h2", "win11"] },
+        "controller_label": { "type": "string", "pattern": "^stock-desk-vm-controller-(win10-22h2|win11)$" },
+        "scenario": { "enum": ["installed-first-use", "webview-install-failure"] },
+        "dpi_percent": { "enum": [100, 125, 150, 175, 200] },
+        "snapshot_id": { "type": "string", "pattern": "^[A-Za-z0-9_.-]{1,128}$" },
+        "snapshot_sha256": { "$ref": "#/$defs/sha256" },
+        "image_sha256": { "$ref": "#/$defs/sha256" },
+        "system": { "$ref": "#/$defs/system" },
+        "webview_initial_state": { "enum": ["present", "absent"] },
+        "failure_injection": { "$ref": "#/$defs/failureInjection" },
+        "data_path": { "enum": ["primary", "primary-blocked-fallback"] },
+        "network": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["profile", "policy_sha256", "expected_provider"],
+          "properties": {
+            "profile": { "enum": ["normal", "primary-blocked", "webview-offline-fixed"] },
+            "policy_sha256": { "$ref": "#/$defs/sha256" },
+            "expected_provider": { "enum": ["akshare", "baostock", "none"] }
+          }
+        },
+        "account": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["account_type", "is_admin", "username_contains_non_ascii", "profile_path_contains_space"],
+          "properties": {
+            "account_type": { "const": "standard" },
+            "is_admin": { "const": false },
+            "username_contains_non_ascii": { "const": true },
+            "profile_path_contains_space": { "const": true }
+          }
+        },
+        "logical_window_sizes": {
+          "const": [
+            { "width": 1366, "height": 768 },
+            { "width": 640, "height": 360 }
+          ]
+        }
+      }
+    }
+  }
+}

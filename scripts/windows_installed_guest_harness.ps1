@@ -12,8 +12,38 @@ param(
   [string]$GuestProfile,
 
   [Parameter(Mandatory = $true)]
-  [ValidateSet('webview-preinstalled', 'webview-absent', 'webview-install-failure')]
+  [ValidateSet('installed-first-use', 'webview-install-failure')]
   [string]$Scenario,
+
+  [Parameter(Mandatory = $true)]
+  [string]$CaseId,
+
+  [Parameter(Mandatory = $true)]
+  [ValidateSet(100, 125, 150, 175, 200)]
+  [int]$DpiPercent,
+
+  [Parameter(Mandatory = $true)]
+  [ValidateSet('present', 'absent')]
+  [string]$WebViewInitialState,
+
+  [Parameter(Mandatory = $true)]
+  [ValidateSet('primary', 'primary-blocked-fallback')]
+  [string]$DataPath,
+
+  [Parameter(Mandatory = $true)]
+  [string]$UiaDriverPath,
+
+  [Parameter(Mandatory = $true)]
+  [string]$UiaDriverSha256,
+
+  [Parameter(Mandatory = $true)]
+  [string]$NetworkObservationPath,
+
+  [Parameter(Mandatory = $true)]
+  [string]$HardwareObservationPath,
+
+  [Parameter(Mandatory = $true)]
+  [string]$FilesystemObservationPath,
 
   [ValidateRange(1, 1)]
   [int]$ScenarioAttempt = 1,
@@ -823,9 +853,19 @@ foreach ($pair in @(
     @($CleanSnapshotSha256, 'clean snapshot digest'),
     @($SnapshotPolicySha256, 'snapshot policy digest'),
     @($ImageSha256, 'image digest'),
-    @($ActionsWorkflowSha256, 'workflow digest')
+    @($ActionsWorkflowSha256, 'workflow digest'),
+    @($UiaDriverSha256, 'UI Automation driver digest')
   )) {
   Assert-HexDigest -Value $pair[0] -Label $pair[1]
+}
+foreach ($requiredPath in @($UiaDriverPath, $NetworkObservationPath, $HardwareObservationPath, $FilesystemObservationPath)) {
+  Assert-RegularFile -Path $requiredPath -Label 'Protected desktop evidence input'
+}
+if ((Get-FileDigest -Path $UiaDriverPath) -cne $UiaDriverSha256) {
+  throw 'Executed UI Automation driver differs from the reviewed file'
+}
+if ($CaseId -cnotmatch '^(win10-22h2|win11)-dpi-(100|125|150|175|200)(-webview-offline)?$') {
+  throw 'Desktop evidence case identity is invalid'
 }
 if ((Get-FileDigest -Path $ControllerRequestPath) -ne $ControllerRequestSha256) {
   throw 'Controller request digest changed inside the guest'
@@ -840,11 +880,21 @@ if ($ActionsRunId -lt 1 -or $ActionsRunAttempt -ne 1 -or $ScenarioAttempt -ne 1)
 
 $request = Get-Content -LiteralPath $ControllerRequestPath -Raw | ConvertFrom-Json
 if (
-  $request.schema -ne 'stock-desk-windows-installed-controller-request-v1' -or
-  $request.evidence_kind -ne 'observed-windows-vm' -or
-  $request.status -ne 'awaiting-controller'
+  $request.schema -ne 'stock-desk-windows-installed-controller-request-v2' -or
+  $request.evidence_kind -ne 'observed-windows-vm'
 ) {
   throw 'Controller request is not an authorized observed-VM request'
+}
+if ($request.status -ne 'authorized' -or $request.raw_only -ne $true) {
+  throw 'Controller request is not an authorized raw-only VM request'
+}
+if (
+  $request.source_sha -ne $ActionsWorkflowSha -or
+  $request.case_ids -notcontains $CaseId -or
+  $request.guest_harness_sha256 -ne $GuestHarnessSha256 -or
+  $request.uia_driver_sha256 -ne $UiaDriverSha256
+) {
+  throw 'Controller request does not bind this exact source, case, guest harness, and UIA driver'
 }
 $controllerRoot = Split-Path -Parent $ControllerRequestPath
 $installerPath = [IO.Path]::GetFullPath((Join-Path $controllerRoot $request.installer.path))
@@ -900,9 +950,10 @@ Add-Observation -Kind 'account-token' -Producer 'windows-token' -Value ([ordered
   })
 
 $v1Root = Join-Path $env:LOCALAPPDATA 'stock-desk'
-New-Item -ItemType Directory -Path $v1Root -Force | Out-Null
 $canaryPath = Join-Path $v1Root 'v1.1-installed-acceptance-canary.txt'
-Write-Utf8NoBom -Path $canaryPath -Text "Stock Desk v1 legacy canary`n"
+if (-not (Test-Path -LiteralPath $canaryPath -PathType Leaf)) {
+  throw 'Protected clean snapshot lacks the pre-seeded legacy v1 canary'
+}
 $canaryBefore = Get-CanarySnapshot -Root $v1Root
 $webviewBefore = Get-WebViewRuntime
 Add-Observation -Kind 'webview-before' -Producer 'windows-registry-authenticode' -Value $webviewBefore
@@ -923,6 +974,9 @@ $script:BrowserWindowEvents = $null
 $script:BrowserObserverSummary = $null
 [StockDeskBrowserWindowObserver]::Start()
 Add-BrowserObservation -Phase 'baseline'
+if (@($script:BrowserTimeline[0].windows).Count -ne 0) {
+  throw 'Protected clean snapshot must have an empty external-browser baseline'
+}
 $installLogPath = Join-Path $rawRoot 'install.log'
 $installerProcess = Start-Process -FilePath $installerPath -ArgumentList '/S' -PassThru
 $installerToken = Get-ProcessTokenObservation -Role 'installer' -Process $installerProcess -Started $true
@@ -968,9 +1022,9 @@ $failureInjection = if ($Scenario -eq 'webview-install-failure') {
   Assert-HexDigest -Value $FailureInjectionSha256 -Label 'failure injection digest'
   [ordered]@{ identity = $FailureInjectionIdentity; sha256 = $FailureInjectionSha256 }
 } else { $null }
-if ($Scenario -eq 'webview-preinstalled' -and $webviewAttempted) { throw 'Preinstalled scenario launched a WebView2 child' }
-if ($Scenario -ne 'webview-preinstalled' -and -not $webviewAttempted) { throw 'Required WebView2 child process was not observed' }
-if ($Scenario -eq 'webview-absent' -and $webviewChildObservation.exit_code -ne 0) { throw 'WebView2 child installation failed unexpectedly' }
+if ($WebViewInitialState -eq 'present' -and $webviewAttempted) { throw 'Preinstalled scenario launched a WebView2 child' }
+if ($WebViewInitialState -eq 'absent' -and -not $webviewAttempted) { throw 'Required WebView2 child process was not observed' }
+if ($Scenario -eq 'installed-first-use' -and $WebViewInitialState -eq 'absent' -and $webviewChildObservation.exit_code -ne 0) { throw 'WebView2 child installation failed unexpectedly' }
 if ($Scenario -eq 'webview-install-failure' -and $webviewChildObservation.exit_code -eq 0) { throw 'Fixed WebView2 fault injection did not cause a child failure' }
 Add-Observation -Kind 'webview-installation' -Producer 'windows-process' -Value ([ordered]@{
     attempted = $webviewAttempted
@@ -1004,6 +1058,10 @@ $captureFileName = 'window.png'
 $capturePath = Join-Path $rawRoot $captureFileName
 $captureTextPath = $script:WebViewCaptureTextPath
 $failureDiagnosticPath = Join-Path $rawRoot 'failure-diagnostic.txt'
+$driverRoot = Join-Path $EvidenceRoot 'driver'
+$driverResult = $null
+$driverActionPath = Join-Path $driverRoot 'uia-actions.json'
+$driverTreePath = Join-Path $driverRoot 'uia-tree.json'
 
 if ($Scenario -ne 'webview-install-failure' -and $installExitCode -eq 0 -and $applicationFilesPresent) {
   $desktopProcess = Start-Process -FilePath $appPath -PassThru
@@ -1023,6 +1081,28 @@ if ($Scenario -ne 'webview-install-failure' -and $installExitCode -eq 0 -and $ap
   }
   $mainWindowCount = if ($desktopProcess.MainWindowHandle -ne [IntPtr]::Zero) { 1 } else { 0 }
   if ($mainWindowCount -eq 1) {
+    if (Test-Path -LiteralPath $driverRoot) { Remove-Item -LiteralPath $driverRoot -Recurse -Force }
+    $expectedProvider = if ($DataPath -eq 'primary-blocked-fallback') { 'baostock' } else { 'akshare' }
+    & $UiaDriverPath `
+      -WindowHandle ([long]$desktopProcess.MainWindowHandle) `
+      -ExpectedProcessId $desktopProcess.Id `
+      -ExpectedExecutableSha256 (Get-FileDigest -Path $appPath) `
+      -ExpectedDpiPercent $DpiPercent `
+      -DataPath $DataPath `
+      -ExpectedProvider $expectedProvider `
+      -NetworkObservationPath $NetworkObservationPath `
+      -OutputRoot $driverRoot
+    if ($LASTEXITCODE -ne 0) { throw 'Reviewed UI Automation driver failed' }
+    foreach ($driverFile in @((Join-Path $driverRoot 'driver-result.json'), $driverActionPath, $driverTreePath)) {
+      Assert-RegularFile -Path $driverFile -Label 'UI Automation driver output'
+    }
+    $driverResult = Get-Content -LiteralPath (Join-Path $driverRoot 'driver-result.json') -Raw | ConvertFrom-Json
+    if (
+      $driverResult.schema -ne 'stock-desk-windows-uia-driver-result-v1' -or
+      $driverResult.candidate.pid -ne $desktopProcess.Id -or
+      $driverResult.candidate.hwnd -ne [long]$desktopProcess.MainWindowHandle -or
+      $driverResult.uia.driver_sha256 -ne $UiaDriverSha256
+    ) { throw 'UI Automation driver output is not bound to the installed candidate' }
     Save-TargetWindowCapture -WindowHandle $desktopProcess.MainWindowHandle -Path $capturePath
     $uiaText = @(Get-WindowAutomationText -WindowHandle $desktopProcess.MainWindowHandle)
     $readyMarker = @($uiaText | Where-Object { $_ -match '(上证指数|000001(?:\.SS)?|欢迎使用|Welcome to|数据源|Data source)' } | Select-Object -First 1)
@@ -1089,6 +1169,16 @@ foreach ($browserEvent in $script:BrowserWindowEvents) {
 
 Add-Observation -Kind 'desktop-host-process-token' -Producer 'windows-process-token' -Value $desktopToken
 Add-Observation -Kind 'sidecar-process-token' -Producer 'windows-process-token' -Value $sidecarToken
+if ($Scenario -eq 'installed-first-use') {
+  Add-Observation -Kind 'hardware-observation' -Producer 'protected-vm-hardware-observer' -Value (Get-Content -LiteralPath $HardwareObservationPath -Raw | ConvertFrom-Json)
+  Add-Observation -Kind 'network-observation' -Producer 'protected-vm-network-observer' -Value (Get-Content -LiteralPath $NetworkObservationPath -Raw | ConvertFrom-Json)
+  Add-Observation -Kind 'display-observation' -Producer 'windows-uia-win32-driver' -Value $driverResult.display
+  Add-Observation -Kind 'first-use-journey' -Producer 'windows-uia-win32-driver' -Value $driverResult.journey
+  Add-Observation -Kind 'uia-matrix' -Producer 'windows-uia-win32-driver' -Value $driverResult.uia
+} else {
+  Add-Observation -Kind 'hardware-observation' -Producer 'protected-vm-hardware-observer' -Value (Get-Content -LiteralPath $HardwareObservationPath -Raw | ConvertFrom-Json)
+  Add-Observation -Kind 'network-observation' -Producer 'protected-vm-network-observer' -Value (Get-Content -LiteralPath $NetworkObservationPath -Raw | ConvertFrom-Json)
+}
 
 $uninstallerToken = [ordered]@{ role = 'uninstaller'; started = $false; elevated = $null; integrity_level = $null; integrity_rid = $null }
 $uninstallObservation = [ordered]@{
@@ -1112,6 +1202,7 @@ if ($Scenario -ne 'webview-install-failure' -and (Test-Path -LiteralPath $uninst
   }
 }
 Add-Observation -Kind 'uninstaller-process-token' -Producer 'windows-process-token' -Value $uninstallerToken
+Add-Observation -Kind 'filesystem-observation' -Producer 'protected-vm-filesystem-observer' -Value (Get-Content -LiteralPath $FilesystemObservationPath -Raw | ConvertFrom-Json)
 
 Add-Observation -Kind 'uac-observation' -Producer 'windows-event-observer' -Value ([ordered]@{
     uac_prompt_count = $script:UacPromptCount
@@ -1181,24 +1272,32 @@ if ($Scenario -eq 'webview-install-failure') {
     media_type = 'text/plain; charset=utf-8'
   }
 } else {
-  $records += [ordered]@{
-    kind = 'ui-automation-text'
-    path = 'raw/capture.txt'
-    sha256 = Get-FileDigest -Path $captureTextPath
-    size_bytes = (Get-Item -LiteralPath $captureTextPath).Length
-    media_type = 'text/plain; charset=utf-8'
+  $driverCopies = @(
+    @('uia-action-trace', $driverActionPath, 'uia-actions.json', 'application/json'),
+    @('uia-tree', $driverTreePath, 'uia-tree.json', 'application/json'),
+    @('focus-region-contact-sheet', (Join-Path $driverRoot 'focus-region-contact-sheet.png'), 'focus-region-contact-sheet.png', 'image/png'),
+    @('window-capture-standard', (Join-Path $driverRoot 'window-standard.png'), 'window-standard.png', 'image/png'),
+    @('window-capture-narrow', (Join-Path $driverRoot 'window-narrow.png'), 'window-narrow.png', 'image/png')
+  )
+  foreach ($copy in $driverCopies) {
+    Assert-RegularFile -Path $copy[1] -Label 'UI Automation public record'
+    $destination = Join-Path $rawRoot $copy[2]
+    Copy-Item -LiteralPath $copy[1] -Destination $destination
+    $records += [ordered]@{
+      kind = $copy[0]
+      path = "raw/$($copy[2])"
+      sha256 = Get-FileDigest -Path $destination
+      size_bytes = (Get-Item -LiteralPath $destination).Length
+      media_type = $copy[3]
+    }
   }
-  $records += [ordered]@{
-    kind = 'window-capture'
-    path = 'raw/window.png'
-    sha256 = Get-FileDigest -Path $capturePath
-    size_bytes = (Get-Item -LiteralPath $capturePath).Length
-    media_type = 'image/png'
-  }
+  Remove-Item -LiteralPath $captureTextPath -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $capturePath -Force -ErrorAction SilentlyContinue
 }
 $manifest = [ordered]@{
-  schema_version = 1
+  schema_version = 2
   artifact = 'windows-installed-raw-evidence'
+  case_id = $CaseId
   scenario = $Scenario
   identity = [ordered]@{
     source_sha = [string]$request.source_sha
@@ -1218,8 +1317,10 @@ $manifest = [ordered]@{
     run_attempt = $ActionsRunAttempt
     job_id = $ActionsJobId
     job_name = $ActionsJobName
+    matrix_case_id = $CaseId
     matrix_guest_profile = $GuestProfile
     matrix_scenario = $Scenario
+    matrix_dpi_percent = $DpiPercent
     matrix_controller_label = $ControllerLabel
     scenario_attempt = $ScenarioAttempt
     attempt_id = "$Scenario-first-$ActionsRunId"
@@ -1229,7 +1330,9 @@ $manifest = [ordered]@{
     completed_at_utc = $completedAt
     guest_profile = $GuestProfile
     controller_label = $ControllerLabel
+    dpi_percent = $DpiPercent
     guest_harness_sha256 = $guestSelfSha256
+    uia_driver_sha256 = $UiaDriverSha256
     controller_request_sha256 = $ControllerRequestSha256
     snapshot_policy_sha256 = $SnapshotPolicySha256
     clean_snapshot_sha256 = $CleanSnapshotSha256
@@ -1237,7 +1340,7 @@ $manifest = [ordered]@{
     webview_product_guid = $WebView2ProductionGuid
     minimum_webview_version = $MinimumWebView2Version.ToString()
     failure_injection = $failureInjection
-    browser_window_observer = $script:BrowserObserverSummary
+    data_path = $DataPath
     redaction_version = 'stock-desk-public-redaction-v2'
   }
   records = $records
