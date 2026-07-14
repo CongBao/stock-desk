@@ -256,9 +256,9 @@ def test_packaged_backtest_matrix_uses_webview_host_ipc_and_new_worker_resume() 
     runtime_ready = source.index(
         "const runtimeBefore = await waitForRuntimeReady(page)"
     )
-    backlog = source.index("const submissions = await Promise.all", runtime_ready)
+    backlog = source.index("const submissions = []", runtime_ready)
     submission = source.index(
-        'invoke(page, "POST", "/api/backtests", request)', backlog
+        'await invoke(page, "POST", "/api/backtests", request)', backlog
     )
     observed = source.index("await waitForCheckpointBacklog", backlog)
     shutdown = source.index(
@@ -267,9 +267,18 @@ def test_packaged_backtest_matrix_uses_webview_host_ipc_and_new_worker_resume() 
     paused = source.index("const pausedTasks", shutdown)
     running = source.index("const running = pausedTasks[0]", paused)
     assert runtime_ready < backlog < submission < observed < shutdown < paused < running
-    assert "Array.from({ length: 64 }" in source[backlog:observed]
+    assert "for (let index = 0; index < 64; index += 1)" in source[backlog:observed]
+    assert "Promise.all" not in source[backlog:observed]
     assert "100-row bound" in source[backlog:observed]
     assert "taskIds.size !== submissions.length" in source[backlog:observed]
+    backlog_helper = source.index("async function waitForCheckpointBacklog")
+    backlog_helper_end = source.index("async function waitForCheckpointBacklogSuccess")
+    assert 'item.status === "running"' in source[backlog_helper:backlog_helper_end]
+    assert 'item.status === "queued"' in source[backlog_helper:backlog_helper_end]
+    assert (
+        "running.length === 1 && queued.length >= 8"
+        in source[backlog_helper:backlog_helper_end]
+    )
     assert "checkpoint.running !== 1" in source[shutdown:paused]
     assert 'item.status === "running"' in source[paused:running]
     assert "pausedTasks.length !== 1" in source[paused:running]

@@ -140,7 +140,9 @@ async function waitForCheckpointBacklog(page, taskIds, timeout = 10_000) {
   while (Date.now() < deadline) {
     latest = await invoke(page, "GET", "/api/tasks?limit=100");
     const selected = latest.filter((item) => taskIds.has(item.id));
-    if (selected.some((item) => item.status === "running")) return selected;
+    const running = selected.filter((item) => item.status === "running");
+    const queued = selected.filter((item) => item.status === "queued");
+    if (running.length === 1 && queued.length >= 8) return selected;
     if (
       selected.length === taskIds.size &&
       selected.every((item) =>
@@ -152,7 +154,7 @@ async function waitForCheckpointBacklog(page, taskIds, timeout = 10_000) {
     await page.waitForTimeout(10);
   }
   throw new Error(
-    `packaged checkpoint backlog did not expose a running task: ${JSON.stringify(latest)}`,
+    `packaged checkpoint backlog did not expose one running and eight queued tasks: ${JSON.stringify(latest)}`,
   );
 }
 
@@ -414,18 +416,18 @@ async function checkpointEvidence(page, seed, baseline) {
   const request = intent(seed, "custom", "pool", "1d");
   const runtimeBefore = await waitForRuntimeReady(page);
   // A two-symbol packaged run can finish before WebView polling observes its
-  // transient `running` state. Queue identical real runs concurrently so the
-  // single packaged Worker has a deterministic backlog, then let the
-  // production shutdown barrier identify the task it actually paused. This
-  // preserves a real in-flight checkpoint instead of treating a fast terminal
-  // task as equivalent evidence.
-  const submissions = await Promise.all(
-    // Eight earlier evidence tasks plus this backlog and eight later matrix
-    // tasks remain below the authenticated task endpoint's 100-row bound.
-    Array.from({ length: 64 }, () =>
-      invoke(page, "POST", "/api/backtests", request),
-    ),
-  );
+  // transient `running` state. Queue identical real runs serially so the
+  // single packaged Worker has a deterministic backlog without turning this
+  // evidence probe into a concurrent write load test. Then let the production
+  // shutdown barrier identify the task it actually paused. This preserves a
+  // real in-flight checkpoint instead of treating a fast terminal task as
+  // equivalent evidence.
+  const submissions = [];
+  // Eight earlier evidence tasks plus this backlog and eight later matrix
+  // tasks remain below the authenticated task endpoint's 100-row bound.
+  for (let index = 0; index < 64; index += 1) {
+    submissions.push(await invoke(page, "POST", "/api/backtests", request));
+  }
   const taskIds = new Set(submissions.map((item) => item.task_id));
   if (taskIds.size !== submissions.length) {
     throw new Error("packaged checkpoint backlog reused a task identity");
