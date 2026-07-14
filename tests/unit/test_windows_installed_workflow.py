@@ -498,6 +498,80 @@ def test_environment_policy_rejects_every_identity_policy_and_runner_expansion()
             )
 
 
+@pytest.mark.parametrize(
+    "reviewer_rules",
+    [
+        [],
+        [
+            {
+                "type": "required_reviewers",
+                "prevent_self_review": False,
+                "reviewers": [{"type": "User", "reviewer": {"id": 42}}],
+            }
+        ],
+        [
+            {
+                "type": "required_reviewers",
+                "prevent_self_review": True,
+                "reviewers": [],
+            }
+        ],
+        [
+            {
+                "type": "required_reviewers",
+                "prevent_self_review": True,
+                "reviewers": [{"type": "App", "reviewer": {"id": 42}}],
+            }
+        ],
+        [
+            {
+                "type": "required_reviewers",
+                "prevent_self_review": True,
+                "reviewers": [{"type": "Team", "reviewer": {"id": True}}],
+            }
+        ],
+        [
+            {
+                "type": "required_reviewers",
+                "prevent_self_review": True,
+                "reviewers": [{"type": "User", "reviewer": {"id": 42}}],
+            },
+            {
+                "type": "required_reviewers",
+                "prevent_self_review": True,
+                "reviewers": [{"type": "Team", "reviewer": {"id": 84}}],
+            },
+        ],
+    ],
+    ids=(
+        "missing",
+        "self-review-enabled",
+        "empty",
+        "invalid-type",
+        "invalid-id",
+        "duplicate-rule",
+    ),
+)
+def test_environment_policy_requires_one_non_self_reviewer_rule(
+    reviewer_rules: list[dict[str, object]],
+) -> None:
+    valid = _valid_environment()
+    valid["protection_rules"] = [
+        {"id": 1, "node_id": "BP_x", "type": "branch_policy"},
+        *reviewer_rules,
+    ]
+    with pytest.raises(EnvironmentPolicyError, match="reviewer"):
+        verify_environment_policy(
+            valid,
+            branch_policies={
+                "total_count": 1,
+                "branch_policies": [{"name": "main", "type": "branch"}],
+            },
+            runners={"total_count": 0, "runners": []},
+            repository="CongBao/stock-desk",
+        )
+
+
 def test_environment_bootstrap_preserves_reviewers_and_disables_bypass() -> None:
     payload = bootstrap_payload(_valid_environment())
     assert payload["can_admins_bypass"] is False
