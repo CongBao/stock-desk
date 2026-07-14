@@ -124,6 +124,58 @@ it('shows an ignorable non-blocking notice and requires explicit confirmation', 
   expect(screen.queryByRole('status')).not.toBeInTheDocument();
 });
 
+it('retries a previously verified install without checking or downloading again', async () => {
+  const user = userEvent.setup();
+  const confirmUpdate = vi.fn(() => Promise.resolve());
+  const checkForUpdates = vi.fn(() =>
+    Promise.resolve({ state: 'idle', current_version: '1.1.0' }),
+  );
+  const desktopAdapter = adapter({
+    checkForUpdates,
+    confirmUpdate,
+    getUpdateState: vi.fn(() =>
+      Promise.resolve({
+        state: 'ready_to_install',
+        current_version: '1.1.0',
+        version: '1.2.0',
+      }),
+    ),
+  });
+  render(<DesktopUpdateNotice bridge={createDesktopBridge(desktopAdapter)} />);
+
+  expect(await screen.findByRole('status')).toHaveTextContent(
+    '更新 1.2.0 已验证',
+  );
+  await user.click(screen.getByRole('button', { name: '重新尝试安装' }));
+
+  await waitFor(() => expect(confirmUpdate).toHaveBeenCalledOnce());
+  expect(checkForUpdates).not.toHaveBeenCalled();
+});
+
+it('keeps a host-retained verified installer retryable after a failed handoff', async () => {
+  const user = userEvent.setup();
+  const ready = {
+    state: 'ready_to_install',
+    current_version: '1.1.0',
+    version: '1.2.0',
+  } as const;
+  const getUpdateState = vi
+    .fn()
+    .mockResolvedValueOnce(ready)
+    .mockResolvedValueOnce(ready);
+  const desktopAdapter = adapter({
+    confirmUpdate: vi.fn(() => Promise.reject(new Error('handoff failed'))),
+    getUpdateState,
+  });
+  render(<DesktopUpdateNotice bridge={createDesktopBridge(desktopAdapter)} />);
+
+  await user.click(await screen.findByRole('button', { name: '重新尝试安装' }));
+
+  await waitFor(() => expect(getUpdateState).toHaveBeenCalledTimes(2));
+  expect(screen.getByRole('button', { name: '重新尝试安装' })).toBeEnabled();
+  expect(screen.getByRole('status')).toHaveTextContent('更新 1.2.0 已验证');
+});
+
 it('does not let a stale initial state replace a newer subscribed event', async () => {
   const initial = deferred<unknown>();
   const checkForUpdates = vi.fn(() =>

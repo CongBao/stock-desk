@@ -213,6 +213,30 @@ function TauriDesktopUpdateNotice({
     }
   }
 
+  async function retryVerifiedInstall() {
+    if (actionPending || state?.state !== 'ready_to_install') return;
+    setActionPending(true);
+    try {
+      await bridge.confirmUpdate();
+    } catch {
+      try {
+        // The host may retain the exact verified installer after a sidecar or
+        // launch failure. Re-read its authoritative state instead of replacing
+        // a retryable ReadyToInstall capability with a local terminal error.
+        setState(await bridge.getUpdateState());
+      } catch {
+        setState({
+          state: 'failed',
+          currentVersion: state.currentVersion,
+          code: 'desktop_updater_install_retry_failed',
+          canRetry: false,
+        });
+      }
+    } finally {
+      setActionPending(false);
+    }
+  }
+
   async function openDiagnostics() {
     if (actionPending) return;
     setActionPending(true);
@@ -255,6 +279,23 @@ function TauriDesktopUpdateNotice({
                 onClick={() => setConfirmationOpen(true)}
               >
                 查看并安装
+              </button>
+            </div>
+          </>
+        ) : state.state === 'ready_to_install' ? (
+          <>
+            <div>
+              <strong>更新 {state.version} 已验证</strong>
+              <p>安装尚未启动；当前版本和本地数据保持不变。</p>
+            </div>
+            <div className="desktop-update-actions">
+              <button
+                ref={installTriggerRef}
+                type="button"
+                disabled={actionPending}
+                onClick={() => void retryVerifiedInstall()}
+              >
+                {actionPending ? '正在请求…' : '重新尝试安装'}
               </button>
             </div>
           </>

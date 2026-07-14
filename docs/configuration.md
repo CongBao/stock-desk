@@ -23,6 +23,16 @@ external browser.
 The legacy v1 tree is deliberately outside the v1.1 ownership boundary. v1.1
 does not read, migrate, modify, or delete `%LOCALAPPDATA%\stock-desk`.
 
+Updater runtime records, when a future signed release formally enables them,
+live only under `%LOCALAPPDATA%\Stock Desk\v1.1\updater`. The host owns
+`pending-install.json`, `failed-install.json`, `installed-watermark.json`, and
+the locked `staging` directory; they are not user-editable settings. A pending
+record advances to an installed watermark only when the next binary starts with
+the exact expected version and source revision. A failed handoff keeps durable
+retry evidence while leaving the current program and user data unchanged. The
+checked-in runtime configuration is currently disabled and
+cannot be overridden by `.env`, command-line input, or WebView state.
+
 ### Version-specific native paths
 
 | Version and platform | Per-user data directory |

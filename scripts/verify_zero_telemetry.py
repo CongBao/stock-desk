@@ -23,6 +23,7 @@ REQUIRED_TAURI_JSON: Final = (
     "src-tauri/capabilities/default.json",
 )
 PRIVACY_POLICY_PATH: Final = "config/desktop-network-privacy.json"
+UPDATER_RUNTIME_CONFIG_PATH: Final = "config/tauri-updater-runtime.json"
 PRODUCTION_ROOTS: Final = ("src/stock_desk", "src-tauri/src", "web/src")
 _NETWORK_EXACT_PATHS: Final = {
     "python": (
@@ -45,6 +46,7 @@ _NETWORK_EXACT_PATHS: Final = {
         "src-tauri/src/exit.rs",
         "src-tauri/src/proxy.rs",
         "src-tauri/src/updater.rs",
+        "src-tauri/src/updater_transport.rs",
     ),
     "web": ("web/src/shared/api/client.ts",),
 }
@@ -82,6 +84,16 @@ EXPECTED_PRIVACY_POLICY: Final = {
             },
         }
     },
+}
+EXPECTED_UPDATER_RUNTIME_CONFIG: Final = {
+    "schema_version": 1,
+    "enabled": False,
+    "channel": "stable",
+    "endpoint": "https://github.com/CongBao/stock-desk/releases/latest/download/latest.json",
+    "target": "windows-x86_64-nsis",
+    "arch": "x86_64",
+    "public_key": None,
+    "public_key_sha256": None,
 }
 _FORBIDDEN_SDK = re.compile(
     r"(?i)(?:@sentry/|\bsentry[_-]sdk\b|\bposthog\b|\bopentelemetry\b|"
@@ -483,11 +495,18 @@ def _rust_without_comments(source: str) -> str:
 def _validate_updater_foundation(root: Path, violations: list[str]) -> None:
     cargo_path = root / "src-tauri/Cargo.toml"
     updater_path = root / "src-tauri/src/updater.rs"
+    runtime_config_path = root / UPDATER_RUNTIME_CONFIG_PATH
     main_path = root / "src-tauri/src/main.rs"
     web_package_path = root / "web/package.json"
     try:
         cargo = tomllib.loads(cargo_path.read_text(encoding="utf-8", errors="strict"))
         updater_source = updater_path.read_text(encoding="utf-8", errors="strict")
+        if not runtime_config_path.is_file() or runtime_config_path.is_symlink():
+            raise ValueError("unsafe updater runtime config")
+        runtime_config = json.loads(
+            runtime_config_path.read_text(encoding="utf-8", errors="strict"),
+            object_pairs_hook=_unique_json_object,
+        )
         main_source = main_path.read_text(encoding="utf-8", errors="strict")
         web_package = json.loads(
             web_package_path.read_text(encoding="utf-8", errors="strict"),
@@ -503,6 +522,9 @@ def _validate_updater_foundation(root: Path, violations: list[str]) -> None:
         violations.append("invalid-trusted-updater-foundation")
         return
 
+    if runtime_config != EXPECTED_UPDATER_RUNTIME_CONFIG:
+        violations.append("invalid-trusted-updater-runtime-config")
+
     dependency = cargo.get("dependencies", {}).get("tauri-plugin-updater")
     if dependency != {
         "version": "=2.10.1",
@@ -514,20 +536,23 @@ def _validate_updater_foundation(root: Path, violations: list[str]) -> None:
         violations.append("invalid-trusted-updater-signature-dependency")
     rust_code = _rust_without_comments(updater_source)
     required_source_contracts = (
-        r"pub\s+const\s+UPDATE_RUNTIME_ENABLED\s*:\s*bool\s*=\s*false\s*;",
         r'pub\s+const\s+UPDATE_TARGET\s*:\s*&str\s*=\s*"windows-x86_64-nsis"\s*;',
         r'pub\s+const\s+UPDATE_ARCH\s*:\s*&str\s*=\s*"x86_64"\s*;',
         r'pub\s+const\s+UPDATE_ENDPOINT\s*:\s*&str\s*=\s*"https://github\.com/CongBao/stock-desk/releases/latest/download/latest\.json"\s*;',
-        r"const\s+_\s*:\s*\(\)\s*=\s*assert!\s*\(\s*!UPDATE_RUNTIME_ENABLED\s*\)\s*;",
         r'const\s+CURRENT_VERSION\s*:\s*&str\s*=\s*env!\s*\(\s*"CARGO_PKG_VERSION"\s*\)\s*;',
-        r"const\s+TRUSTED_TAURI_PUBLIC_KEY\s*:\s*Option\s*<\s*&str\s*>\s*=\s*None\s*;",
+        r'const\s+RUNTIME_CONFIG_JSON\s*:\s*&str\s*=\s*include_str!\s*\(\s*"\.\./\.\./config/tauri-updater-runtime\.json"\s*\)\s*;',
+        r"struct\s+RuntimeConfig\b",
+        r"fn\s+runtime_config\b",
         r"tauri_plugin_updater::Builder::new\(\)\.build\(\)",
-        r"verify_downloaded_candidate\(",
+        r"fetch_release_candidate\(",
+        r"download_trusted_asset\(",
         r"PublicKey::decode",
-        r"verify_authenticode\(installer_path\)",
+        r"updater_windows::verify_authenticode",
+        r"updater_windows::launch_verified_installer",
+        r"updater_journal::persist_pending_install",
         "InstalledWatermark",
         "verified_pending",
-        "installed-watermark.json",
+        "INSTALLED_WATERMARK_FILE",
     )
     if any(
         re.search(contract, rust_code, re.DOTALL) is None
@@ -535,8 +560,8 @@ def _validate_updater_foundation(root: Path, violations: list[str]) -> None:
     ):
         violations.append("invalid-trusted-updater-runtime-contract")
     command_contracts = (
-        r"pub\s+fn\s+desktop_check_for_updates\b[\s\S]*?if\s*!UPDATE_RUNTIME_ENABLED\s*\{\s*return\s+Ok\(machine\.state\(\)\.clone\(\)\);\s*\}",
-        r"pub\s+fn\s+desktop_confirm_update\b[\s\S]*?gate_native_confirmation\s*\(\s*UPDATE_RUNTIME_ENABLED\s*,",
+        r"pub\s+async\s+fn\s+desktop_check_for_updates\b[\s\S]*?if\s*!controller\.config\.enabled\s*\{\s*return\s+desktop_update_state\(app\);\s*\}",
+        r"pub\s+async\s+fn\s+desktop_confirm_update\b[\s\S]*?gate_native_confirmation\s*\(\s*controller\.config\.enabled\s*,",
         r"fn\s+gate_native_confirmation\b[\s\S]*?if\s*!enabled\s*\{\s*return\s+Err\(\"desktop_updater_disabled\"\);\s*\}",
     )
     if any(re.search(contract, rust_code) is None for contract in command_contracts):
@@ -544,8 +569,14 @@ def _validate_updater_foundation(root: Path, violations: list[str]) -> None:
     if "VerificationOutcome" in updater_source or "true, true, true" in updater_source:
         violations.append("claimable-trusted-updater-outcome")
     if (
+        "updater_builder(" in rust_code
+        or "fetch_and_bind_official_update(" in rust_code
+    ):
+        violations.append("unbounded-secondary-updater-transport")
+    if (
         "PathBuf::new()" in updater_source
         or "verified-watermark.json" in updater_source
+        or 'std::env::var("STOCK_DESK_UPDATER' in updater_source
     ):
         violations.append("unsafe-trusted-updater-state-path")
     if ".plugin(updater::plugin())" not in main_source:

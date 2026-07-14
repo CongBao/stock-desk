@@ -10,8 +10,10 @@ import pytest
 
 from scripts.verify_zero_telemetry import (
     EXPECTED_PRIVACY_POLICY,
+    EXPECTED_UPDATER_RUNTIME_CONFIG,
     MANIFESTS,
     PRODUCTION_ROOTS,
+    UPDATER_RUNTIME_CONFIG_PATH,
     ZeroTelemetryError,
     audit_repository,
     verify_repository,
@@ -66,24 +68,27 @@ def _minimal_repository(root: Path) -> None:
         )
     updater = root / "src-tauri/src/updater.rs"
     updater.write_text(
-        "pub const UPDATE_RUNTIME_ENABLED: bool = false;\n"
         'pub const UPDATE_TARGET: &str = "windows-x86_64-nsis";\n'
         'pub const UPDATE_ARCH: &str = "x86_64";\n'
         'const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");\n'
-        "const TRUSTED_TAURI_PUBLIC_KEY: Option<&str> = None;\n"
-        "const _: () = assert!(!UPDATE_RUNTIME_ENABLED);\n"
+        'const RUNTIME_CONFIG_JSON: &str = include_str!("../../config/tauri-updater-runtime.json");\n'
         'pub const UPDATE_ENDPOINT: &str = "https://github.com/CongBao/stock-desk/releases/latest/download/latest.json";\n'
+        "struct RuntimeConfig { enabled: bool }\n"
+        "fn runtime_config() { let _ = RUNTIME_CONFIG_JSON; }\n"
         "struct InstalledWatermark;\n"
-        'const STATE: &str = "installed-watermark.json";\n'
+        'const INSTALLED_WATERMARK_FILE: &str = "installed-watermark.json";\n'
         "fn pending() { let _ = verified_pending; }\n"
-        'fn verify_downloaded_candidate() { let _ = PublicKey::decode(""); '
-        "let _ = verify_authenticode(installer_path); }\n"
+        'fn verify() { let _ = PublicKey::decode(""); '
+        "updater_windows::verify_authenticode(); "
+        "updater_windows::launch_verified_installer(); "
+        "updater_journal::persist_pending_install(); }\n"
+        "fn fetch_release_candidate() {}\n"
+        "fn download_trusted_asset() {}\n"
         "fn plugin() { tauri_plugin_updater::Builder::new().build(); }\n"
-        "pub fn desktop_check_for_updates() { let machine = state(); "
-        "if !UPDATE_RUNTIME_ENABLED { return Ok(machine.state().clone()); } "
-        'Err("desktop_updater_trust_not_activated".to_owned()) }\n'
-        "pub fn desktop_confirm_update() { gate_native_confirmation("
-        "UPDATE_RUNTIME_ENABLED, || request_host_native_confirmation()); }\n"
+        "pub async fn desktop_check_for_updates(app: AppHandle) { let controller = state(); "
+        "if !controller.config.enabled { return desktop_update_state(app); } }\n"
+        "pub async fn desktop_confirm_update() { let controller = state(); "
+        "gate_native_confirmation(controller.config.enabled, || prompt()); }\n"
         "fn gate_native_confirmation(enabled: bool) { if !enabled { "
         'return Err("desktop_updater_disabled"); } }\n',
         encoding="utf-8",
@@ -101,6 +106,10 @@ def _minimal_repository(root: Path) -> None:
     policy = root / "config/desktop-network-privacy.json"
     policy.parent.mkdir(parents=True, exist_ok=True)
     policy.write_text(json.dumps(PRIVACY_POLICY), encoding="utf-8")
+    runtime_config = root / UPDATER_RUNTIME_CONFIG_PATH
+    runtime_config.write_text(
+        json.dumps(EXPECTED_UPDATER_RUNTIME_CONFIG), encoding="utf-8"
+    )
     tauri_config = root / "src-tauri/tauri.conf.json"
     tauri_config.write_text("{}\n", encoding="utf-8")
     windows_config = root / "src-tauri/tauri.windows.conf.json"
@@ -118,9 +127,9 @@ def test_current_locked_application_has_no_telemetry_or_crash_sdk() -> None:
     ("original", "replacement", "commented_contract", "expected"),
     [
         (
-            "pub const UPDATE_RUNTIME_ENABLED: bool = false;",
-            "pub const UPDATE_RUNTIME_ENABLED: bool = true;",
-            "// pub const UPDATE_RUNTIME_ENABLED: bool = false;",
+            'include_str!("../../config/tauri-updater-runtime.json")',
+            'include_str!("../../config/untrusted.json")',
+            '// include_str!("../../config/tauri-updater-runtime.json")',
             "runtime-contract",
         ),
         (
@@ -130,9 +139,9 @@ def test_current_locked_application_has_no_telemetry_or_crash_sdk() -> None:
             "runtime-contract",
         ),
         (
-            "if !UPDATE_RUNTIME_ENABLED { return Ok(machine.state().clone()); }",
-            "if UPDATE_RUNTIME_ENABLED { return Ok(machine.state().clone()); }",
-            "// if !UPDATE_RUNTIME_ENABLED { return Ok(machine.state().clone()); }",
+            "if !controller.config.enabled { return desktop_update_state(app); }",
+            "if controller.config.enabled { return desktop_update_state(app); }",
+            "// if !controller.config.enabled { return desktop_update_state(app); }",
             "command-guard",
         ),
     ],
@@ -274,6 +283,11 @@ def test_missing_manifest_or_source_symlink_fails_closed(tmp_path: Path) -> None
             "src-tauri/tauri.conf.json",
             '[{"updater": {"endpoints": [], "pubkey": ""}}]\n',
             "updater-enabled",
+        ),
+        (
+            UPDATER_RUNTIME_CONFIG_PATH,
+            json.dumps({**EXPECTED_UPDATER_RUNTIME_CONFIG, "enabled": True}),
+            "updater-runtime-config",
         ),
     ],
 )

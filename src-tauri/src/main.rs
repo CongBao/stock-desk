@@ -9,6 +9,9 @@ mod proxy;
 mod sidecar;
 mod uninstall;
 mod updater;
+mod updater_journal;
+mod updater_transport;
+mod updater_windows;
 mod windows_job;
 
 fn focus_main_window(app: &tauri::AppHandle) {
