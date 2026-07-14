@@ -51,7 +51,7 @@ Windows 10/11 实机证据和正式发布契约未全部通过前，它不会联
 
 当前源码中的下一候选卸载器可由用户明确选择是否删除 **仅 v1.1** 的本地数据；取消删除或删除失败都会继续保留数据，旧版 v1 数据不在该操作范围内。已发布的 beta.2 不因源码更新而被重新声明为具备此行为。
 
-当前源码还提供真实 Windows 10/11 普通用户安装的[原始证据 schema、独立验证器与隔离控制器参考合约](docs/windows-installed-evidence.md)。仓库仍禁止持久化 self-hosted runner，现有 workflow 尚未接入外部短生命周期 VM adapter/JIT 服务，因此只会 fail closed，不能生成通过回执。这不代表安装或完整旅程验收已通过，也不改变 beta.2 的测试版状态。
+当前源码还提供真实 Windows 10/11 普通用户安装的[原始证据 schema、独立验证器与隔离控制器参考合约](docs/windows-installed-evidence.md)。仓库仍禁止持久化 self-hosted runner；workflow 已接入 fail-closed 的外部短生命周期 VM broker/JIT adapter 接口和十一项矩阵聚合，但外部 broker/HSM、受保护环境、生产凭据及真实 VM 运行证据尚未配置，因此不能生成通过回执。这不代表安装或完整旅程验收已通过，也不改变 beta.2 的测试版状态。
 
 ## 使用文档
 

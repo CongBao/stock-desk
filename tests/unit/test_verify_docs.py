@@ -2555,8 +2555,15 @@ Restore each deployment with its recorded identity.
 
 ## Native installers
 
+### v1.1 Windows desktop
+
+Windows uses `%LOCALAPPDATA%\\Stock Desk\\v1.1` and does not require an
+external browser. The key is `config/master.key`.
+
+### Historical v1.0 installers
+
 Windows uses `%LOCALAPPDATA%\\stock-desk`; macOS uses
-`~/Library/Application Support/stock-desk`; the key is `config/master.key`.
+`~/Library/Application Support/stock-desk`.
 
 ## Source development
 
@@ -4262,8 +4269,11 @@ def test_repository_contract_requires_desktop_topology_and_attestation_guidance(
         "docs/architecture.md": ("v1.1 Windows desktop topology",),
         "docs/configuration.md": (
             "Native installers",
+            "v1.1 Windows desktop",
+            "%LOCALAPPDATA%\\Stock Desk\\v1.1",
             "%LOCALAPPDATA%\\stock-desk",
             "~/Library/Application Support/stock-desk",
+            "external browser",
             "config/master.key",
         ),
     }
@@ -4278,8 +4288,11 @@ def test_repository_contract_requires_desktop_topology_and_attestation_guidance(
 
     for expected in (
         "Native installers",
+        "v1.1 Windows desktop",
+        "%LOCALAPPDATA%\\Stock Desk\\v1.1",
         "%LOCALAPPDATA%\\stock-desk",
         "~/Library/Application Support/stock-desk",
+        "external browser",
         "config/master.key",
     ):
         assert any(expected in failure for failure in failures), expected

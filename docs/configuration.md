@@ -7,34 +7,54 @@ override file values. Never commit `.env`, keys, credentials, data, or backups.
 
 ## Native installers
 
-The source-free Windows and macOS applications require no Python, Node.js,
-source checkout, or operator-managed `.env`. On first launch, the frozen parent
-launcher creates an OS-private per-user data tree and generates a Fernet key at
-`config/master.key` within that tree:
+Native applications require no Python, Node.js, source checkout, Docker, or
+operator-managed `.env`. Their mutable data is always separate from installed
+program files, but the exact directory and launch topology are version-specific.
 
-| Platform | Per-user data directory |
+### v1.1 Windows desktop
+
+The source-free v1.1 Windows x64 application stores all mutable state under
+`%LOCALAPPDATA%\Stock Desk\v1.1`. On first launch, the Tauri host creates that
+private per-user tree and generates a Fernet key at `config/master.key` within
+it. The host loads bundled React assets in WebView2, starts the bundled API and
+Worker sidecar on a random loopback port, and does not open or require an
+external browser.
+
+The legacy v1 tree is deliberately outside the v1.1 ownership boundary. v1.1
+does not read, migrate, modify, or delete `%LOCALAPPDATA%\stock-desk`.
+
+### Version-specific native paths
+
+| Version and platform | Per-user data directory |
 | --- | --- |
-| Windows | `%LOCALAPPDATA%\stock-desk` |
-| macOS | `~/Library/Application Support/stock-desk` |
+| Windows v1.1 | `%LOCALAPPDATA%\Stock Desk\v1.1` |
+| Windows v1.0 | `%LOCALAPPDATA%\stock-desk` |
+| macOS v1.0 | `~/Library/Application Support/stock-desk` |
+
+### Historical v1.0 installers
+
+The stable v1.0 Windows and macOS installers use the historical paths in the
+table above and open the local workspace in an external browser.
 
 The data directory contains `stock-desk.db`, market objects, `config/master.key`,
 `logs/stock-desk.log`, and runtime coordination under `runtime/`. POSIX modes or
-Windows ACLs restrict the directories and key to the current user. The launcher
-passes the generated key, database, data, and bundled web paths directly to its
-API and worker children; users do not set `STOCK_DESK_MASTER_KEY` for this
+Windows ACLs restrict the directories and key to the current user. Packaged
+launchers pass the generated key, database, data, and bundled web paths directly
+to their API and Worker; users do not set `STOCK_DESK_MASTER_KEY` for a native
 profile.
 
-Each launch reserves a random available port on `127.0.0.1`, starts one API child
-and one worker child, writes the current port to `runtime/runtime.json`, and opens
-the browser. The port is intentionally not 8000 and may change on the next
-launch. One desktop instance is allowed per user.
+Each launch reserves a random available port on `127.0.0.1`; the port is
+intentionally not 8000 and may change on the next launch. One desktop instance
+is allowed per user. In v1.1 the loopback endpoint is private sidecar plumbing
+behind the Tauri host proxy, not a browser entry point.
 
-Protect the whole per-user directory and back up `config/master.key` separately
-from encrypted data. Losing the key makes saved provider ciphertext unreadable.
-The native installers do not bundle the source-tree backup/restore operator CLI.
-The complete workflow is unsupported on native Windows filesystems in this
-release unless a later release adds and verifies a frozen native command. See
-[backup and restore](backup-and-restore.md).
+Protect the whole directory for the exact installed version and back up
+`config/master.key` separately from encrypted data. For v1.1 that means
+`%LOCALAPPDATA%\Stock Desk\v1.1`, not the lowercase v1 path. Losing the key makes
+saved provider ciphertext unreadable. Native installers do not bundle the
+source-tree backup/restore operator CLI. The complete workflow is unsupported
+on native Windows filesystems in this release unless a later release adds and
+verifies a frozen native command. See [backup and restore](backup-and-restore.md).
 
 ## Source development
 

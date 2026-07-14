@@ -52,7 +52,7 @@ Windows 10/11 evidence, and the formal release contract have all passed.
 
 The next candidate in the current source lets the user explicitly choose whether to remove **v1.1-only** local data during uninstall. Cancelling that deletion or a deletion failure keeps the data, and legacy v1 data is outside this operation. This source change does not retroactively claim that the published beta.2 has that behavior.
 
-The current source also provides [raw-evidence schemas, an independent verifier, and an isolated-controller reference contract](docs/windows-installed-evidence.md) for real Windows 10/11 standard-user installation. Persistent repository self-hosted runners remain forbidden, and the workflow is not yet connected to an external short-lived VM adapter/JIT service, so it fails closed and cannot issue a passing receipt. This is not proof of installation or full-journey acceptance and does not change beta.2's test-only status.
+The current source also provides [raw-evidence schemas, an independent verifier, and an isolated-controller reference contract](docs/windows-installed-evidence.md) for real Windows 10/11 standard-user installation. Persistent repository self-hosted runners remain forbidden. The workflow now integrates a fail-closed external short-lived VM broker/JIT-adapter interface and eleven-case matrix aggregation, but no external broker/HSM, protected environment, production credentials, or real-VM run evidence is configured yet, so it cannot issue a passing receipt. This is not proof of installation or full-journey acceptance and does not change beta.2's test-only status.
 
 ## Documentation
 
