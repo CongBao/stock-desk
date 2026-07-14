@@ -535,6 +535,21 @@ async function navigateToCoreRoute(page, route) {
   return transition;
 }
 
+async function reloadWorkspaceAfterPackagedBacktests(page) {
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.waitForSelector("#root", { state: "visible", timeout: 60_000 });
+  const runtime = await waitForDesktopReady(page);
+  const entryMode = await ensureWorkspaceReady(page);
+  await page
+    .getByRole("combobox", { name: "界面主题" })
+    .waitFor({ state: "visible" });
+  return {
+    entry_mode: entryMode,
+    runtime_state: runtime.state,
+    surface: "reloaded-packaged-tauri-webview",
+  };
+}
+
 const browser = await connect();
 try {
   const pages = browser.contexts().flatMap((context) => context.pages());
@@ -665,6 +680,8 @@ try {
   await cdp.send("Emulation.setEmulatedMedia", { features: [] });
 
   const packagedBacktests = await runPackagedBacktestEvidence(page, outputDir);
+  const postBacktestWorkspaceRestore =
+    await reloadWorkspaceAfterPackagedBacktests(page);
 
   await navigateToCoreRoute(page, coreRoutes[0]);
   await page.getByRole("combobox", { name: "界面主题" }).selectOption("system");
@@ -714,6 +731,7 @@ try {
       cell_count: packagedBacktests.cells.length,
       checkpoint_run_id: packagedBacktests.checkpoint.run_id,
     },
+    post_backtest_workspace_restore: postBacktestWorkspaceRestore,
     limitations: [
       "Every 100-200 percent matrix row uses CDP CSS viewport equivalence inside the packaged Tauri WebView; it is not Windows OS DPI and does not prove native Windows DPI behavior.",
       "System Light/Dark rows emulate prefers-color-scheme through CDP; they are not a Windows theme setting or native theme-change event.",

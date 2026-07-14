@@ -206,6 +206,20 @@ def test_packaged_webview_matrix_is_explicitly_equivalent_not_real_os_dpi() -> N
     assert "packaged desktop entered recovery before onboarding" in source
     assert "packaged desktop did not become ready before onboarding" in source
     assert "await navigateToCoreRoute(page, coreRoutes[0])" in source
+    restore_helper = source[
+        source.index(
+            "async function reloadWorkspaceAfterPackagedBacktests"
+        ) : source.index("const browser = await connect()")
+    ]
+    assert 'page.reload({ waitUntil: "domcontentloaded" })' in restore_helper
+    assert "await waitForDesktopReady(page)" in restore_helper
+    assert "await ensureWorkspaceReady(page)" in restore_helper
+    assert (
+        source.index("await runPackagedBacktestEvidence(page, outputDir)")
+        < source.index("await reloadWorkspaceAfterPackagedBacktests(page)")
+        < source.index("await navigateToCoreRoute(page, coreRoutes[0])")
+    )
+    assert "post_backtest_workspace_restore: postBacktestWorkspaceRestore" in source
     assert "desktop_runtime: desktopRuntime" in source
     assert "workspace_entry_mode: workspaceEntryMode" in source
     assert "routeTransition" in source
