@@ -900,19 +900,29 @@ def test_windows_production_post_move_failure_revokes_published_file(
     source.write_bytes(b"verified")
     output = _verified_path(tmp_path)
     real_same_file_object = trusted_release._same_file_object
-    comparisons = 0
+    real_publish = trusted_release._publish_staged_installer
+    published = False
+    published_identity_checked = False
+
+    def publish_for_identity_failure(temporary: Path, target: Path) -> None:
+        nonlocal published
+        real_publish(temporary, target)
+        published = True
 
     def fail_published_identity_check(
         left: os.stat_result, right: os.stat_result
     ) -> bool:
-        nonlocal comparisons
-        comparisons += 1
-        # Writer/reader identity, then both post-verification path/handle
-        # identities, are checked before the final published-object binding.
-        if comparisons == 4:
+        nonlocal published_identity_checked
+        if published:
+            published_identity_checked = True
             return False
         return real_same_file_object(left, right)
 
+    monkeypatch.setattr(
+        trusted_release,
+        "_publish_staged_installer",
+        publish_for_identity_failure,
+    )
     monkeypatch.setattr(
         trusted_release, "_same_file_object", fail_published_identity_check
     )
@@ -923,7 +933,7 @@ def test_windows_production_post_move_failure_revokes_published_file(
 
     assert not output.exists()
     assert list(output.parent.glob(".stock-desk-verified-*")) == []
-    assert comparisons == 4
+    assert published_identity_checked
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="requires real Win32 file APIs")
