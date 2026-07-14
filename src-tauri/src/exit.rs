@@ -33,18 +33,31 @@ enum ShutdownReply {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ExitIntent {
+    Quit,
+    InstallUpdate,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ExitEffect {
     None,
     Emit,
     Recover(u64),
+    RecoverUpdate(u64),
+    CancelUpdate,
     Exit,
+    InstallUpdate(u64),
 }
 
 #[derive(Debug)]
 struct ExitMachine {
     state: DesktopExitState,
     generation: Option<u64>,
-    terminated_before_reply: Option<Option<i32>>,
+    intent: Option<ExitIntent>,
+    terminated_before_commit: Option<Option<i32>>,
+    shutdown_accepted: bool,
+    commit_accepted: bool,
+    install_launching: bool,
     committed: bool,
 }
 
@@ -53,7 +66,11 @@ impl Default for ExitMachine {
         Self {
             state: DesktopExitState::Idle,
             generation: None,
-            terminated_before_reply: None,
+            intent: None,
+            terminated_before_commit: None,
+            shutdown_accepted: false,
+            commit_accepted: false,
+            install_launching: false,
             committed: false,
         }
     }
@@ -63,6 +80,7 @@ impl ExitMachine {
     fn request(&mut self) -> ExitEffect {
         if self.state == DesktopExitState::Idle {
             self.state = DesktopExitState::Confirm;
+            self.intent = Some(ExitIntent::Quit);
             ExitEffect::Emit
         } else {
             ExitEffect::None
@@ -76,8 +94,13 @@ impl ExitMachine {
                 | DesktopExitState::Blocked { .. }
                 | DesktopExitState::CheckpointTimedOut { .. }
         ) {
+            let effect = if self.intent == Some(ExitIntent::InstallUpdate) {
+                ExitEffect::CancelUpdate
+            } else {
+                ExitEffect::Emit
+            };
             self.reset();
-            ExitEffect::Emit
+            effect
         } else {
             ExitEffect::None
         }
@@ -94,7 +117,27 @@ impl ExitMachine {
         }
         self.state = DesktopExitState::Checking;
         self.generation = Some(generation);
-        self.terminated_before_reply = None;
+        if self.intent.is_none() {
+            self.intent = Some(ExitIntent::Quit);
+        }
+        self.terminated_before_commit = None;
+        self.shutdown_accepted = false;
+        self.commit_accepted = false;
+        self.install_launching = false;
+        ExitEffect::Emit
+    }
+
+    fn begin_update_install(&mut self, generation: u64) -> ExitEffect {
+        if self.state != DesktopExitState::Idle || self.intent.is_some() {
+            return ExitEffect::None;
+        }
+        self.state = DesktopExitState::Checking;
+        self.generation = Some(generation);
+        self.intent = Some(ExitIntent::InstallUpdate);
+        self.terminated_before_commit = None;
+        self.shutdown_accepted = false;
+        self.commit_accepted = false;
+        self.install_launching = false;
         ExitEffect::Emit
     }
 
@@ -104,7 +147,10 @@ impl ExitMachine {
         }
         self.state = DesktopExitState::ShuttingDown;
         self.generation = None;
-        self.terminated_before_reply = None;
+        self.intent = Some(ExitIntent::Quit);
+        self.terminated_before_commit = None;
+        self.shutdown_accepted = true;
+        self.commit_accepted = true;
         self.committed = true;
         ExitEffect::Exit
     }
@@ -115,39 +161,52 @@ impl ExitMachine {
         }
         match reply {
             ShutdownReply::CheckpointTimedOut { queued, running } => {
-                if self.terminated_before_reply.take().is_some() {
+                if self.terminated_before_commit.take().is_some() {
                     let failed_generation = self.generation.expect("checked generation");
+                    let effect = self.recovery_effect(failed_generation);
                     self.reset();
-                    return ExitEffect::Recover(failed_generation);
+                    return effect;
                 }
                 self.state = DesktopExitState::CheckpointTimedOut { queued, running };
                 self.generation = None;
-                self.terminated_before_reply = None;
+                self.terminated_before_commit = None;
                 ExitEffect::Emit
             }
             ShutdownReply::Blocked { queued, running } => {
-                if self.terminated_before_reply.take().is_some() {
+                if self.terminated_before_commit.take().is_some() {
                     let failed_generation = self.generation.expect("checked generation");
+                    let effect = self.recovery_effect(failed_generation);
                     self.reset();
-                    return ExitEffect::Recover(failed_generation);
+                    return effect;
                 }
                 self.state = DesktopExitState::Blocked { queued, running };
                 self.generation = None;
-                self.terminated_before_reply = None;
+                self.terminated_before_commit = None;
                 ExitEffect::Emit
             }
-            ShutdownReply::Accepted => match self.terminated_before_reply.take() {
-                Some(_) => {
-                    self.committed = true;
-                    self.state = DesktopExitState::ShuttingDown;
-                    ExitEffect::Exit
-                }
-                None => {
-                    self.state = DesktopExitState::ShuttingDown;
-                    ExitEffect::Emit
-                }
-            },
+            ShutdownReply::Accepted => {
+                self.shutdown_accepted = true;
+                self.state = DesktopExitState::ShuttingDown;
+                ExitEffect::Emit
+            }
         }
+    }
+
+    fn commit_succeeded(&mut self, generation: u64) -> ExitEffect {
+        if self.generation != Some(generation)
+            || self.state != DesktopExitState::ShuttingDown
+            || !self.shutdown_accepted
+            || self.commit_accepted
+        {
+            return ExitEffect::None;
+        }
+        if self.terminated_before_commit.take().is_some() {
+            let effect = self.recovery_effect(generation);
+            self.reset();
+            return effect;
+        }
+        self.commit_accepted = true;
+        ExitEffect::None
     }
 
     fn shutdown_failed(&mut self, generation: u64) -> ExitEffect {
@@ -155,25 +214,32 @@ impl ExitMachine {
             return ExitEffect::None;
         }
         let failed_generation = self.generation.expect("checked generation");
+        let effect = self.recovery_effect(failed_generation);
         self.reset();
-        ExitEffect::Recover(failed_generation)
+        effect
     }
 
     fn shutdown_timed_out(&mut self, generation: u64) -> ExitEffect {
-        if self.generation != Some(generation) || self.state != DesktopExitState::ShuttingDown {
+        if self.generation != Some(generation)
+            || self.state != DesktopExitState::ShuttingDown
+            || self.install_launching
+            || self.committed
+        {
             return ExitEffect::None;
         }
         let failed_generation = self.generation.expect("checked generation");
+        let effect = self.recovery_effect(failed_generation);
         self.reset();
-        ExitEffect::Recover(failed_generation)
+        effect
     }
 
     fn commit_failed(&mut self, generation: u64) -> ExitEffect {
         if self.generation != Some(generation) || self.state != DesktopExitState::ShuttingDown {
             return ExitEffect::None;
         }
+        let effect = self.recovery_effect(generation);
         self.reset();
-        ExitEffect::Recover(generation)
+        effect
     }
 
     fn terminated(&mut self, generation: u64, code: Option<i32>) -> ExitEffect {
@@ -182,15 +248,61 @@ impl ExitMachine {
         }
         match self.state {
             DesktopExitState::Checking => {
-                self.terminated_before_reply = Some(code);
+                self.terminated_before_commit = Some(code);
                 ExitEffect::None
             }
             DesktopExitState::ShuttingDown => {
-                self.committed = true;
-                ExitEffect::Exit
+                if !self.commit_accepted {
+                    self.terminated_before_commit = Some(code);
+                    return ExitEffect::None;
+                }
+                if self.intent == Some(ExitIntent::InstallUpdate) {
+                    if self.install_launching {
+                        return ExitEffect::None;
+                    }
+                    // Atomically transfer ownership from the sidecar timeout
+                    // path to the synchronous installer hand-off. A timeout
+                    // racing CreateProcessW must never restart the sidecar after
+                    // the installer process has already been created.
+                    self.install_launching = true;
+                    ExitEffect::InstallUpdate(generation)
+                } else {
+                    self.committed = true;
+                    ExitEffect::Exit
+                }
             }
             _ => ExitEffect::None,
         }
+    }
+
+    fn install_launched(&mut self, generation: u64) -> ExitEffect {
+        if self.generation != Some(generation)
+            || self.state != DesktopExitState::ShuttingDown
+            || self.intent != Some(ExitIntent::InstallUpdate)
+            || !self.shutdown_accepted
+            || !self.commit_accepted
+            || !self.install_launching
+            || self.committed
+        {
+            return ExitEffect::None;
+        }
+        self.committed = true;
+        ExitEffect::Exit
+    }
+
+    fn install_launch_failed(&mut self, generation: u64) -> ExitEffect {
+        if self.generation != Some(generation)
+            || self.state != DesktopExitState::ShuttingDown
+            || self.intent != Some(ExitIntent::InstallUpdate)
+            || !self.commit_accepted
+            || !self.install_launching
+            || self.committed
+        {
+            return ExitEffect::None;
+        }
+        let effect = self.recovery_effect(generation);
+        self.reset();
+        effect
     }
 
     fn owns_termination(&self, generation: u64) -> bool {
@@ -201,10 +313,22 @@ impl ExitMachine {
             )
     }
 
+    fn recovery_effect(&self, generation: u64) -> ExitEffect {
+        if self.intent == Some(ExitIntent::InstallUpdate) {
+            ExitEffect::RecoverUpdate(generation)
+        } else {
+            ExitEffect::Recover(generation)
+        }
+    }
+
     fn reset(&mut self) {
         self.state = DesktopExitState::Idle;
         self.generation = None;
-        self.terminated_before_reply = None;
+        self.intent = None;
+        self.terminated_before_commit = None;
+        self.shutdown_accepted = false;
+        self.commit_accepted = false;
+        self.install_launching = false;
         self.committed = false;
     }
 }
@@ -257,7 +381,30 @@ impl DesktopExitController {
                     );
                 }
             }
+            ExitEffect::RecoverUpdate(failed_generation) => {
+                let _ = app.emit(EXIT_EVENT, DesktopExitState::Idle);
+                crate::updater::recover_verified_install(app);
+                if let Some(runtime) = app.try_state::<DesktopRuntime>() {
+                    runtime.transition_recovery_for_generation(
+                        app,
+                        failed_generation,
+                        "sidecar_unavailable",
+                        true,
+                    );
+                }
+            }
+            ExitEffect::CancelUpdate => {
+                let _ = app.emit(EXIT_EVENT, DesktopExitState::Idle);
+                crate::updater::cancel_verified_install(app);
+            }
             ExitEffect::Exit => app.exit(0),
+            ExitEffect::InstallUpdate(generation) => {
+                if crate::updater::launch_verified_install(app).is_ok() {
+                    self.apply(app, |machine| machine.install_launched(generation));
+                } else {
+                    self.apply(app, |machine| machine.install_launch_failed(generation));
+                }
+            }
         }
     }
 
@@ -282,6 +429,16 @@ impl DesktopExitController {
             effect
         });
         changed.then_some(checkpoint_active)
+    }
+
+    fn begin_update_install(&self, app: &AppHandle, generation: u64) -> bool {
+        let mut changed = false;
+        self.apply(app, |machine| {
+            let effect = machine.begin_update_install(generation);
+            changed = effect == ExitEffect::Emit;
+            effect
+        });
+        changed
     }
 
     fn confirm_without_ready_session(&self, app: &AppHandle) -> bool {
@@ -314,6 +471,10 @@ impl DesktopExitController {
 
     fn commit_failed(&self, app: &AppHandle, generation: u64) {
         self.apply(app, |machine| machine.commit_failed(generation));
+    }
+
+    fn commit_succeeded(&self, app: &AppHandle, generation: u64) {
+        self.apply(app, |machine| machine.commit_succeeded(generation));
     }
 
     pub(crate) fn sidecar_terminated(
@@ -381,23 +542,53 @@ pub async fn desktop_confirm_exit(app: AppHandle) -> Result<(), String> {
         return Ok(());
     };
 
-    let result = request_shutdown(&session, checkpoint_active).await;
+    continue_shutdown(&app, &runtime, &controller, &session, checkpoint_active).await;
+    Ok(())
+}
+
+pub(crate) async fn begin_update_install(app: AppHandle) -> Result<(), String> {
+    let runtime = app
+        .try_state::<DesktopRuntime>()
+        .ok_or_else(|| "desktop_runtime_not_ready".to_owned())?;
+    let controller = app
+        .try_state::<DesktopExitController>()
+        .ok_or_else(|| "desktop_exit_unavailable".to_owned())?;
+    if !runtime.is_ready() {
+        return Err("desktop_updater_sidecar_not_ready".to_owned());
+    }
+    let session = runtime.ready_session().map_err(str::to_owned)?;
+    if !controller.begin_update_install(&app, session.generation) {
+        return Err("desktop_updater_exit_busy".to_owned());
+    }
+    continue_shutdown(&app, &runtime, &controller, &session, false).await;
+    Ok(())
+}
+
+async fn continue_shutdown(
+    app: &AppHandle,
+    runtime: &DesktopRuntime,
+    controller: &DesktopExitController,
+    session: &ReadySession,
+    checkpoint_active: bool,
+) {
+    let result = request_shutdown(session, checkpoint_active).await;
     if !runtime.is_same_generation(session.generation) {
-        controller.fail(&app, session.generation);
-        return Ok(());
+        controller.fail(app, session.generation);
+        return;
     }
     match result {
-        Ok(reply) => controller.receive_reply(&app, session.generation, reply),
-        Err(()) => controller.fail(&app, session.generation),
+        Ok(reply) => controller.receive_reply(app, session.generation, reply),
+        Err(()) => controller.fail(app, session.generation),
     }
 
     if matches!(result, Ok(ShutdownReply::Accepted)) {
-        if commit_shutdown(&session).await.is_err()
+        if commit_shutdown(session).await.is_err()
             || !runtime.is_same_generation(session.generation)
         {
-            controller.commit_failed(&app, session.generation);
-            return Ok(());
+            controller.commit_failed(app, session.generation);
+            return;
         }
+        controller.commit_succeeded(app, session.generation);
         let timeout_app = app.clone();
         let generation = session.generation;
         tauri::async_runtime::spawn(async move {
@@ -407,7 +598,6 @@ pub async fn desktop_confirm_exit(app: AppHandle) -> Result<(), String> {
             }
         });
     }
-    Ok(())
 }
 
 async fn commit_shutdown(session: &ReadySession) -> Result<(), ()> {
@@ -664,21 +854,24 @@ mod tests {
         );
         assert_eq!(machine.state, DesktopExitState::ShuttingDown);
         assert!(!machine.committed);
+        assert_eq!(machine.commit_succeeded(9), ExitEffect::None);
         assert_eq!(machine.terminated(9, Some(0)), ExitEffect::Exit);
         assert!(machine.committed);
     }
 
     #[test]
-    fn terminated_before_202_is_resolved_without_a_race() {
+    fn terminated_before_202_recovers_without_committing() {
         let mut machine = ExitMachine::default();
         machine.request();
         machine.confirm(11);
         assert_eq!(machine.terminated(11, Some(0)), ExitEffect::None);
         assert_eq!(
             machine.shutdown_reply(11, ShutdownReply::Accepted),
-            ExitEffect::Exit
+            ExitEffect::Emit
         );
-        assert!(machine.committed);
+        assert_eq!(machine.commit_succeeded(11), ExitEffect::Recover(11));
+        assert!(!machine.committed);
+        assert_eq!(machine.state, DesktopExitState::Idle);
     }
 
     #[test]
@@ -727,6 +920,7 @@ mod tests {
             machine.request();
             machine.confirm(13);
             machine.shutdown_reply(13, ShutdownReply::Accepted);
+            machine.commit_succeeded(13);
             assert_eq!(machine.terminated(13, code), ExitEffect::Exit);
             assert_eq!(machine.state, DesktopExitState::ShuttingDown);
             assert!(machine.committed);
@@ -739,9 +933,24 @@ mod tests {
         machine.request();
         machine.confirm(14);
         machine.shutdown_reply(14, ShutdownReply::Accepted);
+        machine.commit_succeeded(14);
         assert_eq!(machine.shutdown_timed_out(14), ExitEffect::Recover(14));
         assert_eq!(machine.state, DesktopExitState::Idle);
         assert!(!machine.committed);
+    }
+
+    #[test]
+    fn committed_quit_cannot_be_rolled_back_by_a_racing_timeout() {
+        let mut machine = ExitMachine::default();
+        machine.request();
+        machine.confirm(16);
+        machine.shutdown_reply(16, ShutdownReply::Accepted);
+        machine.commit_succeeded(16);
+        assert_eq!(machine.terminated(16, Some(0)), ExitEffect::Exit);
+        assert!(machine.committed);
+        assert_eq!(machine.shutdown_timed_out(16), ExitEffect::None);
+        assert_eq!(machine.state, DesktopExitState::ShuttingDown);
+        assert!(machine.committed);
     }
 
     #[test]
@@ -766,6 +975,116 @@ mod tests {
         assert_eq!(machine.terminated(20, Some(0)), ExitEffect::None);
         assert_eq!(machine.shutdown_failed(20), ExitEffect::None);
         assert_eq!(machine.state, DesktopExitState::Checking);
+        assert!(!machine.committed);
+    }
+
+    #[test]
+    fn update_install_intent_starts_only_from_idle_and_never_shows_a_second_web_prompt() {
+        let mut machine = ExitMachine::default();
+        assert_eq!(machine.begin_update_install(31), ExitEffect::Emit);
+        assert_eq!(machine.state, DesktopExitState::Checking);
+        assert_eq!(machine.begin_update_install(32), ExitEffect::None);
+        assert_eq!(machine.request(), ExitEffect::None);
+    }
+
+    #[test]
+    fn cancelling_a_blocked_update_returns_verified_bytes_without_installing() {
+        let mut machine = ExitMachine::default();
+        machine.begin_update_install(41);
+        assert_eq!(
+            machine.shutdown_reply(
+                41,
+                ShutdownReply::Blocked {
+                    queued: 2,
+                    running: 1,
+                },
+            ),
+            ExitEffect::Emit,
+        );
+        assert_eq!(machine.cancel(), ExitEffect::CancelUpdate);
+        assert_eq!(machine.state, DesktopExitState::Idle);
+        assert!(!machine.committed);
+    }
+
+    #[test]
+    fn update_install_launches_only_after_matching_sidecar_termination() {
+        let mut machine = ExitMachine::default();
+        machine.begin_update_install(51);
+        assert_eq!(
+            machine.shutdown_reply(51, ShutdownReply::Accepted),
+            ExitEffect::Emit,
+        );
+        assert_eq!(machine.terminated(50, Some(0)), ExitEffect::None);
+        assert_eq!(machine.commit_succeeded(51), ExitEffect::None);
+        assert_eq!(
+            machine.terminated(51, Some(0)),
+            ExitEffect::InstallUpdate(51)
+        );
+        assert!(!machine.committed);
+        assert_eq!(machine.install_launched(51), ExitEffect::Exit);
+        assert!(machine.committed);
+    }
+
+    #[test]
+    fn update_termination_before_commit_never_launches_installer() {
+        let mut machine = ExitMachine::default();
+        machine.begin_update_install(56);
+        assert_eq!(
+            machine.shutdown_reply(56, ShutdownReply::Accepted),
+            ExitEffect::Emit,
+        );
+        assert_eq!(machine.terminated(56, Some(0)), ExitEffect::None);
+        assert_eq!(machine.commit_succeeded(56), ExitEffect::RecoverUpdate(56));
+        assert_eq!(machine.state, DesktopExitState::Idle);
+        assert!(!machine.committed);
+    }
+
+    #[test]
+    fn failed_installer_launch_recovers_exit_and_allows_service_restart() {
+        let mut machine = ExitMachine::default();
+        machine.begin_update_install(57);
+        machine.shutdown_reply(57, ShutdownReply::Accepted);
+        machine.commit_succeeded(57);
+        assert_eq!(
+            machine.terminated(57, Some(0)),
+            ExitEffect::InstallUpdate(57)
+        );
+        assert_eq!(
+            machine.install_launch_failed(57),
+            ExitEffect::RecoverUpdate(57)
+        );
+        assert_eq!(machine.state, DesktopExitState::Idle);
+        assert!(!machine.committed);
+    }
+
+    #[test]
+    fn sidecar_timeout_cannot_recover_after_installer_handoff_has_started() {
+        let mut machine = ExitMachine::default();
+        machine.begin_update_install(58);
+        machine.shutdown_reply(58, ShutdownReply::Accepted);
+        machine.commit_succeeded(58);
+        assert_eq!(
+            machine.terminated(58, Some(0)),
+            ExitEffect::InstallUpdate(58)
+        );
+        assert!(machine.install_launching);
+        assert_eq!(machine.shutdown_timed_out(58), ExitEffect::None);
+        assert_eq!(machine.terminated(58, Some(0)), ExitEffect::None);
+        assert_eq!(machine.install_launched(58), ExitEffect::Exit);
+        assert!(machine.committed);
+    }
+
+    #[test]
+    fn update_install_timeout_recovers_without_launching_the_installer() {
+        let mut machine = ExitMachine::default();
+        machine.begin_update_install(61);
+        machine.shutdown_reply(61, ShutdownReply::Accepted);
+        machine.commit_succeeded(61);
+        assert_eq!(
+            machine.shutdown_timed_out(61),
+            ExitEffect::RecoverUpdate(61),
+        );
+        assert_eq!(machine.state, DesktopExitState::Idle);
         assert!(!machine.committed);
     }
 

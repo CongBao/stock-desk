@@ -61,29 +61,34 @@ it does not force-kill a healthy sidecar. The next launch offers explicit resume
 or cancel choices for incomplete work, and analysis resume requires a separate
 model-cost confirmation.
 
-The desktop host also contains a default-off trusted-update foundation. Its pure
-state machine accepts only exact stable `X.Y.Z`, increasing versions for the
-fixed Windows x64 target from this repository's exact GitHub Release asset URL;
-it rejects prereleases, build metadata, downgrades, replays, cross-repository or
-cross-tag redirects, and digest mismatches. A high unverified offer never advances
-the replay watermark. Release verification copies the installer once into a
-verifier-owned staged object; SHA-256, Minisign/Ed25519, WinVerifyTrust,
-SignPath, and exact-SHA Windows evidence all bind to that object, and only that
-exact object becomes the publishable installer. Runtime verification records a
-pending identity in memory, while the persistent anti-rollback watermark moves
-only after installation success is confirmed. A failed installation can retry
-the same verified identity. Failure to resolve the per-user local-data directory
-disables the updater without creating any relative state path.
-`latest.json` is a Stock Desk-specific envelope, not the official Tauri updater
-plugin's static JSON format. After formal activation, the Rust host—not WebView
-JavaScript and not the plugin—must fetch it under the one-hop redirect policy,
-enforce its strict schema and size bounds, and bind the embedded signature to the
-candidate identity. The host must then verify the exact payload's SHA-256,
-Minisign/Ed25519 signature, and WinVerifyTrust result before passing that verified
-payload to the official plugin's installation path. The WebView may only request
-a native confirmation prompt; only an affirmative host-owned native dialog may
-mint the private, one-use consent required to continue. A Web IPC parameter or
-event can never substitute for that consent.
+The desktop host also contains a source-bound, default-off trusted-update
+runtime. Its state machine accepts only increasing stable `X.Y.Z` releases for
+the fixed Windows x64 target and rejects prereleases, build metadata, downgrades,
+replays, cross-repository URLs, excess redirects, and identity mismatches. The
+host streams `latest.json` through a 32 KiB limit and the exact GitHub release
+redirect chain, then binds the immutable redirect version to every strict
+metadata field. It does not issue a second unbounded plugin metadata request.
+
+After a host-owned native confirmation, the host streams the installer through
+a 512 MiB limit. Tauri Minisign/Ed25519, SHA-256, and WinVerifyTrust all cover
+the same bytes written to a uniquely created file. After verification the host
+reopens that exact file read-only, compares its Windows file identity, locks the
+staging directory against replacement, refreshes Authenticode chain and revocation
+evidence before stopping the sidecar, and requires real process and primary-thread
+handles from `CreateProcessW`. The graceful-exit controller closes and checkpoints the
+bundled service for the exact process generation; shutdown acceptance, commit
+acceptance, and a later matching termination are all required before it may
+persist `pending-install.json` and launch the installer. The next exact-version,
+exact-source binary commits
+`installed-watermark.json` and removes the pending journal. The old binary never
+advances the watermark after a failed handoff. Missing local-data paths, keys,
+or identity evidence fail closed without creating relative state.
+
+WebView code can request a check or native prompt but cannot supply metadata,
+bytes, consent, a path, a digest, a trust result, or an install decision. The
+runtime has no environment-variable activation and performs no background
+check. Its checked-in configuration remains disabled until the production
+public key, SignPath workflow, and real Windows 10/11 update evidence pass.
 On POSIX, publication hard-links the locked staged object and fsyncs its parent
 directory. Windows does not reuse that directory-fsync model: Microsoft documents
 that `FlushFileBuffers` requires a `GENERIC_WRITE` file handle and does not list it
@@ -116,8 +121,8 @@ build time; an unavailable or mismatched identity is displayed as unavailable,
 never as a hard-coded stable version. The WebView has no direct updater
 capability, and a user must explicitly confirm any future download and install.
 No private signing key is stored in this repository. The production public key,
-runtime WinVerifyTrust integration, and formal SignPath workflow are not yet
-present, so the runtime remains disabled and verification fails closed.
+formal SignPath workflow, and real Windows update receipts are not yet present,
+so the runtime remains disabled and verification fails closed.
 
 Market payload storage follows the host's verified filesystem capabilities.
 POSIX deployments use immutable, content-addressed Parquet partitions plus the

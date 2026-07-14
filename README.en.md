@@ -43,10 +43,12 @@ To test `v1.1.0-beta.2`:
 Ordinary users do not need GitHub CLI, a source checkout, Docker, or development tools. Use the bilingual
 [download and authenticity guide](docs/download.md) for the stable release; beta.2 checksums and immutable build proof are on its prerelease page.
 
-The current source includes a **default-off** trusted-update foundation. It accepts only
-Windows x64 stable metadata from Stock Desk GitHub Releases and requires explicit confirmation
-before any download or install. It makes no update request until signing keys, SignPath,
-Windows 10/11 evidence, and the formal release contract have all passed.
+The current source includes a **default-off** trusted-update runtime. It accepts only Windows x64
+stable metadata from Stock Desk GitHub Releases, bounds downloads, verifies the Tauri signature,
+SHA-256, and Windows trust, safely stops the bundled service, and launches the same verified
+installer. Production updating remains disabled until the public key, SignPath, Windows 10/11
+evidence, and formal release contract all pass; this stage performs no background check,
+download, or installation.
 
 `v1.1.0` does not ship macOS, Linux, Android, or ARM64 installers, and it does not migrate or delete v1 local data. Refer to the release page and [code-signing policy](docs/code-signing-policy.md) for the authoritative signing status.
 

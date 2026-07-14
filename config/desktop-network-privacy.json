@@ -30,7 +30,8 @@
           "src-tauri/src/app.rs",
           "src-tauri/src/exit.rs",
           "src-tauri/src/proxy.rs",
-          "src-tauri/src/updater.rs"
+          "src-tauri/src/updater.rs",
+          "src-tauri/src/updater_transport.rs"
         ],
         "web": [
           "web/src/shared/api/client.ts"
