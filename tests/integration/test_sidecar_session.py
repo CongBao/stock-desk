@@ -377,7 +377,10 @@ def test_desktop_shutdown_timeout_is_actionable_and_resumes_claims(
             response = client.post(
                 "/api/desktop/shutdown",
                 headers=_headers(session),
-                json={"checkpoint_active": True},
+                json={
+                    "checkpoint_active": True,
+                    "require_running_checkpoint": True,
+                },
             )
 
         assert response.status_code == 409
@@ -391,6 +394,45 @@ def test_desktop_shutdown_timeout_is_actionable_and_resumes_claims(
         assert lifecycle.claim_stop_event.is_set() is False
         assert lifecycle.shutdown_requested is False
         assert running.id not in response.text
+    finally:
+        repository.close()
+
+
+def test_desktop_shutdown_checkpoint_probe_retries_a_queued_only_race(
+    tmp_path: Path,
+) -> None:
+    session = _session()
+    repository = _repository(tmp_path)
+    lifecycle = DesktopLifecycleController()
+    queued = repository.create("demo.double", {"value": 1})
+    try:
+        with TestClient(
+            create_app(
+                task_repository=repository,
+                desktop_session=session,
+                desktop_lifecycle=lifecycle,
+            )
+        ) as client:
+            response = client.post(
+                "/api/desktop/shutdown",
+                headers=_headers(session),
+                json={
+                    "checkpoint_active": True,
+                    "require_running_checkpoint": True,
+                },
+            )
+
+        assert response.status_code == 409
+        assert response.json() == {
+            "code": "desktop_checkpoint_not_active",
+            "queued": 1,
+            "running": 0,
+            "retryable": True,
+        }
+        assert lifecycle.shutdown_prepared is False
+        assert lifecycle.claim_stop_event.is_set() is False
+        claimed = repository.claim_next("desktop-test-worker")
+        assert claimed is not None and claimed.id == queued.id
     finally:
         repository.close()
 
@@ -423,7 +465,10 @@ def test_desktop_shutdown_accepts_only_after_durable_checkpoint_ack(
             response = client.post(
                 "/api/desktop/shutdown",
                 headers=_headers(session),
-                json={"checkpoint_active": True},
+                json={
+                    "checkpoint_active": True,
+                    "require_running_checkpoint": True,
+                },
             )
 
         assert response.status_code == 202

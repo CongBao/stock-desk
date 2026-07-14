@@ -355,7 +355,9 @@ def test_packaged_backtest_matrix_uses_webview_host_ipc_and_new_worker_resume() 
     assert "maxAttempts = 24" in checkpoint_retry
     assert "await waitForCheckpointBacklog(page, taskIds)" in checkpoint_retry
     assert '"/api/desktop/shutdown"' in checkpoint_retry
+    assert "require_running_checkpoint: true" in checkpoint_retry
     assert 'payload?.code !== "desktop_checkpoint_timeout"' in checkpoint_retry
+    assert 'payload?.code !== "desktop_checkpoint_not_active"' in checkpoint_retry
     assert "payload?.retryable !== true" in checkpoint_retry
     assert "error?.status !== 409" in checkpoint_retry
     assert "selected.length !== taskIds.size" in checkpoint_retry

@@ -196,12 +196,14 @@ async function requestCheckpoint(page, taskIds, maxAttempts = 24) {
     try {
       return await invoke(page, "POST", "/api/desktop/shutdown", {
         checkpoint_active: true,
+        require_running_checkpoint: true,
       });
     } catch (error) {
       const payload = error?.payload;
       if (
         error?.status !== 409 ||
-        payload?.code !== "desktop_checkpoint_timeout" ||
+        (payload?.code !== "desktop_checkpoint_timeout" &&
+          payload?.code !== "desktop_checkpoint_not_active") ||
         payload?.retryable !== true
       ) {
         throw error;

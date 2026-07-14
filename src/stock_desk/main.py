@@ -117,6 +117,7 @@ class _ApplicationDatabaseMismatch(RuntimeError):
 
 class _DesktopShutdownRequest(BaseModel):
     checkpoint_active: bool = False
+    require_running_checkpoint: bool = False
 
 
 class _DesktopRecoveryResumeRequest(BaseModel):
@@ -1000,6 +1001,20 @@ def create_app(
                                 "code": "desktop_tasks_active",
                                 "queued": queued,
                                 "running": running,
+                            },
+                        )
+                    if (
+                        request is not None
+                        and request.require_running_checkpoint
+                        and running == 0
+                    ):
+                        return JSONResponse(
+                            status_code=409,
+                            content={
+                                "code": "desktop_checkpoint_not_active",
+                                "queued": queued,
+                                "running": running,
+                                "retryable": True,
                             },
                         )
                     resolved_desktop_lifecycle.prepare_shutdown()
