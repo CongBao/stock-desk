@@ -1,8 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import { ApiError, type JsonValue } from '../../shared/api/client';
+import { ModalDialog } from '../../shared/ModalDialog';
 import { marketApi, type MarketApi } from './marketApi';
 import type { MarketInstrumentSelection } from './marketStore';
 import {
@@ -30,6 +31,61 @@ type MarketOperationsPanelProps = {
   readonly marketApiClient?: MarketApi;
   readonly onPoolDeleted?: () => void;
 };
+
+type PoolDraft = {
+  readonly name: string;
+  readonly symbols: readonly string[];
+  readonly search: string;
+};
+
+type PoolMutationToken = {
+  readonly session: number;
+  readonly revision: number;
+};
+
+type CreatePoolRequest = PoolMutationToken & {
+  readonly draft: PoolDraft;
+};
+
+type UpdatePoolRequest = PoolMutationToken & {
+  readonly draft: PoolDraft;
+  readonly expectedRevision: number;
+  readonly poolId: string;
+};
+
+type DeletePoolRequest = {
+  readonly session: number;
+  readonly expectedRevision: number;
+  readonly poolId: string;
+};
+
+function tokensMatch(
+  left: PoolMutationToken | null,
+  right: PoolMutationToken,
+): boolean {
+  return (
+    left !== null &&
+    left.session === right.session &&
+    left.revision === right.revision
+  );
+}
+
+function poolDraft(
+  name: string,
+  symbols: readonly string[],
+  search: string,
+): PoolDraft {
+  return { name, symbols: [...symbols], search };
+}
+
+function poolDraftsMatch(left: PoolDraft, right: PoolDraft): boolean {
+  return (
+    left.name === right.name &&
+    left.search === right.search &&
+    left.symbols.length === right.symbols.length &&
+    left.symbols.every((symbol, index) => symbol === right.symbols[index])
+  );
+}
 
 const terminal = new Set<MarketTask['status']>([
   'succeeded',
@@ -95,24 +151,64 @@ export function MarketOperationsPanel({
 }: MarketOperationsPanelProps) {
   const queryClient = useQueryClient();
   const controllers = useRef(new Set<AbortController>());
+  const createTriggerRef = useRef<HTMLButtonElement>(null);
+  const editTriggerRef = useRef<HTMLButtonElement>(null);
   const createNameRef = useRef<HTMLInputElement>(null);
   const editNameRef = useRef<HTMLInputElement>(null);
-  const createDialogRef = useRef<HTMLDialogElement>(null);
-  const editDialogRef = useRef<HTMLDialogElement>(null);
+  const createContinueRef = useRef<HTMLButtonElement>(null);
+  const editContinueRef = useRef<HTMLButtonElement>(null);
+  const keepPoolRef = useRef<HTMLButtonElement>(null);
+  const createStatusRef = useRef<HTMLParagraphElement>(null);
+  const editStatusRef = useRef<HTMLParagraphElement>(null);
+  const deleteStatusRef = useRef<HTMLParagraphElement>(null);
+  const createConfirmationOriginRef = useRef<HTMLElement | null>(null);
+  const editConfirmationOriginRef = useRef<HTMLElement | null>(null);
+  const createBaselineRef = useRef<PoolDraft>(poolDraft('', [], ''));
+  const editBaselineRef = useRef<PoolDraft>(poolDraft('', [], ''));
+  const nextDialogSessionRef = useRef(0);
+  const activeCreateSessionRef = useRef<number | null>(null);
+  const activeEditSessionRef = useRef<number | null>(null);
+  const activeEditPoolRef = useRef<{
+    readonly id: string;
+    readonly revision: number;
+  } | null>(null);
+  const createDraftRevisionRef = useRef(0);
+  const editDraftRevisionRef = useRef(0);
+  const createPendingRef = useRef<PoolMutationToken | null>(null);
+  const editPendingRef = useRef<PoolMutationToken | null>(null);
+  const deletePendingRef = useRef<DeletePoolRequest | null>(null);
   const [poolDialogOpen, setPoolDialogOpen] = useState(false);
+  const [createDialogMode, setCreateDialogMode] = useState<
+    'editor' | 'discard'
+  >('editor');
   const [poolName, setPoolName] = useState('');
   const [poolSymbols, setPoolSymbols] = useState<string[]>([]);
   const [poolSearch, setPoolSearch] = useState('');
+  const [createPendingToken, setCreatePendingToken] =
+    useState<PoolMutationToken | null>(null);
+  const [editPendingToken, setEditPendingToken] =
+    useState<PoolMutationToken | null>(null);
+  const [createIssue, setCreateIssue] = useState<unknown>(null);
+  const [editIssue, setEditIssue] = useState<unknown>(null);
+  const [deleteIssue, setDeleteIssue] = useState<unknown>(null);
   const [editDialogOpen, setEditDialogOpen] = useState(false);
+  const [editDialogMode, setEditDialogMode] = useState<
+    'editor' | 'discard' | 'delete'
+  >('editor');
   const [editName, setEditName] = useState('');
   const [editSymbols, setEditSymbols] = useState<string[]>([]);
-  const [deleteConfirmation, setDeleteConfirmation] = useState(false);
   const [scope, setScope] = useState<'instrument' | 'pool'>('instrument');
   const [start, setStart] = useState(() => dateInput(365));
   const [end, setEnd] = useState(() => dateInput(0));
   const [activeTask, setActiveTask] = useState<MarketTask | null>(null);
   const [scheduleEnabled, setScheduleEnabled] = useState(false);
   const [scheduleTime, setScheduleTime] = useState('18:00');
+  const createBusy =
+    createPendingToken !== null &&
+    createPendingToken.session === activeCreateSessionRef.current;
+  const editBusy =
+    editPendingToken !== null &&
+    editPendingToken.session === activeEditSessionRef.current;
 
   useEffect(
     () => () => {
@@ -122,23 +218,18 @@ export function MarketOperationsPanel({
     [],
   );
   useEffect(() => {
-    const dialog = createDialogRef.current;
-    if (!poolDialogOpen || dialog === null) return;
-    if (!dialog.open) {
-      if (typeof dialog.showModal === 'function') dialog.showModal();
-      else dialog.setAttribute('open', '');
-    }
-    createNameRef.current?.focus();
-  }, [poolDialogOpen]);
+    if (createDialogMode === 'discard') createContinueRef.current?.focus();
+  }, [createDialogMode]);
   useEffect(() => {
-    const dialog = editDialogRef.current;
-    if (!editDialogOpen || dialog === null) return;
-    if (!dialog.open) {
-      if (typeof dialog.showModal === 'function') dialog.showModal();
-      else dialog.setAttribute('open', '');
-    }
-    editNameRef.current?.focus();
-  }, [editDialogOpen]);
+    if (editDialogMode === 'discard') editContinueRef.current?.focus();
+    if (editDialogMode === 'delete') keepPoolRef.current?.focus();
+  }, [editDialogMode]);
+  useLayoutEffect(() => {
+    if (createBusy) createStatusRef.current?.focus();
+  }, [createBusy]);
+  useLayoutEffect(() => {
+    if (editBusy) editStatusRef.current?.focus();
+  }, [editBusy]);
 
   async function withSignal<T>(
     operation: (signal: AbortSignal) => Promise<T>,
@@ -172,6 +263,239 @@ export function MarketOperationsPanel({
       }),
   });
 
+  function captureFocusedElement(): HTMLElement | null {
+    return document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
+  }
+
+  function restoreConfirmationOrigin(
+    originRef: { current: HTMLElement | null },
+    fallbackRef: { readonly current: HTMLElement | null },
+  ) {
+    const origin = originRef.current;
+    originRef.current = null;
+    window.setTimeout(() => {
+      if (origin?.isConnected && !origin.matches(':disabled')) origin.focus();
+      if (document.activeElement !== origin) fallbackRef.current?.focus();
+    }, 0);
+  }
+
+  function openCreateEditor() {
+    if (createPendingRef.current !== null) {
+      createStatusRef.current?.focus();
+      return;
+    }
+    const session = nextDialogSessionRef.current + 1;
+    nextDialogSessionRef.current = session;
+    activeCreateSessionRef.current = session;
+    createDraftRevisionRef.current = 0;
+    createPendingRef.current = null;
+    const baseline = poolDraft('', [], '');
+    createBaselineRef.current = baseline;
+    setPoolName(baseline.name);
+    setPoolSymbols([...baseline.symbols]);
+    setPoolSearch(baseline.search);
+    setCreatePendingToken(null);
+    setCreateIssue(null);
+    setCreateDialogMode('editor');
+    setPoolDialogOpen(true);
+  }
+
+  function reviseCreateDraft(change: () => void) {
+    if (createPendingRef.current !== null) return;
+    createDraftRevisionRef.current += 1;
+    change();
+  }
+
+  function closeCreateEditor(writeSettled = false) {
+    if (!writeSettled && createPendingRef.current !== null) {
+      createStatusRef.current?.focus();
+      return;
+    }
+    activeCreateSessionRef.current = null;
+    createPendingRef.current = null;
+    setCreatePendingToken(null);
+    setPoolDialogOpen(false);
+  }
+
+  function requestCreateClose() {
+    if (createPendingRef.current !== null) {
+      createStatusRef.current?.focus();
+      return;
+    }
+    if (
+      !poolDraftsMatch(
+        poolDraft(poolName, poolSymbols, poolSearch),
+        createBaselineRef.current,
+      )
+    ) {
+      createConfirmationOriginRef.current = captureFocusedElement();
+      setCreateDialogMode('discard');
+      return;
+    }
+    closeCreateEditor();
+  }
+
+  function returnToCreateEditor() {
+    if (createPendingRef.current !== null) {
+      createStatusRef.current?.focus();
+      return;
+    }
+    setCreateDialogMode('editor');
+    restoreConfirmationOrigin(createConfirmationOriginRef, createNameRef);
+  }
+
+  function discardCreateDraft() {
+    if (createPendingRef.current !== null) {
+      createStatusRef.current?.focus();
+      return;
+    }
+    const baseline = createBaselineRef.current;
+    setPoolName(baseline.name);
+    setPoolSymbols([...baseline.symbols]);
+    setPoolSearch(baseline.search);
+    setCreateDialogMode('editor');
+    closeCreateEditor();
+  }
+
+  function openEditEditor() {
+    if (editPendingRef.current !== null || deletePendingRef.current !== null) {
+      editStatusRef.current?.focus();
+      return;
+    }
+    if (
+      selectedPool?.kind !== 'custom' ||
+      selectedPool.revision === null ||
+      selectedPool.revision === undefined
+    )
+      return;
+    const session = nextDialogSessionRef.current + 1;
+    nextDialogSessionRef.current = session;
+    activeEditSessionRef.current = session;
+    activeEditPoolRef.current = {
+      id: selectedPool.id,
+      revision: selectedPool.revision,
+    };
+    editDraftRevisionRef.current = 0;
+    editPendingRef.current = null;
+    const baseline = poolDraft(selectedPool.name, selectedPool.symbols, '');
+    editBaselineRef.current = baseline;
+    setEditName(baseline.name);
+    setEditSymbols([...baseline.symbols]);
+    setPoolSearch(baseline.search);
+    setEditPendingToken(null);
+    setEditIssue(null);
+    setDeleteIssue(null);
+    setEditDialogMode('editor');
+    setEditDialogOpen(true);
+  }
+
+  function reviseEditDraft(change: () => void) {
+    if (editPendingRef.current !== null || deletePendingRef.current !== null)
+      return;
+    editDraftRevisionRef.current += 1;
+    change();
+  }
+
+  function closeEditEditor(writeSettled = false) {
+    if (!writeSettled && editPendingRef.current !== null) {
+      editStatusRef.current?.focus();
+      return;
+    }
+    if (!writeSettled && deletePendingRef.current !== null) {
+      deleteStatusRef.current?.focus();
+      return;
+    }
+    activeEditSessionRef.current = null;
+    activeEditPoolRef.current = null;
+    editPendingRef.current = null;
+    deletePendingRef.current = null;
+    setEditPendingToken(null);
+    setEditDialogOpen(false);
+  }
+
+  function requestEditClose() {
+    if (editPendingRef.current !== null) {
+      editStatusRef.current?.focus();
+      return;
+    }
+    if (deletePendingRef.current !== null) {
+      deleteStatusRef.current?.focus();
+      return;
+    }
+    if (
+      !poolDraftsMatch(
+        poolDraft(editName, editSymbols, poolSearch),
+        editBaselineRef.current,
+      )
+    ) {
+      editConfirmationOriginRef.current = captureFocusedElement();
+      setEditDialogMode('discard');
+      return;
+    }
+    closeEditEditor();
+  }
+
+  function returnToEditEditor() {
+    if (deletePendingRef.current !== null) {
+      deleteStatusRef.current?.focus();
+      return;
+    }
+    setDeleteIssue(null);
+    setEditDialogMode('editor');
+    restoreConfirmationOrigin(editConfirmationOriginRef, editNameRef);
+  }
+
+  function discardEditDraft() {
+    if (editPendingRef.current !== null) {
+      editStatusRef.current?.focus();
+      return;
+    }
+    if (deletePendingRef.current !== null) {
+      deleteStatusRef.current?.focus();
+      return;
+    }
+    const baseline = editBaselineRef.current;
+    setEditName(baseline.name);
+    setEditSymbols([...baseline.symbols]);
+    setPoolSearch(baseline.search);
+    setEditDialogMode('editor');
+    closeEditEditor();
+  }
+
+  function requestDeletePool() {
+    if (editPendingRef.current !== null || deletePendingRef.current !== null)
+      return;
+    editConfirmationOriginRef.current = captureFocusedElement();
+    setDeleteIssue(null);
+    setEditDialogMode('delete');
+  }
+
+  function handleCreateEscape() {
+    if (createDialogMode === 'discard') {
+      returnToCreateEditor();
+      return;
+    }
+    requestCreateClose();
+  }
+
+  function handleEditEscape() {
+    if (deletePendingRef.current !== null) {
+      deleteStatusRef.current?.focus();
+      return;
+    }
+    if (editPendingRef.current !== null) {
+      editStatusRef.current?.focus();
+      return;
+    }
+    if (editDialogMode !== 'editor') {
+      returnToEditEditor();
+      return;
+    }
+    requestEditClose();
+  }
+
   function payload(): MarketUpdatePayload {
     return {
       symbols: scopeSymbols,
@@ -182,73 +506,191 @@ export function MarketOperationsPanel({
     };
   }
 
+  function submitCreatePool() {
+    const session = activeCreateSessionRef.current;
+    if (
+      session === null ||
+      createPendingRef.current !== null ||
+      poolName.trim().length === 0 ||
+      poolSymbols.length === 0
+    )
+      return;
+    const request: CreatePoolRequest = {
+      session,
+      revision: createDraftRevisionRef.current,
+      draft: poolDraft(poolName, poolSymbols, poolSearch),
+    };
+    createPendingRef.current = request;
+    createStatusRef.current?.focus();
+    setCreateIssue(null);
+    setCreatePendingToken(request);
+    createPool.mutate(request);
+  }
+
+  function submitUpdatePool() {
+    const session = activeEditSessionRef.current;
+    const pool = activeEditPoolRef.current;
+    if (
+      session === null ||
+      pool === null ||
+      editPendingRef.current !== null ||
+      deletePendingRef.current !== null ||
+      editName.trim().length === 0 ||
+      editSymbols.length === 0
+    )
+      return;
+    const request: UpdatePoolRequest = {
+      session,
+      revision: editDraftRevisionRef.current,
+      draft: poolDraft(editName, editSymbols, poolSearch),
+      expectedRevision: pool.revision,
+      poolId: pool.id,
+    };
+    editPendingRef.current = request;
+    editStatusRef.current?.focus();
+    setEditIssue(null);
+    setEditPendingToken(request);
+    updatePool.mutate(request);
+  }
+
+  function submitDeletePool() {
+    const session = activeEditSessionRef.current;
+    const pool = activeEditPoolRef.current;
+    if (
+      session === null ||
+      pool === null ||
+      editPendingRef.current !== null ||
+      deletePendingRef.current !== null
+    )
+      return;
+    const request: DeletePoolRequest = {
+      session,
+      poolId: pool.id,
+      expectedRevision: pool.revision,
+    };
+    deletePendingRef.current = request;
+    setDeleteIssue(null);
+    deleteStatusRef.current?.focus();
+    deletePool.mutate(request);
+  }
+
   const createPool = useMutation({
-    mutationFn: () =>
+    mutationFn: (request: CreatePoolRequest) =>
       withSignal((signal) =>
-        api.createPool({ name: poolName, symbols: poolSymbols }, { signal }),
+        api.createPool(
+          { name: request.draft.name, symbols: request.draft.symbols },
+          { signal },
+        ),
       ),
-    onSuccess: async () => {
-      setPoolDialogOpen(false);
-      setPoolName('');
-      setPoolSymbols([]);
+    onSuccess: async (_createdPool, request) => {
+      if (
+        activeCreateSessionRef.current === request.session &&
+        createDraftRevisionRef.current === request.revision
+      ) {
+        setCreateDialogMode('editor');
+        closeCreateEditor(true);
+        setPoolName('');
+        setPoolSymbols([]);
+        setPoolSearch('');
+      }
       await queryClient.invalidateQueries({ queryKey: ['market', 'pools'] });
+    },
+    onError: (error, request) => {
+      if (
+        activeCreateSessionRef.current === request.session &&
+        createDraftRevisionRef.current === request.revision
+      )
+        setCreateIssue(error);
+    },
+    onSettled: (_data, _error, request) => {
+      if (!tokensMatch(createPendingRef.current, request)) return;
+      createPendingRef.current = null;
+      setCreatePendingToken((current) =>
+        tokensMatch(current, request) ? null : current,
+      );
     },
   });
   const updatePool = useMutation({
-    mutationFn: () => {
-      if (
-        selectedPool?.kind !== 'custom' ||
-        selectedPool.revision === null ||
-        selectedPool.revision === undefined
-      )
-        throw new Error('Custom pool revision is missing');
+    mutationFn: (request: UpdatePoolRequest) => {
       return withSignal((signal) =>
         api.updatePool(
-          selectedPool.id,
+          request.poolId,
           {
-            expectedRevision: selectedPool.revision as number,
-            name: editName,
-            symbols: editSymbols,
+            expectedRevision: request.expectedRevision,
+            name: request.draft.name,
+            symbols: request.draft.symbols,
           },
           { signal },
         ),
       );
     },
-    onSuccess: async () => {
-      setEditDialogOpen(false);
+    onSuccess: async (_updatedPool, request) => {
+      if (
+        activeEditSessionRef.current === request.session &&
+        editDraftRevisionRef.current === request.revision &&
+        activeEditPoolRef.current?.id === request.poolId &&
+        activeEditPoolRef.current.revision === request.expectedRevision
+      ) {
+        setEditDialogMode('editor');
+        closeEditEditor(true);
+      }
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['market', 'pools'] }),
         queryClient.invalidateQueries({
-          queryKey: ['market', 'pool', selectedPool?.id],
+          queryKey: ['market', 'pool', request.poolId],
         }),
       ]);
     },
-  });
-  const deletePool = useMutation({
-    mutationFn: () => {
+    onError: (error, request) => {
       if (
-        selectedPool?.kind !== 'custom' ||
-        selectedPool.revision === null ||
-        selectedPool.revision === undefined
+        activeEditSessionRef.current === request.session &&
+        editDraftRevisionRef.current === request.revision &&
+        activeEditPoolRef.current?.id === request.poolId &&
+        activeEditPoolRef.current.revision === request.expectedRevision
       )
-        throw new Error('Custom pool revision is missing');
-      return withSignal((signal) =>
-        api.deletePool(selectedPool.id, selectedPool.revision as number, {
-          signal,
-        }),
+        setEditIssue(error);
+    },
+    onSettled: (_data, _error, request) => {
+      if (!tokensMatch(editPendingRef.current, request)) return;
+      editPendingRef.current = null;
+      setEditPendingToken((current) =>
+        tokensMatch(current, request) ? null : current,
       );
     },
-    onSuccess: async () => {
-      setEditDialogOpen(false);
+  });
+  const deletePool = useMutation({
+    mutationFn: (request: DeletePoolRequest) => {
+      return withSignal((signal) =>
+        api.deletePool(request.poolId, request.expectedRevision, { signal }),
+      );
+    },
+    onSuccess: async (_deleted, request) => {
+      setEditDialogMode('editor');
+      closeEditEditor(true);
       onPoolDeleted?.();
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['market', 'pools'] }),
         queryClient.invalidateQueries({
-          queryKey: ['market', 'pool', selectedPool?.id],
+          queryKey: ['market', 'pool', request.poolId],
         }),
       ]);
     },
+    onError: (error, request) => {
+      if (
+        activeEditSessionRef.current === request.session &&
+        activeEditPoolRef.current?.id === request.poolId &&
+        activeEditPoolRef.current.revision === request.expectedRevision
+      )
+        setDeleteIssue(error);
+    },
+    onSettled: (_data, _error, request) => {
+      if (deletePendingRef.current !== request) return;
+      deletePendingRef.current = null;
+    },
   });
+  useLayoutEffect(() => {
+    if (deletePool.isPending) deleteStatusRef.current?.focus();
+  }, [deletePool.isPending]);
   const createUpdate = useMutation({
     mutationFn: () =>
       withSignal((signal) => api.createUpdate(payload(), { signal })),
@@ -403,20 +845,11 @@ export function MarketOperationsPanel({
       <p>更新只在明确启动后访问已配置数据源；图表始终只读本地缓存。</p>
 
       <div className="market-operation-actions">
-        <button type="button" onClick={() => setPoolDialogOpen(true)}>
+        <button ref={createTriggerRef} type="button" onClick={openCreateEditor}>
           新建自定义池
         </button>
         {selectedPool?.kind === 'custom' ? (
-          <button
-            type="button"
-            onClick={() => {
-              setEditName(selectedPool.name);
-              setEditSymbols([...selectedPool.symbols]);
-              setPoolSearch('');
-              setDeleteConfirmation(false);
-              setEditDialogOpen(true);
-            }}
-          >
+          <button ref={editTriggerRef} type="button" onClick={openEditEditor}>
             编辑当前股票池
           </button>
         ) : null}
@@ -430,244 +863,411 @@ export function MarketOperationsPanel({
       </div>
 
       {poolDialogOpen ? (
-        <dialog
-          ref={createDialogRef}
-          aria-labelledby="create-pool-title"
-          onCancel={(event) => {
-            event.preventDefault();
-            setPoolDialogOpen(false);
-          }}
+        <ModalDialog
+          backdropClassName="market-pool-backdrop"
+          aria-busy={createBusy}
+          aria-labelledby={
+            createDialogMode === 'discard'
+              ? 'create-pool-discard-title'
+              : 'create-pool-title'
+          }
+          initialFocusRef={createNameRef}
+          returnFocusRef={createTriggerRef}
+          onEscape={handleCreateEscape}
         >
-          <h4 id="create-pool-title">新建自定义池</h4>
-          <label>
-            股票池名称
-            <input
-              aria-label="股票池名称"
-              ref={createNameRef}
-              value={poolName}
-              maxLength={64}
-              onChange={(event) => setPoolName(event.currentTarget.value)}
-            />
-          </label>
-          {selectedInstrument === null ? (
-            <p>先搜索并选择证券，再加入股票池。</p>
-          ) : (
-            <button
-              type="button"
-              disabled={poolSymbols.includes(selectedInstrument.symbol)}
-              onClick={() =>
-                setPoolSymbols((symbols) => [
-                  ...symbols,
-                  selectedInstrument.symbol,
-                ])
-              }
-            >
-              加入{selectedInstrument.name} {selectedInstrument.symbol}
-            </button>
-          )}
-          <label>
-            搜索更多证券
-            <input
-              aria-label="搜索更多证券"
-              value={poolSearch}
-              onChange={(event) => setPoolSearch(event.currentTarget.value)}
-            />
-          </label>
-          {poolSearchResults.data !== undefined ? (
-            <ul aria-label="可加入证券">
-              {poolSearchResults.data.slice(0, 20).map((instrument) => (
-                <li key={instrument.symbol}>
+          <div
+            hidden={createDialogMode !== 'editor'}
+            inert={createDialogMode !== 'editor'}
+            aria-hidden={createDialogMode !== 'editor'}
+          >
+            <h4 id="create-pool-title">新建自定义池</h4>
+            <label>
+              股票池名称
+              <input
+                aria-label="股票池名称"
+                ref={createNameRef}
+                value={poolName}
+                maxLength={64}
+                disabled={createBusy}
+                onChange={(event) =>
+                  reviseCreateDraft(() =>
+                    setPoolName(event.currentTarget.value),
+                  )
+                }
+              />
+            </label>
+            {selectedInstrument === null ? (
+              <p>先搜索并选择证券，再加入股票池。</p>
+            ) : (
+              <button
+                type="button"
+                disabled={
+                  createBusy || poolSymbols.includes(selectedInstrument.symbol)
+                }
+                onClick={() =>
+                  reviseCreateDraft(() =>
+                    setPoolSymbols((symbols) => [
+                      ...symbols,
+                      selectedInstrument.symbol,
+                    ]),
+                  )
+                }
+              >
+                加入{selectedInstrument.name} {selectedInstrument.symbol}
+              </button>
+            )}
+            <label>
+              搜索更多证券
+              <input
+                aria-label="搜索更多证券"
+                value={poolSearch}
+                disabled={createBusy}
+                onChange={(event) =>
+                  reviseCreateDraft(() =>
+                    setPoolSearch(event.currentTarget.value),
+                  )
+                }
+              />
+            </label>
+            {poolSearchResults.data !== undefined ? (
+              <ul aria-label="可加入证券">
+                {poolSearchResults.data.slice(0, 20).map((instrument) => (
+                  <li key={instrument.symbol}>
+                    <button
+                      type="button"
+                      disabled={
+                        createBusy || poolSymbols.includes(instrument.symbol)
+                      }
+                      onClick={() =>
+                        reviseCreateDraft(() =>
+                          setPoolSymbols((symbols) => [
+                            ...symbols,
+                            instrument.symbol,
+                          ]),
+                        )
+                      }
+                    >
+                      加入 {instrument.name} {instrument.symbol}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+            <ol aria-label="新股票池成员">
+              {poolSymbols.map((symbol, index) => (
+                <li key={symbol}>
+                  <span>{symbol}</span>
                   <button
                     type="button"
-                    disabled={poolSymbols.includes(instrument.symbol)}
+                    aria-label={`移除 ${symbol}`}
+                    disabled={createBusy}
                     onClick={() =>
-                      setPoolSymbols((symbols) => [
-                        ...symbols,
-                        instrument.symbol,
-                      ])
+                      reviseCreateDraft(() =>
+                        setPoolSymbols((symbols) =>
+                          symbols.filter(
+                            (_item, itemIndex) => itemIndex !== index,
+                          ),
+                        ),
+                      )
                     }
                   >
-                    加入 {instrument.name} {instrument.symbol}
+                    移除
                   </button>
                 </li>
               ))}
-            </ul>
-          ) : null}
-          <ol aria-label="新股票池成员">
-            {poolSymbols.map((symbol, index) => (
-              <li key={symbol}>
-                <span>{symbol}</span>
-                <button
-                  type="button"
-                  aria-label={`移除 ${symbol}`}
-                  onClick={() =>
-                    setPoolSymbols((symbols) =>
-                      symbols.filter((_item, itemIndex) => itemIndex !== index),
-                    )
-                  }
-                >
-                  移除
-                </button>
-              </li>
-            ))}
-          </ol>
-          {createPool.isError ? (
-            <p role="alert">
-              股票池创建失败，请检查成员。
-              {poolIssueText(createPool.error) ?? ''}
+            </ol>
+            <p
+              ref={createStatusRef}
+              className="pool-mutation-status"
+              role="status"
+              tabIndex={-1}
+            >
+              {createBusy ? '正在创建股票池，请稍候。' : ''}
             </p>
+            {createIssue !== null ? (
+              <p role="alert">
+                股票池创建失败，请检查成员。
+                {poolIssueText(createIssue) ?? ''}
+              </p>
+            ) : null}
+            <button
+              type="button"
+              disabled={
+                createBusy ||
+                poolName.trim().length === 0 ||
+                poolSymbols.length === 0
+              }
+              onClick={submitCreatePool}
+            >
+              {createBusy ? '正在创建…' : '创建股票池'}
+            </button>
+            <button type="button" onClick={requestCreateClose}>
+              取消
+            </button>
+          </div>
+          {createDialogMode === 'discard' ? (
+            <section
+              role="alertdialog"
+              aria-labelledby="create-pool-discard-title"
+              aria-describedby="create-pool-discard-description"
+            >
+              <h4 id="create-pool-discard-title">放弃新股票池草稿？</h4>
+              <p id="create-pool-discard-description">
+                名称、成员或搜索草稿尚未保存。继续编辑可保留这些更改。
+              </p>
+              <button
+                ref={createContinueRef}
+                type="button"
+                onClick={returnToCreateEditor}
+              >
+                继续编辑
+              </button>
+              <button type="button" onClick={discardCreateDraft}>
+                放弃更改
+              </button>
+            </section>
           ) : null}
-          <button
-            type="button"
-            disabled={poolName.trim().length === 0 || poolSymbols.length === 0}
-            onClick={() => createPool.mutate()}
-          >
-            创建股票池
-          </button>
-          <button type="button" onClick={() => setPoolDialogOpen(false)}>
-            取消
-          </button>
-        </dialog>
+        </ModalDialog>
       ) : null}
 
       {editDialogOpen && selectedPool?.kind === 'custom' ? (
-        <dialog
-          ref={editDialogRef}
-          aria-labelledby="edit-pool-title"
-          onCancel={(event) => {
-            event.preventDefault();
-            setEditDialogOpen(false);
-          }}
+        <ModalDialog
+          backdropClassName="market-pool-backdrop"
+          aria-busy={editBusy || deletePool.isPending}
+          aria-labelledby={
+            editDialogMode === 'discard'
+              ? 'edit-pool-discard-title'
+              : editDialogMode === 'delete'
+                ? 'edit-pool-delete-title'
+                : 'edit-pool-title'
+          }
+          initialFocusRef={editNameRef}
+          returnFocusRef={editTriggerRef}
+          onEscape={handleEditEscape}
         >
-          <h4 id="edit-pool-title">编辑自定义池</h4>
-          <label>
-            股票池名称
-            <input
-              ref={editNameRef}
-              value={editName}
-              onChange={(event) => setEditName(event.currentTarget.value)}
-            />
-          </label>
-          <ol aria-label="编辑股票池成员">
-            {editSymbols.map((symbol, index) => (
-              <li key={symbol}>
-                {symbol}
-                <button
-                  type="button"
-                  aria-label={`上移 ${symbol}`}
-                  disabled={index === 0}
-                  onClick={() =>
-                    setEditSymbols((symbols) => {
-                      const next = [...symbols];
-                      [next[index - 1], next[index]] = [
-                        next[index],
-                        next[index - 1],
-                      ];
-                      return next;
-                    })
-                  }
-                >
-                  上移
-                </button>
-                <button
-                  type="button"
-                  aria-label={`下移 ${symbol}`}
-                  disabled={index === editSymbols.length - 1}
-                  onClick={() =>
-                    setEditSymbols((symbols) => {
-                      const next = [...symbols];
-                      [next[index], next[index + 1]] = [
-                        next[index + 1],
-                        next[index],
-                      ];
-                      return next;
-                    })
-                  }
-                >
-                  下移
-                </button>
-                <button
-                  type="button"
-                  aria-label={`移除 ${symbol}`}
-                  onClick={() =>
-                    setEditSymbols((symbols) =>
-                      symbols.filter((_item, itemIndex) => itemIndex !== index),
-                    )
-                  }
-                >
-                  移除
-                </button>
-              </li>
-            ))}
-          </ol>
-          <label>
-            搜索并加入证券
-            <input
-              aria-label="编辑池搜索证券"
-              value={poolSearch}
-              onChange={(event) => setPoolSearch(event.currentTarget.value)}
-            />
-          </label>
-          {poolSearchResults.data !== undefined ? (
-            <ul aria-label="编辑池可加入证券">
-              {poolSearchResults.data.slice(0, 20).map((instrument) => (
-                <li key={instrument.symbol}>
+          <div
+            hidden={editDialogMode !== 'editor'}
+            inert={editDialogMode !== 'editor'}
+            aria-hidden={editDialogMode !== 'editor'}
+          >
+            <h4 id="edit-pool-title">编辑自定义池</h4>
+            <label>
+              股票池名称
+              <input
+                ref={editNameRef}
+                value={editName}
+                disabled={editBusy || deletePool.isPending}
+                onChange={(event) =>
+                  reviseEditDraft(() => setEditName(event.currentTarget.value))
+                }
+              />
+            </label>
+            <ol aria-label="编辑股票池成员">
+              {editSymbols.map((symbol, index) => (
+                <li key={symbol}>
+                  {symbol}
                   <button
                     type="button"
-                    disabled={editSymbols.includes(instrument.symbol)}
+                    aria-label={`上移 ${symbol}`}
+                    disabled={editBusy || deletePool.isPending || index === 0}
                     onClick={() =>
-                      setEditSymbols((symbols) => [
-                        ...symbols,
-                        instrument.symbol,
-                      ])
+                      reviseEditDraft(() =>
+                        setEditSymbols((symbols) => {
+                          const next = [...symbols];
+                          [next[index - 1], next[index]] = [
+                            next[index],
+                            next[index - 1],
+                          ];
+                          return next;
+                        }),
+                      )
                     }
                   >
-                    加入 {instrument.name} {instrument.symbol}
+                    上移
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`下移 ${symbol}`}
+                    disabled={
+                      editBusy ||
+                      deletePool.isPending ||
+                      index === editSymbols.length - 1
+                    }
+                    onClick={() =>
+                      reviseEditDraft(() =>
+                        setEditSymbols((symbols) => {
+                          const next = [...symbols];
+                          [next[index], next[index + 1]] = [
+                            next[index + 1],
+                            next[index],
+                          ];
+                          return next;
+                        }),
+                      )
+                    }
+                  >
+                    下移
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`移除 ${symbol}`}
+                    disabled={editBusy || deletePool.isPending}
+                    onClick={() =>
+                      reviseEditDraft(() =>
+                        setEditSymbols((symbols) =>
+                          symbols.filter(
+                            (_item, itemIndex) => itemIndex !== index,
+                          ),
+                        ),
+                      )
+                    }
+                  >
+                    移除
                   </button>
                 </li>
               ))}
-            </ul>
-          ) : null}
-          {updatePool.isError ? (
-            <p role="alert">
-              股票池保存失败，请检查成员。
-              {poolIssueText(updatePool.error) ?? ''}
+            </ol>
+            <label>
+              搜索并加入证券
+              <input
+                aria-label="编辑池搜索证券"
+                value={poolSearch}
+                disabled={editBusy || deletePool.isPending}
+                onChange={(event) =>
+                  reviseEditDraft(() =>
+                    setPoolSearch(event.currentTarget.value),
+                  )
+                }
+              />
+            </label>
+            {poolSearchResults.data !== undefined ? (
+              <ul aria-label="编辑池可加入证券">
+                {poolSearchResults.data.slice(0, 20).map((instrument) => (
+                  <li key={instrument.symbol}>
+                    <button
+                      type="button"
+                      disabled={
+                        editBusy ||
+                        deletePool.isPending ||
+                        editSymbols.includes(instrument.symbol)
+                      }
+                      onClick={() =>
+                        reviseEditDraft(() =>
+                          setEditSymbols((symbols) => [
+                            ...symbols,
+                            instrument.symbol,
+                          ]),
+                        )
+                      }
+                    >
+                      加入 {instrument.name} {instrument.symbol}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+            <p
+              ref={editStatusRef}
+              className="pool-mutation-status"
+              role="status"
+              tabIndex={-1}
+            >
+              {editBusy ? '正在保存股票池，请稍候。' : ''}
             </p>
-          ) : null}
-          <button
-            type="button"
-            disabled={editName.trim().length === 0 || editSymbols.length === 0}
-            onClick={() => updatePool.mutate()}
-          >
-            保存股票池
-          </button>
-          {deleteConfirmation ? (
-            <div role="alert" className="pool-delete-confirmation">
-              <p>删除后无法撤销，确认删除“{selectedPool.name}”？</p>
+            {editIssue !== null ? (
+              <p role="alert">
+                股票池保存失败，请检查成员。
+                {poolIssueText(editIssue) ?? ''}
+              </p>
+            ) : null}
+            <button
+              type="button"
+              disabled={
+                editBusy ||
+                deletePool.isPending ||
+                editName.trim().length === 0 ||
+                editSymbols.length === 0
+              }
+              onClick={submitUpdatePool}
+            >
+              {editBusy ? '正在保存…' : '保存股票池'}
+            </button>
+            <button
+              type="button"
+              disabled={editBusy || deletePool.isPending}
+              onClick={requestDeletePool}
+            >
+              删除股票池
+            </button>
+            <button type="button" onClick={requestEditClose}>
+              取消
+            </button>
+          </div>
+          {editDialogMode === 'discard' ? (
+            <section
+              role="alertdialog"
+              aria-labelledby="edit-pool-discard-title"
+              aria-describedby="edit-pool-discard-description"
+            >
+              <h4 id="edit-pool-discard-title">放弃股票池更改？</h4>
+              <p id="edit-pool-discard-description">
+                名称、成员顺序或搜索草稿尚未保存。继续编辑可保留这些更改。
+              </p>
               <button
+                ref={editContinueRef}
                 type="button"
-                disabled={deletePool.isPending}
-                onClick={() => deletePool.mutate()}
+                onClick={returnToEditEditor}
               >
-                确认删除
+                继续编辑
               </button>
+              <button type="button" onClick={discardEditDraft}>
+                放弃更改
+              </button>
+            </section>
+          ) : null}
+          {editDialogMode === 'delete' ? (
+            <section
+              role="alertdialog"
+              className="pool-delete-confirmation"
+              aria-labelledby="edit-pool-delete-title"
+              aria-describedby="edit-pool-delete-description"
+            >
+              <h4 id="edit-pool-delete-title">确认删除股票池？</h4>
+              <p id="edit-pool-delete-description">
+                删除后无法撤销，确认删除“{selectedPool.name}”？
+              </p>
+              <p
+                ref={deleteStatusRef}
+                className="pool-mutation-status"
+                role="status"
+                tabIndex={-1}
+              >
+                {deletePool.isPending ? '正在删除股票池，请稍候。' : ''}
+              </p>
+              {deleteIssue !== null ? (
+                <p role="alert">
+                  股票池删除失败，请重试或返回编辑。
+                  {poolIssueText(deleteIssue) ?? ''}
+                </p>
+              ) : null}
               <button
+                ref={keepPoolRef}
                 type="button"
                 disabled={deletePool.isPending}
-                onClick={() => setDeleteConfirmation(false)}
+                onClick={returnToEditEditor}
               >
                 保留股票池
               </button>
-            </div>
-          ) : (
-            <button type="button" onClick={() => setDeleteConfirmation(true)}>
-              删除股票池
-            </button>
-          )}
-          <button type="button" onClick={() => setEditDialogOpen(false)}>
-            取消
-          </button>
-        </dialog>
+              <button
+                type="button"
+                disabled={deletePool.isPending}
+                onClick={submitDeletePool}
+              >
+                确认删除
+              </button>
+            </section>
+          ) : null}
+        </ModalDialog>
       ) : null}
 
       <fieldset>

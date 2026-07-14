@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
 
+import theme from '../../app/theme.css?raw';
 import type { MarketBar } from './marketApi';
 import {
   buildFormulaMarketChartOption,
@@ -69,6 +70,24 @@ const bars = [
     direction: 'fall',
   },
 ] as const satisfies readonly MarketBar[];
+
+it('wraps the live OHLCV status instead of creating a keyboard-inaccessible scroller', () => {
+  const readoutStyles = theme.slice(
+    theme.indexOf('.market-ohlcv-readout {'),
+    theme.indexOf('.chart-interaction-hint'),
+  );
+
+  expect(readoutStyles).toContain('flex-wrap: wrap');
+  expect(readoutStyles).toContain('white-space: normal');
+  expect(readoutStyles).toContain('overflow-wrap: anywhere');
+  expect(readoutStyles).not.toContain('overflow-x: auto');
+
+  render(<MarketChart bars={bars} />);
+  const readout = screen.getByRole('status', { name: '当前 K 线 OHLCV' });
+  expect(readout).toHaveAttribute('aria-live', 'polite');
+  expect(readout).toHaveAttribute('aria-atomic', 'true');
+  expect(readout).not.toHaveAttribute('tabindex');
+});
 
 class ResizeObserverMock {
   static callback: ResizeObserverCallback | null = null;

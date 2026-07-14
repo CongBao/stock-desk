@@ -125,8 +125,8 @@ a {
 }
 
 .global-theme-control {
-  position: fixed;
-  /* Responsive context drawers must remain the top-most interactive surface. */
+  position: absolute;
+  /* Reserve this top-bar slot instead of floating over scrolled page forms. */
   z-index: 20;
   top: 10px;
   right: 18px;
@@ -738,11 +738,20 @@ a {
   background: var(--surface-0);
 }
 
-.desktop-task-recovery > section {
+.desktop-task-recovery-backdrop {
+  display: contents;
+}
+
+.desktop-task-recovery-dialog {
   width: min(560px, 100%);
+  max-width: calc(100vw - 32px);
+  max-height: calc(100dvh - 32px);
+  margin: auto;
   padding: 28px;
+  overflow: auto;
   border: 1px solid var(--border-strong);
   border-radius: 12px;
+  color: var(--text-primary);
   background: var(--surface-1);
   box-shadow: 0 24px 72px var(--shadow-color);
 }
@@ -2518,7 +2527,7 @@ a {
 .read-only-badge,
 .cache-only-badge {
   padding: 4px 6px;
-  border: 1px solid rgba(56, 189, 248, 0.28);
+  border: 1px solid color-mix(in srgb, var(--accent) 32%, transparent);
   border-radius: 999px;
   color: var(--accent);
   background: var(--accent-soft);
@@ -2547,7 +2556,7 @@ a {
   border: 1px solid transparent;
   border-radius: 6px;
   color: var(--text-secondary);
-  background: rgba(7, 17, 31, 0.56);
+  background: var(--surface-0);
   text-align: left;
   cursor: pointer;
 }
@@ -2555,7 +2564,7 @@ a {
 .pool-list button[aria-pressed='true'],
 .pool-list button:hover,
 .pool-members button:hover {
-  border-color: rgba(56, 189, 248, 0.3);
+  border-color: color-mix(in srgb, var(--accent) 36%, transparent);
   color: var(--text-primary);
   background: var(--accent-soft);
 }
@@ -2572,15 +2581,20 @@ a {
   font-size: 9px;
 }
 
+.pool-list strong,
+.pool-members strong {
+  color: var(--text-primary);
+}
+
 .pool-list em {
   flex: 0 0 auto;
-  color: #7dd3fc;
+  color: var(--accent);
   font-size: 9px;
   font-style: normal;
 }
 
 .pool-list em[data-kind='custom'] {
-  color: #c4b5fd;
+  color: color-mix(in srgb, var(--warning) 88%, var(--text-primary));
 }
 
 .pool-guidance,
@@ -2736,18 +2750,52 @@ a {
 }
 
 .market-watchlist-action {
-  border-color: rgba(56, 189, 248, 0.4);
+  border-color: color-mix(in srgb, var(--accent) 42%, transparent);
   color: var(--accent);
 }
 
 .market-pool-backdrop {
-  position: fixed;
-  z-index: 90;
-  inset: 0;
-  display: grid;
-  place-items: center;
-  padding: 16px;
-  background: rgba(2, 8, 18, 0.7);
+  display: contents;
+}
+
+.market-pool-backdrop dialog::backdrop {
+  background: var(--scrim);
+  backdrop-filter: blur(3px);
+}
+
+.market-formula-subchart-control {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--text-secondary);
+  background: var(--surface-2);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.market-formula-subchart-control span {
+  min-width: 0;
+  flex: 1 1 120px;
+  overflow-wrap: anywhere;
+}
+
+.market-formula-subchart-control button {
+  min-width: 0;
+  min-height: 34px;
+  max-width: 100%;
+  flex: 0 1 auto;
+  padding: 5px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  color: var(--text-primary);
+  background: var(--surface-1);
+  cursor: pointer;
+  white-space: normal;
 }
 
 .market-pool-workflow {
@@ -2758,7 +2806,7 @@ a {
   border: 1px solid var(--border-strong);
   border-radius: 11px;
   background: var(--surface-1);
-  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.55);
+  box-shadow: 0 24px 80px var(--shadow-color);
 }
 
 .market-pool-workflow > header {
@@ -2861,14 +2909,19 @@ a {
   display: flex;
   min-height: 36px;
   align-items: center;
+  flex-wrap: wrap;
   gap: 12px;
   padding: 7px 13px;
-  overflow-x: auto;
   border-bottom: 1px solid var(--border);
   color: var(--text-secondary);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 10px;
-  white-space: nowrap;
+  white-space: normal;
+}
+
+.market-ohlcv-readout > * {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .chart-interaction-hint {
@@ -3054,18 +3107,21 @@ a {
   border: 1px solid var(--border-strong);
   border-radius: 6px;
   color: var(--text-primary);
-  background: rgba(7, 17, 31, 0.75);
+  background: var(--surface-1);
   font: inherit;
 }
 
 .market-operations button {
   padding: 6px 8px;
+  background: var(--surface-2);
   cursor: pointer;
 }
 
 .market-operations button:disabled {
+  color: var(--text-muted);
+  background: var(--surface-2);
   cursor: not-allowed;
-  opacity: 0.48;
+  opacity: 1;
 }
 
 .market-operations fieldset {
@@ -3103,12 +3159,27 @@ a {
   border: 1px solid var(--border-strong);
   border-radius: 10px;
   color: var(--text-primary);
-  background: #091727;
-  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.55);
+  background: var(--surface-1);
+  box-shadow: 0 24px 80px var(--shadow-color);
 }
 
 .market-operations dialog::backdrop {
-  background: rgba(2, 8, 18, 0.72);
+  background: var(--scrim);
+}
+
+.pool-mutation-status {
+  min-height: 1.55em;
+  margin: 6px 0;
+  color: var(--text-secondary);
+}
+
+.pool-mutation-status:empty {
+  min-height: 0;
+  margin: 0;
+}
+
+.pool-mutation-status:focus-visible {
+  border-radius: 4px;
 }
 
 .market-operations dialog ol,
@@ -3135,9 +3206,9 @@ a {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 7px;
   padding: 10px;
-  border: 1px solid rgba(239, 68, 68, 0.55);
+  border: 1px solid color-mix(in srgb, var(--danger) 55%, transparent);
   border-radius: 7px;
-  background: rgba(127, 29, 29, 0.18);
+  background: color-mix(in srgb, var(--danger) 12%, var(--surface-1));
 }
 
 .pool-delete-confirmation p {
@@ -4540,7 +4611,7 @@ a {
 .backtest-disclaimer {
   padding: 10px 12px;
   border-left: 3px solid var(--warning);
-  background: rgba(245, 158, 11, 0.08);
+  background: color-mix(in srgb, var(--warning) 9%, var(--surface-1));
 }
 .warning-text {
   color: var(--warning);
@@ -4628,7 +4699,8 @@ a {
   padding: 16px;
   border: 1px solid var(--border);
   border-radius: 9px;
-  background: rgba(7, 17, 31, 0.42);
+  color: var(--text-primary);
+  background: var(--surface-2);
 }
 
 .report-overview > header,
@@ -4687,10 +4759,10 @@ a {
 
 .report-empty-conclusion {
   padding: 12px;
-  border: 1px solid rgba(245, 158, 11, 0.35);
+  border: 1px solid color-mix(in srgb, var(--warning) 42%, transparent);
   border-radius: 8px;
   color: var(--warning);
-  background: rgba(245, 158, 11, 0.07);
+  background: color-mix(in srgb, var(--warning) 9%, var(--surface-1));
 }
 
 .report-distribution {
@@ -4753,7 +4825,7 @@ a {
 
 .report-tabs [role='tab'][aria-selected='true'],
 .grouped-metrics [role='radio'][aria-checked='true'] {
-  border-color: rgba(56, 189, 248, 0.5);
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
   color: var(--accent);
   background: var(--accent-soft);
 }
@@ -5434,7 +5506,7 @@ a {
   min-width: 112px;
   gap: 3px;
   padding: 10px;
-  border: 1px solid rgba(56, 189, 248, 0.36);
+  border: 1px solid color-mix(in srgb, var(--accent) 42%, transparent);
   border-radius: 8px;
   background: var(--accent-soft);
   text-align: right;
@@ -5453,10 +5525,10 @@ a {
 
 .rating-unavailable {
   padding: 9px;
-  border: 1px solid rgba(245, 158, 11, 0.4);
+  border: 1px solid color-mix(in srgb, var(--warning) 44%, transparent);
   border-radius: 7px;
   color: var(--warning);
-  background: rgba(245, 158, 11, 0.08);
+  background: color-mix(in srgb, var(--warning) 9%, var(--surface-1));
   font-size: 11px;
 }
 
@@ -5468,7 +5540,8 @@ a {
   padding: 13px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: rgba(7, 17, 31, 0.48);
+  color: var(--text-primary);
+  background: var(--surface-2);
 }
 
 .confidence-explanation h4,
@@ -5488,8 +5561,8 @@ a {
 }
 
 .analysis-report-alert {
-  border-color: rgba(245, 158, 11, 0.38);
-  background: rgba(245, 158, 11, 0.06);
+  border-color: color-mix(in srgb, var(--warning) 42%, transparent);
+  background: color-mix(in srgb, var(--warning) 8%, var(--surface-1));
 }
 
 .analysis-retry-actions {
@@ -5524,13 +5597,17 @@ a {
 }
 
 .analysis-claim-section button[aria-pressed='true'] {
-  border-color: rgba(56, 189, 248, 0.55);
+  border-color: color-mix(in srgb, var(--accent) 58%, transparent);
   background: var(--accent-soft);
 }
 
 .analysis-claim-section button small {
   color: var(--text-muted);
   font-size: 9px;
+}
+
+.analysis-claim-section button[aria-pressed='true'] small {
+  color: var(--text-secondary);
 }
 
 .analysis-metadata summary {
@@ -5544,7 +5621,7 @@ a {
   padding: 11px;
   border-left: 3px solid var(--warning);
   color: var(--text-muted);
-  background: rgba(245, 158, 11, 0.06);
+  background: color-mix(in srgb, var(--warning) 8%, var(--surface-1));
   font-size: 9px;
   line-height: 1.6;
 }
@@ -5561,7 +5638,7 @@ a {
   gap: 5px;
   margin-top: 10px;
   padding: 9px;
-  border: 1px solid rgba(56, 189, 248, 0.3);
+  border: 1px solid color-mix(in srgb, var(--accent) 36%, transparent);
   border-radius: 7px;
   background: var(--accent-soft);
   font-size: 9px;
@@ -6807,6 +6884,39 @@ a {
   margin-block-start: 24px;
 }
 
+/* Native modal dialogs render in the top layer, so centering, viewport bounds,
+   and the scrim must belong to the dialog rather than its document wrapper. */
+.about-backdrop,
+.model-settings-backdrop,
+.desktop-exit-backdrop,
+.desktop-update-dialog-backdrop,
+.desktop-task-recovery-backdrop {
+  display: contents;
+}
+
+.about-dialog,
+.model-settings-dialog,
+.desktop-exit-dialog,
+.desktop-update-dialog,
+.desktop-task-recovery-dialog {
+  position: fixed;
+  inset: 0;
+  box-sizing: border-box;
+  max-width: calc(100vw - 32px);
+  max-height: calc(100dvh - 32px);
+  margin: auto;
+  overflow: auto;
+}
+
+.about-dialog::backdrop,
+.model-settings-dialog::backdrop,
+.desktop-exit-dialog::backdrop,
+.desktop-update-dialog::backdrop,
+.desktop-task-recovery-dialog::backdrop {
+  background: var(--scrim);
+  backdrop-filter: blur(4px);
+}
+
 @media (max-width: 600px), (resolution >= 1.75dppx) {
   .desktop-update-notice {
     align-items: stretch;
@@ -6860,10 +6970,20 @@ a {
   inset-inline-end: 0;
   min-width: min(260px, calc(100vw - 24px));
   padding: 8px;
-  border: 1px solid var(--border-color, #c8d1dc);
+  border: 1px solid var(--border);
   border-radius: 10px;
-  background: var(--surface, #fff);
-  box-shadow: 0 12px 32px rgb(15 23 42 / 18%);
+  color: var(--text-primary);
+  background: var(--surface-1);
+  box-shadow: 0 12px 32px var(--shadow-color);
+}
+
+.guidance-help-menu button,
+.guidance-dialog button {
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  color: var(--text-primary);
+  background: var(--surface-2);
+  cursor: pointer;
 }
 
 .guidance-help-menu button {
@@ -6873,35 +6993,49 @@ a {
 }
 
 .guidance-layer {
-  position: fixed;
-  z-index: 80;
-  inset-inline: max(12px, env(safe-area-inset-left))
-    max(12px, env(safe-area-inset-right));
-  display: flex;
-  pointer-events: none;
-}
-
-.guidance-layer[data-placement='top'] {
-  inset-block-start: max(12px, env(safe-area-inset-top));
-  justify-content: center;
-}
-
-.guidance-layer[data-placement='bottom'] {
-  inset-block-end: max(12px, env(safe-area-inset-bottom));
-  justify-content: center;
+  display: contents;
 }
 
 .guidance-dialog {
+  position: fixed;
+  inset-inline: max(12px, env(safe-area-inset-left))
+    max(12px, env(safe-area-inset-right));
+  box-sizing: border-box;
   width: min(440px, 100%);
-  max-height: min(42dvh, 360px);
+  max-width: calc(
+    100vw - max(12px, env(safe-area-inset-left)) -
+      max(12px, env(safe-area-inset-right))
+  );
+  max-height: min(
+    42dvh,
+    calc(
+      100dvh - max(12px, env(safe-area-inset-top)) -
+        max(12px, env(safe-area-inset-bottom))
+    )
+  );
+  margin-inline: auto;
+  margin-block: 0;
   overflow: auto;
   padding: clamp(14px, 2vw, 20px);
-  border: 1px solid #2f7ae5;
+  border: 1px solid var(--accent);
   border-radius: 14px;
-  background: var(--surface, #fff);
-  color: var(--text-primary, #142033);
-  box-shadow: 0 18px 48px rgb(15 23 42 / 28%);
-  pointer-events: auto;
+  background: var(--surface-1);
+  color: var(--text-primary);
+  box-shadow: 0 18px 48px var(--shadow-color);
+}
+
+.guidance-dialog[data-placement='top'] {
+  inset-block-start: max(12px, env(safe-area-inset-top));
+  inset-block-end: auto;
+}
+
+.guidance-dialog[data-placement='bottom'] {
+  inset-block-start: auto;
+  inset-block-end: max(12px, env(safe-area-inset-bottom));
+}
+
+.guidance-dialog::backdrop {
+  background: transparent;
 }
 
 .guidance-dialog header {
@@ -6912,7 +7046,7 @@ a {
 
 .guidance-dialog header span,
 .guidance-expected {
-  color: var(--text-secondary, #506176);
+  color: var(--text-secondary);
 }
 
 .guidance-actions {
@@ -6924,18 +7058,23 @@ a {
 
 [data-guidance-active='true'] {
   position: relative;
-  /* The dialog is rendered from the top bar's z-index:5 stacking context.
-     Keep highlighted workspace controls below it so they cannot intercept the
-     tour actions while retaining a visible outline. */
+  /* The native modal is in the top layer. Keep the target outline visible
+     beneath its transparent backdrop without promoting it over other chrome. */
   z-index: 4;
-  outline: 3px solid #2f7ae5;
+  outline: 3px solid var(--focus-ring);
   outline-offset: 4px;
   border-radius: 6px;
 }
 
 @media (max-width: 600px), (resolution >= 1.75dppx) {
   .guidance-dialog {
-    width: 100%;
-    max-height: 30dvh;
+    width: auto;
+    max-height: min(
+      30dvh,
+      calc(
+        100dvh - max(12px, env(safe-area-inset-top)) -
+          max(12px, env(safe-area-inset-bottom))
+      )
+    );
   }
 }

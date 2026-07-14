@@ -81,6 +81,7 @@ it('shows an ignorable non-blocking notice and requires explicit confirmation', 
   const installTrigger = screen.getByRole('button', { name: '查看并安装' });
   await user.click(installTrigger);
   const dialog = screen.getByRole('dialog', { name: '确认安装更新' });
+  expect(dialog.tagName).toBe('DIALOG');
   expect(dialog).toHaveTextContent('不会静默强制更新');
   const cancel = screen.getByRole('button', { name: '暂不安装' });
   const confirm = screen.getByRole('button', { name: '确认下载并安装' });

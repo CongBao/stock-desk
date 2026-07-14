@@ -78,6 +78,34 @@ it('defaults to cancel and offers explicit resume for incomplete work', async ()
   expect(await screen.findByText('workspace')).toBeVisible();
 });
 
+it('traps focus and keeps Escape as a safe no-op until the user chooses', async () => {
+  const user = userEvent.setup();
+  const post = vi.fn();
+  render(
+    <DesktopTaskRecovery
+      bridge={createDesktopBridge(adapter())}
+      api={{ get: vi.fn(() => Promise.resolve(recovery())), post }}
+    >
+      <p>workspace</p>
+    </DesktopTaskRecovery>,
+  );
+
+  const cancel = await screen.findByRole('button', {
+    name: '取消未完成任务',
+  });
+  const resume = screen.getByRole('button', { name: '继续未完成任务' });
+  await waitFor(() => expect(cancel).toHaveFocus());
+  await user.tab({ shift: true });
+  expect(resume).toHaveFocus();
+  await user.tab();
+  expect(cancel).toHaveFocus();
+
+  await user.keyboard('{Escape}');
+  expect(post).not.toHaveBeenCalled();
+  expect(screen.getByRole('dialog')).toBeVisible();
+  expect(screen.queryByText('workspace')).toBeNull();
+});
+
 it('can explicitly cancel incomplete work', async () => {
   const user = userEvent.setup();
   const post = vi.fn(() =>
@@ -128,10 +156,11 @@ it('requires an extra model-cost confirmation before resuming analysis', async (
   expect(post).not.toHaveBeenCalled();
   expect(screen.getByText(/模型 API 并产生费用/u)).toBeVisible();
   await waitFor(() =>
-    expect(
-      screen.getByRole('button', { name: '取消未完成任务' }),
-    ).toHaveFocus(),
+    expect(screen.getByRole('button', { name: '返回' })).toHaveFocus(),
   );
+  await user.keyboard('{Escape}');
+  expect(post).not.toHaveBeenCalled();
+  expect(screen.getByText(/模型 API 并产生费用/u)).toBeVisible();
   await user.click(screen.getByRole('button', { name: '返回' }));
   expect(post).not.toHaveBeenCalled();
   expect(screen.getByText(/选择前不会自动执行任务/u)).toBeVisible();

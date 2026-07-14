@@ -180,6 +180,7 @@ export const FormulaEditor = forwardRef<
           renderLineHighlight: 'all',
           scrollBeyondLastLine: false,
           suggest: { showWords: false },
+          tabFocusMode: true,
           tabSize: 2,
           wordWrap: 'on',
         }}

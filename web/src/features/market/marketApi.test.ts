@@ -127,6 +127,25 @@ it('decodes bars and formula from one atomic snapshot with strict identity bindi
   });
 });
 
+it('uses an immutable formula version defaults when no parameter override is supplied', async () => {
+  const { client, get } = clientReturning(atomicFormulaBarsResponse());
+
+  const result = await createMarketApi(client).getBars({
+    symbol: '600000.SH',
+    period: '1d',
+    adjustment: 'qfq',
+    formulaVersionId: 'version-1',
+  });
+
+  expect(get).toHaveBeenCalledWith(
+    '/market/bars?symbol=600000.SH&period=1d&adjustment=qfq&formula_version_id=version-1',
+    { signal: undefined },
+  );
+  expect(result.formula?.parameters).toEqual([
+    { name: 'N', kind: 'integer', value: '2' },
+  ]);
+});
+
 it('rejects an atomic formula result bound to a different market snapshot', async () => {
   const response = atomicFormulaBarsResponse() as Record<string, unknown>;
   (response['formula'] as Record<string, unknown>)['dataset_version'] =

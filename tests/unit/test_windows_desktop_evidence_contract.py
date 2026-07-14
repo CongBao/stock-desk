@@ -102,6 +102,16 @@ def test_native_harness_installs_candidate_checks_shell_icons_and_exits_cleanly(
     assert source.count("Remove-ItemProperty -LiteralPath") == 2
     assert "$desktopStart.UseShellExecute = $false" in source
     assert "webview-startup-summary.json" in source
+    assert "$nodeStdout = $null" in source
+    assert "$nodeStderr = $null" in source
+    assert "foreach ($runtimeLog in @($nodeStdout, $nodeStderr))" in source
+    assert "function Copy-DiagnosticRuntimeLog" in source
+    assert "Copy-DiagnosticRuntimeLog -Path $runtimeLog" in source
+    node_stop = source.index("Stop-Process -Id $nodeProcess.Id")
+    runtime_log_copy = source.rindex("Copy-DiagnosticRuntimeLog -Path $runtimeLog")
+    assert node_stop < runtime_log_copy
+    assert "$nodeProcess.WaitForExit(5000)" in source
+    assert "diagnostic runtime log copy failed after bounded retries" not in source
     assert "webview_remote_debug_argument_observed" in source
     assert "webview_process_scope = 'isolated-user-data-folder'" in source
     assert "CommandLine -like '*--remote-debugging-port=*'" in source
@@ -216,7 +226,14 @@ def test_packaged_webview_matrix_is_explicitly_equivalent_not_real_os_dpi() -> N
     assert "actual_tauri_webview: true" in source
     assert "tauri-webview-cdp-effective-viewport-not-os-dpi" in source
     assert "tauri-webview-cdp-system-media-not-windows-theme" in source
-    for route in ("/market", "/formulas", "/backtests", "/analysis", "/tasks"):
+    for route in (
+        "/market",
+        "/formulas",
+        "/backtests",
+        "/analysis",
+        "/tasks",
+        "/settings",
+    ):
         assert f'path: "{route}"' in source
     guidance_helper = source[
         source.index("async function dismissAutomaticGuidance") : source.index(
@@ -229,8 +246,17 @@ def test_packaged_webview_matrix_is_explicitly_equivalent_not_real_os_dpi() -> N
     assert 'dialog.waitFor({ state: "hidden", timeout: 15_000 })' in source
     assert ".catch(() => false)" not in guidance_helper
     assert 'return "fresh-page-dismissed"' in guidance_helper
+    assert "guidanceExpected: false" in source
+    assert 'return "not-applicable-no-tour"' in guidance_helper
     assert "automaticGuidanceDisposition" in source
-    assert source.count("await dismissAutomaticGuidance(page)") == 1
+    assert (
+        len(
+            re.findall(
+                r"await dismissAutomaticGuidance\(\s*page,\s*route,\s*\)", source
+            )
+        )
+        == 1
+    )
     for preference in ("light", "dark", "system"):
         assert f'preference: "{preference}"' in source
     assert "core_route_theme_scale_matrix" in source
@@ -281,6 +307,8 @@ def test_packaged_backtest_matrix_uses_webview_host_ipc_and_new_worker_resume() 
     assert '"/api/desktop/shutdown"' in source
     assert '"/api/desktop/shutdown/commit"' in source
     assert '"/api/desktop/recovery/resume"' in source
+    assert '"/api/tasks/worker-status"' in source
+    assert "packaged Worker disappeared while task remained queued" in source
     assert "waitForRuntimeRecovery" in source
     assert 'captureHandshake("restart-before"' in source
     assert 'captureHandshake("restart-after"' in source
@@ -327,7 +355,9 @@ def test_packaged_backtest_matrix_uses_webview_host_ipc_and_new_worker_resume() 
     assert "maxAttempts = 24" in checkpoint_retry
     assert "await waitForCheckpointBacklog(page, taskIds)" in checkpoint_retry
     assert '"/api/desktop/shutdown"' in checkpoint_retry
+    assert "require_running_checkpoint: true" in checkpoint_retry
     assert 'payload?.code !== "desktop_checkpoint_timeout"' in checkpoint_retry
+    assert 'payload?.code !== "desktop_checkpoint_not_active"' in checkpoint_retry
     assert "payload?.retryable !== true" in checkpoint_retry
     assert "error?.status !== 409" in checkpoint_retry
     assert "selected.length !== taskIds.size" in checkpoint_retry

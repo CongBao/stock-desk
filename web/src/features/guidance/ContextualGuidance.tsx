@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 
+import { ModalDialog } from '../../shared/ModalDialog';
+
 import {
   guidanceApi,
   type GuidanceApi,
@@ -25,6 +27,10 @@ type GuidanceTour = {
     GuidanceStep,
     ...GuidanceStep[],
   ];
+};
+
+type PersistOperation = {
+  readonly controller: AbortController;
 };
 
 // Exported for contract tests that verify every core page has an independent,
@@ -209,10 +215,12 @@ export function ContextualGuidance({
   const [stepIndex, setStepIndex] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
   const [placement, setPlacement] = useState<'top' | 'bottom'>('bottom');
-  const dialogRef = useRef<HTMLElement>(null);
+  const [persisting, setPersisting] = useState(false);
   const primaryRef = useRef<HTMLButtonElement>(null);
   const helpRef = useRef<HTMLButtonElement>(null);
+  const persistStatusRef = useRef<HTMLParagraphElement>(null);
   const openedAutomatically = useRef(new Set<GuidancePage>());
+  const persistOperationRef = useRef<PersistOperation | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -223,8 +231,21 @@ export function ContextualGuidance({
     return () => controller.abort();
   }, [api]);
 
+  useEffect(
+    () => () => {
+      const operation = persistOperationRef.current;
+      persistOperationRef.current = null;
+      operation?.controller.abort();
+    },
+    [],
+  );
+
   useEffect(() => {
-    if (!menuOpen) return;
+    if (persisting) persistStatusRef.current?.focus();
+  }, [persisting]);
+
+  useEffect(() => {
+    if (!menuOpen || active !== null) return;
     const keydown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
       event.preventDefault();
@@ -233,7 +254,7 @@ export function ContextualGuidance({
     };
     window.addEventListener('keydown', keydown);
     return () => window.removeEventListener('keydown', keydown);
-  }, [menuOpen]);
+  }, [active, menuOpen]);
 
   useEffect(() => {
     if (page === null || preferences === null || active !== null) return;
@@ -245,6 +266,7 @@ export function ContextualGuidance({
     )
       return;
     openedAutomatically.current.add(page);
+    setMenuOpen(false);
     setStepIndex(0);
     setActive({ page, manual: false });
   }, [active, page, preferences]);
@@ -252,7 +274,6 @@ export function ContextualGuidance({
   const close = useCallback(() => {
     setActive(null);
     setStepIndex(0);
-    window.setTimeout(() => helpRef.current?.focus(), 0);
   }, []);
 
   const persistAndClose = useCallback(
@@ -262,7 +283,15 @@ export function ContextualGuidance({
         close();
         return;
       }
+      if (persistOperationRef.current !== null) return;
       const controller = new AbortController();
+      const operation: PersistOperation = {
+        controller,
+      };
+      persistOperationRef.current = operation;
+      setPersisting(true);
+      const isCurrent = () =>
+        persistOperationRef.current === operation && !controller.signal.aborted;
       try {
         const saved = await api.put(
           {
@@ -273,14 +302,22 @@ export function ContextualGuidance({
           },
           { signal: controller.signal },
         );
+        if (!isCurrent()) return;
         setPreferences(saved);
       } catch {
+        if (!isCurrent()) return;
         try {
-          setPreferences(await api.get({ signal: controller.signal }));
+          const refreshed = await api.get({ signal: controller.signal });
+          if (!isCurrent()) return;
+          setPreferences(refreshed);
         } catch {
-          /* keep UI safe */
+          if (!isCurrent()) return;
+          /* keep UI safe and close the one acknowledged action */
         }
       }
+      if (!isCurrent()) return;
+      persistOperationRef.current = null;
+      setPersisting(false);
       close();
     },
     [active, api, close, preferences],
@@ -313,37 +350,11 @@ export function ContextualGuidance({
       observer.observe(document.body, { childList: true, subtree: true });
     }
     primaryRef.current?.focus();
-    const keydown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        if (active.manual) close();
-        else void persistAndClose('dismissed');
-        return;
-      }
-      if (event.key !== 'Tab') return;
-      const focusable = Array.from(
-        dialogRef.current?.querySelectorAll<HTMLElement>(
-          'button:not([disabled])',
-        ) ?? [],
-      );
-      const first = focusable[0];
-      const last = focusable.at(-1);
-      if (first === undefined || last === undefined) return;
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-    window.addEventListener('keydown', keydown);
     return () => {
       observer.disconnect();
       target?.removeAttribute('data-guidance-active');
-      window.removeEventListener('keydown', keydown);
     };
-  }, [active, close, persistAndClose, stepIndex]);
+  }, [active, stepIndex]);
 
   const tour = active === null ? null : GUIDANCE_TOURS[active.page];
   const step = tour?.steps[stepIndex];
@@ -382,14 +393,20 @@ export function ContextualGuidance({
         ) : null}
       </div>
       {tour !== null && step !== undefined ? (
-        <div className="guidance-layer" data-placement={placement}>
-          <section
-            ref={dialogRef}
-            className="guidance-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-label={`${tour.label}快速引导`}
-          >
+        <ModalDialog
+          backdropClassName="guidance-layer"
+          initialFocusRef={primaryRef}
+          returnFocusRef={helpRef}
+          fallbackFocusRef={helpRef}
+          onEscape={() =>
+            isManual ? close() : void persistAndClose('dismissed')
+          }
+          className="guidance-dialog"
+          data-placement={placement}
+          aria-label={`${tour.label}快速引导`}
+          aria-busy={persisting}
+        >
+          <section>
             <header>
               <span>
                 {stepIndex + 1} / {tour.steps.length}
@@ -405,6 +422,7 @@ export function ContextualGuidance({
               <button
                 ref={primaryRef}
                 type="button"
+                disabled={persisting}
                 onClick={() =>
                   stepIndex + 1 === tour.steps.length
                     ? void persistAndClose('completed')
@@ -416,6 +434,7 @@ export function ContextualGuidance({
               <button
                 type="button"
                 className="secondary-action"
+                disabled={persisting}
                 onClick={() =>
                   isManual ? close() : void persistAndClose('dismissed')
                 }
@@ -423,8 +442,13 @@ export function ContextualGuidance({
                 {isManual ? '关闭引导' : '跳过引导'}
               </button>
             </div>
+            {persisting ? (
+              <p ref={persistStatusRef} role="status" tabIndex={-1}>
+                正在保存引导进度…
+              </p>
+            ) : null}
           </section>
-        </div>
+        </ModalDialog>
       ) : null}
     </>
   );

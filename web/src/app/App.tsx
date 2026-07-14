@@ -6,6 +6,7 @@ import {
   useEffect,
   useRef,
   useState,
+  type RefObject,
 } from 'react';
 import {
   Navigate,
@@ -44,6 +45,7 @@ import type { WorkspaceApi } from './workspaceApi';
 import { createDesktopBridge, type DesktopBridge } from './desktopBridge';
 import { createTauriAdapter } from './tauriAdapter';
 import { ThemeSelector } from './ThemeProvider';
+import { ModalDialog } from '../shared/ModalDialog';
 
 const tauriAdapter = createTauriAdapter();
 const defaultDesktopBridge: DesktopBridge =
@@ -169,47 +171,19 @@ function AboutDialog({
   onClose,
   onExportDiagnostics,
   productVersion,
+  returnFocusRef,
 }: {
   readonly onClose: () => void;
   readonly onExportDiagnostics: () => Promise<
     'cancelled' | 'saved' | undefined
   >;
   readonly productVersion: string;
+  readonly returnFocusRef: RefObject<HTMLButtonElement | null>;
 }) {
-  const dialogRef = useRef<HTMLElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
   const [diagnosticState, setDiagnosticState] = useState<
     'cancelled' | 'failed' | 'saving' | 'saved' | null
   >(null);
-
-  useEffect(() => {
-    closeRef.current?.focus();
-    const containFocus = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        onClose();
-        return;
-      }
-      if (event.key !== 'Tab') return;
-      const focusable = Array.from(
-        dialogRef.current?.querySelectorAll<HTMLElement>(
-          'button:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
-        ) ?? [],
-      );
-      const first = focusable[0];
-      const last = focusable.at(-1);
-      if (first === undefined || last === undefined) return;
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-    window.addEventListener('keydown', containFocus);
-    return () => window.removeEventListener('keydown', containFocus);
-  }, [onClose]);
 
   async function exportDiagnostics() {
     if (diagnosticState === 'saving') return;
@@ -229,74 +203,74 @@ function AboutDialog({
   }
 
   return (
-    <div className="about-backdrop" role="presentation">
-      <section
-        ref={dialogRef}
-        className="about-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="about-title"
-      >
-        <header>
-          <div>
-            <span className="panel-kicker">PRODUCT IDENTITY</span>
-            <h2 id="about-title">关于 {productIdentity.name}</h2>
-          </div>
-          <button
-            ref={closeRef}
-            type="button"
-            aria-label="关闭关于信息"
-            onClick={onClose}
-          >
-            ×
-          </button>
-        </header>
-        <dl>
-          <div>
-            <dt>产品</dt>
-            <dd>{productIdentity.name}</dd>
-          </div>
-          <div>
-            <dt>版本</dt>
-            <dd>{productVersion}</dd>
-          </div>
-          <div>
-            <dt>公开仓库</dt>
-            <dd>
-              <a
-                href={productIdentity.repository}
-                target="_blank"
-                rel="noreferrer"
-              >
-                github.com/CongBao/stock-desk
-              </a>
-            </dd>
-          </div>
-        </dl>
-        <p>本地优先的个人 A 股分析工作台。</p>
-        <div className="diagnostic-export-control">
-          <button
-            type="button"
-            disabled={diagnosticState === 'saving'}
-            onClick={() => void exportDiagnostics()}
-          >
-            {diagnosticState === 'saving' ? '正在准备诊断包…' : '导出诊断包'}
-          </button>
-          <p>
-            诊断包仅保存到你选择的本机位置，不会自动上传，也不包含用户名、文件路径、会话凭证或原始日志。
-          </p>
-          {diagnosticState === null || diagnosticState === 'saving' ? null : (
-            <p role="status">
-              {diagnosticState === 'saved'
-                ? '诊断包已保存到本机，未上传。'
-                : diagnosticState === 'cancelled'
-                  ? '已取消导出，没有写入文件。'
-                  : '暂时无法导出。请确认使用最新 WebView2 后重试。'}
-            </p>
-          )}
+    <ModalDialog
+      backdropClassName="about-backdrop"
+      className="about-dialog"
+      aria-labelledby="about-title"
+      style={{ color: 'var(--text-primary)' }}
+      initialFocusRef={closeRef}
+      returnFocusRef={returnFocusRef}
+      onEscape={onClose}
+    >
+      <header>
+        <div>
+          <span className="panel-kicker">PRODUCT IDENTITY</span>
+          <h2 id="about-title">关于 {productIdentity.name}</h2>
         </div>
-      </section>
-    </div>
+        <button
+          ref={closeRef}
+          type="button"
+          aria-label="关闭关于信息"
+          onClick={onClose}
+        >
+          ×
+        </button>
+      </header>
+      <dl>
+        <div>
+          <dt>产品</dt>
+          <dd>{productIdentity.name}</dd>
+        </div>
+        <div>
+          <dt>版本</dt>
+          <dd>{productVersion}</dd>
+        </div>
+        <div>
+          <dt>公开仓库</dt>
+          <dd>
+            <a
+              href={productIdentity.repository}
+              target="_blank"
+              rel="noreferrer"
+            >
+              github.com/CongBao/stock-desk
+            </a>
+          </dd>
+        </div>
+      </dl>
+      <p>本地优先的个人 A 股分析工作台。</p>
+      <div className="diagnostic-export-control">
+        <button
+          type="button"
+          disabled={diagnosticState === 'saving'}
+          onClick={() => void exportDiagnostics()}
+        >
+          {diagnosticState === 'saving' ? '正在准备诊断包…' : '导出诊断包'}
+        </button>
+        <p>
+          诊断包仅保存到你选择的本机位置，不会自动上传，也不包含用户名、文件路径、会话凭证或原始日志。
+        </p>
+        {diagnosticState === null || diagnosticState === 'saving' ? null : (
+          <p role="status">
+            {diagnosticState === 'saved'
+              ? '诊断包已保存到本机，未上传。'
+              : diagnosticState === 'cancelled'
+                ? '已取消导出，没有写入文件。'
+                : '暂时无法导出。请确认使用最新 WebView2 后重试。'}
+          </p>
+        )}
+      </div>
+    </ModalDialog>
   );
 }
 
@@ -384,7 +358,6 @@ function WorkspaceShell({
   );
   const closeAbout = useCallback(() => {
     setIsAboutOpen(false);
-    window.setTimeout(() => aboutToggleRef.current?.focus(), 0);
   }, []);
   const workspaceKicker =
     location.pathname === '/tasks'
@@ -527,6 +500,7 @@ function WorkspaceShell({
         <AboutDialog
           onClose={closeAbout}
           productVersion={productVersion}
+          returnFocusRef={aboutToggleRef}
           onExportDiagnostics={async () => {
             const result = await desktopBridge.exportDiagnostics();
             return result === 'saved' || result === 'cancelled'

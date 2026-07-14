@@ -8,6 +8,16 @@ import {
 } from '../../app/desktopBridge';
 import { DesktopExitGuard } from './DesktopExitGuard';
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, reject, resolve };
+}
+
 function adapter(overrides: Partial<DesktopAdapter> = {}): DesktopAdapter {
   return {
     cancelExit: vi.fn(() => Promise.resolve()),
@@ -74,6 +84,7 @@ it('focuses Cancel by default, traps Tab, and Escape cancels without arguments',
   );
 
   act(() => fixture.emit({ state: 'confirm' }));
+  expect(screen.getByRole('dialog').tagName).toBe('DIALOG');
   const cancel = screen.getByRole('button', { name: '取消' });
   const confirm = screen.getByRole('button', { name: '退出应用' });
   expect(cancel).toHaveFocus();
@@ -121,6 +132,135 @@ it('treats duplicate events idempotently and disables repeated confirmation', as
   expect(screen.getByRole('button', { name: '退出应用' })).toBeDisabled();
   act(() => resolveConfirm?.());
 });
+
+it('keeps a pending cancel locked across duplicate blocked and count events', async () => {
+  const user = userEvent.setup();
+  const cancellation = deferred<void>();
+  const cancelExit = vi.fn(() => cancellation.promise);
+  const confirmExit = vi.fn(() => Promise.resolve());
+  const fixture = installExitEmitter({ cancelExit, confirmExit });
+  render(
+    <DesktopExitGuard bridge={createDesktopBridge(fixture.desktopAdapter)}>
+      <p>workspace</p>
+    </DesktopExitGuard>,
+  );
+  await waitFor(() =>
+    expect(fixture.desktopAdapter.subscribeExit).toHaveBeenCalled(),
+  );
+
+  act(() => fixture.emit({ state: 'blocked', queued: 2, running: 1 }));
+  await user.click(screen.getByRole('button', { name: '返回应用' }));
+  expect(cancelExit).toHaveBeenCalledOnce();
+
+  act(() => fixture.emit({ state: 'blocked', queued: 3, running: 1 }));
+  expect(screen.getByText('排队任务').nextSibling).toHaveTextContent('3');
+  expect(screen.getByRole('button', { name: '返回应用' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: '打开诊断' })).toBeDisabled();
+  const confirm = screen.getByRole('button', {
+    name: '保存检查点并退出',
+  });
+  expect(confirm).toBeDisabled();
+  await user.click(confirm);
+  expect(confirmExit).not.toHaveBeenCalled();
+
+  await act(async () => {
+    cancellation.resolve();
+    await cancellation.promise;
+  });
+  await waitFor(() => expect(confirm).toBeEnabled());
+});
+
+it('keeps diagnostics owned until it settles despite duplicate exit events', async () => {
+  const user = userEvent.setup();
+  const diagnostics = deferred<void>();
+  const openDiagnostics = vi.fn(() => diagnostics.promise);
+  const fixture = installExitEmitter({ openDiagnostics });
+  render(
+    <DesktopExitGuard bridge={createDesktopBridge(fixture.desktopAdapter)}>
+      <p>workspace</p>
+    </DesktopExitGuard>,
+  );
+  await waitFor(() =>
+    expect(fixture.desktopAdapter.subscribeExit).toHaveBeenCalled(),
+  );
+
+  act(() => fixture.emit({ state: 'blocked', queued: 1, running: 1 }));
+  await user.click(screen.getByRole('button', { name: '打开诊断' }));
+  act(() => fixture.emit({ state: 'blocked', queued: 1, running: 2 }));
+
+  expect(openDiagnostics).toHaveBeenCalledOnce();
+  expect(screen.getByRole('button', { name: '返回应用' })).toBeDisabled();
+  expect(
+    screen.getByRole('button', { name: '保存检查点并退出' }),
+  ).toBeDisabled();
+
+  await act(async () => {
+    diagnostics.resolve();
+    await diagnostics.promise;
+  });
+  await waitFor(() =>
+    expect(screen.getByRole('button', { name: '返回应用' })).toBeEnabled(),
+  );
+});
+
+it.each([
+  {
+    authority: { state: 'blocked' as const, queued: 2, running: 1 },
+    heading: '后台任务仍在运行',
+  },
+  {
+    authority: {
+      state: 'checkpoint_timed_out' as const,
+      queued: 2,
+      running: 1,
+    },
+    heading: '尚未到达安全检查点',
+  },
+])(
+  'lets $authority.state complete confirm without letting its late promise release a newer cancel',
+  async ({ authority, heading }) => {
+    const user = userEvent.setup();
+    const confirmation = deferred<void>();
+    const cancellation = deferred<void>();
+    const fixture = installExitEmitter({
+      cancelExit: vi.fn(() => cancellation.promise),
+      confirmExit: vi.fn(() => confirmation.promise),
+    });
+    render(
+      <DesktopExitGuard bridge={createDesktopBridge(fixture.desktopAdapter)}>
+        <p>workspace</p>
+      </DesktopExitGuard>,
+    );
+    await waitFor(() =>
+      expect(fixture.desktopAdapter.subscribeExit).toHaveBeenCalled(),
+    );
+
+    act(() => fixture.emit({ state: 'confirm' }));
+    await user.click(screen.getByRole('button', { name: '退出应用' }));
+    expect(screen.getByRole('button', { name: '取消' })).toBeDisabled();
+
+    act(() => fixture.emit(authority));
+    expect(screen.getByRole('heading')).toHaveTextContent(heading);
+    const returnToApp = screen.getByRole('button', { name: '返回应用' });
+    expect(returnToApp).toBeEnabled();
+
+    await user.click(returnToApp);
+    act(() => fixture.emit(authority));
+    expect(returnToApp).toBeDisabled();
+
+    await act(async () => {
+      confirmation.resolve();
+      await confirmation.promise;
+    });
+    expect(returnToApp).toBeDisabled();
+
+    await act(async () => {
+      cancellation.resolve();
+      await cancellation.promise;
+    });
+    await waitFor(() => expect(returnToApp).toBeEnabled());
+  },
+);
 
 it('shows blocked counts and requires a second explicit checkpoint confirmation', async () => {
   const user = userEvent.setup();

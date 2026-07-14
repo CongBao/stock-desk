@@ -2,7 +2,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { MarketChart } from './MarketChart';
+import { MarketChart, type FormulaChartLayer } from './MarketChart';
 import {
   isMarketNotFound,
   marketApi,
@@ -28,6 +28,7 @@ import { ProvenancePanel } from './ProvenancePanel';
 import { StockPoolPanel } from './StockPoolPanel';
 import { StockSearch } from './StockSearch';
 import { useOnboardingDemoMode } from '../onboarding/demoMode';
+import { ModalDialog } from '../../shared/ModalDialog';
 
 type MarketPageProps = {
   readonly api?: MarketApi;
@@ -95,11 +96,13 @@ export function MarketPage({
   const period = useMarketStore((state) => state.period);
   const adjustment = useMarketStore((state) => state.adjustment);
   const zoom = useMarketStore((state) => state.zoom);
+  const subchart = useMarketStore((state) => state.subchart);
   const selectInstrument = useMarketStore((state) => state.selectInstrument);
   const selectPool = useMarketStore((state) => state.selectPool);
   const setPeriod = useMarketStore((state) => state.setPeriod);
   const setAdjustment = useMarketStore((state) => state.setAdjustment);
   const setZoom = useMarketStore((state) => state.setZoom);
+  const setSubchart = useMarketStore((state) => state.setSubchart);
 
   const navigation = useQuery({
     queryKey: ['market', 'navigation'],
@@ -120,19 +123,6 @@ export function MarketPage({
     query.addEventListener('change', handleChange);
     return () => query.removeEventListener('change', handleChange);
   }, []);
-
-  useEffect(() => {
-    if (!isPoolWorkflowOpen) return;
-    poolWorkflowCloseRef.current?.focus();
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
-      event.preventDefault();
-      setIsPoolWorkflowOpen(false);
-      window.setTimeout(() => poolWorkflowButtonRef.current?.focus(), 0);
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isPoolWorkflowOpen]);
 
   useEffect(() => {
     if (!isNarrowRail || isRailCollapsed) return;
@@ -240,17 +230,24 @@ export function MarketPage({
       selectedInstrument?.symbol ?? null,
       period,
       adjustment,
+      subchart.kind === 'formula' ? subchart.formulaVersionId : null,
     ],
     enabled: selectedInstrument !== null,
     queryFn: ({ signal }) => {
       if (selectedInstrument === null)
         throw new Error('Instrument selection is missing');
-      return api.getBars({
+      const request = {
         symbol: selectedInstrument.symbol,
         period,
         adjustment,
         signal,
-      });
+      };
+      return subchart.kind === 'formula'
+        ? api.getBars({
+            ...request,
+            formulaVersionId: subchart.formulaVersionId,
+          })
+        : api.getBars(request);
     },
   });
   const isCacheMiss = bars.isError && isMarketNotFound(bars.error);
@@ -259,6 +256,15 @@ export function MarketPage({
       ? '本地暂无缓存：当前周期与复权组合尚未落盘。'
       : '行情数据读取失败，请检查本地服务或响应协议。'
     : undefined;
+  const formulaLayer: FormulaChartLayer | undefined =
+    bars.data?.formula === undefined
+      ? undefined
+      : {
+          placement: 'subchart',
+          timestamps: bars.data.formula.timestamps,
+          numericOutputs: bars.data.formula.numericOutputs,
+          signals: bars.data.formula.signals,
+        };
 
   return (
     <article className="market-page market-terminal-page">
@@ -413,6 +419,17 @@ export function MarketPage({
                   <option value="hfq">后复权</option>
                 </select>
               </label>
+              {subchart.kind === 'formula' ? (
+                <div className="market-formula-subchart-control" role="status">
+                  <span>公式副图已启用</span>
+                  <button
+                    type="button"
+                    onClick={() => setSubchart({ kind: 'volume' })}
+                  >
+                    关闭公式副图
+                  </button>
+                </div>
+              ) : null}
               {selectedInstrument ===
               null ? null : navigationState.watchlist.some(
                   (item) => item.symbol === selectedInstrument.symbol,
@@ -450,6 +467,7 @@ export function MarketPage({
               bars={bars.data?.bars}
               isLoading={bars.isFetching && bars.data === undefined}
               errorMessage={errorMessage}
+              formula={formulaLayer}
               initialZoom={zoom}
               onZoomChange={setZoom}
             />
@@ -522,45 +540,39 @@ export function MarketPage({
       </div>
 
       {isPoolWorkflowOpen ? (
-        <div className="market-pool-backdrop" role="presentation">
-          <section
-            className="market-pool-workflow"
-            role="dialog"
-            aria-modal="true"
-            aria-label="股票池独立流程"
-          >
-            <header>
-              <div>
-                <span className="panel-kicker">STOCK POOL WORKFLOW</span>
-                <h2>选择或管理股票池</h2>
-              </div>
-              <button
-                ref={poolWorkflowCloseRef}
-                type="button"
-                aria-label="关闭股票池"
-                onClick={() => {
-                  setIsPoolWorkflowOpen(false);
-                  window.setTimeout(
-                    () => poolWorkflowButtonRef.current?.focus(),
-                    0,
-                  );
-                }}
-              >
-                ×
-              </button>
-            </header>
-            <StockPoolPanel
-              api={api}
-              selectedPoolId={selectedPoolId}
-              onSelectPool={selectPool}
-              onSelectInstrument={(instrument) => {
-                chooseInstrument(asNavigationInstrument(instrument));
-                setIsPoolWorkflowOpen(false);
-              }}
-              onPoolDetail={setSelectedPool}
-            />
-          </section>
-        </div>
+        <ModalDialog
+          backdropClassName="market-pool-backdrop"
+          className="market-pool-workflow"
+          aria-labelledby="market-pool-workflow-title"
+          initialFocusRef={poolWorkflowCloseRef}
+          returnFocusRef={poolWorkflowButtonRef}
+          onEscape={() => setIsPoolWorkflowOpen(false)}
+        >
+          <header>
+            <div>
+              <span className="panel-kicker">STOCK POOL WORKFLOW</span>
+              <h2 id="market-pool-workflow-title">选择或管理股票池</h2>
+            </div>
+            <button
+              ref={poolWorkflowCloseRef}
+              type="button"
+              aria-label="关闭股票池"
+              onClick={() => setIsPoolWorkflowOpen(false)}
+            >
+              ×
+            </button>
+          </header>
+          <StockPoolPanel
+            api={api}
+            selectedPoolId={selectedPoolId}
+            onSelectPool={selectPool}
+            onSelectInstrument={(instrument) => {
+              chooseInstrument(asNavigationInstrument(instrument));
+              setIsPoolWorkflowOpen(false);
+            }}
+            onPoolDetail={setSelectedPool}
+          />
+        </ModalDialog>
       ) : null}
     </article>
   );
