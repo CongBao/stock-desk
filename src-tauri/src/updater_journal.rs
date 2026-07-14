@@ -835,8 +835,10 @@ fn rename_windows_file_by_handle(
     };
 
     let destination: Vec<u16> = destination_name.encode_wide().collect();
-    let header_size = std::mem::offset_of!(FILE_RENAME_INFO, FileName);
-    let byte_length = header_size + destination.len() * std::mem::size_of::<u16>();
+    // Windows requires at least the complete fixed FILE_RENAME_INFO structure
+    // plus FileNameLength bytes, not merely the offset of the trailing field.
+    let byte_length =
+        std::mem::size_of::<FILE_RENAME_INFO>() + destination.len() * std::mem::size_of::<u16>();
     let word_length = byte_length.div_ceil(std::mem::size_of::<usize>());
     let mut buffer = vec![0_usize; word_length];
     let information = buffer.as_mut_ptr().cast::<FILE_RENAME_INFO>();

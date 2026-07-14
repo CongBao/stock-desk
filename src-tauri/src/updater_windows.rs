@@ -16,6 +16,10 @@ use sha2::{Digest, Sha256};
 
 const MAX_INSTALLER_BYTES: u64 = crate::updater_transport::MAX_ASSET_BYTES as u64;
 const STAGING_ATTEMPTS: usize = 16;
+#[cfg(windows)]
+const STAGE_REOPEN_ATTEMPTS: usize = 10;
+#[cfg(windows)]
+const STAGE_REOPEN_DELAY_MILLIS: u64 = 50;
 
 // MessageBoxW values are kept here so the safe-default contract remains
 // testable on every development platform without importing Windows bindings.
@@ -249,7 +253,6 @@ pub(crate) fn stage_installer(
         file: Some(output),
         delete_on_drop: true,
     };
-
     let copied_digest = write_and_hash(
         payload,
         pending
@@ -713,14 +716,32 @@ fn open_readonly_stage(path: &Path) -> Result<File, &'static str> {
         FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAG_SEQUENTIAL_SCAN, FILE_SHARE_READ,
     };
 
-    let file = OpenOptions::new()
-        .access_mode(GENERIC_READ)
-        .share_mode(FILE_SHARE_READ)
-        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN)
-        .open(path)
-        .map_err(|_| "desktop_updater_staging_file_unavailable")?;
-    reject_reparse_handle(&file, "desktop_updater_staging_file_unsafe")?;
-    Ok(file)
+    for attempt in 0..STAGE_REOPEN_ATTEMPTS {
+        let opened = OpenOptions::new()
+            .access_mode(GENERIC_READ)
+            .share_mode(FILE_SHARE_READ)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN)
+            .open(path);
+        match opened {
+            Ok(file) => {
+                reject_reparse_handle(&file, "desktop_updater_staging_file_unsafe")?;
+                return Ok(file);
+            }
+            Err(error)
+                if is_transient_stage_reopen_error(&error)
+                    && attempt + 1 < STAGE_REOPEN_ATTEMPTS =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(STAGE_REOPEN_DELAY_MILLIS));
+            }
+            Err(_) => return Err("desktop_updater_staging_file_unavailable"),
+        }
+    }
+    Err("desktop_updater_staging_file_unavailable")
+}
+
+#[cfg(windows)]
+fn is_transient_stage_reopen_error(error: &std::io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(32) | Some(33))
 }
 
 #[cfg(windows)]
@@ -1124,6 +1145,22 @@ mod tests {
         drop(staged(launched.clone(), StageLifecycle::Launched));
         assert!(launched.exists());
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn staged_file_reopen_retries_only_transient_windows_locks() {
+        assert!(is_transient_stage_reopen_error(
+            &std::io::Error::from_raw_os_error(32)
+        ));
+        assert!(is_transient_stage_reopen_error(
+            &std::io::Error::from_raw_os_error(33)
+        ));
+        for code in [2, 5, 87] {
+            assert!(!is_transient_stage_reopen_error(
+                &std::io::Error::from_raw_os_error(code)
+            ));
+        }
     }
 
     #[cfg(windows)]
