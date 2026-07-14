@@ -174,6 +174,31 @@ def _validation_evidence(
             if payload_kind == "tauri-unsigned"
             else f"payload-{policy.artifact_name}.json"
         )
+        payloads = [
+            {
+                "path": payload_name,
+                "kind": payload_kind,
+                "size": 1,
+                "sha256": hashlib.sha256(b"x").hexdigest(),
+            }
+        ]
+        if policy.artifact_name == "windows-desktop-alpha-candidate-manifest":
+            payloads.extend(
+                {
+                    "path": f"packaged-backtest/{name}",
+                    "kind": "provenance",
+                    "size": 1,
+                    "sha256": hashlib.sha256(b"x").hexdigest(),
+                }
+                for name in (
+                    "windows-desktop-evidence.json",
+                    "tauri-webview-evidence.json",
+                    "packaged-backtest-evidence.json",
+                    "packaged-backtest-seed.json",
+                    "packaged-backtest-host-observation.json",
+                    "windows-packaged-backtest-promotion.json",
+                )
+            )
         manifests[policy.artifact_name] = {
             "schema_version": 2,
             "source_sha": commit_sha,
@@ -188,14 +213,7 @@ def _validation_evidence(
             "critical_inputs": {"fixture": "1" * 64},
             "toolchain": {"fixture": "1.0"},
             "lockfiles": {"fixture.lock": "2" * 64},
-            "payloads": [
-                {
-                    "path": payload_name,
-                    "kind": payload_kind,
-                    "size": 1,
-                    "sha256": hashlib.sha256(b"x").hexdigest(),
-                }
-            ],
+            "payloads": payloads,
             **({"image_digest": "sha256:" + "4" * 64} if payload_kind == "oci" else {}),
             **(
                 {"tauri": {"cargo_lock_sha256": "5" * 64}}
@@ -703,9 +721,37 @@ def test_generation_requires_publishable_windows_candidate_installer(
     assert isinstance(payloads, list) and isinstance(payloads[0], dict)
     payloads[0]["kind"] = "provenance"
     candidate.pop("tauri")
+    candidate["payloads"] = sorted(payloads, key=lambda payload: payload["path"])
     candidate["manifest_sha256"] = manifest_digest(candidate)
 
     with pytest.raises(MainValidationProofError, match="Tauri unsigned installer"):
+        proof_module.generate_proof(
+            repo_root=repo,
+            repository=REPOSITORY,
+            ref=REF,
+            api_evidence=api_evidence,
+            validation_evidence=manifests,
+        )
+
+
+def test_generation_requires_packaged_backtest_promotion_payloads(
+    tmp_path: Path,
+) -> None:
+    repo = _repository(tmp_path)
+    api_evidence = _api_evidence(repo)
+    manifests = _validation_evidence(repo, api_evidence)
+    candidate = manifests["windows-desktop-alpha-candidate-manifest"]
+    assert isinstance(candidate, dict)
+    payloads = candidate["payloads"]
+    assert isinstance(payloads, list)
+    candidate["payloads"] = [
+        payload
+        for payload in payloads
+        if payload["path"]
+        != "packaged-backtest/windows-packaged-backtest-promotion.json"
+    ]
+
+    with pytest.raises(MainValidationProofError, match="backtest provenance"):
         proof_module.generate_proof(
             repo_root=repo,
             repository=REPOSITORY,
@@ -798,7 +844,9 @@ def test_verification_rejects_resigned_artifact_substitution(tmp_path: Path) -> 
         )
 
 
-def test_artifact_consumption_rejects_payload_substitution(tmp_path: Path) -> None:
+def test_artifact_consumption_rejects_payload_substitution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     repo = _repository(tmp_path / "repo")
     proof = _proof(repo)
     evidence = proof["validation_evidence"]
@@ -822,10 +870,27 @@ def test_artifact_consumption_rejects_payload_substitution(tmp_path: Path) -> No
         roots[artifact_name] = root
         attestations[artifact_name] = create_attestation_binding(manifest_value)
 
+    monkeypatch.setattr(
+        proof_module, "verify_packaged_backtest_promotion", lambda *args, **kwargs: None
+    )
     proof_module.verify_proved_artifacts(
         proof,
         artifact_roots=roots,
         artifact_attestations=attestations,
+    )
+    monkeypatch.setattr(
+        proof_module,
+        "verify_packaged_backtest_promotion",
+        lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("tampered promotion")),
+    )
+    with pytest.raises(MainValidationProofError, match="packaged backtest"):
+        proof_module.verify_proved_artifacts(
+            proof,
+            artifact_roots=roots,
+            artifact_attestations=attestations,
+        )
+    monkeypatch.setattr(
+        proof_module, "verify_packaged_backtest_promotion", lambda *args, **kwargs: None
     )
     web_manifest = evidence["web-build-manifest"]
     assert isinstance(web_manifest, dict)

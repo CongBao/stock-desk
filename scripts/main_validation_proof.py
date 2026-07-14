@@ -67,6 +67,9 @@ CRITICAL_INPUTS: Final = LEGACY_CRITICAL_INPUTS + (
     "packaging/stock-desk-sidecar.spec",
     "playwright.config.ts",
     "schemas/artifact-manifest-v2.schema.json",
+    "schemas/packaged-backtest-evidence-v1.schema.json",
+    "schemas/packaged-backtest-host-observation-v1.schema.json",
+    "schemas/windows-packaged-backtest-promotion-v1.schema.json",
     "schemas/windows-installed-evidence-v1.schema.json",
     "schemas/windows-installed-raw-evidence-v1.schema.json",
     "schemas/windows-vm-snapshot-policy-v1.schema.json",
@@ -74,21 +77,27 @@ CRITICAL_INPUTS: Final = LEGACY_CRITICAL_INPUTS + (
     "scripts/aggregate_ci_evidence.py",
     "scripts/artifact_manifest.py",
     "scripts/build_windows_desktop.py",
+    "scripts/capture_windows_desktop_evidence.ps1",
     "scripts/check_requirement_coverage.py",
     "scripts/ci_impact.py",
     "scripts/ci_test_inventory.py",
     "scripts/clean_build_artifacts.py",
     "scripts/compare_windows_payloads.py",
     "scripts/e2e_snapshot.py",
+    "scripts/prepare_windows_packaged_backtest_evidence.py",
+    "scripts/capture_packaged_backtest_semantics.py",
     "scripts/verify_ci_cache_policy.py",
     "scripts/verify_zero_telemetry.py",
     "scripts/trusted_updater_release.py",
     "scripts/verify_windows_desktop_bundle.py",
+    "scripts/verify_packaged_backtest_evidence.py",
     "scripts/verify_windows_installed_evidence.py",
     "scripts/verify_windows_raw_evidence.py",
     "scripts/windows_installed_guest_harness.ps1",
     "scripts/windows_installed_vm_harness.ps1",
     "scripts/windows_installed_environment_policy.py",
+    "scripts/windows_desktop_webview_evidence.mjs",
+    "scripts/windows_packaged_backtest_evidence.mjs",
     "tests/windows/windows_browser_observer_integration.ps1",
     "src-tauri/Cargo.lock",
     "src-tauri/Cargo.toml",
@@ -100,6 +109,9 @@ CRITICAL_INPUTS: Final = LEGACY_CRITICAL_INPUTS + (
     "rust-toolchain.toml",
     "tests/acceptance/requirements.yml",
     "tests/acceptance/v1_1_requirements.yml",
+    "tests/fixtures/backtest/v1_0_oracle.json",
+    "tests/fixtures/backtest/v1_0_oracle_inputs.json",
+    "scripts/v1_backtest_oracle.py",
     "web/vite.config.ts",
 )
 
@@ -264,6 +276,21 @@ EVIDENCE_POLICIES: Final = {
 
 class MainValidationProofError(RuntimeError):
     """Raised when validation evidence is incomplete, ambiguous, or mismatched."""
+
+
+def verify_packaged_backtest_promotion(
+    promotion_path: Path, *, root: Path, source_sha: str, source_tree: str
+) -> None:
+    """Load the heavier packaged verifier only for artifact consumption."""
+
+    from scripts.verify_packaged_backtest_evidence import verify_promotion
+
+    verify_promotion(
+        promotion_path,
+        root=root,
+        source_sha=source_sha,
+        source_tree=source_tree,
+    )
 
 
 class GitHubApiClient:
@@ -884,6 +911,23 @@ def _validation_evidence(
                 raise MainValidationProofError(
                     "Windows alpha candidate must bind exactly one Tauri unsigned installer"
                 )
+            payload_paths = {
+                payload.get("path")
+                for payload in manifest["payloads"]
+                if isinstance(payload, dict)
+            }
+            required_packaged_backtest = {
+                "packaged-backtest/windows-desktop-evidence.json",
+                "packaged-backtest/tauri-webview-evidence.json",
+                "packaged-backtest/packaged-backtest-evidence.json",
+                "packaged-backtest/packaged-backtest-seed.json",
+                "packaged-backtest/packaged-backtest-host-observation.json",
+                "packaged-backtest/windows-packaged-backtest-promotion.json",
+            }
+            if not required_packaged_backtest.issubset(payload_paths):
+                raise MainValidationProofError(
+                    "Windows alpha candidate is missing packaged backtest provenance"
+                )
         for payload_value in manifest["payloads"]:
             payload = _object(payload_value, f"{artifact_name} payload")
             identity = (artifact_name, _string(payload.get("path"), "payload path"))
@@ -1338,6 +1382,19 @@ def verify_proved_artifacts(
             raise MainValidationProofError(
                 f"{artifact_name} artifact verification failed: {error}"
             ) from error
+        if artifact_name == "windows-desktop-alpha-candidate-manifest":
+            root = artifact_roots[artifact_name]
+            try:
+                verify_packaged_backtest_promotion(
+                    root / "packaged-backtest/windows-packaged-backtest-promotion.json",
+                    root=root,
+                    source_sha=commit_sha,
+                    source_tree=tree_sha,
+                )
+            except (ValueError, OSError) as error:
+                raise MainValidationProofError(
+                    "Windows alpha candidate packaged backtest verification failed"
+                ) from error
 
 
 def _load_json(path: Path, label: str) -> object:

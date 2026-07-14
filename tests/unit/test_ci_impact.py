@@ -175,6 +175,38 @@ def test_windows_installed_controller_paths_are_high_risk_installer_inputs(
     assert impact.required_jobs == ALL_GATES
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "scripts/capture_windows_desktop_evidence.ps1",
+        "scripts/windows_desktop_webview_evidence.mjs",
+        "scripts/windows_packaged_backtest_evidence.mjs",
+        "scripts/prepare_windows_packaged_backtest_evidence.py",
+        "scripts/capture_packaged_backtest_semantics.py",
+        "scripts/verify_packaged_backtest_evidence.py",
+        "schemas/packaged-backtest-evidence-v1.schema.json",
+        "schemas/packaged-backtest-host-observation-v1.schema.json",
+        "schemas/windows-packaged-backtest-promotion-v1.schema.json",
+        "tests/fixtures/backtest/v1_0_oracle.json",
+        "tests/fixtures/backtest/v1_0_oracle_inputs.json",
+        "scripts/v1_backtest_oracle.py",
+        "scripts/main_validation_proof.py",
+    ],
+)
+def test_packaged_backtest_proof_chain_paths_require_full_artifact_proof(
+    path: str,
+) -> None:
+    impact = classify_impact("pull_request", [path])
+
+    assert impact.profile == FULL_PROFILE
+    assert impact.full is True
+    assert impact.domains == ("delivery",)
+    assert impact.reason == f"high-risk-path:{path}"
+    assert "artifact-proof" in impact.required_jobs
+    assert impact.required_jobs == ALL_GATES
+    assert impact.skipped_jobs == ()
+
+
 def test_one_unknown_path_makes_an_otherwise_targeted_change_full() -> None:
     impact = classify_impact(
         "pull_request", ["README.md", "src/stock_desk/desktop.py", "new-file.txt"]

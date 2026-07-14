@@ -624,6 +624,7 @@ def test_prerelease_reuses_exact_main_evidence_without_running_stable_path() -> 
         "oci-image-manifest",
         "oci-security-evidence",
         "windows-payload-comparison-manifest",
+        "windows-browser-observer-evidence",
         "windows-desktop-alpha-candidate-manifest",
     ):
         assert commands.count(artifact_name) >= 2

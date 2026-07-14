@@ -13,6 +13,7 @@ if ($SourceSha -notmatch '^[0-9a-f]{40}$' -or $SourceTree -notmatch '^[0-9a-f]{4
   throw 'desktop evidence requires exact lowercase source SHA and tree ids'
 }
 $Installer = (Resolve-Path -LiteralPath $Installer).Path
+$candidateSha256 = (Get-FileHash -LiteralPath $Installer -Algorithm SHA256).Hash.ToLowerInvariant()
 $Output = [IO.Path]::GetFullPath($Output)
 New-Item -ItemType Directory -Force $Output | Out-Null
 
@@ -32,6 +33,12 @@ public static class StockDeskEvidenceNative {
   public static extern bool SetForegroundWindow(IntPtr hWnd);
   [DllImport("user32.dll")]
   public static extern bool ShowWindow(IntPtr hWnd, int command);
+  [DllImport("kernel32.dll", SetLastError=true)]
+  public static extern bool GetExitCodeProcess(IntPtr process, out uint exitCode);
+  [DllImport("kernel32.dll", SetLastError=true)]
+  public static extern IntPtr OpenProcess(uint processAccess, bool inheritHandle, uint processId);
+  [DllImport("kernel32.dll", SetLastError=true)]
+  public static extern bool CloseHandle(IntPtr handle);
   [DllImport("user32.dll", CharSet=CharSet.Unicode)]
   public static extern uint PrivateExtractIcons(string file, int index, int width, int height, IntPtr[] icons, uint[] ids, uint count, uint flags);
   [DllImport("user32.dll")]
@@ -49,36 +56,118 @@ function Wait-Until([scriptblock]$Condition, [int]$Seconds, [string]$Failure) {
   throw $Failure
 }
 
+function Wait-CaptureMarker([string]$Path, [Diagnostics.Process]$NodeProcess, [string]$Nonce, [int]$Seconds, [string]$Failure) {
+  return Wait-Until {
+    $NodeProcess.Refresh()
+    if ($NodeProcess.HasExited) {
+      throw "packaged WebView evidence exited before capture marker: $(Get-Content -LiteralPath $nodeStderr -Raw -ErrorAction SilentlyContinue)"
+    }
+    if (Test-Path -LiteralPath $Path -PathType Leaf) {
+      try {
+        $candidate = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+        if ($candidate.capture_nonce -eq $Nonce) { return $candidate }
+      } catch {
+        # A writer may only publish with atomic rename, but antivirus/indexing can
+        # still transiently deny a read. Retry until the bounded deadline.
+      }
+    }
+    return $false
+  } $Seconds $Failure
+}
+
+function Write-CaptureAck([string]$Path, [string]$Nonce) {
+  $temporary = Join-Path (Split-Path $Path -Parent) ".$(Split-Path $Path -Leaf).$Nonce.tmp"
+  for ($attempt = 1; $attempt -le 10; $attempt++) {
+    try {
+      $Nonce | Set-Content -LiteralPath $temporary -Encoding utf8NoBOM
+      Move-Item -LiteralPath $temporary -Destination $Path -Force
+      return
+    } catch {
+      Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
+      if ($attempt -eq 10) { throw "capture acknowledgment could not be published after bounded retries: $Path" }
+      Start-Sleep -Milliseconds 100
+    }
+  }
+}
+
+function Remove-EvidenceDirectory([string]$Path) {
+  for ($attempt = 1; $attempt -le 10; $attempt++) {
+    Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction SilentlyContinue
+    if (-not (Test-Path -LiteralPath $Path)) { return $true }
+    Start-Sleep -Milliseconds 250
+  }
+  return -not (Test-Path -LiteralPath $Path)
+}
+
 function Test-IsolatedWebViewCommandLine([string]$CommandLine, [string]$UserDataFolder) {
   if ([string]::IsNullOrWhiteSpace($CommandLine)) { return $false }
-  foreach ($argument in @(
-    "--user-data-dir=$UserDataFolder",
-    "--user-data-dir=`"$UserDataFolder`""
+  # WebView2 appends EBWebView to an explicitly configured UDF. Accept only
+  # the configured root or that exact runtime-owned suffix; sibling and prefix
+  # paths must remain outside this evidence process scope.
+  foreach ($candidateUserDataFolder in @(
+    $UserDataFolder,
+    (Join-Path $UserDataFolder 'EBWebView')
   )) {
-    $offset = $CommandLine.IndexOf($argument, [StringComparison]::OrdinalIgnoreCase)
-    while ($offset -ge 0) {
-      $argumentEnd = $offset + $argument.Length
-      if ($argumentEnd -eq $CommandLine.Length -or [char]::IsWhiteSpace($CommandLine[$argumentEnd])) {
-        return $true
+    foreach ($argument in @(
+      "--user-data-dir=$candidateUserDataFolder",
+      "--user-data-dir=`"$candidateUserDataFolder`""
+    )) {
+      $offset = $CommandLine.IndexOf($argument, [StringComparison]::OrdinalIgnoreCase)
+      while ($offset -ge 0) {
+        $argumentEnd = $offset + $argument.Length
+        if ($argumentEnd -eq $CommandLine.Length -or [char]::IsWhiteSpace($CommandLine[$argumentEnd])) {
+          return $true
+        }
+        $offset = $CommandLine.IndexOf(
+          $argument,
+          $argumentEnd,
+          [StringComparison]::OrdinalIgnoreCase
+        )
       }
-      $offset = $CommandLine.IndexOf(
-        $argument,
-        $argumentEnd,
-        [StringComparison]::OrdinalIgnoreCase
-      )
     }
   }
   return $false
 }
 
-function Get-IsolatedWebViewProcesses([string]$UserDataFolder) {
-  return @(Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" -ErrorAction SilentlyContinue |
+function Get-IsolatedWebViewProcesses([string]$UserDataFolder, [switch]$Strict) {
+  $queryErrorAction = if ($Strict) { 'Stop' } else { 'SilentlyContinue' }
+  return @(Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" -ErrorAction $queryErrorAction |
     Where-Object { Test-IsolatedWebViewCommandLine ([string]$_.CommandLine) $UserDataFolder })
+}
+
+function Test-ProcessExitedStrict([int]$ProcessId) {
+  try {
+    $candidate = [Diagnostics.Process]::GetProcessById($ProcessId)
+    try {
+      $candidate.Refresh()
+      return $candidate.HasExited
+    } finally {
+      $candidate.Dispose()
+    }
+  } catch [ArgumentException] {
+    return $true
+  }
 }
 
 function Get-EvidenceSidecarProcesses([int[]]$BaselineProcessIds = @()) {
   return @(Get-Process -Name 'stock-desk-sidecar' -ErrorAction SilentlyContinue |
     Where-Object { $_.Id -notin $BaselineProcessIds })
+}
+
+function Get-InstalledHostSidecarProcesses([int]$HostProcessId, [string]$InstalledSidecarPath) {
+  $expectedPath = [IO.Path]::GetFullPath($InstalledSidecarPath)
+  $hostChildren = @(Get-CimInstance Win32_Process -Filter "ParentProcessId=$HostProcessId" -ErrorAction SilentlyContinue |
+    Where-Object {
+      -not [string]::IsNullOrWhiteSpace([string]$_.ExecutablePath) -and
+      [string]::Equals(
+        [IO.Path]::GetFullPath([string]$_.ExecutablePath),
+        $expectedPath,
+        [StringComparison]::OrdinalIgnoreCase
+      )
+    })
+  return @($hostChildren | ForEach-Object {
+    Get-Process -Id ([int]$_.ProcessId) -ErrorAction SilentlyContinue
+  })
 }
 
 function Save-EmbeddedIcon([string]$Source, [string]$Destination, [int]$Size, [int]$Index) {
@@ -161,6 +250,8 @@ $hostPath = Join-Path $installRoot 'stock-desk-desktop.exe'
 $uninstallerPath = Join-Path $installRoot 'uninstall.exe'
 $evidenceRoot = Split-Path (Split-Path $Output -Parent) -Parent
 $webviewUserData = Join-Path $evidenceRoot "webview2-user-data-$SourceSha"
+$restartSyncRoot = Join-Path $evidenceRoot "packaged-backtest-sync-$SourceSha"
+$captureNonce = [Guid]::NewGuid().ToString('D')
 $webviewEdgePolicy = 'HKCU:\Software\Policies\Microsoft\Edge'
 $webviewPolicyRoot = 'HKCU:\Software\Policies\Microsoft\Edge\WebView2'
 $webviewArgsPolicy = Join-Path $webviewPolicyRoot 'AdditionalBrowserArguments'
@@ -174,11 +265,14 @@ $webviewArgsPolicySet = $false
 $webviewDataPolicySet = $false
 $tauriDefaultWebViewData = Join-Path $env:LOCALAPPDATA 'com.congbao.stockdesk'
 $tauriDefaultWebViewDataExisted = Test-Path -LiteralPath $tauriDefaultWebViewData
+$packagedDataRoot = Join-Path $env:LOCALAPPDATA 'Stock Desk\v1.1'
 $baselineSidecarProcessIds = @(
   Get-Process -Name 'stock-desk-sidecar' -ErrorAction SilentlyContinue |
     ForEach-Object { $_.Id }
 )
 $desktopProcess = $null
+$nodeProcess = $null
+$sidecarAfterHandle = [IntPtr]::Zero
 $gracefulExit = $false
 try {
   if (Test-Path -LiteralPath $uninstallerPath -PathType Leaf) {
@@ -261,9 +355,18 @@ try {
   $webviewArgsPolicySet = $true
   New-ItemProperty -LiteralPath $webviewDataPolicy -Name $webviewAppName -PropertyType String -Value $webviewUserData | Out-Null
   $webviewDataPolicySet = $true
-  # This candidate proof owns an isolated first-run state. Removing stale state
-  # makes onboarding evidence deterministic even on a reused Windows host.
-  Remove-Item -Recurse -Force (Join-Path $env:LOCALAPPDATA 'Stock Desk\v1.1') -ErrorAction SilentlyContinue
+  # This candidate proof owns an isolated public fixture. Removing stale state
+  # prevents a reused Windows host from changing the packaged backtest matrix.
+  if (-not (Remove-EvidenceDirectory $packagedDataRoot)) {
+    throw 'stale packaged backtest data state could not be cleaned'
+  }
+  & $python (Join-Path $PSScriptRoot 'prepare_windows_packaged_backtest_evidence.py') `
+    --destination $packagedDataRoot --source-sha $SourceSha --source-tree $SourceTree
+  if ($LASTEXITCODE -ne 0) { throw 'packaged backtest evidence fixture preparation failed' }
+  $packagedBacktestSeed = Join-Path $packagedDataRoot 'packaged-backtest-seed.json'
+  if (-not (Test-Path -LiteralPath $packagedBacktestSeed -PathType Leaf)) {
+    throw 'packaged backtest evidence seed manifest is missing'
+  }
   $desktopStart = [Diagnostics.ProcessStartInfo]::new()
   $desktopStart.FileName = $hostPath
   $desktopStart.WorkingDirectory = $installRoot
@@ -289,20 +392,119 @@ try {
   if ($devToolsWebSocket.Scheme -ne 'ws' -or $devToolsWebSocket.Host -ne '127.0.0.1' -or $devToolsWebSocket.Port -ne $devToolsPort -or $devToolsWebSocket.AbsolutePath -ne $devToolsPath) {
     throw 'packaged WebView2 CDP endpoint does not match the isolated browser identity'
   }
-  $sidecar = Wait-Until { @(Get-EvidenceSidecarProcesses $baselineSidecarProcessIds) | Select-Object -First 1 } 60 'packaged Python sidecar did not remain running'
+  $installedSidecarPath = Join-Path $installRoot 'stock-desk-sidecar.exe'
+  $sidecar = Wait-Until { @(Get-InstalledHostSidecarProcesses $desktopProcess.Id $installedSidecarPath) | Select-Object -First 1 } 60 'packaged Python sidecar did not remain running'
+  $initialSidecars = @(Get-InstalledHostSidecarProcesses $desktopProcess.Id $installedSidecarPath)
+  if ($initialSidecars.Count -ne 1 -or $initialSidecars[0].Id -ne $sidecar.Id) {
+    throw 'packaged capture did not own exactly one initial sidecar process'
+  }
+  if ([IO.Path]::GetFullPath($sidecar.Path) -ne [IO.Path]::GetFullPath($installedSidecarPath)) {
+    throw 'initial sidecar process does not belong to the installed candidate'
+  }
+  $sidecarBinaryHash = (Get-FileHash -LiteralPath $sidecar.Path -Algorithm SHA256).Hash.ToLowerInvariant()
+  $isolatedWebViews = @(Get-IsolatedWebViewProcesses $webviewUserData)
+  if ($isolatedWebViews.Count -lt 1) { throw 'isolated packaged WebView2 process is missing' }
 
   $nativeEvidence = Save-WindowScreenshot $desktopProcess (Join-Path $Output 'tauri-native-window.png')
   $virtual = [Windows.Forms.SystemInformation]::VirtualScreen
   $nativeEvidence['screen'] = [ordered]@{ x=$virtual.X; y=$virtual.Y; width=$virtual.Width; height=$virtual.Height }
   $nativeEvidence['host_pid'] = $desktopProcess.Id
   $nativeEvidence['sidecar_pid'] = $sidecar.Id
+  $hostMainWindowHandle = [int64]$desktopProcess.MainWindowHandle
 
   $env:SOURCE_SHA = $SourceSha
   $env:SOURCE_TREE = $SourceTree
   $env:STOCK_DESK_DESKTOP_EVIDENCE_DIR = $Output
   $env:STOCK_DESK_DESKTOP_CDP = $desktopCdp
-  & node scripts/windows_desktop_webview_evidence.mjs
-  if ($LASTEXITCODE -ne 0) { throw 'packaged Tauri WebView evidence failed' }
+  $env:STOCK_DESK_PACKAGED_BACKTEST_SEED = $packagedBacktestSeed
+  $env:STOCK_DESK_CANDIDATE_SHA256 = $candidateSha256
+  if (-not (Remove-EvidenceDirectory $restartSyncRoot)) {
+    throw 'stale packaged backtest synchronization state could not be cleaned'
+  }
+  New-Item -ItemType Directory -Force $restartSyncRoot | Out-Null
+  $env:STOCK_DESK_RESTART_SYNC_DIR = $restartSyncRoot
+  $env:STOCK_DESK_CAPTURE_NONCE = $captureNonce
+  $nodeStdout = Join-Path $restartSyncRoot 'node-stdout.log'
+  $nodeStderr = Join-Path $restartSyncRoot 'node-stderr.log'
+  $nodeProcess = Start-Process -FilePath 'node' -ArgumentList @('scripts/windows_desktop_webview_evidence.mjs') -WorkingDirectory $PWD.Path -RedirectStandardOutput $nodeStdout -RedirectStandardError $nodeStderr -PassThru
+  foreach ($fixtureRequest in @(
+    @('a_share_constraints_60m','a_share_constraints_60m'),
+    @('open_position_costs_1d','open_position_costs_1d'),
+    @('partial_pool_gap_1d','partial_pool_gap_1d'),
+    @('matrix_1d','matrix_1d'),
+    @('checkpoint-matrix-1d','matrix_1d')
+  )) {
+    $markerName = $fixtureRequest[0]
+    $fixtureId = $fixtureRequest[1]
+    $fixtureMarkerPath = Join-Path $restartSyncRoot "fixture-$markerName.json"
+    $fixtureMarker = Wait-CaptureMarker $fixtureMarkerPath $nodeProcess $captureNonce 300 "packaged fixture switch did not arrive: $fixtureId"
+    if ($fixtureMarker.fixture_id -ne $fixtureId) { throw "packaged fixture switch identity is invalid: $fixtureId" }
+    & $python (Join-Path $PSScriptRoot 'prepare_windows_packaged_backtest_evidence.py') `
+      --destination $packagedDataRoot --source-sha $SourceSha --source-tree $SourceTree --switch-fixture $fixtureId
+    if ($LASTEXITCODE -ne 0) { throw "packaged fixture switch failed: $fixtureId" }
+    Write-CaptureAck (Join-Path $restartSyncRoot "fixture-$markerName.ack") $captureNonce
+  }
+  $beforeMarkerPath = Join-Path $restartSyncRoot 'restart-before.json'
+  $beforeMarker = Wait-CaptureMarker $beforeMarkerPath $nodeProcess $captureNonce 300 'packaged checkpoint did not reach the sidecar restart boundary'
+  if ($beforeMarker.runtime_state -ne 'ready') {
+    throw 'pre-restart capture marker identity is invalid'
+  }
+  $beforeSidecars = @(Get-InstalledHostSidecarProcesses $desktopProcess.Id $installedSidecarPath)
+  if ($beforeSidecars.Count -ne 1 -or $beforeSidecars[0].Id -ne $sidecar.Id) {
+    throw 'pre-restart packaged sidecar process identity changed unexpectedly'
+  }
+  if ([IO.Path]::GetFullPath($beforeSidecars[0].Path) -ne [IO.Path]::GetFullPath($installedSidecarPath)) {
+    throw 'pre-restart sidecar process does not belong to the installed candidate'
+  }
+  $sidecarBeforeHash = (Get-FileHash -LiteralPath $beforeSidecars[0].Path -Algorithm SHA256).Hash.ToLowerInvariant()
+  if ($sidecarBeforeHash -ne $sidecarBinaryHash) { throw 'sidecar binary identity changed before restart' }
+  $sidecarBeforePid = [int]$beforeSidecars[0].Id
+  Write-CaptureAck (Join-Path $restartSyncRoot 'restart-before.ack') $captureNonce
+  $afterMarkerPath = Join-Path $restartSyncRoot 'restart-after.json'
+  $afterMarker = Wait-CaptureMarker $afterMarkerPath $nodeProcess $captureNonce 120 'packaged sidecar restart did not reach the ready boundary'
+  if ($afterMarker.runtime_state -ne 'ready' -or $afterMarker.run_id -ne $beforeMarker.run_id -or $afterMarker.task_id -ne $beforeMarker.task_id) {
+    throw 'post-restart capture marker identity is invalid'
+  }
+  $afterSidecars = @(Get-InstalledHostSidecarProcesses $desktopProcess.Id $installedSidecarPath)
+  if ($afterSidecars.Count -ne 1 -or $afterSidecars[0].Id -eq $sidecarBeforePid) {
+    throw 'packaged sidecar did not restart as exactly one new OS process'
+  }
+  if (Get-Process -Id $sidecarBeforePid -ErrorAction SilentlyContinue) {
+    throw 'old packaged sidecar OS process survived the runtime restart'
+  }
+  if ([IO.Path]::GetFullPath($afterSidecars[0].Path) -ne [IO.Path]::GetFullPath($installedSidecarPath)) {
+    throw 'restarted sidecar process does not belong to the installed candidate'
+  }
+  $sidecarAfterHash = (Get-FileHash -LiteralPath $afterSidecars[0].Path -Algorithm SHA256).Hash.ToLowerInvariant()
+  if ($sidecarAfterHash -ne $sidecarBinaryHash) { throw 'sidecar binary identity changed across restart' }
+  $sidecarAfterProcess = $afterSidecars[0]
+  $sidecarAfterPid = [int]$afterSidecars[0].Id
+  # Retain the least-privilege native process handle while the sidecar is alive.
+  # Windows keeps the process object and its exit status available until this
+  # handle is closed, even after the process has terminated.
+  $sidecarAfterHandle = [StockDeskEvidenceNative]::OpenProcess(0x1000, $false, [uint32]$sidecarAfterPid)
+  if ($sidecarAfterHandle -eq [IntPtr]::Zero) {
+    throw 'restarted sidecar process handle is unavailable'
+  }
+  Write-CaptureAck (Join-Path $restartSyncRoot 'restart-after.ack') $captureNonce
+  foreach ($fixtureRequest in @(
+    @('matrix_1w','matrix_1w'),
+    @('matrix_60m','matrix_60m')
+  )) {
+    $markerName = $fixtureRequest[0]
+    $fixtureId = $fixtureRequest[1]
+    $fixtureMarkerPath = Join-Path $restartSyncRoot "fixture-$markerName.json"
+    $fixtureMarker = Wait-CaptureMarker $fixtureMarkerPath $nodeProcess $captureNonce 300 "packaged fixture switch did not arrive after restart: $fixtureId"
+    if ($fixtureMarker.fixture_id -ne $fixtureId) { throw "packaged fixture switch identity is invalid after restart: $fixtureId" }
+    & $python (Join-Path $PSScriptRoot 'prepare_windows_packaged_backtest_evidence.py') `
+      --destination $packagedDataRoot --source-sha $SourceSha --source-tree $SourceTree --switch-fixture $fixtureId
+    if ($LASTEXITCODE -ne 0) { throw "packaged fixture switch failed after restart: $fixtureId" }
+    Write-CaptureAck (Join-Path $restartSyncRoot "fixture-$markerName.ack") $captureNonce
+  }
+  Wait-Until { $nodeProcess.Refresh(); if ($nodeProcess.HasExited) { $true } else { $false } } 300 'packaged Tauri WebView evidence did not finish after restart observation' | Out-Null
+  if ($nodeProcess.ExitCode -ne 0) {
+    throw "packaged Tauri WebView evidence failed: $(Get-Content -LiteralPath $nodeStderr -Raw -ErrorAction SilentlyContinue)"
+  }
   try {
     Wait-Until { $desktopProcess.Refresh(); if ($desktopProcess.HasExited) { $true } else { $false } } 25 'packaged app did not complete the tested graceful exit' | Out-Null
   } catch {
@@ -310,22 +512,95 @@ try {
     $sidecarAlive = @(Get-Process -Name 'stock-desk-sidecar' -ErrorAction SilentlyContinue).Count -gt 0
     throw "packaged app did not complete the tested graceful exit; host_alive=$(-not $desktopProcess.HasExited); sidecar_alive=$sidecarAlive"
   }
+  $desktopProcess.Refresh()
+  if ($desktopProcess.ExitCode -ne 0) {
+    throw "packaged app exited with a non-zero code during the tested graceful exit: $($desktopProcess.ExitCode)"
+  }
+  try {
+    Wait-Until {
+      [uint32]$observedSidecarExitCode = 259
+      if (-not [StockDeskEvidenceNative]::GetExitCodeProcess($sidecarAfterHandle, [ref]$observedSidecarExitCode)) {
+        throw 'packaged sidecar native exit status became unavailable'
+      }
+      $sidecarExited = $observedSidecarExitCode -ne 259
+      $remainingWebViews = @(Get-IsolatedWebViewProcesses $webviewUserData -Strict)
+      if ($sidecarExited -and $remainingWebViews.Count -eq 0) { $true } else { $false }
+    } 30 'packaged child processes did not complete the tested graceful exit' | Out-Null
+  } catch {
+    $childExitFailure = $_.Exception.Message
+    $remainingSidecarIds = if (Test-ProcessExitedStrict $sidecarAfterPid) { @() } else { @($sidecarAfterPid) }
+    $remainingWebViewIds = @(
+      Get-IsolatedWebViewProcesses $webviewUserData |
+        ForEach-Object { [int]$_.ProcessId }
+    )
+    throw "packaged child processes did not complete the tested graceful exit; reason=$childExitFailure; sidecar_ids=$($remainingSidecarIds -join ','); webview_ids=$($remainingWebViewIds -join ',')"
+  }
+  [uint32]$sidecarAfterExitCode = 0
+  if (-not [StockDeskEvidenceNative]::GetExitCodeProcess($sidecarAfterHandle, [ref]$sidecarAfterExitCode)) {
+    $sidecarExitCodeError = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+    throw "packaged sidecar exit code is unavailable after the tested graceful exit: win32=$sidecarExitCodeError"
+  }
+  if ($sidecarAfterExitCode -eq 259) {
+    throw 'packaged sidecar native handle remained active after the tested graceful exit'
+  }
+  if ($sidecarAfterExitCode -ne 0) {
+    throw "packaged sidecar exited with a non-zero code during the tested graceful exit: $sidecarAfterExitCode"
+  }
   $gracefulExit = $true
 
   $webviewManifest = Join-Path $Output 'tauri-webview-evidence.json'
   if (-not (Test-Path -LiteralPath $webviewManifest -PathType Leaf)) {
     throw 'packaged WebView evidence manifest is missing'
   }
+  $packagedBacktestManifest = Join-Path $Output 'packaged-backtest-evidence.json'
+  if (-not (Test-Path -LiteralPath $packagedBacktestManifest -PathType Leaf)) {
+    throw 'packaged backtest evidence manifest is missing'
+  }
+  & $python (Join-Path $PSScriptRoot 'capture_packaged_backtest_semantics.py') `
+    --data-root $packagedDataRoot --evidence $packagedBacktestManifest
+  if ($LASTEXITCODE -ne 0) { throw 'packaged canonical semantic capture failed' }
+  $packagedBacktest = Get-Content -LiteralPath $packagedBacktestManifest -Raw | ConvertFrom-Json
+  if ($packagedBacktest.capture_nonce -ne $captureNonce -or $packagedBacktest.checkpoint.run_id -ne $beforeMarker.run_id -or $packagedBacktest.checkpoint.task_id -ne $beforeMarker.task_id) {
+    throw 'packaged backtest evidence is not bound to the Windows process observation'
+  }
+  $hostObservation = [ordered]@{
+    schema_version = 'stock-desk-packaged-backtest-host-observation-v1'
+    source_sha = $SourceSha
+    source_tree = $SourceTree
+    candidate_sha256 = $candidateSha256
+    capture_nonce = $captureNonce
+    capture_scope = 'installed-current-user-tauri-webview'
+    host_ipc_command = 'desktop_api_request'
+    host_pid = [int]$desktopProcess.Id
+    main_window_handle = $hostMainWindowHandle
+    installed_host_sha256 = (Get-FileHash -LiteralPath $hostPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    isolated_webview_process_ids = @($isolatedWebViews | ForEach-Object { [int]$_.ProcessId } | Sort-Object -Unique)
+    sidecar_before = [ordered]@{ pid=$sidecarBeforePid; executable_sha256=$sidecarBinaryHash }
+    sidecar_after = [ordered]@{ pid=$sidecarAfterPid; executable_sha256=$sidecarAfterHash }
+    checkpoint = [ordered]@{ run_id=[string]$beforeMarker.run_id; task_id=[string]$beforeMarker.task_id }
+    evidence_sha256 = (Get-FileHash -LiteralPath $packagedBacktestManifest -Algorithm SHA256).Hash.ToLowerInvariant()
+  }
+  $hostObservation | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $Output 'packaged-backtest-host-observation.json') -Encoding utf8NoBOM
+  Copy-Item -LiteralPath $packagedBacktestSeed -Destination (Join-Path $Output 'packaged-backtest-seed.json') -Force
   $manifest = [ordered]@{
     schema_version = 'stock-desk-windows-desktop-evidence-v1'
     source_sha = $SourceSha
     source_tree = $SourceTree
+    candidate_sha256 = $candidateSha256
     actual_packaged_tauri = $true
     native = $nativeEvidence
     icons = $iconEvidence
     webview = [ordered]@{
       manifest = 'tauri-webview-evidence.json'
       sha256 = (Get-FileHash -LiteralPath $webviewManifest -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
+    packaged_backtests = [ordered]@{
+      manifest = 'packaged-backtest-evidence.json'
+      sha256 = (Get-FileHash -LiteralPath $packagedBacktestManifest -Algorithm SHA256).Hash.ToLowerInvariant()
+      seed = 'packaged-backtest-seed.json'
+      seed_sha256 = (Get-FileHash -LiteralPath $packagedBacktestSeed -Algorithm SHA256).Hash.ToLowerInvariant()
+      host_observation = 'packaged-backtest-host-observation.json'
+      host_observation_sha256 = (Get-FileHash -LiteralPath (Join-Path $Output 'packaged-backtest-host-observation.json') -Algorithm SHA256).Hash.ToLowerInvariant()
     }
     graceful_exit = $true
     hosted_runner_limitations = @(
@@ -336,6 +611,10 @@ try {
   }
   $manifest | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $Output 'windows-desktop-evidence.json') -Encoding utf8NoBOM
 } finally {
+  if ($sidecarAfterHandle -ne [IntPtr]::Zero) {
+    [StockDeskEvidenceNative]::CloseHandle($sidecarAfterHandle) | Out-Null
+    $sidecarAfterHandle = [IntPtr]::Zero
+  }
   if (-not $gracefulExit -and (Test-Path -LiteralPath $Output -PathType Container)) {
     $diagnosticsRoot = Join-Path (Split-Path (Split-Path $Output -Parent) -Parent) 'diagnostics'
     New-Item -ItemType Directory -Force $diagnosticsRoot | Out-Null
@@ -355,17 +634,28 @@ try {
   Remove-Item Env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS -ErrorAction SilentlyContinue
   Remove-Item Env:WEBVIEW2_USER_DATA_FOLDER -ErrorAction SilentlyContinue
   Remove-Item Env:STOCK_DESK_DESKTOP_CDP -ErrorAction SilentlyContinue
+  Remove-Item Env:STOCK_DESK_PACKAGED_BACKTEST_SEED -ErrorAction SilentlyContinue
+  Remove-Item Env:STOCK_DESK_CANDIDATE_SHA256 -ErrorAction SilentlyContinue
+  Remove-Item Env:STOCK_DESK_RESTART_SYNC_DIR -ErrorAction SilentlyContinue
+  Remove-Item Env:STOCK_DESK_CAPTURE_NONCE -ErrorAction SilentlyContinue
   if ($webviewArgsPolicySet) { Remove-ItemProperty -LiteralPath $webviewArgsPolicy -Name $webviewAppName -ErrorAction SilentlyContinue }
   if ($webviewDataPolicySet) { Remove-ItemProperty -LiteralPath $webviewDataPolicy -Name $webviewAppName -ErrorAction SilentlyContinue }
   if ($webviewArgsPolicyCreated) { Remove-Item -LiteralPath $webviewArgsPolicy -Force -ErrorAction SilentlyContinue }
   if ($webviewDataPolicyCreated) { Remove-Item -LiteralPath $webviewDataPolicy -Force -ErrorAction SilentlyContinue }
   if ($webviewPolicyRootCreated) { Remove-Item -LiteralPath $webviewPolicyRoot -Force -ErrorAction SilentlyContinue }
   if ($webviewEdgePolicyCreated) { Remove-Item -LiteralPath $webviewEdgePolicy -Force -ErrorAction SilentlyContinue }
-  $unexpectedGracefulResidue = $false
+  $unexpectedGracefulResidue = @()
+  if ($null -ne $nodeProcess) {
+    $nodeProcess.Refresh()
+    if (-not $nodeProcess.HasExited) {
+      if ($gracefulExit) { $unexpectedGracefulResidue += "node:$($nodeProcess.Id)" }
+      Stop-Process -Id $nodeProcess.Id -Force -ErrorAction SilentlyContinue
+    }
+  }
   if ($null -ne $desktopProcess) {
     $desktopProcess.Refresh()
     if (-not $desktopProcess.HasExited) {
-      if ($gracefulExit) { $unexpectedGracefulResidue = $true }
+      if ($gracefulExit) { $unexpectedGracefulResidue += "host:$($desktopProcess.Id)" }
       Stop-Process -Id $desktopProcess.Id -Force -ErrorAction SilentlyContinue
     }
   }
@@ -375,8 +665,11 @@ try {
     $evidenceSidecars | Stop-Process -Force -ErrorAction SilentlyContinue
     Start-Sleep -Milliseconds 250
   }
-  if ($gracefulExit -and @(Get-EvidenceSidecarProcesses $baselineSidecarProcessIds).Count -gt 0) {
-    $unexpectedGracefulResidue = $true
+  $remainingEvidenceSidecars = @(Get-EvidenceSidecarProcesses $baselineSidecarProcessIds)
+  if ($gracefulExit -and $remainingEvidenceSidecars.Count -gt 0) {
+    $unexpectedGracefulResidue += @(
+      $remainingEvidenceSidecars | ForEach-Object { "sidecar:$($_.Id)" }
+    )
   }
   for ($cleanupAttempt = 1; $cleanupAttempt -le 10; $cleanupAttempt++) {
     $isolatedWebViewProcesses = @(Get-IsolatedWebViewProcesses $webviewUserData)
@@ -386,19 +679,23 @@ try {
     }
     Start-Sleep -Milliseconds 250
   }
-  if ($gracefulExit -and @(Get-IsolatedWebViewProcesses $webviewUserData).Count -gt 0) {
-    $unexpectedGracefulResidue = $true
+  $remainingIsolatedWebViews = @(Get-IsolatedWebViewProcesses $webviewUserData)
+  if ($gracefulExit -and $remainingIsolatedWebViews.Count -gt 0) {
+    $unexpectedGracefulResidue += @(
+      $remainingIsolatedWebViews | ForEach-Object { "webview:$($_.ProcessId)" }
+    )
   }
   if (Test-Path -LiteralPath $uninstallerPath -PathType Leaf) {
     $cleanup = Start-Process -FilePath $uninstallerPath -ArgumentList '/S' -Wait -PassThru
     if ($cleanup.ExitCode -ne 0 -and $gracefulExit) { throw 'test uninstall failed after desktop evidence' }
   }
-  Remove-Item -Recurse -Force (Join-Path $env:LOCALAPPDATA 'Stock Desk\v1.1') -ErrorAction SilentlyContinue
+  $packagedDataCleaned = Remove-EvidenceDirectory $packagedDataRoot
   for ($cleanupAttempt = 1; $cleanupAttempt -le 10; $cleanupAttempt++) {
     Remove-Item -Recurse -Force $webviewUserData -ErrorAction SilentlyContinue
     if (-not (Test-Path -LiteralPath $webviewUserData)) { break }
     Start-Sleep -Milliseconds 250
   }
+  $restartSyncCleaned = Remove-EvidenceDirectory $restartSyncRoot
   if (-not $tauriDefaultWebViewDataExisted) {
     for ($cleanupAttempt = 1; $cleanupAttempt -le 10; $cleanupAttempt++) {
       Remove-Item -Recurse -Force $tauriDefaultWebViewData -ErrorAction SilentlyContinue
@@ -409,10 +706,16 @@ try {
   if ($gracefulExit -and (Test-Path -LiteralPath $webviewUserData)) {
     throw 'isolated WebView2 evidence state could not be cleaned'
   }
+  if ($gracefulExit -and -not $packagedDataCleaned) {
+    throw 'packaged backtest data state could not be cleaned'
+  }
+  if ($gracefulExit -and -not $restartSyncCleaned) {
+    throw 'packaged backtest synchronization state could not be cleaned'
+  }
   if ($gracefulExit -and -not $tauriDefaultWebViewDataExisted -and (Test-Path -LiteralPath $tauriDefaultWebViewData)) {
     throw 'Tauri default WebView2 state created by evidence could not be cleaned'
   }
-  if ($gracefulExit -and $unexpectedGracefulResidue) {
-    throw 'packaged processes unexpectedly remained after graceful exit'
+  if ($gracefulExit -and $unexpectedGracefulResidue.Count -gt 0) {
+    throw "packaged processes unexpectedly remained after graceful exit: $($unexpectedGracefulResidue -join ',')"
   }
 }

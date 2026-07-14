@@ -870,4 +870,10 @@ requirements:
         path: web/e2e/backtest.spec.ts
         selector: custom formula discloses and completes a partial pool
         assertion: A real visible desktop journey carries the oracle-covered custom-formula pool flow through partial outcome disclosure and terminal reporting.
+      - state: existing
+        runner: pytest
+        kind: contract
+        path: tests/unit/test_windows_desktop_evidence_contract.py
+        selector: tests/unit/test_windows_desktop_evidence_contract.py::test_packaged_backtest_matrix_uses_webview_host_ipc_and_new_worker_resume
+        assertion: The Windows candidate contract requires the installed WebView host-IPC matrix, refuses demo and router bypasses, checkpoints through the desktop shutdown protocol, restarts the packaged sidecar, and verifies a different Worker identity after resume.
 non_goals: []

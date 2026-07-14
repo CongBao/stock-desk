@@ -223,7 +223,7 @@ jobs:
           )
           if proof["commit_sha"] != os.environ["SOURCE_SHA"]:
               raise SystemExit("main proof source SHA mismatch")
-          if proof["validation_evidence"]["windows-alpha-candidate"] != candidate:
+          if proof["validation_evidence"]["windows-desktop-alpha-candidate-manifest"] != candidate:
               raise SystemExit("promoted candidate manifest is not the proved manifest")
           PY
           python scripts/artifact_manifest.py verify \

@@ -1,4 +1,41 @@
-# Backtesting semantics
+# 回测语义 / Backtesting semantics
+
+## 打包桌面兼容性证据
+
+Windows candidate A 会安装实际 NSIS 候选包，并在 Tauri WebView 中通过宿主认证 IPC
+提交 12 个完整回测：MACD 与参数化自定义公式 × 单股与股票池 × 日线、周线与
+60 分钟。每个任务都由打包 sidecar Worker 执行；证据记录冻结公式版本/参数、股票池
+快照、数据快照、报告和结果摘要，并逐项核对绑定到 `v1.0.0` 固定提交与 tree 的离线
+语义基准。只读演示、普通浏览器、`TestClient` 或前端路由伪造都不能生成通过证据。
+
+另外一条较大的自定义公式股票池任务会走桌面关闭检查点协议，随后真正重启 sidecar，
+由不同 Worker 身份恢复并完成。Windows 宿主捕获器会以随机 nonce 与 WebView 握手，
+交叉记录原生窗口、隔离 WebView2 进程、重启前后不同的 sidecar OS PID 及相同可执行文件
+哈希；页面脚本自报的布尔值本身不足以通过校验。证据、公开确定性夹具、安装包 SHA-256、源码 SHA/tree、
+v1 基准及生成器、schema 和校验器均进入 candidate artifact manifest，并由同一提交的
+不可变 main proof 继续约束。这个自动化证明面向 GitHub-hosted Windows runner；它不
+替代正式发布前独立的 Windows 10/11 普通用户实机验收。
+
+## English: packaged desktop compatibility evidence
+
+Windows candidate A installs the actual NSIS candidate and submits a complete
+12-cell matrix from the Tauri WebView through authenticated host IPC: MACD and a
+parameterized custom formula, single stock and pool, across daily, weekly, and
+60-minute periods. The packaged sidecar Worker executes every task. Evidence
+binds frozen formula parameters, pool and data snapshots, reports, result hashes,
+the installer digest, source SHA/tree, the immutable v1 oracle and generator,
+schema, verifier, artifact manifest, and the same-SHA main proof. Read-only demo,
+a normal browser, `TestClient`, and router-only navigation fail closed.
+
+A larger custom-pool run also enters the desktop shutdown checkpoint protocol,
+restarts the sidecar, and resumes under a different Worker identity. A
+nonce-bound Windows host observation cross-checks the native window, isolated
+WebView2 processes, different before/after sidecar OS PIDs, and the unchanged
+sidecar executable digest; self-reported booleans alone cannot pass. This hosted
+runner evidence does not replace the separate clean Windows 10/11 standard-user
+release acceptance.
+
+## 基础语义 / Core semantics
 
 Stock Desk v0.4.0 turns the BUY and SELL outputs of one immutable trading-formula version into reproducible historical trade samples. The engine is research software: it does not connect to a broker, place orders, share capital across stocks, or predict future performance.
 
