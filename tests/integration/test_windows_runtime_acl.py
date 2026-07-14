@@ -110,17 +110,35 @@ def test_windows_market_lake_direct_constructor_initializes_private_root(
         )
         marker = root / ".stock-desk-market-lake"
         routed = routed_daily_bars((date(2024, 1, 2),))
+        deletion_observed = False
 
         def marker_is_pinned_before_commit() -> None:
-            with pytest.raises(PermissionError):
+            nonlocal deletion_observed
+            try:
                 marker.unlink()
+            except PermissionError:
+                return
+            deletion_observed = True
 
-        lake._commit_catalog(  # noqa: SLF001 -- transaction binding contract
-            routed,
-            manifest_record_id(routed.manifest),
-            (),
-            before_commit=marker_is_pinned_before_commit,
-        )
+        try:
+            lake._commit_catalog(  # noqa: SLF001 -- transaction binding contract
+                routed,
+                manifest_record_id(routed.manifest),
+                (),
+                before_commit=marker_is_pinned_before_commit,
+            )
+        except MarketLakeCorruptionError:
+            assert deletion_observed
+            with engine.connect() as connection:
+                assert (
+                    connection.exec_driver_sql(
+                        "SELECT COUNT(*) FROM market_dataset"
+                    ).scalar_one()
+                    == 0
+                )
+            marker.write_bytes(b"stock-desk-market-lake-v1\n")
+        else:
+            assert not deletion_observed
         marker.unlink()
         marker.write_bytes(b"stock-desk-market-lake-v1\n")
         with pytest.raises(MarketLakeCorruptionError, match="root"):

@@ -220,6 +220,53 @@ def test_windows_backend_rejects_marker_rebinding_before_catalog_write(
         engine.dispose()
 
 
+def test_windows_backend_revalidates_root_before_transaction_commit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_url = f"sqlite:///{tmp_path / 'catalog.db'}"
+    migrate(database_url)
+    engine = create_engine_for_url(database_url)
+    monkeypatch.setattr(lake_module, "_PLATFORM", "nt")
+    root = (tmp_path / "market").resolve()
+    routed = routed_daily_bars((date(2024, 1, 2),))
+    try:
+        lake = MarketLake(engine=engine, root=root)
+        original_validate = lake_module._validate_windows_root_binding
+        validation_count = 0
+
+        def reject_final_binding(
+            bound_root: Path,
+            root_identity: tuple[int, int],
+            marker_identity: tuple[int, int],
+        ) -> None:
+            nonlocal validation_count
+            validation_count += 1
+            original_validate(bound_root, root_identity, marker_identity)
+            if validation_count == 2:
+                raise ValueError("simulated final root rebinding")
+
+        monkeypatch.setattr(
+            lake_module,
+            "_validate_windows_root_binding",
+            reject_final_binding,
+        )
+
+        with pytest.raises(MarketLakeCorruptionError, match="transaction binding"):
+            lake.write(routed)
+
+        assert validation_count == 2
+        with engine.connect() as connection:
+            assert (
+                connection.exec_driver_sql(
+                    "SELECT COUNT(*) FROM market_dataset"
+                ).scalar_one()
+                == 0
+            )
+    finally:
+        engine.dispose()
+
+
 def test_sqlite_market_lake_write_read_duplicate_and_reopen(
     tmp_path: Path,
 ) -> None:

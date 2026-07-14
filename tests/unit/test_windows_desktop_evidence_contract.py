@@ -88,11 +88,37 @@ def test_native_harness_installs_candidate_checks_shell_icons_and_exits_cleanly(
     assert "$desktopStart.UseShellExecute = $false" in source
     assert "webview-startup-summary.json" in source
     assert "webview_remote_debug_argument_observed" in source
+    assert "webview_process_scope = 'isolated-user-data-folder'" in source
     assert "CommandLine -like '*--remote-debugging-port=*'" in source
     assert "CommandLine =" not in source
-    diagnostics = source.index("$webviewProcesses = @(Get-CimInstance")
+    assert "Get-IsolatedWebViewProcesses $webviewUserData" in source
+    assert "--user-data-dir=$UserDataFolder" in source
+    assert "[StringComparison]::OrdinalIgnoreCase" in source
+    assert "[char]::IsWhiteSpace($CommandLine[$argumentEnd])" in source
+    assert "Get-EvidenceSidecarProcesses $baselineSidecarProcessIds" in source
+    assert "Get-Process -Name 'stock-desk-sidecar'" in source
+    assert "com.congbao.stockdesk" in source
+    assert "$tauriDefaultWebViewDataExisted" in source
+    diagnostics = source.index(
+        "$webviewProcesses = @(Get-IsolatedWebViewProcesses $webviewUserData)"
+    )
     process_cleanup = source.index("Stop-Process -Id $desktopProcess.Id")
     assert diagnostics < process_cleanup
+    sidecar_cleanup = source.index("$evidenceSidecars = @(Get-EvidenceSidecarProcesses")
+    isolated_webview_cleanup = source.index(
+        "$isolatedWebViewProcesses = @(Get-IsolatedWebViewProcesses"
+    )
+    uninstall_cleanup = source.index(
+        "if (Test-Path -LiteralPath $uninstallerPath -PathType Leaf)",
+        process_cleanup,
+    )
+    assert process_cleanup < sidecar_cleanup < isolated_webview_cleanup
+    assert isolated_webview_cleanup < uninstall_cleanup < udf_cleanup
+    assert "packaged processes unexpectedly remained after graceful exit" in source
+    assert (
+        "Tauri default WebView2 state created by evidence could not be cleaned"
+        in source
+    )
     assert "$webviewPolicyRootCreated" in source
     assert "$webviewEdgePolicyCreated" in source
 
