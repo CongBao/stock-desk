@@ -256,15 +256,28 @@ def test_packaged_backtest_matrix_uses_webview_host_ipc_and_new_worker_resume() 
     runtime_ready = source.index(
         "const runtimeBefore = await waitForRuntimeReady(page)"
     )
+    backlog = source.index("const submissions = await Promise.all", runtime_ready)
     submission = source.index(
-        'await invoke(page, "POST", "/api/backtests", request)', runtime_ready
+        'invoke(page, "POST", "/api/backtests", request)', backlog
     )
-    running = source.index("const running = await waitForTask", submission)
+    observed = source.index("await waitForCheckpointBacklog", backlog)
     shutdown = source.index(
-        'await invoke(page, "POST", "/api/desktop/shutdown"', running
+        'await invoke(page, "POST", "/api/desktop/shutdown"', observed
     )
-    assert runtime_ready < submission < running < shutdown
-    assert "waitForRuntimeReady(page)" not in source[running:shutdown]
+    paused = source.index("const pausedTasks", shutdown)
+    running = source.index("const running = pausedTasks[0]", paused)
+    assert runtime_ready < backlog < submission < observed < shutdown < paused < running
+    assert "Array.from({ length: 64 }" in source[backlog:observed]
+    assert "100-row bound" in source[backlog:observed]
+    assert "taskIds.size !== submissions.length" in source[backlog:observed]
+    assert "checkpoint.running !== 1" in source[shutdown:paused]
+    assert 'item.status === "running"' in source[paused:running]
+    assert "pausedTasks.length !== 1" in source[paused:running]
+    assert "waitForRuntimeReady(page)" not in source[observed:shutdown]
+    resumed = source.index("const finished = await waitForTask", running)
+    drained = source.index("await waitForCheckpointBacklogSuccess", resumed)
+    report = source.index('await invoke(\n    page,\n    "GET",', drained)
+    assert running < resumed < drained < report
 
 
 def test_packaged_backtest_marker_protocol_is_atomic_and_retries_partial_or_stale_data() -> (

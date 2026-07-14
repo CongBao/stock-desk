@@ -127,11 +127,61 @@ async function waitForRuntimeRecovery(page) {
 }
 
 async function task(page, taskId) {
-  const tasks = await invoke(page, "GET", "/api/tasks?limit=100");
-  const match = tasks.find((item) => item.id === taskId);
+  const currentTasks = await invoke(page, "GET", "/api/tasks?limit=100");
+  const match = currentTasks.find((item) => item.id === taskId);
   if (match === undefined)
     throw new Error(`backtest task is missing: ${taskId}`);
   return match;
+}
+
+async function waitForCheckpointBacklog(page, taskIds, timeout = 10_000) {
+  const deadline = Date.now() + timeout;
+  let latest = [];
+  while (Date.now() < deadline) {
+    latest = await invoke(page, "GET", "/api/tasks?limit=100");
+    const selected = latest.filter((item) => taskIds.has(item.id));
+    if (selected.some((item) => item.status === "running")) return selected;
+    if (
+      selected.length === taskIds.size &&
+      selected.every((item) =>
+        ["succeeded", "failed", "cancelled"].includes(item.status),
+      )
+    ) {
+      break;
+    }
+    await page.waitForTimeout(10);
+  }
+  throw new Error(
+    `packaged checkpoint backlog did not expose a running task: ${JSON.stringify(latest)}`,
+  );
+}
+
+async function waitForCheckpointBacklogSuccess(
+  page,
+  taskIds,
+  timeout = 120_000,
+) {
+  const deadline = Date.now() + timeout;
+  let selected = [];
+  while (Date.now() < deadline) {
+    const currentTasks = await invoke(page, "GET", "/api/tasks?limit=100");
+    selected = currentTasks.filter((item) => taskIds.has(item.id));
+    if (
+      selected.length === taskIds.size &&
+      selected.every((item) => item.status === "succeeded")
+    ) {
+      return selected;
+    }
+    if (
+      selected.some((item) => ["failed", "cancelled"].includes(item.status))
+    ) {
+      break;
+    }
+    await page.waitForTimeout(50);
+  }
+  throw new Error(
+    `packaged checkpoint backlog did not finish successfully: ${JSON.stringify(selected)}`,
+  );
 }
 
 async function waitForTask(page, taskId, statuses, timeout = 90_000) {
@@ -363,18 +413,48 @@ async function specialEvidence(page, seed, caseId) {
 async function checkpointEvidence(page, seed, baseline) {
   const request = intent(seed, "custom", "pool", "1d");
   const runtimeBefore = await waitForRuntimeReady(page);
-  const submission = await invoke(page, "POST", "/api/backtests", request);
-  const running = await waitForTask(page, submission.task_id, ["running"]);
-  // Request the production checkpoint barrier immediately after the Worker is
-  // observed. The shutdown endpoint itself waits for the next durable symbol
-  // boundary, so evidence does not assume which pool symbol is in flight.
+  // A two-symbol packaged run can finish before WebView polling observes its
+  // transient `running` state. Queue identical real runs concurrently so the
+  // single packaged Worker has a deterministic backlog, then let the
+  // production shutdown barrier identify the task it actually paused. This
+  // preserves a real in-flight checkpoint instead of treating a fast terminal
+  // task as equivalent evidence.
+  const submissions = await Promise.all(
+    // Eight earlier evidence tasks plus this backlog and eight later matrix
+    // tasks remain below the authenticated task endpoint's 100-row bound.
+    Array.from({ length: 64 }, () =>
+      invoke(page, "POST", "/api/backtests", request),
+    ),
+  );
+  const taskIds = new Set(submissions.map((item) => item.task_id));
+  if (taskIds.size !== submissions.length) {
+    throw new Error("packaged checkpoint backlog reused a task identity");
+  }
+  await waitForCheckpointBacklog(page, taskIds);
   const checkpoint = await invoke(page, "POST", "/api/desktop/shutdown", {
     checkpoint_active: true,
   });
-  if (!checkpoint.recovery_required) {
+  if (!checkpoint.recovery_required || checkpoint.running !== 1) {
     throw new Error(
       "packaged custom pool did not create a recovery checkpoint",
     );
+  }
+  const pausedTasks = (
+    await invoke(page, "GET", "/api/tasks?limit=100")
+  ).filter((item) => taskIds.has(item.id) && item.status === "running");
+  if (pausedTasks.length !== 1) {
+    throw new Error(
+      `packaged checkpoint did not identify exactly one paused task: ${JSON.stringify(pausedTasks)}`,
+    );
+  }
+  const running = pausedTasks[0];
+  const submission = submissions.find((item) => item.task_id === running.id);
+  if (
+    submission === undefined ||
+    typeof running.worker_id !== "string" ||
+    running.worker_id.length === 0
+  ) {
+    throw new Error("packaged checkpoint paused task identity is incomplete");
   }
   await captureHandshake("restart-before", {
     run_id: submission.run_id,
@@ -411,6 +491,9 @@ async function checkpointEvidence(page, seed, baseline) {
   ) {
     throw new Error("packaged checkpoint did not resume on a new Worker");
   }
+  // Do not let evidence-only duplicate runs overlap a later fixture switch.
+  // Every queued copy must reach the same successful production terminal state.
+  await waitForCheckpointBacklogSuccess(page, taskIds);
   const report = await invoke(
     page,
     "GET",
