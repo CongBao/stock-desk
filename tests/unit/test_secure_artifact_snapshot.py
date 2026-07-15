@@ -879,8 +879,13 @@ def test_windows_snapshot_branch_holds_root_and_consumes_only_snapshot(
         "_set_windows_private_dacl",
         lambda path, _sids, *, create=False: path.mkdir(mode=0o700) if create else None,
     )
+
+    def open_private_root(_path: Path, *, share_mode: int) -> int:
+        assert share_mode == secure_snapshot._WINDOWS_DIRECTORY_SHARE
+        return 91
+
     monkeypatch.setattr(
-        secure_snapshot, "_open_windows_directory_handle", lambda _path: 91
+        secure_snapshot, "_open_windows_directory_handle", open_private_root
     )
     monkeypatch.setattr(secure_snapshot, "_close_windows_handle", lambda _handle: None)
     monkeypatch.setattr(
@@ -1554,8 +1559,14 @@ def test_windows_private_directory_swap_and_existing_target_fail_closed(
         "_set_windows_private_dacl",
         lambda path, _sids, *, create=False: path.mkdir(mode=0o700) if create else None,
     )
+    opened_share_modes: list[int] = []
+
+    def open_private_root(_path: Path, *, share_mode: int) -> int:
+        opened_share_modes.append(share_mode)
+        return 91
+
     monkeypatch.setattr(
-        secure_snapshot, "_open_windows_directory_handle", lambda _path: 91
+        secure_snapshot, "_open_windows_directory_handle", open_private_root
     )
     monkeypatch.setattr(secure_snapshot, "_close_windows_handle", lambda _handle: None)
 
@@ -1564,6 +1575,7 @@ def test_windows_private_directory_swap_and_existing_target_fail_closed(
             destination.rename(moved)
             destination.mkdir(mode=0o700)
             (destination / "replacement.txt").write_text("preserve", encoding="utf-8")
+    assert opened_share_modes == [secure_snapshot._WINDOWS_DIRECTORY_SHARE]
     assert (destination / "replacement.txt").read_text(encoding="utf-8") == "preserve"
 
     with pytest.raises(SecureArtifactSnapshotError, match="must not already exist"):

@@ -1333,7 +1333,11 @@ def _create_private_directory(path: Path) -> Iterator[_PrivateDirectoryLease]:
             try:
                 _set_windows_private_dacl(path, allowed_sids, create=True)
                 created_identity = _identity(path.stat(follow_symlinks=False))
-                target_handle = _open_windows_directory_handle(path)
+                # The leased directory must remain writable while its identity is
+                # pinned.  Omitting DELETE sharing still prevents replacement.
+                target_handle = _open_windows_directory_handle(
+                    path, share_mode=_WINDOWS_DIRECTORY_SHARE
+                )
                 if not _same_object(
                     _identity(path.stat(follow_symlinks=False)), created_identity
                 ):
