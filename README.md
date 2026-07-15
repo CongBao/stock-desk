@@ -2,7 +2,7 @@
 
 # Stock Desk
 
-> 当前稳定版为 `v1.0.0`。当前开发候选 `v1.1.0-beta.2` 是 Windows x64 桌面体验预发布版；测试资产不替代稳定版，范围与限制见 [beta.2 说明](docs/releases/v1.1.0-beta.2.md)。
+> 当前稳定版为 `v1.0.0`。当前开发候选 `v1.1.0-beta.3` 是 Windows x64 桌面体验预发布版；测试资产不替代稳定版，范围与限制见 [beta.3 说明](docs/releases/v1.1.0-beta.3.md)。
 
 ## 产品定位
 
@@ -32,16 +32,16 @@ MACD/参数化自定义公式、单股/股票池、日线/周线/60 分钟的 12
 
 稳定使用请从 [Latest Release](https://github.com/CongBao/stock-desk/releases/latest) 下载
 `v1.0.0`。测试 Windows x64 桌面候选请使用单独的
-[`v1.1.0-beta.2` 预发布页](https://github.com/CongBao/stock-desk/releases/tag/v1.1.0-beta.2)，
-下载 `stock-desk-1.1.0-beta.2-unsigned-x64-setup.exe`；它未签名，Windows 可能显示未知发布者或 SmartScreen 提示。
+[`v1.1.0-beta.3` 预发布页](https://github.com/CongBao/stock-desk/releases/tag/v1.1.0-beta.3)，
+下载 `stock-desk-1.1.0-beta.3-unsigned-x64-setup.exe`；它未签名，Windows 可能显示未知发布者或 SmartScreen 提示。
 
-测试 `v1.1.0-beta.2`：
+测试 `v1.1.0-beta.3`：
 
 1. 使用普通 Windows 用户运行安装器，无需管理员权限。
 2. 从开始菜单打开 Stock Desk；内置服务会随桌面窗口启动。
 3. 按首次使用向导完成数据准备并选择股票；若暂不选择，默认打开上证指数 `000001.SS`。
 
-普通用户无需 GitHub CLI、源码检出、Docker 或开发工具。稳定版下载真实性验证见[下载说明](docs/download.md)；beta.2 的校验和与不可变构建证明位于其预发布页。
+普通用户无需 GitHub CLI、源码检出、Docker 或开发工具。稳定版下载真实性验证见[下载说明](docs/download.md)；beta.3 的校验和与不可变构建证明位于其预发布页。
 
 当前源码已包含**默认关闭**的可信更新运行链，以及**硬禁用的正式签名发布控制面骨架**。
 骨架描述同一受保护 `main` 的 proof/candidate、人工批准的 SignPath、Windows 10/11 普通用户
@@ -53,9 +53,9 @@ MACD/参数化自定义公式、单股/股票池、日线/周线/60 分钟的 12
 
 `v1.1.0` 不发布 macOS、Linux、Android 或 ARM64 安装包，也不会迁移或删除 v1 的本地数据。正式版签名状态以发布页和[代码签名政策](docs/code-signing-policy.md)为准。
 
-当前源码中的下一候选卸载器可由用户明确选择是否删除 **仅 v1.1** 的本地数据；取消删除或删除失败都会继续保留数据，旧版 v1 数据不在该操作范围内。已发布的 beta.2 不因源码更新而被重新声明为具备此行为。
+beta.3 卸载器可由用户明确选择是否删除 **仅 v1.1** 的本地数据；取消删除或删除失败都会继续保留数据，旧版 v1 数据不在该操作范围内。
 
-当前源码还提供真实 Windows 10/11 普通用户安装的[原始证据 schema、独立验证器与隔离控制器参考合约](docs/windows-installed-evidence.md)。仓库仍禁止持久化 self-hosted runner；workflow 已接入 fail-closed 的外部短生命周期 VM broker/JIT adapter 接口和十一项矩阵聚合，但外部 broker/HSM、受保护环境、生产凭据及真实 VM 运行证据尚未配置，因此不能生成通过回执。这不代表安装或完整旅程验收已通过，也不改变 beta.2 的测试版状态。
+当前源码还提供真实 Windows 10/11 普通用户安装的[原始证据 schema、独立验证器与隔离控制器参考合约](docs/windows-installed-evidence.md)。仓库仍禁止持久化 self-hosted runner；workflow 已接入 fail-closed 的外部短生命周期 VM broker/JIT adapter 接口和十一项矩阵聚合，但外部 broker/HSM、受保护环境、生产凭据及真实 VM 运行证据尚未配置，因此不能生成通过回执。这不代表安装或完整旅程验收已通过，也不改变 beta.3 的测试版状态。
 
 ## 使用文档
 

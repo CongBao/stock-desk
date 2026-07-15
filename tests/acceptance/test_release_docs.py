@@ -91,7 +91,7 @@ def _workflow() -> dict[str, Any]:
 
 
 def _native_artifact_patterns() -> tuple[str, ...]:
-    return ("stock-desk-1.1.0-beta.2-unsigned-x64-setup.exe",)
+    return ("stock-desk-1.1.0-beta.3-unsigned-x64-setup.exe",)
 
 
 def _readmes() -> tuple[str, str]:

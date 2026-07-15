@@ -2,7 +2,7 @@
 
 # Stock Desk
 
-> The current stable release is `v1.0.0`. The current `v1.1.0-beta.2` candidate is a Windows x64 desktop-experience prerelease; test assets do not replace the stable release. See the [beta.2 notes](docs/releases/v1.1.0-beta.2.md).
+> The current stable release is `v1.0.0`. The current `v1.1.0-beta.3` candidate is a Windows x64 desktop-experience prerelease; test assets do not replace the stable release. See the [beta.3 notes](docs/releases/v1.1.0-beta.3.md).
 
 ## Product positioning
 
@@ -31,17 +31,17 @@ Backtest compatibility is protected by an offline immutable `v1.0.0` oracle boun
 
 For stable use, download `v1.0.0` from the
 [Latest Release](https://github.com/CongBao/stock-desk/releases/latest). To test the Windows x64 desktop candidate, use the separate
-[`v1.1.0-beta.2` prerelease](https://github.com/CongBao/stock-desk/releases/tag/v1.1.0-beta.2)
-and download `stock-desk-1.1.0-beta.2-unsigned-x64-setup.exe`. It is unsigned, so Windows may show an Unknown Publisher or SmartScreen warning.
+[`v1.1.0-beta.3` prerelease](https://github.com/CongBao/stock-desk/releases/tag/v1.1.0-beta.3)
+and download `stock-desk-1.1.0-beta.3-unsigned-x64-setup.exe`. It is unsigned, so Windows may show an Unknown Publisher or SmartScreen warning.
 
-To test `v1.1.0-beta.2`:
+To test `v1.1.0-beta.3`:
 
 1. Run the installer as an ordinary Windows user; administrator rights are not required.
 2. Open Stock Desk from the Start menu; its bundled service starts with the desktop window.
 3. Complete the first-run data and stock setup. If no stock is chosen, the Shanghai Composite `000001.SS` opens by default.
 
 Ordinary users do not need GitHub CLI, a source checkout, Docker, or development tools. Use the bilingual
-[download and authenticity guide](docs/download.md) for the stable release; beta.2 checksums and immutable build proof are on its prerelease page.
+[download and authenticity guide](docs/download.md) for the stable release; beta.3 checksums and immutable build proof are on its prerelease page.
 
 The current source includes a **default-off** trusted-update runtime and a **hard-disabled formal
 signing and release control-plane scaffold**. The scaffold describes the same protected-`main`
@@ -56,9 +56,9 @@ The production updater remains disabled.
 
 `v1.1.0` does not ship macOS, Linux, Android, or ARM64 installers, and it does not migrate or delete v1 local data. Refer to the release page and [code-signing policy](docs/code-signing-policy.md) for the authoritative signing status.
 
-The next candidate in the current source lets the user explicitly choose whether to remove **v1.1-only** local data during uninstall. Cancelling that deletion or a deletion failure keeps the data, and legacy v1 data is outside this operation. This source change does not retroactively claim that the published beta.2 has that behavior.
+The beta.3 uninstaller lets the user explicitly choose whether to remove **v1.1-only** local data. Cancelling that deletion or a deletion failure keeps the data, and legacy v1 data is outside this operation.
 
-The current source also provides [raw-evidence schemas, an independent verifier, and an isolated-controller reference contract](docs/windows-installed-evidence.md) for real Windows 10/11 standard-user installation. Persistent repository self-hosted runners remain forbidden. The workflow now integrates a fail-closed external short-lived VM broker/JIT-adapter interface and eleven-case matrix aggregation, but no external broker/HSM, protected environment, production credentials, or real-VM run evidence is configured yet, so it cannot issue a passing receipt. This is not proof of installation or full-journey acceptance and does not change beta.2's test-only status.
+The current source also provides [raw-evidence schemas, an independent verifier, and an isolated-controller reference contract](docs/windows-installed-evidence.md) for real Windows 10/11 standard-user installation. Persistent repository self-hosted runners remain forbidden. The workflow now integrates a fail-closed external short-lived VM broker/JIT-adapter interface and eleven-case matrix aggregation, but no external broker/HSM, protected environment, production credentials, or real-VM run evidence is configured yet, so it cannot issue a passing receipt. This is not proof of installation or full-journey acceptance and does not change beta.3's test-only status.
 
 ## Documentation
 
