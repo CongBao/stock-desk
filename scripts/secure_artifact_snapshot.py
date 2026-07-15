@@ -19,6 +19,7 @@ import os
 from pathlib import Path, PurePosixPath
 import stat
 import sys
+import time
 from typing import Any, BinaryIO, Final
 import unicodedata
 
@@ -27,6 +28,8 @@ _READ_BLOCK: Final = 1024 * 1024
 _REPARSE_ATTRIBUTE: Final = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 _WINDOWS_FILE_SHARE_READ: Final = 0x00000001
 _WINDOWS_DIRECTORY_SHARE: Final = 0x00000003
+_WINDOWS_SHARING_RETRY_DELAYS: Final = (0.05, 0.1, 0.2, 0.4)
+_WINDOWS_TRANSIENT_SHARING_ERRORS: Final = frozenset({32, 33})
 _WINDOWS_RESERVED_NAMES: Final = frozenset(
     {"CON", "PRN", "AUX", "NUL"}
     | {f"COM{index}" for index in range(1, 10)}
@@ -909,6 +912,50 @@ def _windows_ancestor_paths(path: Path) -> tuple[Path, ...]:
     return tuple(paths)
 
 
+def _windows_retry_sleep(delay: float) -> None:
+    time.sleep(delay)
+
+
+def _windows_error_code(error: OSError) -> int | None:
+    winerror = getattr(error, "winerror", None)
+    if isinstance(winerror, int):
+        return winerror
+    return error.errno if isinstance(error.errno, int) else None
+
+
+def _open_windows_source_handles(path: Path) -> list[int]:
+    for attempt in range(len(_WINDOWS_SHARING_RETRY_DELAYS) + 1):
+        handles: list[int] = []
+        try:
+            for component in _windows_ancestor_paths(path):
+                handles.append(
+                    _open_windows_directory_handle(
+                        component, share_mode=_WINDOWS_DIRECTORY_SHARE
+                    )
+                )
+            return handles
+        except SecureArtifactSnapshotError:
+            for handle in reversed(handles):
+                _close_windows_handle(handle)
+            raise
+        except OSError as error:
+            for handle in reversed(handles):
+                _close_windows_handle(handle)
+            code = _windows_error_code(error)
+            if (
+                code in _WINDOWS_TRANSIENT_SHARING_ERRORS
+                and attempt < len(_WINDOWS_SHARING_RETRY_DELAYS)
+            ):
+                _windows_retry_sleep(_WINDOWS_SHARING_RETRY_DELAYS[attempt])
+                continue
+            detail = f" (Windows error {code})" if code is not None else ""
+            raise SecureArtifactSnapshotError(
+                "source root contains a missing, mutable, or unsafe component"
+                f"{detail}"
+            ) from error
+    raise AssertionError("Windows sharing retry loop did not terminate")
+
+
 @contextmanager
 def _hold_windows_source_root(path: Path) -> Iterator[None]:
     """Pin every directory without allowing replacement during source reads.
@@ -919,14 +966,8 @@ def _hold_windows_source_root(path: Path) -> Iterator[None]:
     artifact files remain opened read-share-only and the complete inventory is rechecked.
     """
 
-    handles: list[int] = []
+    handles = _open_windows_source_handles(path)
     try:
-        for component in _windows_ancestor_paths(path):
-            handles.append(
-                _open_windows_directory_handle(
-                    component, share_mode=_WINDOWS_DIRECTORY_SHARE
-                )
-            )
         yield
     except SecureArtifactSnapshotError:
         raise

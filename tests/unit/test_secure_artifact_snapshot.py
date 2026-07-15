@@ -595,6 +595,60 @@ def test_windows_source_handle_failure_closes_previously_opened_handles(
     assert closed == [71]
 
 
+def test_windows_source_handle_transient_sharing_conflicts_are_retried(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[Path] = []
+    closed: list[int] = []
+    sleeps: list[float] = []
+
+    def open_handle(path: Path, *, share_mode: int) -> int:
+        assert share_mode == secure_snapshot._WINDOWS_DIRECTORY_SHARE
+        calls.append(path)
+        if len(calls) in {2, 4}:
+            raise OSError(32, "sharing violation")
+        return len(calls)
+
+    monkeypatch.setattr(secure_snapshot, "_open_windows_directory_handle", open_handle)
+    monkeypatch.setattr(secure_snapshot, "_close_windows_handle", closed.append)
+    monkeypatch.setattr(secure_snapshot, "_windows_retry_sleep", sleeps.append)
+
+    with secure_snapshot._hold_windows_source_root(Path("/build/root")):
+        assert calls == [
+            Path("/"),
+            Path("/build"),
+            Path("/"),
+            Path("/build"),
+            Path("/"),
+            Path("/build"),
+            Path("/build/root"),
+        ]
+        assert closed == [1, 3]
+
+    assert sleeps == [0.05, 0.1]
+    assert closed == [1, 3, 7, 6, 5]
+
+
+def test_windows_source_handle_exhausted_sharing_conflict_reports_error_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts = 0
+
+    def fail(_path: Path, *, share_mode: int) -> int:
+        nonlocal attempts
+        assert share_mode == secure_snapshot._WINDOWS_DIRECTORY_SHARE
+        attempts += 1
+        raise OSError(32, "sharing violation")
+
+    monkeypatch.setattr(secure_snapshot, "_open_windows_directory_handle", fail)
+    monkeypatch.setattr(secure_snapshot, "_windows_retry_sleep", lambda _delay: None)
+
+    with pytest.raises(SecureArtifactSnapshotError, match="Windows error 32"):
+        with secure_snapshot._hold_windows_source_root(Path("/build/root")):
+            pass
+    assert attempts == len(secure_snapshot._WINDOWS_SHARING_RETRY_DELAYS) + 1
+
+
 def test_windows_inventory_has_the_same_stable_limits_and_link_policy(
     tmp_path: Path,
 ) -> None:
