@@ -278,6 +278,25 @@ def _relative_path(value: object, field: str) -> str:
     return raw
 
 
+def _mapping_target(value: object, field: str) -> str:
+    """Canonicalize only benign separator artifacts at the descriptor boundary."""
+
+    raw = _text(value, field, limit=1024)
+    if (
+        "\\" in raw
+        or ":" in raw
+        or raw.startswith("/")
+        or _WINDOWS_ABSOLUTE.match(raw)
+        or unicodedata.normalize("NFKC", raw) != raw
+    ):
+        raise NsisRepackContractError(f"{field} must be a portable relative path")
+    parts = raw.split("/")
+    if ".." in parts:
+        raise NsisRepackContractError(f"{field} must not traverse its root")
+    normalized = "/".join(part for part in parts if part not in {"", "."})
+    return _relative_path(normalized, field)
+
+
 def _assert_case_unique(paths: Sequence[str], field: str) -> None:
     seen: dict[str, str] = {}
     for path in paths:
@@ -511,6 +530,34 @@ def _canonical_toolchain_tree(
         "total_size": total_size,
         "sha256": hashlib.sha256(_canonical_json(records)).hexdigest(),
     }
+
+
+def _mapping_targets(
+    files: Sequence[Mapping[str, object]],
+    expected_output: Mapping[str, object],
+) -> set[str]:
+    targets = {
+        str(record["path"])
+        for record in files
+        if record["role"]
+        in {
+            "payload",
+            "webview2",
+            "icon",
+            "nsis-hook",
+            "nsis-language",
+            "nsis-include",
+        }
+    }
+    for record in files:
+        if record["role"] not in {"nsis-toolchain", "nsis-plugin"}:
+            continue
+        parent = PurePosixPath(str(record["path"])).parent
+        while parent != PurePosixPath("."):
+            targets.add(parent.as_posix())
+            parent = parent.parent
+    targets.add(str(expected_output["path"]))
+    return targets
 
 
 def _safe_child(root: Path, relative: str, field: str) -> Path:
@@ -942,25 +989,7 @@ def _normalize_path_mappings(
     raw_mappings = _array(value, "path_mappings")
     if not raw_mappings or len(raw_mappings) > 128:
         raise NsisRepackContractError("path_mappings must be a bounded non-empty array")
-    allowed_targets = {
-        str(record["path"])
-        for record in files
-        if record["role"]
-        in {
-            "payload",
-            "webview2",
-            "icon",
-            "nsis-hook",
-            "nsis-language",
-            "nsis-include",
-        }
-    }
-    allowed_targets.update(
-        str(PurePosixPath(str(record["path"])).parent)
-        for record in files
-        if record["role"] == "nsis-plugin"
-    )
-    allowed_targets.add(str(expected_output["path"]))
+    allowed_targets = _mapping_targets(files, expected_output)
     mappings: list[dict[str, object]] = []
     sources: list[str] = []
     targets: list[str] = []
@@ -980,7 +1009,7 @@ def _normalize_path_mappings(
             raise NsisRepackContractError(
                 f"path_mappings[{index}].source_absolute must be absolute"
             )
-        target = _relative_path(mapping["target"], f"path_mappings[{index}].target")
+        target = _mapping_target(mapping["target"], f"path_mappings[{index}].target")
         if target not in allowed_targets:
             raise NsisRepackContractError(
                 f"path_mappings[{index}].target is not a bound payload"
@@ -999,18 +1028,13 @@ def _normalize_path_mappings(
         )
     _assert_case_unique(sources, "path_mappings sources")
     _assert_case_unique(targets, "path_mappings targets")
-    for collection, label in ((sources, "sources"), (targets, "targets")):
-        for index, left in enumerate(collection):
-            for right in collection[index + 1 :]:
-                left_folded = left.casefold()
-                right_folded = right.casefold()
-                if left_folded.startswith(right_folded) or right_folded.startswith(
-                    left_folded
-                ):
-                    raise NsisRepackContractError(
-                        f"path_mappings {label} are prefix-ambiguous"
-                    )
-    return sorted(mappings, key=lambda mapping: str(mapping["target"]))
+    return sorted(
+        mappings,
+        key=lambda mapping: (
+            -len(str(mapping["source_absolute"])),
+            str(mapping["source_absolute"]),
+        ),
+    )
 
 
 def _normalize_normalization(
@@ -1056,12 +1080,7 @@ def _normalize_normalization(
     targets: list[dict[str, object]] = []
     paths: list[str] = []
     bound_paths = {str(record["path"]) for record in files}
-    bound_paths.update(
-        str(PurePosixPath(str(record["path"])).parent)
-        for record in files
-        if record["role"] == "nsis-plugin"
-    )
-    bound_paths.add(str(expected_output["path"]))
+    bound_paths.update(_mapping_targets(files, expected_output))
     for index, raw_target in enumerate(raw_targets):
         target = _object(raw_target, f"normalization.mapped_targets[{index}]")
         _exact_fields(

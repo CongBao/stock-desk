@@ -174,6 +174,26 @@ foreach ($source in $absoluteValues) {
   $mappings += [ordered]@{source_absolute=$source;target=$target;occurrences=$occurrences}
 }
 
+# Parent and child absolute paths may both be rendered. Count replacements in
+# longest-source-first order so the descriptor binds each exact occurrence once.
+$remainingScript = $scriptText
+$orderedMappings = @($mappings | Sort-Object `
+  @{Expression = { $_.source_absolute.Length }; Descending = $true}, `
+  @{Expression = { $_.source_absolute }; Descending = $false})
+foreach ($mapping in $orderedMappings) {
+  $occurrences = 0
+  $position = 0
+  while (($position = $remainingScript.IndexOf($mapping.source_absolute, $position, [StringComparison]::Ordinal)) -ge 0) {
+    $occurrences += 1
+    $position += $mapping.source_absolute.Length
+  }
+  if ($occurrences -lt 1) { throw 'an absolute path mapping was shadowed before normalization' }
+  $mapping.occurrences = $occurrences
+  $marker = "@STOCK_DESK_PATH_MAP[$($mapping.target)]@"
+  $remainingScript = $remainingScript.Replace($mapping.source_absolute, $marker, [StringComparison]::Ordinal)
+}
+$mappings = $orderedMappings
+
 $pluginNames = @($scriptText -split "`r?`n" | ForEach-Object {
   if ($_ -match '^\s*([A-Za-z][A-Za-z0-9_.-]*)::') { $Matches[1] }
 } | Sort-Object -Unique)

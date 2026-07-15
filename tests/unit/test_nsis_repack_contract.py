@@ -952,6 +952,13 @@ def test_cli_can_run_from_repository_root(entrypoint: tuple[str, ...]) -> None:
         (lambda: contract._positive_int(-1, "count", allow_zero=True), "non-negative"),
         (lambda: contract._relative_path(".", "path"), "POSIX"),
         (lambda: contract._relative_path("a/../b", "path"), "POSIX"),
+        (lambda: contract._mapping_target("../toolchain", "target"), "traverse"),
+        (lambda: contract._mapping_target("/toolchain", "target"), "portable"),
+        (lambda: contract._mapping_target("C:/toolchain", "target"), "portable"),
+        (
+            lambda: contract._mapping_target("toolchain\\Include", "target"),
+            "portable",
+        ),
     ],
 )
 def test_primitive_contract_validators_fail_closed(call: Any, match: str) -> None:
@@ -969,6 +976,41 @@ def test_file_roles_used_only_by_rendered_script_are_not_shape_requirements(
     normalized = contract._normalize_file_records(files)
 
     assert role not in {record["role"] for record in normalized}
+
+
+def test_descriptor_normalizes_bound_toolchain_directory_mapping(
+    tmp_path: Path,
+) -> None:
+    source, descriptor = _fixture(tmp_path)
+    absolute_toolchain = "C:\\runner\\A"
+    script = source / "installer.nsi"
+    rendered = (
+        script.read_bytes()
+        + (f'!define STOCK_DESK_NSIS_ROOT "{absolute_toolchain}"\n').encode()
+    )
+    script.write_bytes(rendered)
+    script_record = next(
+        record for record in descriptor["files"] if record["path"] == "installer.nsi"
+    )
+    script_record["size"] = len(rendered)
+    script_record["sha256"] = _digest(rendered)
+    descriptor["path_mappings"].append(
+        {
+            "source_absolute": absolute_toolchain,
+            "target": "toolchain/.",
+            "occurrences": 1,
+        }
+    )
+
+    manifest = _create_kit(
+        descriptor=_write_descriptor(tmp_path, descriptor),
+        source_root=source,
+        output=tmp_path / "kit",
+    )
+
+    assert {item["target"] for item in manifest["normalization"]["mapped_targets"]} >= {
+        "toolchain"
+    }
 
 
 @pytest.mark.parametrize(
