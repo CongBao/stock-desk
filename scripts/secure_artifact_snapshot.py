@@ -942,16 +942,14 @@ def _open_windows_source_handles(path: Path) -> list[int]:
             for handle in reversed(handles):
                 _close_windows_handle(handle)
             code = _windows_error_code(error)
-            if (
-                code in _WINDOWS_TRANSIENT_SHARING_ERRORS
-                and attempt < len(_WINDOWS_SHARING_RETRY_DELAYS)
+            if code in _WINDOWS_TRANSIENT_SHARING_ERRORS and attempt < len(
+                _WINDOWS_SHARING_RETRY_DELAYS
             ):
                 _windows_retry_sleep(_WINDOWS_SHARING_RETRY_DELAYS[attempt])
                 continue
             detail = f" (Windows error {code})" if code is not None else ""
             raise SecureArtifactSnapshotError(
-                "source root contains a missing, mutable, or unsafe component"
-                f"{detail}"
+                f"source root contains a missing, mutable, or unsafe component{detail}"
             ) from error
     raise AssertionError("Windows sharing retry loop did not terminate")
 
