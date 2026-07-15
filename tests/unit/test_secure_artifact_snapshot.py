@@ -132,6 +132,42 @@ def test_cli_emits_path_free_canonical_summary(
     assert output == json.dumps(parsed, sort_keys=True, separators=(",", ":")) + "\n"
 
 
+def test_cli_emits_path_free_github_error_annotation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    source = _source(tmp_path).resolve()
+    destination = (tmp_path / "snapshot").resolve()
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setattr(
+        secure_snapshot,
+        "snapshot_artifacts",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            SecureArtifactSnapshotError("Windows error 32%\r\nno path")
+        ),
+    )
+
+    with pytest.raises(SystemExit, match="2"):
+        main(
+            [
+                "--source-root",
+                str(source),
+                "--destination",
+                str(destination),
+                "--entry",
+                "stock-desk.nsi",
+            ]
+        )
+
+    error = capsys.readouterr().err
+    assert (
+        "::error title=Secure artifact snapshot::Windows error 32%25%0D%0Ano path\n"
+    ) in error
+    assert str(source) not in error
+    assert str(destination) not in error
+
+
 def test_prepare_verify_private_directory_api_and_cli(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

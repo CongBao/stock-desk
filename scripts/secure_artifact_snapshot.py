@@ -1829,6 +1829,13 @@ def snapshot_artifacts(
         )
 
 
+def _emit_github_error_annotation(message: str) -> None:
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        return
+    escaped = message.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    print(f"::error title=Secure artifact snapshot::{escaped}", file=sys.stderr)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Create a private immutable-input snapshot for NSIS repackaging."
@@ -1904,6 +1911,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
         )
     except SecureArtifactSnapshotError as error:
+        _emit_github_error_annotation(str(error))
         parser.error(str(error))
     print(json.dumps(result.summary(), sort_keys=True, separators=(",", ":")))
     return 0
