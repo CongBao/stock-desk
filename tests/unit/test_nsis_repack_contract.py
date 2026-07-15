@@ -563,6 +563,70 @@ def test_unmapped_absolute_and_unknown_plugin_calls_fail_closed(tmp_path: Path) 
         )
 
 
+@pytest.mark.parametrize("attribute_option", ["/a", "/A"])
+def test_file_cannot_preserve_unbound_source_attributes(
+    tmp_path: Path, attribute_option: str
+) -> None:
+    source, descriptor = _fixture(tmp_path)
+    script = source / "installer.nsi"
+    absolute_payload = descriptor["path_mappings"][0]["source_absolute"]
+    payload = (
+        script.read_bytes()
+        + (f'File {attribute_option} "/oname=copy.exe" "{absolute_payload}"\n').encode()
+    )
+    script.write_bytes(payload)
+    rendered = next(
+        record for record in descriptor["files"] if record["path"] == "installer.nsi"
+    )
+    rendered["size"] = len(payload)
+    rendered["sha256"] = _digest(payload)
+    descriptor["path_mappings"][0]["occurrences"] = 2
+
+    with pytest.raises(
+        contract.NsisRepackContractError, match="preserve source attributes"
+    ):
+        _create_kit(
+            descriptor=_write_descriptor(tmp_path, descriptor),
+            source_root=source,
+            output=tmp_path / "kit",
+        )
+
+
+@pytest.mark.parametrize(
+    "dynamic_script",
+    [
+        '!define COPY "File /a"\n${COPY} "/oname=copy.exe" "{payload}"\n',
+        '!define COPY File\n${COPY} /a "/oname=copy.exe" "{payload}"\n',
+    ],
+)
+def test_dynamic_file_instruction_cannot_bypass_attribute_audit(
+    tmp_path: Path, dynamic_script: str
+) -> None:
+    source, descriptor = _fixture(tmp_path)
+    script = source / "installer.nsi"
+    absolute_payload = descriptor["path_mappings"][0]["source_absolute"]
+    payload = (
+        script.read_bytes()
+        + dynamic_script.replace("{payload}", absolute_payload).encode()
+    )
+    script.write_bytes(payload)
+    rendered = next(
+        record for record in descriptor["files"] if record["path"] == "installer.nsi"
+    )
+    rendered["size"] = len(payload)
+    rendered["sha256"] = _digest(payload)
+    descriptor["path_mappings"][0]["occurrences"] = 2
+
+    with pytest.raises(
+        contract.NsisRepackContractError, match="dynamic preprocessor instruction"
+    ):
+        _create_kit(
+            descriptor=_write_descriptor(tmp_path, descriptor),
+            source_root=source,
+            output=tmp_path / "kit",
+        )
+
+
 @pytest.mark.parametrize(
     "instruction",
     [

@@ -658,12 +658,12 @@ Section Install
     CreateDirectory "$INSTDIR\\{{this}}"
   {{/each}}
   {{#each resources}}
-    File /a "/oname={{this.[1]}}" "{{no-escape @key}}"
+    File "/oname={{this.[1]}}" "{{no-escape @key}}"
   {{/each}}
 
   ; Copy external binaries
   {{#each binaries}}
-    File /a "/oname={{this}}" "{{no-escape @key}}"
+    File "/oname={{this}}" "{{no-escape @key}}"
   {{/each}}
 
   ; Create file associations

@@ -1483,6 +1483,15 @@ def _audit_scripts(kit_content: Path, manifest: Mapping[str, object]) -> None:
                 expanded_instruction = (
                     expanded_tokens[0].casefold() if expanded_tokens else ""
                 )
+                if expanded_instruction in {
+                    "file",
+                    "outfile",
+                    "!include",
+                    "!addplugindir",
+                }:
+                    raise NsisRepackContractError(
+                        f"{relative}:{number} contains a dynamic preprocessor instruction"
+                    )
                 if (
                     expanded_instruction in _FORBIDDEN_EXTERNAL_COMPILE_CONTROLS
                     or expanded_instruction.startswith("nsexec::")
@@ -1533,7 +1542,11 @@ def _audit_scripts(kit_content: Path, manifest: Mapping[str, object]) -> None:
                 sources = []
                 for token in tokens[1:]:
                     option = token.casefold()
-                    if option in {"/a", "/r", "/nonfatal"} or option.startswith(
+                    if option == "/a":
+                        raise NsisRepackContractError(
+                            f"{relative}:{number} cannot preserve source attributes"
+                        )
+                    if option in {"/r", "/nonfatal"} or option.startswith(
                         ("/oname=", "/x=")
                     ):
                         continue
