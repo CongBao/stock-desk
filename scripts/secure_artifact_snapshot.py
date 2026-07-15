@@ -26,6 +26,7 @@ import unicodedata
 _READ_BLOCK: Final = 1024 * 1024
 _REPARSE_ATTRIBUTE: Final = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 _WINDOWS_FILE_SHARE_READ: Final = 0x00000001
+_WINDOWS_DIRECTORY_SHARE: Final = 0x00000003
 _WINDOWS_RESERVED_NAMES: Final = frozenset(
     {"CON", "PRN", "AUX", "NUL"}
     | {f"COM{index}" for index in range(1, 10)}
@@ -815,8 +816,13 @@ def _validate_global_collisions(inventory: _Inventory) -> None:
         folded[key] = relative
 
 
-def _open_windows_directory_handle(path: Path) -> int:
+def _open_windows_directory_handle(
+    path: Path, *, share_mode: int = _WINDOWS_FILE_SHARE_READ
+) -> int:
     """Open and pin one directory path without following its reparse point."""
+
+    if share_mode not in {_WINDOWS_FILE_SHARE_READ, _WINDOWS_DIRECTORY_SHARE}:
+        raise SecureArtifactSnapshotError("Windows directory share mode is invalid")
 
     import ctypes
     from ctypes import wintypes
@@ -855,7 +861,7 @@ def _open_windows_directory_handle(path: Path) -> int:
     handle = create_file(
         str(path),
         0x80000000,
-        _WINDOWS_FILE_SHARE_READ,
+        share_mode,
         None,
         3,
         0x00200000 | 0x02000000,  # OPEN_REPARSE_POINT | BACKUP_SEMANTICS
@@ -905,12 +911,22 @@ def _windows_ancestor_paths(path: Path) -> tuple[Path, ...]:
 
 @contextmanager
 def _hold_windows_source_root(path: Path) -> Iterator[None]:
-    """Pin every ancestor and the root for the entire enumerate/read/recheck window."""
+    """Pin every directory without allowing replacement during source reads.
+
+    Directory handles permit concurrent writes because build and antivirus processes can
+    legitimately retain write-capable handles.  Deliberately omitting ``FILE_SHARE_DELETE``
+    still prevents any held path component from being renamed or replaced; individual
+    artifact files remain opened read-share-only and the complete inventory is rechecked.
+    """
 
     handles: list[int] = []
     try:
         for component in _windows_ancestor_paths(path):
-            handles.append(_open_windows_directory_handle(component))
+            handles.append(
+                _open_windows_directory_handle(
+                    component, share_mode=_WINDOWS_DIRECTORY_SHARE
+                )
+            )
         yield
     except SecureArtifactSnapshotError:
         raise

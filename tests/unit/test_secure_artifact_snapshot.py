@@ -546,25 +546,30 @@ def test_windows_reparse_attribute_is_explicitly_recognized() -> None:
     assert secure_snapshot._is_reparse(regular) is False  # type: ignore[arg-type]
 
 
-def test_windows_source_handles_are_read_share_only_and_held_until_exit(
+def test_windows_source_directories_allow_writes_but_not_delete_and_are_held(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    opened: list[Path] = []
+    opened: list[tuple[Path, int]] = []
     closed: list[int] = []
 
-    def open_handle(path: Path) -> int:
-        opened.append(path)
+    def open_handle(path: Path, *, share_mode: int) -> int:
+        opened.append((path, share_mode))
         return len(opened)
 
     monkeypatch.setattr(secure_snapshot, "_open_windows_directory_handle", open_handle)
     monkeypatch.setattr(secure_snapshot, "_close_windows_handle", closed.append)
 
     with secure_snapshot._hold_windows_source_root(Path("/build/root")):
-        assert opened == [Path("/"), Path("/build"), Path("/build/root")]
+        assert opened == [
+            (Path("/"), secure_snapshot._WINDOWS_DIRECTORY_SHARE),
+            (Path("/build"), secure_snapshot._WINDOWS_DIRECTORY_SHARE),
+            (Path("/build/root"), secure_snapshot._WINDOWS_DIRECTORY_SHARE),
+        ]
         assert closed == []
 
     assert closed == [3, 2, 1]
     assert secure_snapshot._WINDOWS_FILE_SHARE_READ == 0x00000001
+    assert secure_snapshot._WINDOWS_DIRECTORY_SHARE == 0x00000003
 
 
 def test_windows_source_handle_failure_closes_previously_opened_handles(
@@ -573,8 +578,9 @@ def test_windows_source_handle_failure_closes_previously_opened_handles(
     calls = 0
     closed: list[int] = []
 
-    def open_handle(_path: Path) -> int:
+    def open_handle(_path: Path, *, share_mode: int) -> int:
         nonlocal calls
+        assert share_mode == secure_snapshot._WINDOWS_DIRECTORY_SHARE
         calls += 1
         if calls == 2:
             raise OSError("unsafe")
@@ -743,6 +749,19 @@ def test_windows_directory_handle_rejects_reparse_and_non_directory(
     with pytest.raises(SecureArtifactSnapshotError, match="not a directory"):
         secure_snapshot._open_windows_directory_handle(tmp_path)
     assert regular_file.closed == [91]
+
+    writable_directory = _FakeKernel(attributes=0x10)
+    _fake_windows_runtime(monkeypatch, writable_directory)
+    handle = secure_snapshot._open_windows_directory_handle(
+        tmp_path, share_mode=secure_snapshot._WINDOWS_DIRECTORY_SHARE
+    )
+    secure_snapshot._close_windows_handle(handle)
+    assert writable_directory.share_modes == [
+        secure_snapshot._WINDOWS_FILE_SHARE_READ | 0x00000002
+    ]
+
+    with pytest.raises(SecureArtifactSnapshotError, match="share mode"):
+        secure_snapshot._open_windows_directory_handle(tmp_path, share_mode=0x7)
 
 
 def test_windows_file_handle_is_held_and_reparse_is_rejected(
