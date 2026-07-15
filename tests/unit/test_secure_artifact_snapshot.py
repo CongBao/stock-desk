@@ -685,6 +685,23 @@ def test_windows_source_handle_exhausted_sharing_conflict_reports_error_code(
     assert attempts == len(secure_snapshot._WINDOWS_SHARING_RETRY_DELAYS) + 1
 
 
+def test_windows_source_operation_error_preserves_error_code_and_closes_handles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    closed: list[int] = []
+    monkeypatch.setattr(
+        secure_snapshot,
+        "_open_windows_source_handles",
+        lambda _path: [11, 22, 33],
+    )
+    monkeypatch.setattr(secure_snapshot, "_close_windows_handle", closed.append)
+
+    with pytest.raises(SecureArtifactSnapshotError, match="Windows error 5"):
+        with secure_snapshot._hold_windows_source_root(Path("/build/root")):
+            raise OSError(5, "access denied")
+    assert closed == [33, 22, 11]
+
+
 def test_windows_inventory_has_the_same_stable_limits_and_link_policy(
     tmp_path: Path,
 ) -> None:

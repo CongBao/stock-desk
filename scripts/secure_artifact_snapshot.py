@@ -970,8 +970,10 @@ def _hold_windows_source_root(path: Path) -> Iterator[None]:
     except SecureArtifactSnapshotError:
         raise
     except OSError as error:
+        code = _windows_error_code(error)
+        detail = f" (Windows error {code})" if code is not None else ""
         raise SecureArtifactSnapshotError(
-            "source root contains a missing, mutable, or unsafe component"
+            f"source root contains a missing, mutable, or unsafe component{detail}"
         ) from error
     finally:
         for handle in reversed(handles):
