@@ -288,6 +288,27 @@ def test_stable_publish_cannot_run_without_every_real_signed_receipt() -> None:
     assert isinstance(jobs, dict)
     verify = _job_commands(jobs["trusted-updater-release"])
     verify_job = str(jobs["trusted-updater-release"])
+    trusted_steps = jobs["trusted-updater-release"]["steps"]
+    setup_node = next(
+        step for step in trusted_steps if step.get("name") == "Set up Node.js"
+    )
+    assert setup_node["with"] == {"node-version": "24.14.0"}
+    pnpm_cache = next(
+        step
+        for step in trusted_steps
+        if step.get("name") == "Restore exact-lock pnpm downloads"
+    )
+    assert pnpm_cache["uses"] == (
+        "actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae"
+    )
+    assert pnpm_cache["with"] == {
+        "path": "~/.pnpm-store",
+        "key": (
+            "trusted-updater-pnpm-${{ runner.os }}-${{ runner.arch }}-"
+            "node-24.14.0-pnpm-11.7.0-${{ hashFiles('pnpm-lock.yaml') }}"
+        ),
+    }
+    assert 'pnpm config set store-dir "$HOME/.pnpm-store"' in verify
     assert "needs.signpath.outputs.signed_artifact_name" in verify_job
     assert "needs.windows-installed.outputs.acceptance_artifact_name" in verify_job
     for required in (
