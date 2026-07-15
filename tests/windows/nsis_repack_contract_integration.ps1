@@ -124,6 +124,87 @@ $originalSnapshot = Join-Path $snapshots ("snapshot-{0:D4}" -f $snapshotNumber)
 if ($LASTEXITCODE -ne 0) { throw 'original unsigned installer snapshot failed' }
 $original = Join-Path $originalSnapshot (Split-Path $originalSource -Leaf)
 
+# Recompile the untouched Tauri-rendered script before normalizing or relocating
+# any input. These bounded identities distinguish a user-level NSIS config leak
+# from path normalization without publishing an additional executable.
+$privateAppData = Join-Path $captureRoot 'empty-appdata'
+New-PrivateDirectory $privateAppData
+$userConfigIdentity = [ordered]@{exists=$false;reparse=$false;size=0}
+$userConfig = if ($env:APPDATA) { Join-Path $env:APPDATA 'nsisconf.nsh' } else { $null }
+if ($userConfig -and (Test-Path -LiteralPath $userConfig)) {
+  $userConfigItem = Get-Item -LiteralPath $userConfig -Force
+  $userConfigReparse = ($userConfigItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0
+  $userConfigIdentity = [ordered]@{
+    exists=$true
+    reparse=$userConfigReparse
+    size=(if (-not $userConfigItem.PSIsContainer -and -not $userConfigReparse) { $userConfigItem.Length } else { 0 })
+  }
+}
+Write-Host ('NSIS user configuration identity: ' + ($userConfigIdentity | ConvertTo-Json -Compress))
+
+$probeOutput = Join-Path $render 'nsis-output.exe'
+if (Test-Path -LiteralPath $probeOutput) {
+  throw 'raw NSIS diagnostic output preexists after the Tauri bundle move'
+}
+
+function Invoke-RawNsisProbe(
+  [string]$ProbeName,
+  [bool]$UsePrivateAppData
+) {
+  $environmentNames = @(
+    'SOURCE_DATE_EPOCH','STOCK_DESK_SOURCE_REVISION','PYTHONHASHSEED','CARGO_ENCODED_RUSTFLAGS',
+    'NSISCONFDIR','NSISDIR','APPDATA'
+  )
+  $savedEnvironment = @{}
+  foreach ($environmentName in $environmentNames) {
+    $savedEnvironment[$environmentName] = [Environment]::GetEnvironmentVariable($environmentName, 'Process')
+  }
+  $probeLog = Join-Path $captureRoot "$ProbeName-nsis.log"
+  try {
+    $env:SOURCE_DATE_EPOCH = "$SourceEpoch"
+    $env:STOCK_DESK_SOURCE_REVISION = $SourceSha
+    $env:PYTHONHASHSEED = '0'
+    $env:CARGO_ENCODED_RUSTFLAGS = "-C$([char]0x1f)link-arg=/Brepro"
+    $env:NSISCONFDIR = $null
+    $env:NSISDIR = $null
+    if ($UsePrivateAppData) { $env:APPDATA = $privateAppData }
+    if (Test-Path -LiteralPath $probeOutput) {
+      throw "raw NSIS probe output already exists: $ProbeName"
+    }
+    Push-Location $render
+    try {
+      & (Join-Path $nsis 'makensis.exe') `
+        -INPUTCHARSET UTF8 -OUTPUTCHARSET UTF8 -V3 $renderedScript *> $probeLog
+      if ($LASTEXITCODE -ne 0) { throw "raw NSIS probe failed: $ProbeName" }
+    } finally {
+      Pop-Location
+    }
+    if (-not (Test-Path -LiteralPath $probeOutput -PathType Leaf)) {
+      throw "raw NSIS probe did not create its expected output: $ProbeName"
+    }
+    $identity = [ordered]@{
+      name=$ProbeName
+      size=(Get-Item -LiteralPath $probeOutput).Length
+      sha256=(Get-Sha256 $probeOutput)
+    }
+    Write-Host ('NSIS raw probe identity: ' + ($identity | ConvertTo-Json -Compress))
+  } finally {
+    if (Test-Path -LiteralPath $probeOutput) {
+      Remove-Item -LiteralPath $probeOutput -Force
+    }
+    foreach ($environmentName in $environmentNames) {
+      [Environment]::SetEnvironmentVariable(
+        $environmentName, $savedEnvironment[$environmentName], 'Process'
+      )
+    }
+  }
+}
+
+Invoke-RawNsisProbe `
+  -ProbeName 'inherited-appdata' -UsePrivateAppData $false
+Invoke-RawNsisProbe `
+  -ProbeName 'empty-private-appdata' -UsePrivateAppData $true
+
 $scriptText = Get-Content -LiteralPath (Join-Path $stage 'installer.nsi') -Raw
 $quotedAbsolute = [regex]'(?<quote>["''])(?<path>(?:[A-Za-z]:[\\/]|\\\\)[^"''\r\n]*?)\k<quote>'
 $absoluteValues = @($quotedAbsolute.Matches($scriptText) | ForEach-Object { $_.Groups['path'].Value } | Sort-Object -Unique)

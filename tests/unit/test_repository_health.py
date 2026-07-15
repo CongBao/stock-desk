@@ -647,6 +647,26 @@ def test_windows_candidate_binds_reproducible_nsis_repack_kit_without_new_family
         assert private_root in integration
     assert "independent fixed NSIS repacks are not byte-identical" in integration
     assert "does not reproduce the original unsigned candidate" in integration
+    assert "function Invoke-RawNsisProbe(" in integration
+    assert "[string]$ProbeName" in integration
+    assert integration.count("Invoke-RawNsisProbe `") == 2
+    assert "-ProbeName 'inherited-appdata'" in integration
+    assert "-ProbeName 'empty-private-appdata'" in integration
+    assert "-UsePrivateAppData $false" in integration
+    assert "-UsePrivateAppData $true" in integration
+    assert "NSIS raw probe identity:" in integration
+    assert "NSIS user configuration identity:" in integration
+    assert "Get-Sha256 $userConfig" not in integration
+    assert "foreach ($name in $environmentNames)" not in integration
+    assert "foreach ($environmentName in $environmentNames)" in integration
+    assert "reparse=$false" in integration
+    assert "raw NSIS diagnostic output preexists" in integration
+    assert "Remove-Item -LiteralPath $probeOutput" in integration
+    assert "SOURCE_DATE_EPOCH" in integration
+    assert "CARGO_ENCODED_RUSTFLAGS" in integration
+    assert "$env:NSISCONFDIR = $null" in integration
+    assert "$env:NSISDIR = $null" in integration
+    assert "Get-Content -LiteralPath $userConfig" not in integration
     assert "Remove-Item -LiteralPath $captureRoot" in integration
     assert "Remove-Item -LiteralPath $EvidenceRoot" not in integration
 
