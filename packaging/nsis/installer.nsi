@@ -578,6 +578,7 @@ Section WebView2
         Goto install_webview2
       !endif
 
+      {{#if webview2_bootstrapper_path}}
       !if "${INSTALLWEBVIEW2MODE}" == "embedBootstrapper"
         Delete "$TEMP\MicrosoftEdgeWebview2Setup.exe"
         File "/oname=$TEMP\MicrosoftEdgeWebview2Setup.exe" "${WEBVIEW2BOOTSTRAPPERPATH}"
@@ -585,6 +586,7 @@ Section WebView2
         StrCpy $6 "$TEMP\MicrosoftEdgeWebview2Setup.exe"
         Goto install_webview2
       !endif
+      {{/if}}
 
       !if "${INSTALLWEBVIEW2MODE}" == "offlineInstaller"
         Delete "$TEMP\MicrosoftEdgeWebView2RuntimeInstaller.exe"

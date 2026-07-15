@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import yaml  # type: ignore[import-untyped]
@@ -69,6 +70,32 @@ def test_windows_workflow_models_the_pinned_direct_file_nsis_template() -> None:
     assert "stock-desk-sidecar.exe" in commands
     assert "uninstall.exe" in commands
     assert "app.7z" not in commands.casefold()
+
+
+def test_offline_webview_render_omits_the_unbound_embed_bootstrapper_branch() -> None:
+    template = (ROOT / "packaging" / "nsis" / "installer.nsi").read_text(
+        encoding="utf-8"
+    )
+    guard = "{{#if webview2_bootstrapper_path}}"
+    branch = '!if "${INSTALLWEBVIEW2MODE}" == "embedBootstrapper"'
+    bootstrapper_file = (
+        'File "/oname=$TEMP\\MicrosoftEdgeWebview2Setup.exe" '
+        '"${WEBVIEW2BOOTSTRAPPERPATH}"'
+    )
+    guard_index = template.index(guard)
+    branch_index = template.index(branch)
+    file_index = template.index(bootstrapper_file)
+    closing_index = template.index("{{/if}}", file_index)
+    assert guard_index < branch_index < file_index < closing_index
+    assert template.count(guard) == 1
+    assert template.count(bootstrapper_file) == 1
+
+    config = json.loads(
+        (ROOT / "src-tauri" / "tauri.conf.json").read_text(encoding="utf-8")
+    )
+    assert config["bundle"]["windows"]["webviewInstallMode"] == {
+        "type": "offlineInstaller"
+    }
 
 
 def test_builders_use_exact_source_frozen_inputs_and_preserve_acl_contracts() -> None:
