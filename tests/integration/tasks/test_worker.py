@@ -13,6 +13,7 @@ from typing import Any, cast
 import pytest
 from sqlalchemy import event, select
 from sqlalchemy.dialects import postgresql, sqlite
+from sqlalchemy.exc import OperationalError
 
 import stock_desk.tasks.repository as repository_module
 import stock_desk.tasks.worker as worker_module
@@ -1259,6 +1260,59 @@ def test_worker_dispatches_demo_handler_and_claims_at_most_one(
         assert completed.status == "succeeded"
         assert completed.result == {"value": 42}
         assert repository.get(second.id).status == "queued"
+    finally:
+        repository.close()
+
+
+@pytest.mark.parametrize(
+    ("sqlite_errorcode", "sqlite_errorname"),
+    [
+        (sqlite3.SQLITE_BUSY, "SQLITE_BUSY"),
+        (sqlite3.SQLITE_LOCKED, "SQLITE_LOCKED"),
+    ],
+)
+def test_worker_treats_transient_sqlite_claim_contention_as_idle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    sqlite_errorcode: int,
+    sqlite_errorname: str,
+) -> None:
+    repository = _repository(tmp_path)
+    original = sqlite3.OperationalError("database is locked")
+    original.sqlite_errorcode = sqlite_errorcode
+    original.sqlite_errorname = sqlite_errorname
+    contention = OperationalError("UPDATE task_run", {}, original)
+    try:
+        monkeypatch.setattr(
+            repository,
+            "claim_next",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(contention),
+        )
+        worker = TaskWorker(repository, worker_id="worker-1")
+
+        assert worker.run_once() is None
+    finally:
+        repository.close()
+
+
+def test_worker_does_not_retry_non_contention_claim_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = _repository(tmp_path)
+    original = sqlite3.OperationalError("no such table: task_run")
+    original.sqlite_errorcode = sqlite3.SQLITE_ERROR
+    original.sqlite_errorname = "SQLITE_ERROR"
+    failure = OperationalError("UPDATE task_run", {}, original)
+    try:
+        monkeypatch.setattr(
+            repository,
+            "claim_next",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(failure),
+        )
+        worker = TaskWorker(repository, worker_id="worker-1")
+
+        with pytest.raises(OperationalError, match="no such table"):
+            worker.run_once()
     finally:
         repository.close()
 
