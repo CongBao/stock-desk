@@ -54,6 +54,11 @@ function Get-Sha256([string]$Path) {
   return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 
+function Test-RelativeChild([string]$Relative) {
+  if ([IO.Path]::IsPathRooted($Relative) -or $Relative -eq '..') { return $false }
+  return -not $Relative.StartsWith("..$([IO.Path]::DirectorySeparatorChar)", [StringComparison]::Ordinal)
+}
+
 function Copy-PrivateSnapshot(
   [string]$SourceRoot,
   [string[]]$Entries,
@@ -139,7 +144,7 @@ foreach ($source in $absoluteValues) {
     throw 'rendered installer.nsi unexpectedly references the final bundle path'
   } elseif (Test-Path -LiteralPath $source -PathType Container) {
     $relativeToToolchain = [IO.Path]::GetRelativePath($nsis, $source)
-    if ($relativeToToolchain -eq '..' -or $relativeToToolchain.StartsWith("..$([IO.Path]::DirectorySeparatorChar)")) {
+    if (-not (Test-RelativeChild $relativeToToolchain)) {
       $externalPlugins = @(Get-ChildItem -LiteralPath $source -Recurse -File)
       if (-not ($externalPlugins | Where-Object Name -IEQ 'nsis_tauri_utils.dll')) {
         throw "unexpected absolute NSIS directory outside the pinned toolchain: $source"
@@ -152,9 +157,9 @@ foreach ($source in $absoluteValues) {
   } elseif (Test-Path -LiteralPath $source -PathType Leaf) {
     $relativeToRender = [IO.Path]::GetRelativePath($render, $source)
     $relativeToToolchain = [IO.Path]::GetRelativePath($nsis, $source)
-    if ($relativeToRender -ne '..' -and -not $relativeToRender.StartsWith("..$([IO.Path]::DirectorySeparatorChar)")) {
+    if (Test-RelativeChild $relativeToRender) {
       $target = $relativeToRender.Replace('\', '/')
-    } elseif ($relativeToToolchain -ne '..' -and -not $relativeToToolchain.StartsWith("..$([IO.Path]::DirectorySeparatorChar)")) {
+    } elseif (Test-RelativeChild $relativeToToolchain) {
       $target = 'toolchain/' + $relativeToToolchain.Replace('\', '/')
     } else {
       $prefix = "captured/{0:D3}" -f $mappingIndex
