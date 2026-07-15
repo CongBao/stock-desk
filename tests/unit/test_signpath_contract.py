@@ -10,6 +10,7 @@ from typing import Mapping, cast
 import pytest
 import yaml
 
+import scripts.signpath_contract as signpath_contract
 from scripts.signpath_contract import (
     REQUIRED_ROLES,
     SignPathContractError,
@@ -654,3 +655,125 @@ def test_verify_environment_cli_smoke(tmp_path: Path) -> None:
         )
         == 0
     )
+
+
+def test_signpath_cli_routes_bind_request_closure_and_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert (
+        main(
+            [
+                "preflight",
+                "--status",
+                "integrated",
+                "--source-sha",
+                SHA,
+                "--source-tree",
+                TREE,
+                "--proof-digest",
+                PROOF_DIGEST,
+                "--candidate-digest",
+                CANDIDATE_DIGEST,
+            ]
+        )
+        == 0
+    )
+
+    request_path = tmp_path / "request.json"
+    monkeypatch.setattr(
+        signpath_contract,
+        "_verify_candidate_manifest",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        signpath_contract,
+        "_manifest_unsigned_identities",
+        lambda *_args, **_kwargs: UNSIGNED,
+    )
+    assert (
+        main(
+            [
+                "create-request",
+                "--source-sha",
+                SHA,
+                "--source-tree",
+                TREE,
+                "--proof-digest",
+                PROOF_DIGEST,
+                "--candidate-digest",
+                CANDIDATE_DIGEST,
+                "--candidate-manifest",
+                str(tmp_path / "candidate-manifest.json"),
+                "--bundle-manifest",
+                str(tmp_path / "bundle-manifest.json"),
+                "--installer",
+                str(tmp_path / "stock-desk-unsigned-nsis.exe"),
+                "--output",
+                str(request_path),
+            ]
+        )
+        == 0
+    )
+    request = json.loads(request_path.read_text(encoding="utf-8"))
+    assert request["source"] == {
+        "ref": "refs/heads/main",
+        "sha": SHA,
+        "tree": TREE,
+    }
+    assert request["unsigned"] == UNSIGNED
+
+    monkeypatch.setattr(
+        signpath_contract,
+        "verify_signing_equivalence",
+        lambda **_kwargs: (SIGNED, EQUIVALENCE),
+    )
+    closure_path = tmp_path / "identity-closure.json"
+    receipt_path = tmp_path / "signing-receipt.json"
+    request_id = "2e905217-2a1d-4f12-a1ef-936d0a0c44b0"
+    assert (
+        main(
+            [
+                "create-receipt",
+                "--request",
+                str(request_path),
+                "--request-id",
+                request_id,
+                "--unsigned",
+                f"desktop-host={tmp_path / 'unsigned-host.exe'}",
+                "--unsigned",
+                f"sidecar={tmp_path / 'unsigned-sidecar.exe'}",
+                "--unsigned",
+                f"nsis-installer={tmp_path / 'unsigned-installer.exe'}",
+                "--signed",
+                f"desktop-host={tmp_path / 'signed-host.exe'}",
+                "--signed",
+                f"sidecar={tmp_path / 'signed-sidecar.exe'}",
+                "--signed",
+                f"nsis-installer={tmp_path / 'signed-installer.exe'}",
+                "--unsigned-extract-root",
+                str(tmp_path / "unsigned-extract"),
+                "--signed-extract-root",
+                str(tmp_path / "signed-extract"),
+                "--signer-subject",
+                "CN=Stock Desk",
+                "--certificate-thumbprint",
+                "A" * 40,
+                "--timestamp-subject",
+                "CN=Trusted Timestamp",
+                "--closure-output",
+                str(closure_path),
+                "--receipt-output",
+                str(receipt_path),
+            ]
+        )
+        == 0
+    )
+
+    closure = json.loads(closure_path.read_text(encoding="utf-8"))
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert closure["request_id"] == request_id
+    assert closure["source"] == request["source"]
+    assert set(closure["artifacts"]) == REQUIRED_ROLES
+    assert receipt["source_sha"] == SHA
+    assert receipt["payload_sha256"] == SIGNED["nsis-installer"]["sha256"]
+    assert receipt["request_id"] == request_id
