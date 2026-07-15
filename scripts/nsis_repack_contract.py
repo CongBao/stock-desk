@@ -34,6 +34,7 @@ from scripts.secure_artifact_snapshot import (
     SecureArtifactSnapshotError,
     SnapshotLimits,
     snapshot_artifacts,
+    verify_private_directory,
 )
 
 
@@ -44,6 +45,7 @@ SCHEMA_VERSION: Final = 1
 MAX_JSON_BYTES: Final = 2 * 1024 * 1024
 MAX_FILE_BYTES: Final = 2 * 1024 * 1024 * 1024
 MAX_FILES: Final = 4096
+MAX_TAURI_HOST_BYTES: Final = MAX_FILE_BYTES
 NSIS_DIAGNOSTIC_TAIL_BYTES: Final = 32 * 1024
 _NSIS_DIAGNOSTIC_MAX_LINES: Final = 40
 TOOLCHAIN_LOCK_PATH: Final = (
@@ -69,6 +71,8 @@ _OFFICIAL_ARGV: Final = (
     "installer.nsi",
 )
 _PRIVATE_WORK_PLACEHOLDER: Final = "@STOCK_DESK_PRIVATE_WORK@"
+_TAURI_BUNDLE_MARKER_UNKNOWN: Final = b"__TAURI_BUNDLE_TYPE_VAR_UNK"
+_TAURI_BUNDLE_MARKER_NSIS: Final = b"__TAURI_BUNDLE_TYPE_VAR_NSS"
 _ALLOWED_ENVIRONMENT: Final = frozenset(
     {"SOURCE_DATE_EPOCH", "LANG", "LC_ALL", "TZ", "TEMP", "TMP"}
 )
@@ -535,7 +539,6 @@ def _is_reparse(metadata: os.stat_result) -> bool:
 
 def _safe_extracted_tree_records(
     nsis_root: Path,
-    external_plugin: Path,
 ) -> list[dict[str, object]]:
     """Read the complete extracted tree without following filesystem aliases."""
 
@@ -607,35 +610,22 @@ def _safe_extracted_tree_records(
             records.append(
                 {
                     "path": f"toolchain/{portable}",
-                    "role": "nsis-toolchain",
+                    "role": (
+                        "nsis-plugin"
+                        if portable
+                        == "Plugins/x86-unicode/additional/nsis_tauri_utils.dll"
+                        else "nsis-toolchain"
+                    ),
                     "size": size,
                     "sha256": digest,
                     "executable": portable == "makensis.exe",
                 }
             )
     _assert_case_unique(seen_paths, "extracted NSIS tree")
-
-    plugin_metadata = _safe_regular_metadata(
-        external_plugin, "external nsis_tauri_utils plugin"
-    )
-    plugin_size, plugin_digest = _hash_regular_file(
-        external_plugin, "external nsis_tauri_utils plugin"
-    )
-    if plugin_size != plugin_metadata.st_size:
-        raise NsisRepackContractError("external plugin identity changed")
-    records.append(
-        {
-            "path": "toolchain/Plugins/x86-unicode/additional/nsis_tauri_utils.dll",
-            "role": "nsis-plugin",
-            "size": plugin_size,
-            "sha256": plugin_digest,
-            "executable": False,
-        }
-    )
     _assert_case_unique(
         [str(record["path"]) for record in records], "verified NSIS toolchain"
     )
-    return records
+    return sorted(records, key=lambda record: str(record["path"]).encode("utf-8"))
 
 
 def _safe_regular_metadata(path: Path, field: str) -> os.stat_result:
@@ -664,6 +654,11 @@ def verify_extracted_nsis_toolchain(
 
     nsis_root = nsis_root.absolute()
     additional_plugins_root = additional_plugins_root.absolute()
+    expected_plugins_root = nsis_root / "Plugins" / "x86-unicode" / "additional"
+    if additional_plugins_root != expected_plugins_root:
+        raise NsisRepackContractError(
+            "additional NSIS plugin root must equal the compiler tree plugin root"
+        )
     try:
         plugins_root_metadata = os.lstat(additional_plugins_root)
     except OSError as error:
@@ -682,7 +677,7 @@ def verify_extracted_nsis_toolchain(
     plugin_metadata = _safe_regular_metadata(
         external_plugin, "external nsis_tauri_utils plugin"
     )
-    records = _safe_extracted_tree_records(nsis_root, external_plugin)
+    records = _safe_extracted_tree_records(nsis_root)
     lock, lock_digest = _load_toolchain_lock(lock_path)
     actual_tree = _canonical_toolchain_tree(records)
     trusted_tree = _object(lock["extracted_tree"], "trusted toolchain tree")
@@ -690,17 +685,37 @@ def verify_extracted_nsis_toolchain(
         raise NsisRepackContractError(
             "extracted NSIS tree does not equal the repository-pinned lock"
         )
-    if _safe_extracted_tree_records(nsis_root, external_plugin) != records:
+    verified_records = _safe_extracted_tree_records(nsis_root)
+    if verified_records != records:
         raise NsisRepackContractError("verified NSIS toolchain changed during review")
+    records_by_path = {str(record["path"]): record for record in verified_records}
+    compiler_record = records_by_path.get("toolchain/makensis.exe")
+    plugin_record = records_by_path.get(
+        "toolchain/Plugins/x86-unicode/additional/nsis_tauri_utils.dll"
+    )
+    if compiler_record is None or plugin_record is None:
+        raise NsisRepackContractError("verified NSIS compiler or plugin is missing")
     compiler_size, compiler_digest = _hash_regular_file(
         compiler, "top-level makensis.exe"
     )
     plugin_size, plugin_digest = _hash_regular_file(
         external_plugin, "external nsis_tauri_utils plugin"
     )
+    compiler_metadata_after = _safe_regular_metadata(compiler, "top-level makensis.exe")
+    plugin_metadata_after = _safe_regular_metadata(
+        external_plugin, "external nsis_tauri_utils plugin"
+    )
     if (
         compiler_size != compiler_metadata.st_size
         or plugin_size != plugin_metadata.st_size
+        or _stable_file_identity(compiler_metadata_after)
+        != _stable_file_identity(compiler_metadata)
+        or _stable_file_identity(plugin_metadata_after)
+        != _stable_file_identity(plugin_metadata)
+        or compiler_size != compiler_record["size"]
+        or compiler_digest != compiler_record["sha256"]
+        or plugin_size != plugin_record["size"]
+        or plugin_digest != plugin_record["sha256"]
     ):
         raise NsisRepackContractError("verified NSIS input identity changed")
     return VerifiedNsisToolchain(
@@ -723,6 +738,242 @@ def verify_extracted_nsis_toolchain(
             sha256=str(actual_tree["sha256"]),
         ),
     )
+
+
+def _marker_scan(
+    path: Path,
+    *,
+    max_bytes: int,
+) -> tuple[int, str, int, int, int]:
+    """Stream one host binary and locate the two equal-length Tauri markers."""
+
+    if (
+        isinstance(max_bytes, bool)
+        or not isinstance(max_bytes, int)
+        or max_bytes < 1
+        or max_bytes > MAX_FILE_BYTES
+    ):
+        raise NsisRepackContractError("Tauri host size limit is invalid")
+    if len(_TAURI_BUNDLE_MARKER_UNKNOWN) != len(_TAURI_BUNDLE_MARKER_NSIS):
+        raise NsisRepackContractError("Tauri bundle markers are not equal length")
+    marker_length = len(_TAURI_BUNDLE_MARKER_UNKNOWN)
+    digest = hashlib.sha256()
+    total = 0
+    tail = b""
+    unknown_count = 0
+    nsis_count = 0
+    marker_offset = -1
+    with _open_regular_file(path, "private Tauri host payload") as stream:
+        while block := stream.read(1024 * 1024):
+            previous_total = total
+            total += len(block)
+            if total > max_bytes:
+                raise NsisRepackContractError("private Tauri host exceeds size limit")
+            digest.update(block)
+            window = tail + block
+            window_base = previous_total - len(tail)
+            for marker, marker_name in (
+                (_TAURI_BUNDLE_MARKER_UNKNOWN, "unknown"),
+                (_TAURI_BUNDLE_MARKER_NSIS, "nsis"),
+            ):
+                search_from = 0
+                while True:
+                    index = window.find(marker, search_from)
+                    if index < 0:
+                        break
+                    absolute = window_base + index
+                    if absolute + marker_length > previous_total:
+                        if marker_name == "unknown":
+                            unknown_count += 1
+                            if marker_offset < 0:
+                                marker_offset = absolute
+                        else:
+                            nsis_count += 1
+                    search_from = index + 1
+            tail = window[-(marker_length - 1) :]
+    return total, digest.hexdigest(), unknown_count, nsis_count, marker_offset
+
+
+def _write_all(stream: BinaryIO, payload: bytes) -> None:
+    remaining = memoryview(payload)
+    while remaining:
+        written = stream.write(remaining)
+        if written is None or written <= 0:
+            raise OSError("payload patch write made no progress")
+        remaining = remaining[written:]
+
+
+def _copy_patch_range(
+    source: BinaryIO,
+    destination: BinaryIO,
+    count: int | None,
+    before_digest: Any,
+    after_digest: Any,
+) -> int:
+    copied = 0
+    while count is None or copied < count:
+        request = 1024 * 1024 if count is None else min(1024 * 1024, count - copied)
+        if request == 0:
+            break
+        block = source.read(request)
+        if not block:
+            break
+        before_digest.update(block)
+        after_digest.update(block)
+        _write_all(destination, block)
+        copied += len(block)
+    return copied
+
+
+def _stable_file_identity(metadata: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
+def patch_tauri_bundle_payload(
+    *,
+    private_root: Path,
+    payload: Path,
+    max_bytes: int = MAX_TAURI_HOST_BYTES,
+) -> dict[str, object]:
+    """Patch one private restored Tauri host copy from UNK to NSS, in place."""
+
+    private_root = private_root.absolute()
+    payload = payload.absolute()
+    try:
+        verify_private_directory(private_root)
+    except SecureArtifactSnapshotError as error:
+        raise NsisRepackContractError("Tauri payload root is not private") from error
+    try:
+        relative = payload.relative_to(private_root)
+    except ValueError as error:
+        raise NsisRepackContractError(
+            "Tauri payload is outside the private root"
+        ) from error
+    portable_relative = PurePosixPath(*relative.parts).as_posix()
+    secured_payload = _safe_child(
+        private_root, portable_relative, "private Tauri host payload"
+    )
+    if secured_payload != payload:
+        raise NsisRepackContractError("Tauri payload path is not canonical")
+    before_metadata = _safe_regular_metadata(payload, "private Tauri host payload")
+    before_size, before_sha256, unknown_count, nsis_count, marker_offset = _marker_scan(
+        payload, max_bytes=max_bytes
+    )
+    if unknown_count != 1 or nsis_count != 0 or marker_offset < 0:
+        raise NsisRepackContractError(
+            "restored Tauri host must contain exactly one UNK and zero NSS markers"
+        )
+    if before_size != before_metadata.st_size:
+        raise NsisRepackContractError("private Tauri host changed during scan")
+
+    temporary_path: Path | None = None
+    descriptor = -1
+    try:
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{payload.name}.nss-patch-", dir=payload.parent
+        )
+        temporary_path = Path(temporary_name)
+        with os.fdopen(descriptor, "w+b", closefd=True) as destination:
+            descriptor = -1
+            before_copy_digest = hashlib.sha256()
+            after_digest = hashlib.sha256()
+            copied_prefix = 0
+            copied_suffix = 0
+            with _open_regular_file(payload, "private Tauri host payload") as source:
+                copied_prefix = _copy_patch_range(
+                    source,
+                    destination,
+                    marker_offset,
+                    before_copy_digest,
+                    after_digest,
+                )
+                marker = source.read(len(_TAURI_BUNDLE_MARKER_UNKNOWN))
+                before_copy_digest.update(marker)
+                if marker != _TAURI_BUNDLE_MARKER_UNKNOWN:
+                    raise NsisRepackContractError(
+                        "private Tauri host marker changed before patch"
+                    )
+                _write_all(destination, _TAURI_BUNDLE_MARKER_NSIS)
+                after_digest.update(_TAURI_BUNDLE_MARKER_NSIS)
+                copied_suffix = _copy_patch_range(
+                    source,
+                    destination,
+                    None,
+                    before_copy_digest,
+                    after_digest,
+                )
+            patched_size = (
+                copied_prefix + len(_TAURI_BUNDLE_MARKER_NSIS) + copied_suffix
+            )
+            if (
+                copied_prefix != marker_offset
+                or patched_size != before_size
+                or before_copy_digest.hexdigest() != before_sha256
+            ):
+                raise NsisRepackContractError(
+                    "private Tauri host changed while creating patched copy"
+                )
+            destination.flush()
+            os.fsync(destination.fileno())
+            patched_sha256 = after_digest.hexdigest()
+
+        temporary_metadata = _safe_regular_metadata(
+            temporary_path, "private NSS-patched Tauri host"
+        )
+        if temporary_metadata.st_size != before_size:
+            raise NsisRepackContractError("private NSS-patched host size changed")
+        current_metadata = _safe_regular_metadata(payload, "private Tauri host payload")
+        if _stable_file_identity(current_metadata) != _stable_file_identity(
+            before_metadata
+        ):
+            raise NsisRepackContractError(
+                "private Tauri host was replaced before promotion"
+            )
+        current_size, current_sha256 = _hash_regular_file(
+            payload, "private Tauri host payload"
+        )
+        if current_size != before_size or current_sha256 != before_sha256:
+            raise NsisRepackContractError("private Tauri host changed before promotion")
+        try:
+            os.replace(temporary_path, payload)
+        except OSError as error:
+            raise NsisRepackContractError(
+                "private NSS-patched host could not be promoted atomically"
+            ) from error
+        temporary_path = None
+        final_metadata = _safe_regular_metadata(payload, "private NSS-patched host")
+        final_size, final_sha256 = _hash_regular_file(
+            payload, "private NSS-patched host"
+        )
+        if (
+            final_metadata.st_size != before_size
+            or final_size != before_size
+            or final_sha256 != patched_sha256
+        ):
+            raise NsisRepackContractError(
+                "private NSS-patched host identity changed after promotion"
+            )
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink()
+            except OSError:
+                pass
+
+    return {
+        "algorithm": "tauri-bundle-type-unk-to-nss-v1",
+        "marker_offset": marker_offset,
+        "before": {"size": before_size, "sha256": before_sha256},
+        "after": {"size": before_size, "sha256": patched_sha256},
+    }
 
 
 def _canonical_toolchain_tree(
@@ -2479,6 +2730,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     verify_receipt_command.add_argument("--expected-source-sha", required=True)
     verify_receipt_command.add_argument("--expected-source-tree", required=True)
     verify_receipt_command.add_argument("--expected-kit-sha256", required=True)
+    verify_toolchain_command = commands.add_parser("verify-extracted-toolchain")
+    verify_toolchain_command.add_argument("--nsis-root", type=Path, required=True)
+    verify_toolchain_command.add_argument(
+        "--additional-plugins-root", type=Path, required=True
+    )
+    patch_payload_command = commands.add_parser("patch-tauri-bundle-payload")
+    patch_payload_command.add_argument("--private-root", type=Path, required=True)
+    patch_payload_command.add_argument("--payload", type=Path, required=True)
     arguments = parser.parse_args(argv)
     try:
         if arguments.command == "create-kit":
@@ -2505,7 +2764,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 expected_source_tree=arguments.expected_source_tree,
                 expected_kit_sha256=arguments.expected_kit_sha256,
             )
-        else:
+        elif arguments.command == "verify-receipt":
             result = verify_receipt(
                 receipt=arguments.receipt,
                 kit=arguments.kit,
@@ -2513,6 +2772,32 @@ def main(argv: Sequence[str] | None = None) -> int:
                 expected_source_sha=arguments.expected_source_sha,
                 expected_source_tree=arguments.expected_source_tree,
                 expected_kit_sha256=arguments.expected_kit_sha256,
+            )
+        elif arguments.command == "verify-extracted-toolchain":
+            identity = verify_extracted_nsis_toolchain(
+                nsis_root=arguments.nsis_root,
+                additional_plugins_root=arguments.additional_plugins_root,
+            )
+            result = {
+                "compiler": os.fspath(identity.compiler),
+                "compiler_size": identity.compiler_size,
+                "compiler_sha256": identity.compiler_sha256,
+                "additional_plugins_root": os.fspath(identity.additional_plugins_root),
+                "nsis_tauri_utils": os.fspath(identity.nsis_tauri_utils),
+                "nsis_tauri_utils_size": identity.nsis_tauri_utils_size,
+                "nsis_tauri_utils_sha256": identity.nsis_tauri_utils_sha256,
+                "lock_sha256": identity.lock_sha256,
+                "tree": {
+                    "algorithm": identity.tree.algorithm,
+                    "file_count": identity.tree.file_count,
+                    "total_size": identity.tree.total_size,
+                    "sha256": identity.tree.sha256,
+                },
+            }
+        else:
+            result = patch_tauri_bundle_payload(
+                private_root=arguments.private_root,
+                payload=arguments.payload,
             )
         sys.stdout.buffer.write(_canonical_json(result))
     except (NsisRepackContractError, OSError) as error:

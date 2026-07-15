@@ -129,6 +129,49 @@ if ($LASTEXITCODE -ne 0) { throw 'original unsigned installer snapshot failed' }
 $original = Join-Path $originalSnapshot (Split-Path $originalSource -Leaf)
 
 $scriptText = Get-Content -LiteralPath (Join-Path $stage 'installer.nsi') -Raw
+$additionalPluginDefines = @([regex]::Matches(
+  $scriptText,
+  '(?m)^\s*!define\s+ADDITIONALPLUGINSPATH\s+"(?<path>[^"\r\n]+)"\s*$'
+))
+if ($additionalPluginDefines.Count -ne 1) {
+  throw "rendered installer.nsi must define ADDITIONALPLUGINSPATH exactly once, found $($additionalPluginDefines.Count)"
+}
+$renderedAdditionalPlugins = $additionalPluginDefines[0].Groups['path'].Value
+if (-not [IO.Path]::IsPathRooted($renderedAdditionalPlugins)) {
+  throw 'rendered ADDITIONALPLUGINSPATH must be absolute'
+}
+$expectedLiveAdditionalPlugins = Join-Path $nsis 'Plugins\x86-unicode\additional'
+if (
+  [IO.Path]::GetFullPath($renderedAdditionalPlugins) -ine
+  [IO.Path]::GetFullPath($expectedLiveAdditionalPlugins)
+) { throw 'rendered ADDITIONALPLUGINSPATH does not belong to the exact NSIS tree' }
+if (
+  @([regex]::Matches(
+    $scriptText,
+    '(?m)^\s*!addplugindir\s+"\$\{ADDITIONALPLUGINSPATH\}"\s*$'
+  )).Count -ne 1 -or
+  $scriptText -cnotmatch '(?m)^\s*nsis_tauri_utils::'
+) { throw 'rendered installer.nsi does not bind the verified additional plugin root' }
+$stagedToolchain = Join-Path $stage 'toolchain'
+$stagedAdditionalPlugins = Join-Path $stagedToolchain 'Plugins\x86-unicode\additional'
+Confirm-PrivateDirectory $stage
+$verifiedToolchainJson = @(& $python scripts\nsis_repack_contract.py `
+  verify-extracted-toolchain `
+  --nsis-root $stagedToolchain `
+  --additional-plugins-root $stagedAdditionalPlugins)
+if ($LASTEXITCODE -ne 0) { throw 'private staged NSIS toolchain verification failed' }
+try { $verifiedToolchain = ($verifiedToolchainJson -join "`n") | ConvertFrom-Json }
+catch { throw 'private staged NSIS toolchain verifier returned invalid JSON' }
+$verifiedCompiler = [IO.Path]::GetFullPath([string]$verifiedToolchain.compiler)
+if ($verifiedCompiler -cne [IO.Path]::GetFullPath((Join-Path $stagedToolchain 'makensis.exe'))) {
+  throw 'verified NSIS compiler does not belong to the private staged toolchain'
+}
+if (
+  [string]$verifiedToolchain.tree.algorithm -cne 'stock-desk-nsis-toolchain-tree-v1' -or
+  [long]$verifiedToolchain.tree.file_count -ne 442 -or
+  [long]$verifiedToolchain.tree.total_size -ne 7168591 -or
+  [string]$verifiedToolchain.tree.sha256 -cne '1baa63462557de9a7bdd3ef13534faf3ff38671f960de6ce30a87c5df5ec7866'
+) { throw 'verified private NSIS toolchain identity is not the repository lock' }
 $mainBinaryDefines = @([regex]::Matches(
   $scriptText,
   '(?m)^\s*!define\s+MAINBINARYSRCPATH\s+"(?<path>[^"\r\n]+)"\s*$'
@@ -154,22 +197,6 @@ if ($mainPathOccurrences -ne 1) {
   throw "rendered MAINBINARYSRCPATH value must occur exactly once, found $mainPathOccurrences"
 }
 
-function Find-ByteTokenOffsets([byte[]]$Bytes, [byte[]]$Token) {
-  if ($Token.Length -eq 0 -or $Bytes.Length -lt $Token.Length) { return @() }
-  $offsets = @()
-  for ($offset = 0; $offset -le $Bytes.Length - $Token.Length; $offset += 1) {
-    $matches = $true
-    for ($index = 0; $index -lt $Token.Length; $index += 1) {
-      if ($Bytes[$offset + $index] -ne $Token[$index]) {
-        $matches = $false
-        break
-      }
-    }
-    if ($matches) { $offsets += $offset }
-  }
-  return $offsets
-}
-
 $patchedPayloadRelative = 'captured/main-binary-nss.exe'
 Copy-PrivateSnapshot `
   (Split-Path $mainBinarySource -Parent) `
@@ -179,46 +206,22 @@ $unpatchedPayload = Join-Path $stage (Join-Path 'captured/main-binary-source' (S
 $patchedPayload = Join-Path $stage $patchedPayloadRelative
 if (Test-Path -LiteralPath $patchedPayload) { throw 'private NSS-patched payload already exists' }
 Copy-Item -LiteralPath $unpatchedPayload -Destination $patchedPayload
-$unknownMarker = [Text.Encoding]::ASCII.GetBytes('__TAURI_BUNDLE_TYPE_VAR_UNK')
-$nsisMarker = [Text.Encoding]::ASCII.GetBytes('__TAURI_BUNDLE_TYPE_VAR_NSS')
-if ($unknownMarker.Length -ne $nsisMarker.Length) { throw 'Tauri bundle markers must be equal length' }
-$unpatchedBytes = [IO.File]::ReadAllBytes($unpatchedPayload)
-$unknownOffsets = @(Find-ByteTokenOffsets $unpatchedBytes $unknownMarker)
-$preexistingNsisOffsets = @(Find-ByteTokenOffsets $unpatchedBytes $nsisMarker)
-if ($unknownOffsets.Count -ne 1 -or $preexistingNsisOffsets.Count -ne 0) {
-  throw "restored host must contain exactly one UNK marker and zero NSS markers; UNK=$($unknownOffsets.Count), NSS=$($preexistingNsisOffsets.Count)"
-}
-$markerOffset = [long]$unknownOffsets[0]
-$patchedBytes = [byte[]]$unpatchedBytes.Clone()
-[Array]::Copy($nsisMarker, 0, $patchedBytes, $markerOffset, $nsisMarker.Length)
-for ($index = 0; $index -lt $unpatchedBytes.Length; $index += 1) {
-  if ($index -ge $markerOffset -and $index -lt ($markerOffset + $unknownMarker.Length)) { continue }
-  if ($patchedBytes[$index] -ne $unpatchedBytes[$index]) {
-    throw 'private NSS payload changed outside the exact marker range'
-  }
-}
-[IO.File]::WriteAllBytes($patchedPayload, $patchedBytes)
-$patchedReadback = [IO.File]::ReadAllBytes($patchedPayload)
-if ($patchedReadback.Length -ne $unpatchedBytes.Length) { throw 'private NSS payload length changed' }
-if (@(Find-ByteTokenOffsets $patchedReadback $unknownMarker).Count -ne 0) {
-  throw 'private NSS payload retained an UNK marker'
-}
-$patchedNsisOffsets = @(Find-ByteTokenOffsets $patchedReadback $nsisMarker)
-if ($patchedNsisOffsets.Count -ne 1 -or [long]$patchedNsisOffsets[0] -ne $markerOffset) {
-  throw 'private NSS payload marker identity is invalid'
-}
-$unpatchedIdentity = [ordered]@{
-  size=$unpatchedBytes.Length;sha256=(Get-Sha256 $unpatchedPayload)
-}
-$patchedIdentity = [ordered]@{
-  size=$patchedReadback.Length;sha256=(Get-Sha256 $patchedPayload);marker_offset=$markerOffset
-}
-Write-Host ('Tauri NSS payload reconstruction: ' + ([ordered]@{
-  algorithm='tauri-bundle-type-unk-to-nss-v1'
-  unpatched=$unpatchedIdentity
-  patched=$patchedIdentity
-} | ConvertTo-Json -Depth 5 -Compress))
-if ((Get-Sha256 $mainBinarySource) -cne $unpatchedIdentity.sha256) {
+$payloadPatchJson = @(& $python scripts\nsis_repack_contract.py `
+  patch-tauri-bundle-payload `
+  --private-root $stage `
+  --payload $patchedPayload)
+if ($LASTEXITCODE -ne 0) { throw 'private Tauri NSS payload reconstruction failed' }
+try { $payloadPatch = ($payloadPatchJson -join "`n") | ConvertFrom-Json }
+catch { throw 'private Tauri NSS payload reconstruction returned invalid JSON' }
+if (
+  [string]$payloadPatch.algorithm -cne 'tauri-bundle-type-unk-to-nss-v1' -or
+  [long]$payloadPatch.marker_offset -lt 0 -or
+  [long]$payloadPatch.before.size -ne [long]$payloadPatch.after.size -or
+  [long]$payloadPatch.after.size -ne (Get-Item -LiteralPath $patchedPayload).Length -or
+  [string]$payloadPatch.after.sha256 -cne (Get-Sha256 $patchedPayload)
+) { throw 'private Tauri NSS payload reconstruction identity is invalid' }
+Write-Host ('Tauri NSS payload reconstruction: ' + ($payloadPatch | ConvertTo-Json -Depth 5 -Compress))
+if ((Get-Sha256 $mainBinarySource) -cne [string]$payloadPatch.before.sha256) {
   throw 'workspace host binary changed while reconstructing the private NSS payload'
 }
 Remove-Item -LiteralPath $unpatchedPayload -Force
@@ -338,7 +341,7 @@ foreach ($file in Get-ChildItem -LiteralPath $stage -Recurse -File) {
   }
 }
 
-$compiler = Join-Path $stage 'toolchain\makensis.exe'
+$compiler = $verifiedCompiler
 $plugins = @($pluginNames | ForEach-Object {
   $pluginPath = $pluginPaths[$_]
   [ordered]@{name=$_;path=$pluginPath;sha256=(Get-Sha256 (Join-Path $stage $pluginPath))}

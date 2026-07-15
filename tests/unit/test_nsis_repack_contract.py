@@ -200,7 +200,9 @@ def _fixture(tmp_path: Path, *, prefix: str = "A") -> tuple[Path, dict[str, Any]
 
 def _extracted_toolchain_fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
     nsis_root = tmp_path / "extracted-nsis"
-    external_plugin = tmp_path / "external-plugins" / "nsis_tauri_utils.dll"
+    external_plugin = (
+        nsis_root / "Plugins" / "x86-unicode" / "additional" / "nsis_tauri_utils.dll"
+    )
     records: list[dict[str, object]] = []
     for locked_path in REQUIRED_TOOL_PATHS:
         if locked_path == PLUGIN_PATH:
@@ -223,6 +225,21 @@ def _extracted_toolchain_fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
                 "executable": locked_path == "toolchain/makensis.exe",
             }
         )
+    for index in range(442 - len(records)):
+        locked_path = f"toolchain/Contrib/fixture-{index:03d}.bin"
+        destination = nsis_root / locked_path.removeprefix("toolchain/")
+        payload = f"{locked_path}\n".encode()
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(payload)
+        records.append(
+            {
+                "path": locked_path,
+                "role": "nsis-toolchain",
+                "size": len(payload),
+                "sha256": _digest(payload),
+                "executable": False,
+            }
+        )
     rendered_script = tmp_path / "render" / "installer.nsi"
     rendered_script.parent.mkdir(parents=True)
     rendered_script.write_text(
@@ -233,7 +250,7 @@ def _extracted_toolchain_fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
     return nsis_root, rendered_script, external_plugin
 
 
-def test_extracted_toolchain_verifier_accepts_the_locked_tree_and_external_plugin(
+def test_extracted_toolchain_verifier_accepts_real_in_tree_plugin_layout(
     tmp_path: Path,
 ) -> None:
     nsis_root, _rendered_script, external_plugin = _extracted_toolchain_fixture(
@@ -257,9 +274,263 @@ def test_extracted_toolchain_verifier_accepts_the_locked_tree_and_external_plugi
     assert identity.nsis_tauri_utils_sha256 == _digest(external_plugin.read_bytes())
     assert identity.lock_sha256 == _digest(contract.TOOLCHAIN_LOCK_PATH.read_bytes())
     assert identity.tree.algorithm == "stock-desk-nsis-toolchain-tree-v1"
-    assert identity.tree.file_count == len(REQUIRED_TOOL_PATHS)
+    assert identity.tree.file_count == 442
     assert identity.tree.total_size > 0
     assert len(identity.tree.sha256) == 64
+
+
+def test_extracted_toolchain_verifier_rejects_external_or_duplicate_plugin_layout(
+    tmp_path: Path,
+) -> None:
+    nsis_root, _rendered_script, plugin = _extracted_toolchain_fixture(tmp_path)
+    external_root = tmp_path / "external-plugins"
+    external_root.mkdir()
+    (external_root / plugin.name).write_bytes(plugin.read_bytes())
+
+    with pytest.raises(contract.NsisRepackContractError):
+        contract.verify_extracted_nsis_toolchain(
+            nsis_root=nsis_root,
+            additional_plugins_root=external_root,
+        )
+
+    duplicate = nsis_root / "Plugins" / "x86-unicode" / "duplicate" / plugin.name
+    duplicate.parent.mkdir()
+    duplicate.write_bytes(plugin.read_bytes())
+    with pytest.raises(contract.NsisRepackContractError):
+        contract.verify_extracted_nsis_toolchain(
+            nsis_root=nsis_root,
+            additional_plugins_root=plugin.parent,
+        )
+
+
+def test_extracted_toolchain_verifier_rejects_same_size_final_identity_race(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    nsis_root, _rendered_script, plugin = _extracted_toolchain_fixture(tmp_path)
+    compiler = nsis_root / "makensis.exe"
+    original_hash = _digest(compiler.read_bytes())
+    real_hash = contract._hash_regular_file
+    compiler_hashes = 0
+
+    def racing_hash(path: Path, field: str) -> tuple[int, str]:
+        nonlocal compiler_hashes
+        result = real_hash(path, field)
+        if path == compiler:
+            compiler_hashes += 1
+            if compiler_hashes == 2:
+                compiler.write_bytes(b"x" * result[0])
+        return result
+
+    monkeypatch.setattr(contract, "_hash_regular_file", racing_hash)
+
+    with pytest.raises(contract.NsisRepackContractError):
+        contract.verify_extracted_nsis_toolchain(
+            nsis_root=nsis_root,
+            additional_plugins_root=plugin.parent,
+        )
+    assert _digest(compiler.read_bytes()) != original_hash
+
+
+_UNK_MARKER = b"__TAURI_BUNDLE_TYPE_VAR_UNK"
+_NSS_MARKER = b"__TAURI_BUNDLE_TYPE_VAR_NSS"
+
+
+def _private_payload(tmp_path: Path, payload: bytes) -> tuple[Path, Path]:
+    root = tmp_path / "private"
+    root.mkdir(mode=0o700, parents=True)
+    path = root / "stock-desk-desktop.exe"
+    path.write_bytes(payload)
+    return root, path
+
+
+def test_tauri_payload_patch_streams_one_exact_marker_and_preserves_original(
+    tmp_path: Path,
+) -> None:
+    original = tmp_path / "workspace-host.exe"
+    original_payload = b"prefix" + _UNK_MARKER + b"suffix"
+    original.write_bytes(original_payload)
+    private_root, private_payload = _private_payload(tmp_path, original.read_bytes())
+
+    result = contract.patch_tauri_bundle_payload(
+        private_root=private_root,
+        payload=private_payload,
+    )
+
+    assert result == {
+        "algorithm": "tauri-bundle-type-unk-to-nss-v1",
+        "marker_offset": 6,
+        "before": {
+            "size": len(original_payload),
+            "sha256": _digest(original_payload),
+        },
+        "after": {
+            "size": len(original_payload),
+            "sha256": _digest(b"prefix" + _NSS_MARKER + b"suffix"),
+        },
+    }
+    assert original.read_bytes() == original_payload
+    assert private_payload.read_bytes() == b"prefix" + _NSS_MARKER + b"suffix"
+
+
+def test_tauri_payload_patch_finds_marker_across_stream_boundary(
+    tmp_path: Path,
+) -> None:
+    prefix = b"x" * (1024 * 1024 - len(_UNK_MARKER) // 2)
+    private_root, private_payload = _private_payload(
+        tmp_path, prefix + _UNK_MARKER + b"suffix"
+    )
+
+    result = contract.patch_tauri_bundle_payload(
+        private_root=private_root,
+        payload=private_payload,
+    )
+
+    assert result["marker_offset"] == len(prefix)
+    assert private_payload.read_bytes() == prefix + _NSS_MARKER + b"suffix"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"no marker",
+        _UNK_MARKER + b"x" + _UNK_MARKER,
+        _UNK_MARKER + b"x" + _NSS_MARKER,
+    ],
+    ids=["missing-unk", "duplicate-unk", "preexisting-nss"],
+)
+def test_tauri_payload_patch_rejects_invalid_marker_cardinality(
+    tmp_path: Path,
+    payload: bytes,
+) -> None:
+    private_root, private_payload = _private_payload(tmp_path, payload)
+
+    with pytest.raises(contract.NsisRepackContractError):
+        contract.patch_tauri_bundle_payload(
+            private_root=private_root,
+            payload=private_payload,
+        )
+    assert private_payload.read_bytes() == payload
+
+
+def test_tauri_payload_patch_rejects_oversized_nonprivate_or_linked_input(
+    tmp_path: Path,
+) -> None:
+    private_root, private_payload = _private_payload(
+        tmp_path, b"prefix" + _UNK_MARKER + b"suffix"
+    )
+    with pytest.raises(contract.NsisRepackContractError):
+        contract.patch_tauri_bundle_payload(
+            private_root=private_root,
+            payload=private_payload,
+            max_bytes=8,
+        )
+
+    private_root.chmod(0o755)
+    with pytest.raises(contract.NsisRepackContractError):
+        contract.patch_tauri_bundle_payload(
+            private_root=private_root,
+            payload=private_payload,
+        )
+
+
+def test_tauri_payload_patch_rejects_hardlink_or_outside_private_root(
+    tmp_path: Path,
+) -> None:
+    private_root, private_payload = _private_payload(
+        tmp_path, b"prefix" + _UNK_MARKER + b"suffix"
+    )
+    alias = private_root / "alias.exe"
+    os.link(private_payload, alias)
+    with pytest.raises(contract.NsisRepackContractError):
+        contract.patch_tauri_bundle_payload(
+            private_root=private_root,
+            payload=private_payload,
+        )
+
+    outside = tmp_path / "outside.exe"
+    outside.write_bytes(b"prefix" + _UNK_MARKER + b"suffix")
+    with pytest.raises(contract.NsisRepackContractError):
+        contract.patch_tauri_bundle_payload(
+            private_root=private_root,
+            payload=outside,
+        )
+    private_root.chmod(0o700)
+
+    backing = private_root / "backing.exe"
+    private_payload.rename(backing)
+    try:
+        private_payload.symlink_to(backing)
+    except OSError:
+        pytest.skip("file symlink creation is unavailable")
+    with pytest.raises(contract.NsisRepackContractError):
+        contract.patch_tauri_bundle_payload(
+            private_root=private_root,
+            payload=private_payload,
+        )
+
+
+def test_tauri_payload_patch_rejects_destination_change_after_replace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_root, private_payload = _private_payload(
+        tmp_path, b"prefix" + _UNK_MARKER + b"suffix"
+    )
+    real_replace = os.replace
+
+    def tampering_replace(source: str | Path, destination: str | Path) -> None:
+        real_replace(source, destination)
+        Path(destination).write_bytes(b"tampered-after-replace")
+
+    monkeypatch.setattr(contract.os, "replace", tampering_replace)
+
+    with pytest.raises(contract.NsisRepackContractError):
+        contract.patch_tauri_bundle_payload(
+            private_root=private_root,
+            payload=private_payload,
+        )
+
+
+def test_toolchain_and_payload_patch_cli_emit_structured_identity(
+    tmp_path: Path,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    nsis_root, _rendered_script, plugin = _extracted_toolchain_fixture(tmp_path)
+    assert (
+        contract.main(
+            [
+                "verify-extracted-toolchain",
+                "--nsis-root",
+                os.fspath(nsis_root),
+                "--additional-plugins-root",
+                os.fspath(plugin.parent),
+            ]
+        )
+        == 0
+    )
+    verified = json.loads(capfd.readouterr().out)
+    assert verified["compiler"] == os.fspath(nsis_root / "makensis.exe")
+    assert verified["tree"]["file_count"] == 442
+
+    private_root, private_payload = _private_payload(
+        tmp_path / "patch-cli", b"prefix" + _UNK_MARKER + b"suffix"
+    )
+    assert (
+        contract.main(
+            [
+                "patch-tauri-bundle-payload",
+                "--private-root",
+                os.fspath(private_root),
+                "--payload",
+                os.fspath(private_payload),
+            ]
+        )
+        == 0
+    )
+    patched = json.loads(capfd.readouterr().out)
+    assert patched["marker_offset"] == 6
+    assert patched["before"]["size"] == patched["after"]["size"]
 
 
 @pytest.mark.parametrize("tamper", ["compiler", "external-plugin", "tree"])

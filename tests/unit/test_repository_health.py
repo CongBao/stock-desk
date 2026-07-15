@@ -650,14 +650,21 @@ def test_windows_candidate_binds_reproducible_nsis_repack_kit_without_new_family
     assert "function Invoke-RawNsisProbe(" not in integration
     assert "MAINBINARYSRCPATH exactly once" in integration
     assert "rendered MAINBINARYSRCPATH must be absolute" in integration
-    assert "Find-ByteTokenOffsets" in integration
-    assert "__TAURI_BUNDLE_TYPE_VAR_UNK" in integration
-    assert "__TAURI_BUNDLE_TYPE_VAR_NSS" in integration
-    assert "exactly one UNK marker and zero NSS markers" in integration
-    assert "private NSS payload changed outside the exact marker range" in integration
-    assert "private NSS payload length changed" in integration
+    assert "Find-ByteTokenOffsets" not in integration
+    assert "ReadAllBytes" not in integration
+    assert "verify-extracted-toolchain" in integration
+    assert "ADDITIONALPLUGINSPATH exactly once" in integration
+    assert "rendered ADDITIONALPLUGINSPATH must be absolute" in integration
+    assert "does not belong to the exact NSIS tree" in integration
+    assert '!addplugindir\\s+"\\$\\{ADDITIONALPLUGINSPATH\\}"' in integration
+    assert "--nsis-root $stagedToolchain" in integration
+    assert "--additional-plugins-root $stagedAdditionalPlugins" in integration
+    assert "$compiler = $verifiedCompiler" in integration
+    assert "patch-tauri-bundle-payload" in integration
+    assert "--private-root $stage" in integration
+    assert "--payload $patchedPayload" in integration
     assert "tauri-bundle-type-unk-to-nss-v1" in integration
-    assert "marker_offset=$markerOffset" in integration
+    assert "$payloadPatch.marker_offset" in integration
     assert "workspace host binary changed" in integration
     assert "original unsigned candidate changed" in integration
     assert (
