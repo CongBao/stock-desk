@@ -744,6 +744,107 @@ def test_windows_inventory_accepts_native_build_hardlinks(tmp_path: Path) -> Non
     assert inventory.files["native-build/stock-desk-copy.nsi"].links == 2
 
 
+def test_windows_source_file_stat_uses_the_secured_handle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handle_stat = cast(
+        os.stat_result,
+        SimpleNamespace(
+            st_dev=10,
+            st_ino=20,
+            st_mode=stat.S_IFREG | 0o666,
+            st_size=30,
+            st_mtime_ns=40,
+            st_ctime_ns=60,
+            st_nlink=2,
+            st_file_attributes=0,
+        ),
+    )
+    closed: list[int] = []
+    monkeypatch.setattr(secure_snapshot, "_running_on_windows", lambda: True)
+    monkeypatch.setattr(secure_snapshot, "_open_windows_non_reparse", lambda _path: 91)
+    monkeypatch.setattr(
+        os, "fstat", lambda descriptor: handle_stat if descriptor == 91 else None
+    )
+    monkeypatch.setattr(os, "close", closed.append)
+
+    observed = secure_snapshot._stat_windows_source_file(Path("C:/build/payload.exe"))
+
+    assert observed is handle_stat
+    assert closed == [91]
+
+
+def test_windows_inventory_uses_full_path_identity_for_scanned_entries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _source(tmp_path).resolve()
+    original_scandir = os.scandir
+
+    class ZeroIdentityDirEntry:
+        def __init__(self, entry: os.DirEntry[str]) -> None:
+            self._entry = entry
+            self.name = entry.name
+            self.path = entry.path
+
+        def is_symlink(self) -> bool:
+            return self._entry.is_symlink()
+
+        def stat(self, *, follow_symlinks: bool = True) -> os.stat_result:
+            metadata = self._entry.stat(follow_symlinks=follow_symlinks)
+            return cast(
+                os.stat_result,
+                SimpleNamespace(
+                    st_dev=0,
+                    st_ino=0,
+                    st_mode=metadata.st_mode,
+                    st_size=metadata.st_size,
+                    st_mtime_ns=metadata.st_mtime_ns,
+                    st_ctime_ns=metadata.st_ctime_ns,
+                    st_nlink=0,
+                    st_file_attributes=int(getattr(metadata, "st_file_attributes", 0)),
+                ),
+            )
+
+    def zero_identity_scandir(path: Any) -> list[ZeroIdentityDirEntry]:
+        with original_scandir(path) as entries:
+            return [ZeroIdentityDirEntry(entry) for entry in entries]
+
+    monkeypatch.setattr(os, "scandir", zero_identity_scandir)
+
+    inventory = secure_snapshot._inventory_windows(source, ["app"], SnapshotLimits())
+
+    expected = secure_snapshot._identity(
+        (source / "app" / "stock-desk-desktop.exe").stat(follow_symlinks=False)
+    )
+    assert inventory.files["app/stock-desk-desktop.exe"] == expected
+
+
+def test_windows_hardlink_policy_rejects_an_unavailable_link_identity(
+    tmp_path: Path,
+) -> None:
+    metadata = tmp_path / "payload.bin"
+    metadata.write_bytes(b"payload")
+    values = metadata.stat(follow_symlinks=False)
+    zero_links = cast(
+        os.stat_result,
+        SimpleNamespace(
+            st_dev=values.st_dev,
+            st_ino=values.st_ino,
+            st_mode=values.st_mode,
+            st_size=values.st_size,
+            st_mtime_ns=values.st_mtime_ns,
+            st_ctime_ns=values.st_ctime_ns,
+            st_nlink=0,
+            st_file_attributes=int(getattr(values, "st_file_attributes", 0)),
+        ),
+    )
+
+    with pytest.raises(SecureArtifactSnapshotError, match="identity is unavailable"):
+        secure_snapshot._add_inventory_file(
+            {}, "payload.bin", zero_links, SnapshotLimits(), allow_hardlinks=True
+        )
+
+
 def test_windows_snapshot_branch_holds_root_and_consumes_only_snapshot(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1287,6 +1388,36 @@ def test_windows_native_open_and_close_failures_release_owned_handles(
     with pytest.raises(OSError, match="conversion failed"):
         secure_snapshot._open_windows_non_reparse(tmp_path / "payload")
     assert conversion_failure.closed == [91]
+
+
+def test_windows_source_read_revalidates_the_path_through_a_secured_handle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _source(tmp_path).resolve()
+    target = source / "stock-desk.nsi"
+    expected = secure_snapshot._identity(target.stat(follow_symlinks=False))
+    observed: list[Path] = []
+    original_stat = secure_snapshot._stat_windows_source_file
+
+    monkeypatch.setattr(secure_snapshot, "_running_on_windows", lambda: True)
+    monkeypatch.setattr(
+        secure_snapshot,
+        "_open_windows_non_reparse",
+        lambda path: os.open(path, os.O_RDONLY),
+    )
+
+    def observe_stat(path: Path) -> os.stat_result:
+        observed.append(path)
+        return original_stat(path)
+
+    monkeypatch.setattr(secure_snapshot, "_stat_windows_source_file", observe_stat)
+
+    with secure_snapshot._open_source_file(
+        source, None, "stock-desk.nsi", expected
+    ) as stream:
+        assert stream.read() == b"OutFile stock-desk.exe\n"
+
+    assert observed == [target]
 
 
 @pytest.mark.skipif(os.name == "nt", reason="exercises POSIX descriptor reads")

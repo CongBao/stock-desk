@@ -671,6 +671,8 @@ def _add_inventory_file(
 ) -> None:
     if relative in files:
         raise SecureArtifactSnapshotError("snapshot entries overlap or are duplicated")
+    if metadata.st_nlink < 1:
+        raise SecureArtifactSnapshotError("artifact identity is unavailable")
     if not allow_hardlinks and metadata.st_nlink != 1:
         raise SecureArtifactSnapshotError("artifact hard links are forbidden")
     if metadata.st_size > limits.max_file_size:
@@ -1012,8 +1014,12 @@ def _inventory_windows(
                 )
             folded.add(normalized)
             child_relative = f"{relative}/{entry.name}" if relative else entry.name
+            child_path = Path(entry.path)
             try:
-                metadata = entry.stat(follow_symlinks=False)
+                # DirEntry.stat() leaves dev/inode/nlink as zero on Windows. A
+                # full path stat is required for the stable identity compared
+                # with the later handle fstat.
+                metadata = child_path.stat(follow_symlinks=False)
             except OSError as error:
                 raise SecureArtifactSnapshotError(
                     "artifact entry changed or is unsafe"
@@ -1023,12 +1029,14 @@ def _inventory_windows(
                     "artifact links and reparse points are forbidden"
                 )
             if stat.S_ISREG(metadata.st_mode):
+                try:
+                    opened = _stat_windows_source_file(child_path)
+                except OSError as error:
+                    raise SecureArtifactSnapshotError(
+                        "artifact entry changed or is unsafe"
+                    ) from error
                 _add_inventory_file(
-                    files,
-                    child_relative,
-                    metadata,
-                    limits,
-                    allow_hardlinks=True,
+                    files, child_relative, opened, limits, allow_hardlinks=True
                 )
             elif stat.S_ISDIR(metadata.st_mode):
                 if child_relative in directories:
@@ -1036,7 +1044,7 @@ def _inventory_windows(
                         "snapshot entries overlap or are duplicated"
                     )
                 directories[child_relative] = _identity(metadata)
-                walk(Path(entry.path), child_relative)
+                walk(child_path, child_relative)
             else:
                 raise SecureArtifactSnapshotError(
                     "artifact contains a non-regular entry"
@@ -1055,7 +1063,13 @@ def _inventory_windows(
                 "artifact links and reparse points are forbidden"
             )
         if stat.S_ISREG(metadata.st_mode):
-            _add_inventory_file(files, relative, metadata, limits, allow_hardlinks=True)
+            try:
+                opened = _stat_windows_source_file(path)
+            except OSError as error:
+                raise SecureArtifactSnapshotError(
+                    "snapshot entry is missing or unsafe"
+                ) from error
+            _add_inventory_file(files, relative, opened, limits, allow_hardlinks=True)
         elif stat.S_ISDIR(metadata.st_mode):
             if relative in directories:
                 raise SecureArtifactSnapshotError(
@@ -1142,6 +1156,21 @@ def _open_windows_non_reparse(path: Path) -> int:
         raise
 
 
+def _stat_windows_source_file(path: Path) -> os.stat_result:
+    """Read exact Windows change time and identity from a secured file handle."""
+
+    if not _running_on_windows():
+        return path.stat(follow_symlinks=False)
+    descriptor = _open_windows_non_reparse(path)
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or _is_reparse(metadata):
+            raise SecureArtifactSnapshotError("artifact is no longer a regular file")
+        return metadata
+    finally:
+        os.close(descriptor)
+
+
 @contextmanager
 def _open_source_file(
     root: Path, root_fd: int | None, relative: str, expected: _Identity
@@ -1180,7 +1209,7 @@ def _open_source_file(
         if _identity(after) != expected:
             raise SecureArtifactSnapshotError("artifact changed while it was read")
         if _running_on_windows():
-            path_after = path.stat(follow_symlinks=False)
+            path_after = _stat_windows_source_file(path)
         else:
             path_after = os.stat(name, dir_fd=parent, follow_symlinks=False)
         if _identity(path_after) != expected or _is_reparse(path_after):
