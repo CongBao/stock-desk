@@ -288,11 +288,13 @@ def test_stable_publish_cannot_run_without_every_real_signed_receipt() -> None:
     assert isinstance(jobs, dict)
     verify = _job_commands(jobs["trusted-updater-release"])
     verify_job = str(jobs["trusted-updater-release"])
+    assert jobs["trusted-updater-release"]["env"]["NODE_VERSION"] == "24.14.0"
+    assert jobs["trusted-updater-release"]["env"]["PNPM_VERSION"] == "11.7.0"
     trusted_steps = jobs["trusted-updater-release"]["steps"]
     setup_node = next(
         step for step in trusted_steps if step.get("name") == "Set up Node.js"
     )
-    assert setup_node["with"] == {"node-version": "24.14.0"}
+    assert setup_node["with"] == {"node-version": "${{ env.NODE_VERSION }}"}
     pnpm_cache = next(
         step
         for step in trusted_steps
@@ -305,7 +307,8 @@ def test_stable_publish_cannot_run_without_every_real_signed_receipt() -> None:
         "path": "~/.pnpm-store",
         "key": (
             "trusted-updater-pnpm-${{ runner.os }}-${{ runner.arch }}-"
-            "node-24.14.0-pnpm-11.7.0-${{ hashFiles('pnpm-lock.yaml') }}"
+            "node-${{ env.NODE_VERSION }}-pnpm-${{ env.PNPM_VERSION }}-"
+            "${{ hashFiles('pnpm-lock.yaml') }}"
         ),
     }
     assert 'pnpm config set store-dir "$HOME/.pnpm-store"' in verify
