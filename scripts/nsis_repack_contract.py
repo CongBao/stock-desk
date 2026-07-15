@@ -2166,8 +2166,12 @@ def _repack_verified_snapshot(
         generated = _safe_child(work, str(expected["path"]), "generated installer")
         size, digest = _hash_regular_file(generated, "generated installer")
         if size != expected["size"] or digest != expected["sha256"]:
+            diagnostic = _format_nsis_diagnostic(bytes(diagnostic_tail), work)
+            suffix = f"\n{diagnostic}" if diagnostic else ""
             raise NsisRepackContractError(
-                "generated installer does not match the expected unsigned identity"
+                "generated installer does not match the expected unsigned identity; "
+                f"expected size={expected['size']} sha256={expected['sha256']}; "
+                f"actual size={size} sha256={digest}{suffix}"
             )
         output.parent.mkdir(parents=True, exist_ok=True)
         output_identity = _copy_regular_file(generated, output, "generated installer")

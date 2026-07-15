@@ -1309,8 +1309,12 @@ def test_repack_execution_failures_are_closed(
         return subprocess.CompletedProcess(command, 7 if mode == "nonzero" else 0)
 
     monkeypatch.setattr("scripts.nsis_repack_contract.subprocess.run", fake_run)
-    with pytest.raises(contract.NsisRepackContractError):
+    with pytest.raises(contract.NsisRepackContractError) as captured:
         _repack(kit, tmp_path / "out.exe", tmp_path / "receipt.json")
+    if mode == "wrong-output":
+        message = str(captured.value)
+        assert f"expected size={len(INSTALLER)} sha256={_digest(INSTALLER)}" in message
+        assert f"actual size={len(b'wrong\n')} sha256={_digest(b'wrong\n')}" in message
 
 
 def test_repack_nonzero_reports_only_a_bounded_redacted_tool_tail(
