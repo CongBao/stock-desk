@@ -312,6 +312,10 @@ function Write-FocusRegionContactSheet {
     }
   } finally { $graphics.Dispose() }
   try { $sheet.Save($Path, [Drawing.Imaging.ImageFormat]::Png) } finally { $sheet.Dispose() }
+  Remove-Item -LiteralPath $focusRegionRoot -Recurse -Force -ErrorAction Stop
+  if (Test-Path -LiteralPath $focusRegionRoot) {
+    throw 'focus-region scratch captures were not removed'
+  }
   return [ordered]@{
     schema = 'stock-desk-focus-region-contact-sheet-v1'
     media_kind = 'focus-region-contact-sheet'

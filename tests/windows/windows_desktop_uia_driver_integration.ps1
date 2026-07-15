@@ -163,8 +163,12 @@ try {
   $runtimeTreePath = Join-Path $probeRoot 'uia-tree.json'
   $runtimeCapturePath = Join-Path $probeRoot 'runtime-probe-window.png'
   $runtimeFocusContactPath = Join-Path $probeRoot 'focus-region-contact-sheet.png'
+  $runtimeFocusPartsPath = Join-Path $probeRoot 'focus-region-parts'
   foreach ($path in @($runtimeResultPath, $runtimeActionsPath, $runtimeTreePath, $runtimeCapturePath, $runtimeFocusContactPath)) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Runtime probe output is missing: $path" }
+  }
+  if (Test-Path -LiteralPath $runtimeFocusPartsPath) {
+    throw 'Runtime probe retained focus-region scratch captures'
   }
   $runtimeResult = Get-Content -LiteralPath $runtimeResultPath -Raw | ConvertFrom-Json
   $runtimeActions = @(Get-Content -LiteralPath $runtimeActionsPath -Raw | ConvertFrom-Json)
