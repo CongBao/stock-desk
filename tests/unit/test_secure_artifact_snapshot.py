@@ -221,6 +221,16 @@ def test_private_directory_post_create_failure_rolls_back_exact_object(
         "app/./file",
         "bad\nname",
     ],
+    ids=(
+        "empty",
+        "dot",
+        "parent",
+        "absolute",
+        "backslash",
+        "double-slash",
+        "dot-segment",
+        "newline",
+    ),
 )
 def test_entry_paths_must_be_normalized_safe_posix_paths(
     tmp_path: Path, entry: str
