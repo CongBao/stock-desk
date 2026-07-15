@@ -1674,11 +1674,14 @@ def create_kit(
         or int(getattr(output_parent_metadata, "st_file_attributes", 0)) & 0x400
     ):
         raise NsisRepackContractError("output parent must be a non-link directory")
+    private_stage = "lease creation"
     try:
         with private_directory_lease(output.absolute()):
+            private_stage = "source snapshot"
             records = descriptor_contract["files"]
             assert isinstance(records, list)
             _snapshot_source_files(source_root, records, output / "content")
+            private_stage = "render normalization"
             mappings = descriptor_contract.pop("path_mappings")
             assert isinstance(mappings, list)
             normalization = _normalize_rendered_script(
@@ -1691,14 +1694,19 @@ def create_kit(
                 "normalization": normalization,
             }
             normalized["kit_sha256"] = _kit_digest(normalized)
+            private_stage = "snapshot verification"
             _verify_snapshot_files(output, normalized)
+            private_stage = "manifest write"
             _write_new_file(
                 output / KIT_MANIFEST,
                 _canonical_json(normalized),
                 "kit manifest",
             )
+            private_stage = "lease verification"
     except SecureArtifactSnapshotError as error:
-        raise NsisRepackContractError("could not create a private kit root") from error
+        raise NsisRepackContractError(
+            f"private kit root failed during {private_stage}: {error}"
+        ) from error
     return normalized
 
 

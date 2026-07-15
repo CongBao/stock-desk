@@ -9,7 +9,7 @@ from pathlib import Path
 import subprocess
 import sys
 from typing import Any, cast
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 
 import pytest
 
@@ -255,6 +255,34 @@ def test_create_kit_publication_never_uses_a_replacing_rename(
     )
 
     assert result["artifact"] == contract.KIT_ARTIFACT
+
+
+def test_create_kit_preserves_safe_private_lease_diagnostics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source, descriptor = _fixture(tmp_path)
+
+    @contextmanager
+    def fail_lease(_path: Path) -> Iterator[Path]:
+        raise contract.SecureArtifactSnapshotError(
+            "lease verification failed (Windows error 32)"
+        )
+        yield  # pragma: no cover - required by the contextmanager protocol
+
+    monkeypatch.setattr(contract, "private_directory_lease", fail_lease)
+
+    with pytest.raises(
+        contract.NsisRepackContractError,
+        match=(
+            r"private kit root failed during lease creation: "
+            r"lease verification failed \(Windows error 32\)"
+        ),
+    ):
+        _create_kit(
+            descriptor=_write_descriptor(tmp_path, descriptor),
+            source_root=source,
+            output=tmp_path / "kit",
+        )
 
 
 def _repack(kit: Path, output: Path, receipt: Path) -> dict[str, object]:
