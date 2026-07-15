@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
+from dataclasses import dataclass
 import hashlib
 import json
 import os
@@ -134,6 +135,31 @@ _FORBIDDEN_EXTERNAL_COMPILE_CONTROLS: Final = frozenset(
 
 class NsisRepackContractError(ValueError):
     """The repack snapshot or execution does not close its trusted inputs."""
+
+
+@dataclass(frozen=True)
+class NsisToolchainTreeIdentity:
+    """Canonical identity of the complete extracted NSIS compiler tree."""
+
+    algorithm: str
+    file_count: int
+    total_size: int
+    sha256: str
+
+
+@dataclass(frozen=True)
+class VerifiedNsisToolchain:
+    """Immutable identity of every executable input used by makensis."""
+
+    compiler: Path
+    compiler_size: int
+    compiler_sha256: str
+    additional_plugins_root: Path
+    nsis_tauri_utils: Path
+    nsis_tauri_utils_size: int
+    nsis_tauri_utils_sha256: str
+    lock_sha256: str
+    tree: NsisToolchainTreeIdentity
 
 
 def _reject_constant(value: str) -> object:
@@ -389,12 +415,13 @@ def _hash_regular_file(path: Path, field: str) -> tuple[int, str]:
     return size, digest.hexdigest()
 
 
-def _load_toolchain_lock() -> tuple[dict[str, object], str]:
+def _load_toolchain_lock(
+    lock_path: Path | None = None,
+) -> tuple[dict[str, object], str]:
     """Load the repository-pinned official Tauri/NSIS trust root."""
 
-    payload = _read_regular_file(
-        TOOLCHAIN_LOCK_PATH, "NSIS toolchain lock", limit=MAX_JSON_BYTES
-    )
+    path = TOOLCHAIN_LOCK_PATH if lock_path is None else lock_path
+    payload = _read_regular_file(path, "NSIS toolchain lock", limit=MAX_JSON_BYTES)
     raw = _object(_parse_json(payload, "NSIS toolchain lock"), "NSIS toolchain lock")
     _exact_fields(
         raw,
@@ -497,6 +524,205 @@ def _load_toolchain_lock() -> tuple[dict[str, object], str]:
     ):
         raise NsisRepackContractError("NSIS toolchain lock cannot be canonicalized")
     return normalized, hashlib.sha256(payload).hexdigest()
+
+
+def _is_reparse(metadata: os.stat_result) -> bool:
+    return bool(
+        getattr(metadata, "st_file_attributes", 0)
+        & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    )
+
+
+def _safe_extracted_tree_records(
+    nsis_root: Path,
+    external_plugin: Path,
+) -> list[dict[str, object]]:
+    """Read the complete extracted tree without following filesystem aliases."""
+
+    try:
+        root_metadata = os.lstat(nsis_root)
+    except OSError as error:
+        raise NsisRepackContractError("extracted NSIS root is missing") from error
+    if (
+        stat.S_ISLNK(root_metadata.st_mode)
+        or not stat.S_ISDIR(root_metadata.st_mode)
+        or _is_reparse(root_metadata)
+    ):
+        raise NsisRepackContractError("extracted NSIS root is unsafe")
+
+    records: list[dict[str, object]] = []
+    seen_paths: list[str] = []
+    pending: list[tuple[Path, PurePosixPath, int]] = [
+        (nsis_root, PurePosixPath("."), 0)
+    ]
+    directory_count = 0
+    while pending:
+        directory, relative_directory, depth = pending.pop()
+        if depth > 32:
+            raise NsisRepackContractError("extracted NSIS tree exceeds depth limit")
+        directory_count += 1
+        if directory_count > MAX_FILES:
+            raise NsisRepackContractError("extracted NSIS tree exceeds directory limit")
+        try:
+            entries = list(os.scandir(directory))
+        except OSError as error:
+            raise NsisRepackContractError(
+                "extracted NSIS tree cannot be enumerated"
+            ) from error
+        for entry in entries:
+            relative = (
+                PurePosixPath(entry.name)
+                if relative_directory == PurePosixPath(".")
+                else relative_directory / entry.name
+            )
+            portable = relative.as_posix()
+            if (
+                not entry.name
+                or entry.name in {".", ".."}
+                or unicodedata.normalize("NFKC", portable) != portable
+            ):
+                raise NsisRepackContractError("extracted NSIS tree path is unsafe")
+            seen_paths.append(portable)
+            if len(seen_paths) > MAX_FILES:
+                raise NsisRepackContractError("extracted NSIS tree exceeds file limit")
+            path = directory / entry.name
+            try:
+                metadata = os.lstat(path)
+            except OSError as error:
+                raise NsisRepackContractError(
+                    "extracted NSIS tree contains an unreadable object"
+                ) from error
+            if stat.S_ISLNK(metadata.st_mode) or _is_reparse(metadata):
+                raise NsisRepackContractError(
+                    "extracted NSIS tree contains a link or reparse point"
+                )
+            if stat.S_ISDIR(metadata.st_mode):
+                pending.append((path, relative, depth + 1))
+                continue
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+                raise NsisRepackContractError(
+                    "extracted NSIS tree contains an unowned object"
+                )
+            size, digest = _hash_regular_file(path, f"extracted NSIS file {portable}")
+            records.append(
+                {
+                    "path": f"toolchain/{portable}",
+                    "role": "nsis-toolchain",
+                    "size": size,
+                    "sha256": digest,
+                    "executable": portable == "makensis.exe",
+                }
+            )
+    _assert_case_unique(seen_paths, "extracted NSIS tree")
+
+    plugin_metadata = _safe_regular_metadata(
+        external_plugin, "external nsis_tauri_utils plugin"
+    )
+    plugin_size, plugin_digest = _hash_regular_file(
+        external_plugin, "external nsis_tauri_utils plugin"
+    )
+    if plugin_size != plugin_metadata.st_size:
+        raise NsisRepackContractError("external plugin identity changed")
+    records.append(
+        {
+            "path": "toolchain/Plugins/x86-unicode/additional/nsis_tauri_utils.dll",
+            "role": "nsis-plugin",
+            "size": plugin_size,
+            "sha256": plugin_digest,
+            "executable": False,
+        }
+    )
+    _assert_case_unique(
+        [str(record["path"]) for record in records], "verified NSIS toolchain"
+    )
+    return records
+
+
+def _safe_regular_metadata(path: Path, field: str) -> os.stat_result:
+    try:
+        metadata = os.lstat(path)
+    except OSError as error:
+        raise NsisRepackContractError(f"{field} is missing") from error
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_nlink != 1
+        or _is_reparse(metadata)
+        or metadata.st_size <= 0
+    ):
+        raise NsisRepackContractError(f"{field} is unsafe")
+    return metadata
+
+
+def verify_extracted_nsis_toolchain(
+    *,
+    nsis_root: Path,
+    additional_plugins_root: Path,
+    lock_path: Path | None = None,
+) -> VerifiedNsisToolchain:
+    """Verify the exact extracted Tauri NSIS compiler and external plugin."""
+
+    nsis_root = nsis_root.absolute()
+    additional_plugins_root = additional_plugins_root.absolute()
+    try:
+        plugins_root_metadata = os.lstat(additional_plugins_root)
+    except OSError as error:
+        raise NsisRepackContractError(
+            "additional NSIS plugin root is missing"
+        ) from error
+    if (
+        stat.S_ISLNK(plugins_root_metadata.st_mode)
+        or not stat.S_ISDIR(plugins_root_metadata.st_mode)
+        or _is_reparse(plugins_root_metadata)
+    ):
+        raise NsisRepackContractError("additional NSIS plugin root is unsafe")
+    compiler = nsis_root / "makensis.exe"
+    external_plugin = additional_plugins_root / "nsis_tauri_utils.dll"
+    compiler_metadata = _safe_regular_metadata(compiler, "top-level makensis.exe")
+    plugin_metadata = _safe_regular_metadata(
+        external_plugin, "external nsis_tauri_utils plugin"
+    )
+    records = _safe_extracted_tree_records(nsis_root, external_plugin)
+    lock, lock_digest = _load_toolchain_lock(lock_path)
+    actual_tree = _canonical_toolchain_tree(records)
+    trusted_tree = _object(lock["extracted_tree"], "trusted toolchain tree")
+    if actual_tree != dict(trusted_tree):
+        raise NsisRepackContractError(
+            "extracted NSIS tree does not equal the repository-pinned lock"
+        )
+    if _safe_extracted_tree_records(nsis_root, external_plugin) != records:
+        raise NsisRepackContractError("verified NSIS toolchain changed during review")
+    compiler_size, compiler_digest = _hash_regular_file(
+        compiler, "top-level makensis.exe"
+    )
+    plugin_size, plugin_digest = _hash_regular_file(
+        external_plugin, "external nsis_tauri_utils plugin"
+    )
+    if (
+        compiler_size != compiler_metadata.st_size
+        or plugin_size != plugin_metadata.st_size
+    ):
+        raise NsisRepackContractError("verified NSIS input identity changed")
+    return VerifiedNsisToolchain(
+        compiler=compiler,
+        compiler_size=compiler_size,
+        compiler_sha256=compiler_digest,
+        additional_plugins_root=additional_plugins_root,
+        nsis_tauri_utils=external_plugin,
+        nsis_tauri_utils_size=plugin_size,
+        nsis_tauri_utils_sha256=plugin_digest,
+        lock_sha256=lock_digest,
+        tree=NsisToolchainTreeIdentity(
+            algorithm=str(actual_tree["algorithm"]),
+            file_count=_positive_int(
+                actual_tree["file_count"], "verified NSIS tree file_count"
+            ),
+            total_size=_positive_int(
+                actual_tree["total_size"], "verified NSIS tree total_size"
+            ),
+            sha256=str(actual_tree["sha256"]),
+        ),
+    )
 
 
 def _canonical_toolchain_tree(

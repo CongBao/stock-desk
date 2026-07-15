@@ -32,8 +32,14 @@ def _digest(payload: bytes) -> str:
 
 
 def _install_fixture_toolchain_lock(
-    tmp_path: Path, files: list[dict[str, object]]
-) -> None:
+    tmp_path: Path,
+    files: list[dict[str, object]],
+    *,
+    install_as_repository_lock: bool = True,
+    nsis_tauri_utils_sha256: str = (
+        "5ba143b5db4a87d32d6e7802e033330aae56cbceabe0d1e3ba41948385ad4709"
+    ),
+) -> Path:
     tree = contract._canonical_toolchain_tree(files)
     lock = {
         "schema_version": 1,
@@ -52,13 +58,15 @@ def _install_fixture_toolchain_lock(
             "version": "0.5.3",
             "url": "https://github.com/tauri-apps/nsis-tauri-utils/releases/download/nsis_tauri_utils-v0.5.3/nsis_tauri_utils.dll",
             "sha1": "75197fee3c6a814fe035788d1c34ead39349b860",
-            "sha256": "5ba143b5db4a87d32d6e7802e033330aae56cbceabe0d1e3ba41948385ad4709",
+            "sha256": nsis_tauri_utils_sha256,
         },
         "extracted_tree": tree,
     }
     path = tmp_path / "fixture-nsis-toolchain-lock.json"
     path.write_bytes(json.dumps(lock, indent=2).encode() + b"\n")
-    setattr(contract, "TOOLCHAIN_LOCK_PATH", path)
+    if install_as_repository_lock:
+        setattr(contract, "TOOLCHAIN_LOCK_PATH", path)
+    return path
 
 
 def _fixture(tmp_path: Path, *, prefix: str = "A") -> tuple[Path, dict[str, Any]]:
@@ -228,13 +236,30 @@ def _extracted_toolchain_fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
 def test_extracted_toolchain_verifier_accepts_the_locked_tree_and_external_plugin(
     tmp_path: Path,
 ) -> None:
-    nsis_root, rendered_script, _external_plugin = _extracted_toolchain_fixture(
+    nsis_root, _rendered_script, external_plugin = _extracted_toolchain_fixture(
         tmp_path
     )
     verifier = getattr(contract, "verify_extracted_nsis_toolchain", None)
 
     assert callable(verifier)
-    assert verifier(nsis_root, rendered_script) is not None
+    identity = verifier(
+        nsis_root=nsis_root,
+        additional_plugins_root=external_plugin.parent,
+    )
+    assert identity.compiler == nsis_root / "makensis.exe"
+    assert identity.compiler_size == (nsis_root / "makensis.exe").stat().st_size
+    assert identity.compiler_sha256 == _digest(
+        (nsis_root / "makensis.exe").read_bytes()
+    )
+    assert identity.additional_plugins_root == external_plugin.parent
+    assert identity.nsis_tauri_utils == external_plugin
+    assert identity.nsis_tauri_utils_size == external_plugin.stat().st_size
+    assert identity.nsis_tauri_utils_sha256 == _digest(external_plugin.read_bytes())
+    assert identity.lock_sha256 == _digest(contract.TOOLCHAIN_LOCK_PATH.read_bytes())
+    assert identity.tree.algorithm == "stock-desk-nsis-toolchain-tree-v1"
+    assert identity.tree.file_count == len(REQUIRED_TOOL_PATHS)
+    assert identity.tree.total_size > 0
+    assert len(identity.tree.sha256) == 64
 
 
 @pytest.mark.parametrize("tamper", ["compiler", "external-plugin", "tree"])
@@ -242,7 +267,9 @@ def test_extracted_toolchain_verifier_rejects_locked_identity_tampering(
     tmp_path: Path,
     tamper: str,
 ) -> None:
-    nsis_root, rendered_script, external_plugin = _extracted_toolchain_fixture(tmp_path)
+    nsis_root, _rendered_script, external_plugin = _extracted_toolchain_fixture(
+        tmp_path
+    )
     if tamper == "compiler":
         (nsis_root / "makensis.exe").write_bytes(b"tampered-compiler")
     elif tamper == "external-plugin":
@@ -255,7 +282,10 @@ def test_extracted_toolchain_verifier_rejects_locked_identity_tampering(
     verifier = getattr(contract, "verify_extracted_nsis_toolchain", None)
     assert callable(verifier)
     with pytest.raises(contract.NsisRepackContractError):
-        verifier(nsis_root, rendered_script)
+        verifier(
+            nsis_root=nsis_root,
+            additional_plugins_root=external_plugin.parent,
+        )
 
 
 @pytest.mark.parametrize(
@@ -267,6 +297,7 @@ def test_extracted_toolchain_verifier_rejects_locked_identity_tampering(
         "plugin-symlink",
         "plugin-hardlink",
         "plugin-reparse",
+        "plugin-root-symlink",
     ],
 )
 def test_extracted_toolchain_verifier_rejects_linked_or_reparse_inputs(
@@ -274,12 +305,31 @@ def test_extracted_toolchain_verifier_rejects_linked_or_reparse_inputs(
     monkeypatch: pytest.MonkeyPatch,
     unsafe_object: str,
 ) -> None:
-    nsis_root, rendered_script, external_plugin = _extracted_toolchain_fixture(tmp_path)
+    nsis_root, _rendered_script, external_plugin = _extracted_toolchain_fixture(
+        tmp_path
+    )
     target = (
         nsis_root / "makensis.exe"
         if unsafe_object.startswith("compiler-")
         else external_plugin
     )
+    if unsafe_object == "plugin-root-symlink":
+        plugin_root = external_plugin.parent
+        backing_root = tmp_path / "outside-plugin-root"
+        plugin_root.rename(backing_root)
+        try:
+            plugin_root.symlink_to(backing_root, target_is_directory=True)
+        except OSError:
+            backing_root.rename(plugin_root)
+            pytest.skip("directory symlink creation is unavailable")
+        verifier = getattr(contract, "verify_extracted_nsis_toolchain", None)
+        assert callable(verifier)
+        with pytest.raises(contract.NsisRepackContractError):
+            verifier(
+                nsis_root=nsis_root,
+                additional_plugins_root=plugin_root,
+            )
+        return
     object_kind = unsafe_object.rpartition("-")[2]
     if object_kind in {"symlink", "hardlink"}:
         backing = tmp_path / "outside-backing" / target.name
@@ -316,7 +366,10 @@ def test_extracted_toolchain_verifier_rejects_linked_or_reparse_inputs(
     verifier = getattr(contract, "verify_extracted_nsis_toolchain", None)
     assert callable(verifier)
     with pytest.raises(contract.NsisRepackContractError):
-        verifier(nsis_root, rendered_script)
+        verifier(
+            nsis_root=nsis_root,
+            additional_plugins_root=external_plugin.parent,
+        )
 
 
 def _write_descriptor(

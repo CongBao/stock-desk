@@ -115,6 +115,10 @@ Copy-PrivateSnapshot $render $renderEntries ''
 Copy-PrivateSnapshot $nsis $toolEntries 'toolchain'
 Copy-PrivateSnapshot (Split-Path $config -Parent) @((Split-Path $config -Leaf)) 'source'
 Copy-PrivateSnapshot (Split-Path $template -Parent) @((Split-Path $template -Leaf)) 'template'
+$originalSourceIdentityBefore = [ordered]@{
+  size=(Get-Item -LiteralPath $originalSource).Length
+  sha256=(Get-Sha256 $originalSource)
+}
 $snapshotNumber += 1
 $originalSnapshot = Join-Path $snapshots ("snapshot-{0:D4}" -f $snapshotNumber)
 & $python scripts\secure_artifact_snapshot.py `
@@ -124,88 +128,106 @@ $originalSnapshot = Join-Path $snapshots ("snapshot-{0:D4}" -f $snapshotNumber)
 if ($LASTEXITCODE -ne 0) { throw 'original unsigned installer snapshot failed' }
 $original = Join-Path $originalSnapshot (Split-Path $originalSource -Leaf)
 
-# Recompile the untouched Tauri-rendered script before normalizing or relocating
-# any input. These bounded identities distinguish a user-level NSIS config leak
-# from path normalization without publishing an additional executable.
-$privateAppData = Join-Path $captureRoot 'empty-appdata'
-New-PrivateDirectory $privateAppData
-$userConfigIdentity = [ordered]@{exists=$false;reparse=$false;size=0}
-$userConfig = if ($env:APPDATA) { Join-Path $env:APPDATA 'nsisconf.nsh' } else { $null }
-if ($userConfig -and (Test-Path -LiteralPath $userConfig)) {
-  $userConfigItem = Get-Item -LiteralPath $userConfig -Force
-  $userConfigReparse = ($userConfigItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0
-  $userConfigIdentity = [ordered]@{
-    exists=$true
-    reparse=$userConfigReparse
-    size=(if (-not $userConfigItem.PSIsContainer -and -not $userConfigReparse) { $userConfigItem.Length } else { 0 })
-  }
-}
-Write-Host ('NSIS user configuration identity: ' + ($userConfigIdentity | ConvertTo-Json -Compress))
-
-$probeOutput = Join-Path $render 'nsis-output.exe'
-if (Test-Path -LiteralPath $probeOutput) {
-  throw 'raw NSIS diagnostic output preexists after the Tauri bundle move'
-}
-
-function Invoke-RawNsisProbe(
-  [string]$ProbeName,
-  [bool]$UsePrivateAppData
-) {
-  $environmentNames = @(
-    'SOURCE_DATE_EPOCH','STOCK_DESK_SOURCE_REVISION','PYTHONHASHSEED','CARGO_ENCODED_RUSTFLAGS',
-    'NSISCONFDIR','NSISDIR','APPDATA'
-  )
-  $savedEnvironment = @{}
-  foreach ($environmentName in $environmentNames) {
-    $savedEnvironment[$environmentName] = [Environment]::GetEnvironmentVariable($environmentName, 'Process')
-  }
-  $probeLog = Join-Path $captureRoot "$ProbeName-nsis.log"
-  try {
-    $env:SOURCE_DATE_EPOCH = "$SourceEpoch"
-    $env:STOCK_DESK_SOURCE_REVISION = $SourceSha
-    $env:PYTHONHASHSEED = '0'
-    $env:CARGO_ENCODED_RUSTFLAGS = "-C$([char]0x1f)link-arg=/Brepro"
-    $env:NSISCONFDIR = $null
-    $env:NSISDIR = $null
-    if ($UsePrivateAppData) { $env:APPDATA = $privateAppData }
-    if (Test-Path -LiteralPath $probeOutput) {
-      throw "raw NSIS probe output already exists: $ProbeName"
-    }
-    Push-Location $render
-    try {
-      & (Join-Path $nsis 'makensis.exe') `
-        -INPUTCHARSET UTF8 -OUTPUTCHARSET UTF8 -V3 $renderedScript *> $probeLog
-      if ($LASTEXITCODE -ne 0) { throw "raw NSIS probe failed: $ProbeName" }
-    } finally {
-      Pop-Location
-    }
-    if (-not (Test-Path -LiteralPath $probeOutput -PathType Leaf)) {
-      throw "raw NSIS probe did not create its expected output: $ProbeName"
-    }
-    $identity = [ordered]@{
-      name=$ProbeName
-      size=(Get-Item -LiteralPath $probeOutput).Length
-      sha256=(Get-Sha256 $probeOutput)
-    }
-    Write-Host ('NSIS raw probe identity: ' + ($identity | ConvertTo-Json -Compress))
-  } finally {
-    if (Test-Path -LiteralPath $probeOutput) {
-      Remove-Item -LiteralPath $probeOutput -Force
-    }
-    foreach ($environmentName in $environmentNames) {
-      [Environment]::SetEnvironmentVariable(
-        $environmentName, $savedEnvironment[$environmentName], 'Process'
-      )
-    }
-  }
-}
-
-Invoke-RawNsisProbe `
-  -ProbeName 'inherited-appdata' -UsePrivateAppData $false
-Invoke-RawNsisProbe `
-  -ProbeName 'empty-private-appdata' -UsePrivateAppData $true
-
 $scriptText = Get-Content -LiteralPath (Join-Path $stage 'installer.nsi') -Raw
+$mainBinaryDefines = @([regex]::Matches(
+  $scriptText,
+  '(?m)^\s*!define\s+MAINBINARYSRCPATH\s+"(?<path>[^"\r\n]+)"\s*$'
+))
+if ($mainBinaryDefines.Count -ne 1) {
+  throw "rendered installer.nsi must define MAINBINARYSRCPATH exactly once, found $($mainBinaryDefines.Count)"
+}
+$mainBinarySource = $mainBinaryDefines[0].Groups['path'].Value
+if (-not [IO.Path]::IsPathRooted($mainBinarySource)) {
+  throw 'rendered MAINBINARYSRCPATH must be absolute'
+}
+$mainBinarySource = [IO.Path]::GetFullPath($mainBinarySource)
+if (-not (Test-Path -LiteralPath $mainBinarySource -PathType Leaf)) {
+  throw 'rendered MAINBINARYSRCPATH does not identify one restored host binary'
+}
+$mainPathOccurrences = 0
+$mainPathPosition = 0
+while (($mainPathPosition = $scriptText.IndexOf($mainBinarySource, $mainPathPosition, [StringComparison]::Ordinal)) -ge 0) {
+  $mainPathOccurrences += 1
+  $mainPathPosition += $mainBinarySource.Length
+}
+if ($mainPathOccurrences -ne 1) {
+  throw "rendered MAINBINARYSRCPATH value must occur exactly once, found $mainPathOccurrences"
+}
+
+function Find-ByteTokenOffsets([byte[]]$Bytes, [byte[]]$Token) {
+  if ($Token.Length -eq 0 -or $Bytes.Length -lt $Token.Length) { return @() }
+  $offsets = @()
+  for ($offset = 0; $offset -le $Bytes.Length - $Token.Length; $offset += 1) {
+    $matches = $true
+    for ($index = 0; $index -lt $Token.Length; $index += 1) {
+      if ($Bytes[$offset + $index] -ne $Token[$index]) {
+        $matches = $false
+        break
+      }
+    }
+    if ($matches) { $offsets += $offset }
+  }
+  return $offsets
+}
+
+$patchedPayloadRelative = 'captured/main-binary-nss.exe'
+Copy-PrivateSnapshot `
+  (Split-Path $mainBinarySource -Parent) `
+  @((Split-Path $mainBinarySource -Leaf)) `
+  'captured/main-binary-source'
+$unpatchedPayload = Join-Path $stage (Join-Path 'captured/main-binary-source' (Split-Path $mainBinarySource -Leaf))
+$patchedPayload = Join-Path $stage $patchedPayloadRelative
+if (Test-Path -LiteralPath $patchedPayload) { throw 'private NSS-patched payload already exists' }
+Copy-Item -LiteralPath $unpatchedPayload -Destination $patchedPayload
+$unknownMarker = [Text.Encoding]::ASCII.GetBytes('__TAURI_BUNDLE_TYPE_VAR_UNK')
+$nsisMarker = [Text.Encoding]::ASCII.GetBytes('__TAURI_BUNDLE_TYPE_VAR_NSS')
+if ($unknownMarker.Length -ne $nsisMarker.Length) { throw 'Tauri bundle markers must be equal length' }
+$unpatchedBytes = [IO.File]::ReadAllBytes($unpatchedPayload)
+$unknownOffsets = @(Find-ByteTokenOffsets $unpatchedBytes $unknownMarker)
+$preexistingNsisOffsets = @(Find-ByteTokenOffsets $unpatchedBytes $nsisMarker)
+if ($unknownOffsets.Count -ne 1 -or $preexistingNsisOffsets.Count -ne 0) {
+  throw "restored host must contain exactly one UNK marker and zero NSS markers; UNK=$($unknownOffsets.Count), NSS=$($preexistingNsisOffsets.Count)"
+}
+$markerOffset = [long]$unknownOffsets[0]
+$patchedBytes = [byte[]]$unpatchedBytes.Clone()
+[Array]::Copy($nsisMarker, 0, $patchedBytes, $markerOffset, $nsisMarker.Length)
+for ($index = 0; $index -lt $unpatchedBytes.Length; $index += 1) {
+  if ($index -ge $markerOffset -and $index -lt ($markerOffset + $unknownMarker.Length)) { continue }
+  if ($patchedBytes[$index] -ne $unpatchedBytes[$index]) {
+    throw 'private NSS payload changed outside the exact marker range'
+  }
+}
+[IO.File]::WriteAllBytes($patchedPayload, $patchedBytes)
+$patchedReadback = [IO.File]::ReadAllBytes($patchedPayload)
+if ($patchedReadback.Length -ne $unpatchedBytes.Length) { throw 'private NSS payload length changed' }
+if (@(Find-ByteTokenOffsets $patchedReadback $unknownMarker).Count -ne 0) {
+  throw 'private NSS payload retained an UNK marker'
+}
+$patchedNsisOffsets = @(Find-ByteTokenOffsets $patchedReadback $nsisMarker)
+if ($patchedNsisOffsets.Count -ne 1 -or [long]$patchedNsisOffsets[0] -ne $markerOffset) {
+  throw 'private NSS payload marker identity is invalid'
+}
+$unpatchedIdentity = [ordered]@{
+  size=$unpatchedBytes.Length;sha256=(Get-Sha256 $unpatchedPayload)
+}
+$patchedIdentity = [ordered]@{
+  size=$patchedReadback.Length;sha256=(Get-Sha256 $patchedPayload);marker_offset=$markerOffset
+}
+Write-Host ('Tauri NSS payload reconstruction: ' + ([ordered]@{
+  algorithm='tauri-bundle-type-unk-to-nss-v1'
+  unpatched=$unpatchedIdentity
+  patched=$patchedIdentity
+} | ConvertTo-Json -Depth 5 -Compress))
+if ((Get-Sha256 $mainBinarySource) -cne $unpatchedIdentity.sha256) {
+  throw 'workspace host binary changed while reconstructing the private NSS payload'
+}
+Remove-Item -LiteralPath $unpatchedPayload -Force
+$unpatchedPayloadParent = Split-Path $unpatchedPayload -Parent
+if (@(Get-ChildItem -LiteralPath $unpatchedPayloadParent -Force).Count -ne 0) {
+  throw 'private unpatched payload staging directory is not empty after removal'
+}
+Remove-Item -LiteralPath $unpatchedPayloadParent -Force
+
 $quotedAbsolute = [regex]'(?<quote>["''])(?<path>(?:[A-Za-z]:[\\/]|\\\\)[^"''\r\n]*?)\k<quote>'
 $absoluteValues = @($quotedAbsolute.Matches($scriptText) | ForEach-Object { $_.Groups['path'].Value } | Sort-Object -Unique)
 if (-not $absoluteValues) { throw 'rendered installer.nsi did not contain expected absolute Tauri inputs' }
@@ -223,6 +245,9 @@ foreach ($source in $absoluteValues) {
   if ($occurrences -lt 1) { throw "absolute mapping was not observed: $source" }
   if ([IO.Path]::GetFullPath($source) -ieq [IO.Path]::GetFullPath($originalSource)) {
     throw 'rendered installer.nsi unexpectedly references the final bundle path'
+  } elseif ([IO.Path]::GetFullPath($source) -ieq $mainBinarySource) {
+    $target = $patchedPayloadRelative
+    $mappedRoles[$target] = 'payload'
   } elseif (Test-Path -LiteralPath $source -PathType Container) {
     $relativeToToolchain = [IO.Path]::GetRelativePath($nsis, $source)
     if (-not (Test-RelativeChild $relativeToToolchain)) {
@@ -378,4 +403,12 @@ $firstHash = Get-Sha256 $first
 $secondHash = Get-Sha256 $second
 if ($firstHash -cne $secondHash) { throw 'independent fixed NSIS repacks are not byte-identical' }
 if ($firstHash -cne $expectedHash) { throw 'fixed NSIS repack does not reproduce the original unsigned candidate' }
+$originalSourceIdentityAfter = [ordered]@{
+  size=(Get-Item -LiteralPath $originalSource).Length
+  sha256=(Get-Sha256 $originalSource)
+}
+if (
+  $originalSourceIdentityAfter.size -ne $originalSourceIdentityBefore.size -or
+  $originalSourceIdentityAfter.sha256 -cne $originalSourceIdentityBefore.sha256
+) { throw 'original unsigned candidate changed during private NSIS reconstruction' }
 Remove-Item -LiteralPath $captureRoot -Recurse -Force
