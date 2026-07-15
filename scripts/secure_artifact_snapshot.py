@@ -666,10 +666,12 @@ def _add_inventory_file(
     relative: str,
     metadata: os.stat_result,
     limits: SnapshotLimits,
+    *,
+    allow_hardlinks: bool = False,
 ) -> None:
     if relative in files:
         raise SecureArtifactSnapshotError("snapshot entries overlap or are duplicated")
-    if metadata.st_nlink != 1:
+    if not allow_hardlinks and metadata.st_nlink != 1:
         raise SecureArtifactSnapshotError("artifact hard links are forbidden")
     if metadata.st_size > limits.max_file_size:
         raise SecureArtifactSnapshotError("artifact exceeds the per-file size limit")
@@ -983,6 +985,11 @@ def _hold_windows_source_root(path: Path) -> Iterator[None]:
 def _inventory_windows(
     root: Path, entries: Sequence[str], limits: SnapshotLimits
 ) -> _Inventory:
+    # Native Windows build tools legitimately reuse files through hard links. The
+    # enclosing snapshot holds every ancestor without delete sharing, opens each file
+    # with read sharing only, and compares a second complete identity inventory, so an
+    # alias cannot mutate a file unnoticed while it is consumed. POSIX keeps the
+    # stricter one-link policy because it has no equivalent mandatory sharing lock.
     files: dict[str, _Identity] = {}
     directories: dict[str, _Identity] = {}
 
@@ -1016,7 +1023,13 @@ def _inventory_windows(
                     "artifact links and reparse points are forbidden"
                 )
             if stat.S_ISREG(metadata.st_mode):
-                _add_inventory_file(files, child_relative, metadata, limits)
+                _add_inventory_file(
+                    files,
+                    child_relative,
+                    metadata,
+                    limits,
+                    allow_hardlinks=True,
+                )
             elif stat.S_ISDIR(metadata.st_mode):
                 if child_relative in directories:
                     raise SecureArtifactSnapshotError(
@@ -1042,7 +1055,7 @@ def _inventory_windows(
                 "artifact links and reparse points are forbidden"
             )
         if stat.S_ISREG(metadata.st_mode):
-            _add_inventory_file(files, relative, metadata, limits)
+            _add_inventory_file(files, relative, metadata, limits, allow_hardlinks=True)
         elif stat.S_ISDIR(metadata.st_mode):
             if relative in directories:
                 raise SecureArtifactSnapshotError(

@@ -702,7 +702,7 @@ def test_windows_source_operation_error_preserves_error_code_and_closes_handles(
     assert closed == [33, 22, 11]
 
 
-def test_windows_inventory_has_the_same_stable_limits_and_link_policy(
+def test_windows_inventory_has_the_same_stable_limits_and_reparse_policy(
     tmp_path: Path,
 ) -> None:
     source = _source(tmp_path).resolve()
@@ -722,6 +722,26 @@ def test_windows_inventory_has_the_same_stable_limits_and_link_policy(
             secure_snapshot._inventory_windows(
                 source, ["unsafe-link"], SnapshotLimits()
             )
+
+
+def test_windows_inventory_accepts_native_build_hardlinks(tmp_path: Path) -> None:
+    source = _source(tmp_path).resolve()
+    nested = source / "native-build"
+    nested.mkdir()
+    os.link(source / "stock-desk.nsi", nested / "stock-desk-copy.nsi")
+
+    inventory = secure_snapshot._inventory_windows(
+        source,
+        ["stock-desk.nsi", "native-build"],
+        SnapshotLimits(),
+    )
+
+    assert sorted(inventory.files) == [
+        "native-build/stock-desk-copy.nsi",
+        "stock-desk.nsi",
+    ]
+    assert inventory.files["stock-desk.nsi"].links == 2
+    assert inventory.files["native-build/stock-desk-copy.nsi"].links == 2
 
 
 def test_windows_snapshot_branch_holds_root_and_consumes_only_snapshot(

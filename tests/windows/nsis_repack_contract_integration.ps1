@@ -77,6 +77,32 @@ function Copy-PrivateSnapshot(
   }
 }
 
+$hardlinkSource = Join-Path $captureRoot 'hardlink-source'
+New-PrivateDirectory $hardlinkSource
+$hardlinkOriginal = Join-Path $hardlinkSource 'original.bin'
+$hardlinkAlias = Join-Path $hardlinkSource 'alias.bin'
+[IO.File]::WriteAllBytes($hardlinkOriginal, [Text.Encoding]::UTF8.GetBytes('native-windows-hardlink'))
+New-Item -ItemType HardLink -Path $hardlinkAlias -Target $hardlinkOriginal | Out-Null
+$hardlinkSnapshot = Join-Path $snapshots 'hardlink-contract'
+& $python scripts\secure_artifact_snapshot.py `
+  --source-root $hardlinkSource `
+  --destination $hardlinkSnapshot `
+  --entry 'original.bin' `
+  --entry 'alias.bin' | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'native Windows hardlink snapshot contract failed' }
+$expectedHardlinkHash = Get-Sha256 $hardlinkOriginal
+foreach ($name in @('original.bin','alias.bin')) {
+  if ((Get-Sha256 (Join-Path $hardlinkSnapshot $name)) -cne $expectedHardlinkHash) {
+    throw "native Windows hardlink snapshot content mismatch: $name"
+  }
+}
+[IO.File]::WriteAllBytes($hardlinkAlias, [Text.Encoding]::UTF8.GetBytes('mutated-source-alias'))
+foreach ($name in @('original.bin','alias.bin')) {
+  if ((Get-Sha256 (Join-Path $hardlinkSnapshot $name)) -cne $expectedHardlinkHash) {
+    throw "native Windows hardlink snapshot retained a source link: $name"
+  }
+}
+
 $renderEntries = @(Get-ChildItem -LiteralPath $render -Force | ForEach-Object Name)
 $toolEntries = @(Get-ChildItem -LiteralPath $nsis -Force | ForEach-Object Name)
 if (-not $renderEntries -or -not $toolEntries) { throw 'rendered NSIS or toolchain root is empty' }
