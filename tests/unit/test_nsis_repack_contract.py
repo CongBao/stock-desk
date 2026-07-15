@@ -6,8 +6,10 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import stat
 import subprocess
 import sys
+from types import SimpleNamespace
 from typing import Any, cast
 from collections.abc import Iterator, Mapping
 
@@ -186,6 +188,135 @@ def _fixture(tmp_path: Path, *, prefix: str = "A") -> tuple[Path, dict[str, Any]
         ],
     }
     return root, descriptor
+
+
+def _extracted_toolchain_fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
+    nsis_root = tmp_path / "extracted-nsis"
+    external_plugin = tmp_path / "external-plugins" / "nsis_tauri_utils.dll"
+    records: list[dict[str, object]] = []
+    for locked_path in REQUIRED_TOOL_PATHS:
+        if locked_path == PLUGIN_PATH:
+            destination = external_plugin
+            payload = b"locked-external-plugin\n"
+            role = "nsis-plugin"
+        else:
+            relative = locked_path.removeprefix("toolchain/")
+            destination = nsis_root / relative
+            payload = f"{locked_path}\n".encode()
+            role = "nsis-toolchain"
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(payload)
+        records.append(
+            {
+                "path": locked_path,
+                "role": role,
+                "size": len(payload),
+                "sha256": _digest(payload),
+                "executable": locked_path == "toolchain/makensis.exe",
+            }
+        )
+    rendered_script = tmp_path / "render" / "installer.nsi"
+    rendered_script.parent.mkdir(parents=True)
+    rendered_script.write_text(
+        f'!addplugindir "{external_plugin.parent}"\nnsis_tauri_utils::SemverCompare\n',
+        encoding="utf-8",
+    )
+    _install_fixture_toolchain_lock(tmp_path, records)
+    return nsis_root, rendered_script, external_plugin
+
+
+def test_extracted_toolchain_verifier_accepts_the_locked_tree_and_external_plugin(
+    tmp_path: Path,
+) -> None:
+    nsis_root, rendered_script, _external_plugin = _extracted_toolchain_fixture(
+        tmp_path
+    )
+    verifier = getattr(contract, "verify_extracted_nsis_toolchain", None)
+
+    assert callable(verifier)
+    assert verifier(nsis_root, rendered_script) is not None
+
+
+@pytest.mark.parametrize("tamper", ["compiler", "external-plugin", "tree"])
+def test_extracted_toolchain_verifier_rejects_locked_identity_tampering(
+    tmp_path: Path,
+    tamper: str,
+) -> None:
+    nsis_root, rendered_script, external_plugin = _extracted_toolchain_fixture(tmp_path)
+    if tamper == "compiler":
+        (nsis_root / "makensis.exe").write_bytes(b"tampered-compiler")
+    elif tamper == "external-plugin":
+        external_plugin.write_bytes(b"tampered-plugin")
+    elif tamper == "tree":
+        (nsis_root / "Include" / "unlocked.nsh").write_bytes(b"extra")
+    else:  # pragma: no cover - parametrization is exhaustive
+        raise AssertionError(tamper)
+
+    verifier = getattr(contract, "verify_extracted_nsis_toolchain", None)
+    assert callable(verifier)
+    with pytest.raises(contract.NsisRepackContractError):
+        verifier(nsis_root, rendered_script)
+
+
+@pytest.mark.parametrize(
+    "unsafe_object",
+    [
+        "compiler-symlink",
+        "compiler-hardlink",
+        "compiler-reparse",
+        "plugin-symlink",
+        "plugin-hardlink",
+        "plugin-reparse",
+    ],
+)
+def test_extracted_toolchain_verifier_rejects_linked_or_reparse_inputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    unsafe_object: str,
+) -> None:
+    nsis_root, rendered_script, external_plugin = _extracted_toolchain_fixture(tmp_path)
+    target = (
+        nsis_root / "makensis.exe"
+        if unsafe_object.startswith("compiler-")
+        else external_plugin
+    )
+    object_kind = unsafe_object.rpartition("-")[2]
+    if object_kind in {"symlink", "hardlink"}:
+        backing = tmp_path / "outside-backing" / target.name
+        backing.parent.mkdir()
+        target.rename(backing)
+        if object_kind == "symlink":
+            try:
+                target.symlink_to(backing)
+            except OSError:
+                pytest.skip("file symlink creation is unavailable")
+        else:
+            os.link(backing, target)
+    else:
+        real_lstat = os.lstat
+
+        def reparse_lstat(
+            path: os.PathLike[str] | str, *args: object, **kwargs: object
+        ):
+            metadata = real_lstat(path, *args, **kwargs)
+            if Path(path) != target:
+                return metadata
+            values = {
+                name: getattr(metadata, name)
+                for name in dir(metadata)
+                if name.startswith("st_")
+            }
+            values["st_file_attributes"] = getattr(
+                stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400
+            )
+            return SimpleNamespace(**values)
+
+        monkeypatch.setattr(contract.os, "lstat", reparse_lstat)
+
+    verifier = getattr(contract, "verify_extracted_nsis_toolchain", None)
+    assert callable(verifier)
+    with pytest.raises(contract.NsisRepackContractError):
+        verifier(nsis_root, rendered_script)
 
 
 def _write_descriptor(

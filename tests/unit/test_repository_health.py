@@ -543,8 +543,9 @@ def test_windows_candidate_binds_reproducible_nsis_repack_kit_without_new_family
     names = [step.get("name") for step in builder["steps"]]
     build_index = names.index("Build exact-SHA Windows desktop once")
     repack_index = names.index("Capture and reproduce fixed NSIS repack kit")
+    candidate_upload_index = names.index("Upload source-free candidate A")
     cleanup_index = names.index("Clean candidate A build and test state")
-    assert build_index < repack_index < cleanup_index
+    assert build_index < repack_index < candidate_upload_index < cleanup_index
     repack = builder["steps"][repack_index]["run"]
     for required in (
         "src-tauri\\target\\x86_64-pc-windows-msvc\\release",
@@ -571,6 +572,25 @@ def test_windows_candidate_binds_reproducible_nsis_repack_kit_without_new_family
     ]
     assert not any(name.startswith("nsis-repack-") for name in uploads)
     assert any(name.startswith("windows-desktop-candidate-a-") for name in uploads)
+
+    builder_b = jobs["windows-desktop-builder-b"]
+    names_b = [step.get("name") for step in builder_b["steps"]]
+    build_b = names_b.index("Build exact-SHA Windows desktop once")
+    verify_b = names_b.index("Safely unpack and verify candidate B")
+    upload_b = names_b.index("Upload source-free candidate B")
+    cleanup_b = names_b.index("Clean candidate B build and test state")
+    assert build_b < verify_b < upload_b < cleanup_b
+    verify_b_script = str(builder_b["steps"][verify_b].get("run", ""))
+    for required in (
+        "expected exactly one NSIS installer",
+        "scripts/verify_windows_desktop_bundle.py",
+        "windows-desktop-bundle.json",
+        "Copy-Item $installers[0].FullName",
+    ):
+        assert required in verify_b_script
+    assert builder["needs"] == builder_b["needs"] == "impact"
+    assert "windows-desktop-builder-b" not in str(builder.get("needs", ""))
+    assert "windows-desktop-builder-a" not in str(builder_b.get("needs", ""))
 
     compare = "\n".join(
         str(step.get("run", ""))
@@ -604,6 +624,8 @@ def test_windows_candidate_binds_reproducible_nsis_repack_kit_without_new_family
     assert 'separators=(",", ":")' in compare
 
     integration = _read("tests/windows/nsis_repack_contract_integration.ps1")
+    powershell_code = re.sub(r"(?m)^\s*#.*$", "", integration)
+    normalized_integration = re.sub(r"\s+", " ", powershell_code)
     assert "-replace '\\', '/'" not in integration
     assert integration.count(".Replace('\\', '/')") == 6
     assert "function Test-RelativeChild([string]$Relative)" in integration
@@ -655,6 +677,77 @@ def test_windows_candidate_binds_reproducible_nsis_repack_kit_without_new_family
     assert "-UsePrivateAppData $false" in integration
     assert "-UsePrivateAppData $true" in integration
     assert "NSIS raw probe identity:" in integration
+    assert re.search(r"\breturn\s+\$identity\b", powershell_code)
+    raw_identities: dict[str, str] = {}
+    for probe_name in ("inherited-appdata", "empty-private-appdata"):
+        assignment = re.search(
+            rf"\$(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*"
+            rf"Invoke-RawNsisProbe\s+.*?-ProbeName\s+['\"]{probe_name}['\"]",
+            normalized_integration,
+        )
+        assert assignment is not None
+        raw_identities[probe_name] = assignment.group("name")
+    assert len(set(raw_identities.values())) == 2
+
+    identity_function = re.search(
+        r"function\s+Get-InstallerIdentity\s*\(\s*\[string\]\$Path\s*\)\s*\{"
+        r"(?P<body>.*?)\}",
+        normalized_integration,
+    )
+    assert identity_function is not None
+    assert ".Length" in identity_function.group("body")
+    assert "Get-Sha256" in identity_function.group("body")
+    artifact_identities: dict[str, str] = {}
+    for label, path_name in (
+        ("bundle", "original"),
+        ("kit-a", "first"),
+        ("kit-b", "second"),
+    ):
+        assignment = re.search(
+            rf"\$(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*"
+            rf"Get-InstallerIdentity\s+\${path_name}\b",
+            normalized_integration,
+        )
+        assert assignment is not None
+        artifact_identities[label] = assignment.group("name")
+    assert len(set(artifact_identities.values())) == 3
+
+    receipt_verification = re.search(
+        r"\$verifiedReceiptCount\s*=\s*0\b.*?"
+        r"foreach\s*\(\s*\$pair\s+in\s+\$receiptPairs\s*\)\s*\{"
+        r"(?P<body>.*?)\}\s*"
+        r"if\s*\(\s*\$verifiedReceiptCount\s*-ne\s*2\s*\)\s*\{"
+        r"(?P<completion>[^{}]*)\}",
+        normalized_integration,
+    )
+    assert receipt_verification is not None
+    receipt_body = receipt_verification.group("body")
+    receipt_command = receipt_body.index("nsis_repack_contract.py verify-receipt")
+    receipt_exit_check = receipt_body.index("$LASTEXITCODE")
+    receipt_increment = receipt_body.index("$verifiedReceiptCount += 1")
+    assert receipt_command < receipt_exit_check < receipt_increment
+    assert "throw" in receipt_verification.group("completion")
+
+    equality_gate = re.search(
+        r"\$canonicalIdentities\s*=\s*@\((?P<identities>[^)]*)\)\s*"
+        r".*?\.size.*?Sort-Object\s+-Unique.*?"
+        r"\.sha256.*?Sort-Object\s+-Unique.*?"
+        r"if\s*\([^{}]*\)\s*\{(?P<body>[^{}]*)\}",
+        normalized_integration[receipt_verification.end() :],
+    )
+    assert equality_gate is not None
+    identity_list = equality_gate.group("identities")
+    expected_identity_names = {
+        *raw_identities.values(),
+        *artifact_identities.values(),
+    }
+    assert len(expected_identity_names) == 5
+    assert expected_identity_names == {
+        name
+        for name in expected_identity_names
+        if re.search(rf"\${re.escape(name)}\b", identity_list)
+    }
+    assert "throw" in equality_gate.group("body")
     assert "NSIS user configuration identity:" in integration
     assert "Get-Sha256 $userConfig" not in integration
     assert "foreach ($name in $environmentNames)" not in integration

@@ -2,18 +2,24 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+import errno
 import os
 from pathlib import Path
+import shutil
+import stat
 import struct
+import subprocess
 from types import SimpleNamespace
 
 import pytest
 
 from scripts import build_windows_desktop as builder
+from scripts import nsis_repack_contract as nsis_contract
 
 
 _ORIGINAL_INSTALLER = b"tauri-original-unsigned-installer"
 _CANONICAL_INSTALLER = b"canonical-makensis-output"
+_DEFAULT_LOCAL_APP_DATA = object()
 
 
 @dataclass(frozen=True)
@@ -25,6 +31,7 @@ class _NsisLayout:
     toolchain: Path
     compiler: Path
     compiler_output: Path
+    external_plugin: Path
 
 
 def _nsis_layout(root: Path, local_app_data: Path) -> _NsisLayout:
@@ -40,6 +47,9 @@ def _nsis_layout(root: Path, local_app_data: Path) -> _NsisLayout:
         toolchain=toolchain,
         compiler=toolchain / "makensis.exe",
         compiler_output=render / "nsis-output.exe",
+        external_plugin=(
+            local_app_data / "tauri" / "WixTools" / "nsis_tauri_utils.dll"
+        ),
     )
 
 
@@ -55,11 +65,23 @@ def _write_complete_toolchain(root: Path) -> None:
     _write_file(root / "Bin" / "makensis.exe")
 
 
+def _write_external_plugin(layout: _NsisLayout) -> None:
+    _write_file(layout.external_plugin, b"locked-nsis-tauri-utils")
+
+
 def _write_tauri_nsis_outputs(layout: _NsisLayout) -> None:
-    for name in ("installer.nsi", "FileAssociation.nsh", "utils.nsh"):
+    _write_file(
+        layout.rendered_script,
+        (
+            f'!addplugindir "{layout.external_plugin.parent}"\n'
+            "nsis_tauri_utils::SemverCompare\n"
+        ).encode(),
+    )
+    for name in ("FileAssociation.nsh", "utils.nsh"):
         _write_file(layout.render / name)
     _write_file(layout.installer, _ORIGINAL_INSTALLER)
     _write_complete_toolchain(layout.toolchain)
+    _write_external_plugin(layout)
 
     # Discovery is deliberately bounded: these plausible decoys are not inputs.
     _write_file(layout.render.parent / "arm64" / "installer.nsi")
@@ -73,7 +95,12 @@ def _run_nsis_build(
     *,
     mutate_outputs: Callable[[_NsisLayout], None] | None = None,
     compiler_payload: bytes | None = _CANONICAL_INSTALLER,
+    compiler_writer: Callable[[Path], None] | None = None,
+    toolchain_verifier: Callable[[Path, Path], object] | None = None,
+    verification_log: list[tuple[Path, Path]] | None = None,
+    event_log: list[str] | None = None,
     call_log: list[tuple[list[str], Path, dict[str, str]]] | None = None,
+    local_app_data_env: str | None | object = _DEFAULT_LOCAL_APP_DATA,
 ) -> tuple[
     Path | None,
     _NsisLayout,
@@ -87,23 +114,51 @@ def _run_nsis_build(
     python = r"C:\Python312\python.exe"
     pnpm = r"C:\pnpm\pnpm.cmd"
     calls = [] if call_log is None else call_log
+    verifications = [] if verification_log is None else verification_log
+    events = [] if event_log is None else event_log
 
-    monkeypatch.setenv("LOCALAPPDATA", os.fspath(local_app_data))
+    if local_app_data_env is _DEFAULT_LOCAL_APP_DATA:
+        monkeypatch.setenv("LOCALAPPDATA", os.fspath(local_app_data))
+    elif local_app_data_env is None:
+        monkeypatch.delenv("LOCALAPPDATA", raising=False)
+    else:
+        monkeypatch.setenv("LOCALAPPDATA", str(local_app_data_env))
     monkeypatch.setenv("NSISDIR", r"C:\inherited-nsis")
     monkeypatch.setenv("NSISCONFDIR", r"C:\inherited-nsis-config")
+    monkeypatch.setenv("APPDATA", r"C:\inherited-appdata")
+
+    def verify_toolchain(nsis_root: Path, rendered_script: Path) -> object:
+        verifications.append((nsis_root, rendered_script))
+        events.append("verify-toolchain")
+        if toolchain_verifier is not None:
+            return toolchain_verifier(nsis_root, rendered_script)
+        return object()
+
+    monkeypatch.setattr(
+        nsis_contract,
+        "verify_extracted_nsis_toolchain",
+        verify_toolchain,
+        raising=False,
+    )
 
     def run(arguments: list[str], *, cwd: Path, env: dict[str, str]) -> None:
         calls.append((arguments, cwd, env))
         if arguments[0] == python:
+            events.append("pyinstaller")
             _write_file(
                 root / "src-tauri" / "binaries" / builder.SIDECAR_EXE, _pe_x64()
             )
         elif arguments[0] == pnpm:
+            events.append("tauri")
             _write_tauri_nsis_outputs(layout)
             if mutate_outputs is not None:
                 mutate_outputs(layout)
-        elif Path(arguments[0]) == layout.compiler and compiler_payload is not None:
-            _write_file(layout.compiler_output, compiler_payload)
+        elif Path(arguments[0]) == layout.compiler:
+            events.append("compiler")
+            if compiler_writer is not None:
+                compiler_writer(layout.compiler_output)
+            elif compiler_payload is not None:
+                _write_file(layout.compiler_output, compiler_payload)
 
     result = builder.build_windows_desktop(
         root=root,
@@ -117,6 +172,31 @@ def _run_nsis_build(
         inventory_reader=lambda _path: [],
     )
     return result, layout, calls
+
+
+def _compiler_calls(
+    calls: list[tuple[list[str], Path, dict[str, str]]],
+    layout: _NsisLayout,
+) -> list[tuple[list[str], Path, dict[str, str]]]:
+    return [
+        call
+        for call in calls
+        if Path(call[0][0]) == layout.compiler
+        or Path(call[0][0]).name.casefold() == "makensis.exe"
+    ]
+
+
+def _metadata_with(
+    metadata: os.stat_result,
+    **overrides: int,
+) -> SimpleNamespace:
+    values = {
+        name: getattr(metadata, name)
+        for name in dir(metadata)
+        if name.startswith("st_")
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
 
 
 def _pe_x64() -> bytes:
@@ -189,6 +269,7 @@ def test_dry_run_binds_reproducible_environment_and_exact_commands(
     root = tmp_path / "repo"
     root.mkdir()
     work = tmp_path / "work"
+    inherited_environment = os.environ.copy()
     calls: list[tuple[list[str], Path, dict[str, str]]] = []
 
     def run(arguments: list[str], *, cwd: Path, env: dict[str, str]) -> None:
@@ -207,6 +288,7 @@ def test_dry_run_binds_reproducible_environment_and_exact_commands(
     )
 
     assert result is None
+    assert len(calls) == 2
     assert calls[0][0] == [
         r"C:\Python312\python.exe",
         "-m",
@@ -237,6 +319,9 @@ def test_dry_run_binds_reproducible_environment_and_exact_commands(
         assert environment["SOURCE_DATE_EPOCH"] == "1700000123"
         assert environment["PYTHONHASHSEED"] == "0"
         assert environment["CARGO_ENCODED_RUSTFLAGS"] == "-C\x1flink-arg=/Brepro"
+    assert list(root.iterdir()) == []
+    assert not work.exists()
+    assert os.environ == inherited_environment
 
 
 def test_build_canonicalizes_the_exact_tauri_nsis_candidate(
@@ -245,6 +330,9 @@ def test_build_canonicalizes_the_exact_tauri_nsis_candidate(
 ) -> None:
     real_replace = os.replace
     replacements: list[tuple[Path, Path]] = []
+    verifications: list[tuple[Path, Path]] = []
+    events: list[str] = []
+    inherited_app_data = r"C:\inherited-appdata"
 
     def audited_replace(source: str | Path, destination: str | Path) -> None:
         replacements.append((Path(source), Path(destination)))
@@ -252,9 +340,14 @@ def test_build_canonicalizes_the_exact_tauri_nsis_candidate(
 
     monkeypatch.setattr(builder.os, "replace", audited_replace)
 
-    result, layout, calls = _run_nsis_build(tmp_path, monkeypatch)
+    result, layout, calls = _run_nsis_build(
+        tmp_path,
+        monkeypatch,
+        verification_log=verifications,
+        event_log=events,
+    )
 
-    compiler_calls = [call for call in calls if Path(call[0][0]) == layout.compiler]
+    compiler_calls = _compiler_calls(calls, layout)
     assert len(compiler_calls) == 1
     compiler_arguments, compiler_cwd, compiler_environment = compiler_calls[0]
     assert compiler_arguments == [
@@ -271,6 +364,29 @@ def test_build_canonicalizes_the_exact_tauri_nsis_candidate(
     assert "NSISCONFDIR" not in compiler_environment
     assert compiler_environment["SOURCE_DATE_EPOCH"] == "1700000456"
     assert compiler_environment["STOCK_DESK_SOURCE_REVISION"] == "c" * 40
+    assert compiler_environment is not calls[0][2]
+    assert compiler_environment is not calls[1][2]
+    for build_environment in (calls[0][2], calls[1][2]):
+        assert build_environment["APPDATA"] == inherited_app_data
+        assert build_environment["NSISDIR"] == r"C:\inherited-nsis"
+        assert build_environment["NSISCONFDIR"] == r"C:\inherited-nsis-config"
+    private_app_data = Path(compiler_environment["APPDATA"])
+    assert private_app_data != Path(inherited_app_data)
+    assert private_app_data.is_absolute()
+    assert private_app_data.is_relative_to(tmp_path / "work")
+    assert private_app_data.is_dir()
+    assert list(private_app_data.iterdir()) == []
+    assert not private_app_data.is_symlink()
+    assert not (
+        getattr(os.lstat(private_app_data), "st_file_attributes", 0)
+        & stat.FILE_ATTRIBUTE_REPARSE_POINT
+    )
+    assert os.environ["APPDATA"] == inherited_app_data
+    assert os.environ["NSISDIR"] == r"C:\inherited-nsis"
+    assert os.environ["NSISCONFDIR"] == r"C:\inherited-nsis-config"
+    assert verifications == [(layout.toolchain, layout.rendered_script)]
+    assert events.index("tauri") < events.index("verify-toolchain")
+    assert events.index("verify-toolchain") < events.index("compiler")
     assert replacements == [(layout.compiler_output, layout.installer)]
     assert not layout.compiler_output.exists()
     assert layout.installer.read_bytes() == _CANONICAL_INSTALLER
@@ -286,7 +402,7 @@ def test_build_rejects_preexisting_canonical_nsis_output(
 
     layout = _nsis_layout(tmp_path / "repo", tmp_path / "Local App Data")
     calls: list[tuple[list[str], Path, dict[str, str]]] = []
-    with pytest.raises(RuntimeError, match="NSIS output.*already exists"):
+    with pytest.raises(RuntimeError):
         _run_nsis_build(
             tmp_path,
             monkeypatch,
@@ -300,20 +416,291 @@ def test_build_rejects_preexisting_canonical_nsis_output(
 
 
 @pytest.mark.parametrize(
-    ("case", "message"),
+    "object_kind",
+    ["broken-symlink", "file-symlink", "hardlink", "directory"],
+)
+def test_build_uses_lstat_ownership_for_every_preexisting_output_object(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    object_kind: str,
+) -> None:
+    layout = _nsis_layout(tmp_path / "repo", tmp_path / "Local App Data")
+    calls: list[tuple[list[str], Path, dict[str, str]]] = []
+    before: list[os.stat_result] = []
+
+    def precreate_object(actual: _NsisLayout) -> None:
+        external = tmp_path / "unknown-output-owner.exe"
+        if object_kind == "broken-symlink":
+            try:
+                actual.compiler_output.symlink_to(tmp_path / "missing-owner")
+            except OSError:
+                pytest.skip("file symlink creation is unavailable")
+        elif object_kind == "file-symlink":
+            _write_file(external, b"unknown-owner")
+            try:
+                actual.compiler_output.symlink_to(external)
+            except OSError:
+                pytest.skip("file symlink creation is unavailable")
+        elif object_kind == "hardlink":
+            _write_file(external, b"unknown-owner")
+            os.link(external, actual.compiler_output)
+        elif object_kind == "directory":
+            actual.compiler_output.mkdir()
+        else:  # pragma: no cover - parametrization is exhaustive
+            raise AssertionError(object_kind)
+        before.append(os.lstat(actual.compiler_output))
+
+    with pytest.raises(RuntimeError):
+        _run_nsis_build(
+            tmp_path,
+            monkeypatch,
+            mutate_outputs=precreate_object,
+            call_log=calls,
+        )
+
+    after = os.lstat(layout.compiler_output)
+    assert (after.st_dev, after.st_ino, after.st_mode, after.st_nlink) == (
+        before[0].st_dev,
+        before[0].st_ino,
+        before[0].st_mode,
+        before[0].st_nlink,
+    )
+    assert os.path.lexists(layout.compiler_output)
+    assert _compiler_calls(calls, layout) == []
+    assert layout.installer.read_bytes() == _ORIGINAL_INSTALLER
+
+
+def test_build_treats_only_file_not_found_as_absent_compiler_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    layout = _nsis_layout(tmp_path / "repo", tmp_path / "Local App Data")
+    calls: list[tuple[list[str], Path, dict[str, str]]] = []
+    real_lstat = os.lstat
+
+    def denied_lstat(path: os.PathLike[str] | str, *args: object, **kwargs: object):
+        if Path(path) == layout.compiler_output:
+            raise PermissionError("fixture lstat denied")
+        return real_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(builder.os, "lstat", denied_lstat)
+
+    with pytest.raises(RuntimeError):
+        _run_nsis_build(tmp_path, monkeypatch, call_log=calls)
+
+    assert _compiler_calls(calls, layout) == []
+    assert not os.path.lexists(layout.compiler_output)
+    assert layout.installer.read_bytes() == _ORIGINAL_INSTALLER
+
+
+@pytest.mark.parametrize("tamper", ["compiler", "external-plugin", "tree"])
+def test_build_rejects_shared_toolchain_verifier_failure_before_compiler(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tamper: str,
+) -> None:
+    layout = _nsis_layout(tmp_path / "repo", tmp_path / "Local App Data")
+    calls: list[tuple[list[str], Path, dict[str, str]]] = []
+    events: list[str] = []
+    replacements: list[tuple[Path, Path]] = []
+
+    def tamper_toolchain(actual: _NsisLayout) -> None:
+        if tamper == "compiler":
+            actual.compiler.write_bytes(b"tampered-compiler")
+        elif tamper == "external-plugin":
+            actual.external_plugin.write_bytes(b"tampered-plugin")
+        elif tamper == "tree":
+            _write_file(actual.toolchain / "Include" / "unlocked.nsh")
+        else:  # pragma: no cover - parametrization is exhaustive
+            raise AssertionError(tamper)
+
+    def reject_toolchain(nsis_root: Path, rendered_script: Path) -> object:
+        assert (nsis_root, rendered_script) == (
+            layout.toolchain,
+            layout.rendered_script,
+        )
+        raise nsis_contract.NsisRepackContractError("locked tree mismatch")
+
+    monkeypatch.setattr(
+        builder.os,
+        "replace",
+        lambda source, destination: replacements.append(
+            (Path(source), Path(destination))
+        ),
+    )
+
+    with pytest.raises(RuntimeError):
+        _run_nsis_build(
+            tmp_path,
+            monkeypatch,
+            mutate_outputs=tamper_toolchain,
+            toolchain_verifier=reject_toolchain,
+            event_log=events,
+            call_log=calls,
+        )
+
+    assert "verify-toolchain" in events
+    assert "compiler" not in events
+    assert _compiler_calls(calls, layout) == []
+    assert replacements == []
+    assert layout.installer.read_bytes() == _ORIGINAL_INSTALLER
+
+
+@pytest.mark.parametrize(
+    "critical_path",
     [
-        ("missing-render", "rendered NSIS input is missing"),
-        ("missing-bundle", "exactly one unsigned NSIS installer"),
-        ("ambiguous-bundle", "exactly one unsigned NSIS installer"),
-        ("missing-toolchain", "exactly one Tauri NSIS toolchain"),
-        ("ambiguous-toolchain", "exactly one Tauri NSIS toolchain"),
+        "render-root",
+        "rendered-script",
+        "render-ancestor",
+        "bundle-root",
+        "bundle-installer",
+        "bundle-ancestor",
+        "toolchain-root",
+        "compiler",
+        "plugin-directory",
+        "external-plugin",
+        "toolchain-ancestor",
+    ],
+)
+def test_build_rejects_reparse_metadata_for_every_critical_path_and_ancestor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    critical_path: str,
+) -> None:
+    layout = _nsis_layout(tmp_path / "repo", tmp_path / "Local App Data")
+    paths = {
+        "render-root": layout.render,
+        "rendered-script": layout.rendered_script,
+        "render-ancestor": layout.render.parent,
+        "bundle-root": layout.bundle,
+        "bundle-installer": layout.installer,
+        "bundle-ancestor": layout.bundle.parent,
+        "toolchain-root": layout.toolchain,
+        "compiler": layout.compiler,
+        "plugin-directory": layout.toolchain / "Plugins",
+        "external-plugin": layout.external_plugin,
+        "toolchain-ancestor": layout.toolchain.parents[2],
+    }
+    marked_path = paths[critical_path]
+    real_lstat = os.lstat
+    calls: list[tuple[list[str], Path, dict[str, str]]] = []
+    replacements: list[tuple[Path, Path]] = []
+
+    def reparse_lstat(path: os.PathLike[str] | str, *args: object, **kwargs: object):
+        metadata = real_lstat(path, *args, **kwargs)
+        if Path(path) == marked_path:
+            return _metadata_with(
+                metadata,
+                st_file_attributes=getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400),
+            )
+        return metadata
+
+    monkeypatch.setattr(builder.os, "lstat", reparse_lstat)
+    monkeypatch.setattr(
+        builder.os,
+        "replace",
+        lambda source, destination: replacements.append(
+            (Path(source), Path(destination))
+        ),
+    )
+
+    toolchain_owned_paths = {
+        "toolchain-root",
+        "compiler",
+        "plugin-directory",
+        "external-plugin",
+        "toolchain-ancestor",
+    }
+
+    def verifier_guard(_nsis_root: Path, _rendered_script: Path) -> object:
+        metadata = os.lstat(marked_path)
+        if getattr(metadata, "st_file_attributes", 0) & getattr(
+            stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400
+        ):
+            raise nsis_contract.NsisRepackContractError("reparse path")
+        return object()
+
+    with pytest.raises(RuntimeError):
+        _run_nsis_build(
+            tmp_path,
+            monkeypatch,
+            call_log=calls,
+            toolchain_verifier=(
+                verifier_guard if critical_path in toolchain_owned_paths else None
+            ),
+        )
+
+    assert _compiler_calls(calls, layout) == []
+    assert replacements == []
+    assert layout.installer.read_bytes() == _ORIGINAL_INSTALLER
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires a native Windows junction")
+def test_windows_build_rejects_a_real_render_root_junction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    layout = _nsis_layout(tmp_path / "repo", tmp_path / "Local App Data")
+    external_render = tmp_path / "external-render"
+    calls: list[tuple[list[str], Path, dict[str, str]]] = []
+    junction_created = False
+
+    def replace_render_with_junction(actual: _NsisLayout) -> None:
+        nonlocal junction_created
+        actual.render.rename(external_render)
+        completed = subprocess.run(
+            [
+                "cmd",
+                "/d",
+                "/c",
+                "mklink",
+                "/J",
+                os.fspath(actual.render),
+                os.fspath(external_render),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if completed.returncode != 0:
+            external_render.rename(actual.render)
+            pytest.skip("Windows junction creation is unavailable")
+        junction_created = True
+
+    try:
+        with pytest.raises(RuntimeError):
+            _run_nsis_build(
+                tmp_path,
+                monkeypatch,
+                mutate_outputs=replace_render_with_junction,
+                call_log=calls,
+            )
+        assert _compiler_calls(calls, layout) == []
+        assert layout.installer.read_bytes() == _ORIGINAL_INSTALLER
+    finally:
+        if junction_created:
+            subprocess.run(
+                ["cmd", "/d", "/c", "rmdir", os.fspath(layout.render)],
+                check=False,
+                capture_output=True,
+            )
+            external_render.rename(layout.render)
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "missing-render",
+        "missing-bundle",
+        "ambiguous-bundle",
+        "missing-toolchain",
+        "ambiguous-toolchain",
     ],
 )
 def test_build_fails_closed_when_nsis_discovery_is_missing_or_ambiguous(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     case: str,
-    message: str,
 ) -> None:
     def mutate(layout: _NsisLayout) -> None:
         if case == "missing-render":
@@ -331,8 +718,107 @@ def test_build_fails_closed_when_nsis_discovery_is_missing_or_ambiguous(
         else:  # pragma: no cover - the parametrization is exhaustive
             raise AssertionError(case)
 
-    with pytest.raises(RuntimeError, match=message):
-        _run_nsis_build(tmp_path, monkeypatch, mutate_outputs=mutate)
+    layout = _nsis_layout(tmp_path / "repo", tmp_path / "Local App Data")
+    calls: list[tuple[list[str], Path, dict[str, str]]] = []
+    replacements: list[tuple[Path, Path]] = []
+    monkeypatch.setattr(
+        builder.os,
+        "replace",
+        lambda source, destination: replacements.append(
+            (Path(source), Path(destination))
+        ),
+    )
+
+    with pytest.raises(RuntimeError):
+        _run_nsis_build(
+            tmp_path,
+            monkeypatch,
+            mutate_outputs=mutate,
+            call_log=calls,
+        )
+
+    assert _compiler_calls(calls, layout) == []
+    assert replacements == []
+    if layout.installer.exists():
+        assert layout.installer.read_bytes() == _ORIGINAL_INSTALLER
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "missing",
+        "empty",
+        "relative",
+        "nonexistent",
+        "unreadable",
+        "case-collision",
+    ],
+)
+def test_build_rejects_unsafe_local_app_data_before_candidate_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    case: str,
+) -> None:
+    actual_local_app_data = tmp_path / "Local App Data"
+    layout = _nsis_layout(tmp_path / "repo", actual_local_app_data)
+    calls: list[tuple[list[str], Path, dict[str, str]]] = []
+    replacements: list[tuple[Path, Path]] = []
+    local_app_data_env: str | None | object = os.fspath(actual_local_app_data)
+    mutate_outputs: Callable[[_NsisLayout], None] | None = None
+
+    if case == "missing":
+        local_app_data_env = None
+    elif case == "empty":
+        local_app_data_env = ""
+    elif case == "relative":
+        local_app_data_env = "relative-cache"
+    elif case == "nonexistent":
+        local_app_data_env = os.fspath(tmp_path / "does-not-exist")
+    elif case == "unreadable":
+        real_scandir = os.scandir
+
+        def unreadable_scandir(path: os.PathLike[str] | str):
+            if (
+                not isinstance(path, int)
+                and Path(path) == actual_local_app_data / "tauri"
+            ):
+                raise PermissionError("fixture enumeration denied")
+            return real_scandir(path)
+
+        monkeypatch.setattr(builder.os, "scandir", unreadable_scandir)
+    elif case == "case-collision":
+
+        def create_collision(actual: _NsisLayout) -> None:
+            shutil.rmtree(actual.toolchain)
+            for name in ("Straße", "STRASSE"):
+                _write_complete_toolchain(
+                    actual_local_app_data / "tauri" / name / "v3.11"
+                )
+
+        mutate_outputs = create_collision
+    else:  # pragma: no cover - parametrization is exhaustive
+        raise AssertionError(case)
+
+    monkeypatch.setattr(
+        builder.os,
+        "replace",
+        lambda source, destination: replacements.append(
+            (Path(source), Path(destination))
+        ),
+    )
+
+    with pytest.raises(RuntimeError):
+        _run_nsis_build(
+            tmp_path,
+            monkeypatch,
+            local_app_data_env=local_app_data_env,
+            mutate_outputs=mutate_outputs,
+            call_log=calls,
+        )
+
+    assert _compiler_calls(calls, layout) == []
+    assert replacements == []
+    assert layout.installer.read_bytes() == _ORIGINAL_INSTALLER
 
 
 def test_build_rejects_missing_canonical_nsis_output(
@@ -341,7 +827,7 @@ def test_build_rejects_missing_canonical_nsis_output(
 ) -> None:
     layout = _nsis_layout(tmp_path / "repo", tmp_path / "Local App Data")
     calls: list[tuple[list[str], Path, dict[str, str]]] = []
-    with pytest.raises(RuntimeError, match="canonical NSIS output is missing"):
+    with pytest.raises(RuntimeError):
         _run_nsis_build(
             tmp_path,
             monkeypatch,
@@ -350,6 +836,193 @@ def test_build_rejects_missing_canonical_nsis_output(
         )
 
     assert any(Path(call[0][0]) == layout.compiler for call in calls)
+    assert layout.installer.read_bytes() == _ORIGINAL_INSTALLER
+
+
+@pytest.mark.parametrize(
+    "object_kind",
+    ["empty", "directory", "file-symlink", "hardlink", "reparse"],
+)
+def test_build_rejects_unowned_or_nonregular_generated_nsis_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    object_kind: str,
+) -> None:
+    layout = _nsis_layout(tmp_path / "repo", tmp_path / "Local App Data")
+    replacements: list[tuple[Path, Path]] = []
+
+    def write_generated(output: Path) -> None:
+        external = tmp_path / "compiler-external-output.exe"
+        if object_kind == "empty":
+            _write_file(output, b"")
+        elif object_kind == "directory":
+            output.mkdir()
+        elif object_kind == "file-symlink":
+            _write_file(external, _CANONICAL_INSTALLER)
+            try:
+                output.symlink_to(external)
+            except OSError:
+                pytest.skip("file symlink creation is unavailable")
+        elif object_kind == "hardlink":
+            _write_file(external, _CANONICAL_INSTALLER)
+            os.link(external, output)
+        elif object_kind == "reparse":
+            _write_file(output, _CANONICAL_INSTALLER)
+        else:  # pragma: no cover - parametrization is exhaustive
+            raise AssertionError(object_kind)
+
+    real_lstat = os.lstat
+
+    def reparse_lstat(path: os.PathLike[str] | str, *args: object, **kwargs: object):
+        metadata = real_lstat(path, *args, **kwargs)
+        if object_kind == "reparse" and Path(path) == layout.compiler_output:
+            return _metadata_with(
+                metadata,
+                st_file_attributes=getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400),
+            )
+        return metadata
+
+    monkeypatch.setattr(builder.os, "lstat", reparse_lstat)
+    monkeypatch.setattr(
+        builder.os,
+        "replace",
+        lambda source, destination: replacements.append(
+            (Path(source), Path(destination))
+        ),
+    )
+
+    with pytest.raises(RuntimeError):
+        _run_nsis_build(
+            tmp_path,
+            monkeypatch,
+            compiler_writer=write_generated,
+        )
+
+    assert replacements == []
+    assert layout.installer.read_bytes() == _ORIGINAL_INSTALLER
+
+
+def test_build_rejects_generated_output_replaced_between_lstat_and_hash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    layout = _nsis_layout(tmp_path / "repo", tmp_path / "Local App Data")
+    moved_output = tmp_path / "moved-generated-output.exe"
+    real_os_open = os.open
+    real_path_open = Path.open
+    replacements: list[tuple[Path, Path]] = []
+    swapped: list[bool] = []
+
+    def swap_output_once() -> None:
+        if swapped or not layout.compiler_output.exists():
+            return
+        layout.compiler_output.rename(moved_output)
+        _write_file(layout.compiler_output, b"raced-generated-object")
+        swapped.append(True)
+
+    def swapping_os_open(
+        path: os.PathLike[str] | str,
+        flags: int,
+        *args: object,
+        **kwargs: object,
+    ) -> int:
+        if Path(path) == layout.compiler_output and flags & os.O_ACCMODE == os.O_RDONLY:
+            swap_output_once()
+        return real_os_open(path, flags, *args, **kwargs)
+
+    def swapping_path_open(
+        path: Path,
+        mode: str = "r",
+        *args: object,
+        **kwargs: object,
+    ):
+        if path == layout.compiler_output and "r" in mode:
+            swap_output_once()
+        return real_path_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(builder.os, "open", swapping_os_open)
+    monkeypatch.setattr(Path, "open", swapping_path_open)
+    monkeypatch.setattr(
+        builder.os,
+        "replace",
+        lambda source, destination: replacements.append(
+            (Path(source), Path(destination))
+        ),
+    )
+
+    with pytest.raises(RuntimeError):
+        _run_nsis_build(tmp_path, monkeypatch)
+
+    assert swapped == [True]
+    assert replacements == []
+    assert layout.installer.read_bytes() == _ORIGINAL_INSTALLER
+
+
+def test_build_rejects_cross_volume_output_before_atomic_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    layout = _nsis_layout(tmp_path / "repo", tmp_path / "Local App Data")
+    real_lstat = os.lstat
+    replacements: list[tuple[Path, Path]] = []
+
+    def cross_volume_lstat(
+        path: os.PathLike[str] | str, *args: object, **kwargs: object
+    ):
+        metadata = real_lstat(path, *args, **kwargs)
+        if Path(path) == layout.compiler_output:
+            return _metadata_with(metadata, st_dev=metadata.st_dev + 1)
+        return metadata
+
+    monkeypatch.setattr(builder.os, "lstat", cross_volume_lstat)
+    monkeypatch.setattr(
+        builder.os,
+        "replace",
+        lambda source, destination: replacements.append(
+            (Path(source), Path(destination))
+        ),
+    )
+
+    with pytest.raises(RuntimeError):
+        _run_nsis_build(tmp_path, monkeypatch)
+
+    assert replacements == []
+    assert layout.installer.read_bytes() == _ORIGINAL_INSTALLER
+
+
+@pytest.mark.parametrize(
+    "replace_error",
+    [
+        pytest.param(OSError(errno.EXDEV, "cross-device"), id="cross-device"),
+        pytest.param(PermissionError(errno.EACCES, "denied"), id="permission"),
+    ],
+)
+def test_build_never_falls_back_to_copy_when_atomic_replace_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    replace_error: OSError,
+) -> None:
+    layout = _nsis_layout(tmp_path / "repo", tmp_path / "Local App Data")
+    replace_attempts: list[tuple[Path, Path]] = []
+    fallback_attempts: list[str] = []
+
+    def fail_replace(source: str | Path, destination: str | Path) -> None:
+        replace_attempts.append((Path(source), Path(destination)))
+        raise replace_error
+
+    def reject_fallback(*_args: object, **_kwargs: object) -> None:
+        fallback_attempts.append("copy-or-move")
+        raise AssertionError("copy fallback is forbidden")
+
+    monkeypatch.setattr(builder.os, "replace", fail_replace)
+    for name in ("move", "copy", "copy2", "copyfile"):
+        monkeypatch.setattr(builder.shutil, name, reject_fallback)
+
+    with pytest.raises(RuntimeError):
+        _run_nsis_build(tmp_path, monkeypatch)
+
+    assert replace_attempts == [(layout.compiler_output, layout.installer)]
+    assert fallback_attempts == []
     assert layout.installer.read_bytes() == _ORIGINAL_INSTALLER
 
 
@@ -376,7 +1049,7 @@ def test_build_rereads_destination_identity_after_atomic_replacement(
 
     monkeypatch.setattr(builder.os, "replace", tampering_replace)
 
-    with pytest.raises(RuntimeError, match="NSIS destination identity mismatch"):
+    with pytest.raises(RuntimeError):
         _run_nsis_build(tmp_path, monkeypatch)
 
 
