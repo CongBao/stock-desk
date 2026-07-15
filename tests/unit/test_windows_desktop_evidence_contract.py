@@ -99,16 +99,14 @@ def test_native_harness_installs_candidate_checks_shell_icons_and_exits_cleanly(
     assert "$listener.Stop()" in source
     port_reservation = source.index("$devToolsPort = Get-AvailableLoopbackPort")
     browser_arguments = source.index(
-        "$env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = \"--remote-debugging-port=$devToolsPort"
+        '$env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=$devToolsPort'
     )
     assert "[int]$devToolsPort = 0" in source
     assert fixture_prepare < port_reservation < browser_arguments < launch
     assert "selected loopback DevTools port is invalid" in source
-    assert "(?:^|[\\s=\"])--remote-debugging-port={0}(?:[\\s\"]|$)" in source
+    assert '(?:^|[\\s="])--remote-debugging-port={0}(?:[\\s"]|$)' in source
     assert "[Regex]::Escape([string]$Port)" in source
-    assert (
-        "Test-RemoteDebuggingPortCommandLine $_.CommandLine $devToolsPort" in source
-    )
+    assert "Test-RemoteDebuggingPortCommandLine $_.CommandLine $devToolsPort" in source
     process_cleanup = source.index("Stop-Process -Id $desktopProcess.Id")
     udf_cleanup = source.rindex("Remove-Item -Recurse -Force $webviewUserData")
     assert process_cleanup < udf_cleanup
