@@ -66,7 +66,8 @@ def test_native_harness_installs_candidate_checks_shell_icons_and_exits_cleanly(
         "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
         "WEBVIEW2_USER_DATA_FOLDER",
         "Get-AvailableLoopbackPort",
-        "Test-RemoteDebuggingPortCommandLine",
+        "Get-NetTCPConnection",
+        "OwningProcess",
         "--remote-debugging-port=$devToolsPort",
         "--remote-debugging-address=127.0.0.1",
         "packaged WebView2 CDP endpoint did not appear",
@@ -88,8 +89,9 @@ def test_native_harness_installs_candidate_checks_shell_icons_and_exits_cleanly(
     assert first_run_cleanup < fixture_prepare < launch
     isolation = source.index("$env:WEBVIEW2_USER_DATA_FOLDER = $webviewUserData")
     cdp_wait = source.index("$devToolsVersion = Wait-Until")
+    listener_ownership = source.index("$devToolsListeners = @(")
     cdp_export = source.index("$env:STOCK_DESK_DESKTOP_CDP = $desktopCdp")
-    assert isolation < launch < cdp_wait < cdp_export
+    assert isolation < launch < cdp_wait < listener_ownership < cdp_export
     assert source.count("Remove-Item -Recurse -Force $webviewUserData") == 2
     assert "Remove-Item Env:WEBVIEW2_USER_DATA_FOLDER" in source
     assert "--remote-allow-origins=*" not in source
@@ -104,9 +106,9 @@ def test_native_harness_installs_candidate_checks_shell_icons_and_exits_cleanly(
     assert "[int]$devToolsPort = 0" in source
     assert fixture_prepare < port_reservation < browser_arguments < launch
     assert "selected loopback DevTools port is invalid" in source
-    assert '(?:^|[\\s="])--remote-debugging-port={0}(?:[\\s"]|$)' in source
-    assert "[Regex]::Escape([string]$Port)" in source
-    assert "Test-RemoteDebuggingPortCommandLine $_.CommandLine $devToolsPort" in source
+    assert "Test-RemoteDebuggingPortCommandLine" not in source
+    assert "LocalAddress -eq '127.0.0.1'" in source
+    assert "isolated WebView2 process does not own the selected CDP listener" in source
     process_cleanup = source.index("Stop-Process -Id $desktopProcess.Id")
     udf_cleanup = source.rindex("Remove-Item -Recurse -Force $webviewUserData")
     assert process_cleanup < udf_cleanup
@@ -126,7 +128,7 @@ def test_native_harness_installs_candidate_checks_shell_icons_and_exits_cleanly(
     assert node_stop < runtime_log_copy
     assert "$nodeProcess.WaitForExit(5000)" in source
     assert "diagnostic runtime log copy failed after bounded retries" not in source
-    assert "webview_remote_debug_argument_observed" in source
+    assert "devtools_listener_owned_by_isolated_webview" in source
     assert "webview_process_scope = 'isolated-user-data-folder'" in source
     assert "CommandLine =" not in source
     assert "Get-IsolatedWebViewProcesses $webviewUserData" in source

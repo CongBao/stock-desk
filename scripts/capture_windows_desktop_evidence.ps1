@@ -71,13 +71,6 @@ function Get-AvailableLoopbackPort() {
   }
 }
 
-function Test-RemoteDebuggingPortCommandLine([string]$CommandLine, [int]$Port) {
-  if ([string]::IsNullOrWhiteSpace($CommandLine)) { return $false }
-  $escapedPort = [Regex]::Escape([string]$Port)
-  $pattern = '(?i)(?:^|[\s="])--remote-debugging-port={0}(?:[\s"]|$)' -f $escapedPort
-  return [Regex]::IsMatch($CommandLine, $pattern)
-}
-
 function Wait-CaptureMarker([string]$Path, [Diagnostics.Process]$NodeProcess, [string]$Nonce, [int]$Seconds, [string]$Failure) {
   return Wait-Until {
     $NodeProcess.Refresh()
@@ -419,15 +412,36 @@ try {
   $desktopProcess = [Diagnostics.Process]::Start($desktopStart)
   if ($null -eq $desktopProcess) { throw 'packaged Tauri host could not be started' }
   Wait-Until { $desktopProcess.Refresh(); if ($desktopProcess.HasExited) { throw 'packaged Tauri host exited during startup' }; if ($desktopProcess.MainWindowHandle -ne [IntPtr]::Zero) { $desktopProcess.MainWindowHandle } } 90 'packaged Tauri main window did not appear' | Out-Null
-  Wait-Until {
-    @(Get-IsolatedWebViewProcesses $webviewUserData | Where-Object { Test-RemoteDebuggingPortCommandLine $_.CommandLine $devToolsPort }) | Select-Object -First 1
-  } 90 'packaged WebView2 did not receive its selected loopback DevTools port' | Out-Null
   $desktopCdp = "http://127.0.0.1:$devToolsPort"
   $devToolsVersion = Wait-Until { try { Invoke-RestMethod -Uri "$desktopCdp/json/version" -TimeoutSec 2 } catch { $false } } 90 'packaged WebView2 CDP endpoint did not appear'
   try { $devToolsWebSocket = [Uri]$devToolsVersion.webSocketDebuggerUrl }
   catch { throw 'packaged WebView2 published an invalid CDP browser endpoint' }
   if ($devToolsWebSocket.Scheme -ne 'ws' -or $devToolsWebSocket.Host -ne '127.0.0.1' -or $devToolsWebSocket.Port -ne $devToolsPort -or $devToolsWebSocket.AbsolutePath -notmatch '^/devtools/browser/[A-Za-z0-9-]+$') {
     throw 'packaged WebView2 CDP endpoint does not match the isolated browser identity'
+  }
+  $isolatedWebViews = @(
+    Wait-Until {
+      $processes = @(Get-IsolatedWebViewProcesses $webviewUserData)
+      if ($processes.Count -gt 0) { return $processes }
+      return $false
+    } 90 'isolated packaged WebView2 process is missing'
+  )
+  $isolatedWebViewProcessIds = @($isolatedWebViews | ForEach-Object { [int]$_.ProcessId })
+  $devToolsListeners = @(
+    Wait-Until {
+      $listeners = @(
+        Get-NetTCPConnection -State Listen -LocalPort $devToolsPort -ErrorAction SilentlyContinue |
+          Where-Object {
+            $_.LocalAddress -eq '127.0.0.1' -and
+            $isolatedWebViewProcessIds -contains [int]($_.OwningProcess)
+          }
+      )
+      if ($listeners.Count -eq 1) { return $listeners[0] }
+      return $false
+    } 30 'isolated WebView2 process does not own the selected CDP listener'
+  )
+  if ($devToolsListeners.Count -ne 1) {
+    throw 'isolated WebView2 process does not own exactly one selected CDP listener'
   }
   $installedSidecarPath = Join-Path $installRoot 'stock-desk-sidecar.exe'
   $sidecar = Wait-Until { @(Get-InstalledHostSidecarProcesses $desktopProcess.Id $installedSidecarPath) | Select-Object -First 1 } 60 'packaged Python sidecar did not remain running'
@@ -439,9 +453,6 @@ try {
     throw 'initial sidecar process does not belong to the installed candidate'
   }
   $sidecarBinaryHash = (Get-FileHash -LiteralPath $sidecar.Path -Algorithm SHA256).Hash.ToLowerInvariant()
-  $isolatedWebViews = @(Get-IsolatedWebViewProcesses $webviewUserData)
-  if ($isolatedWebViews.Count -lt 1) { throw 'isolated packaged WebView2 process is missing' }
-
   $nativeEvidence = Save-WindowScreenshot $desktopProcess (Join-Path $Output 'tauri-native-window.png')
   $virtual = [Windows.Forms.SystemInformation]::VirtualScreen
   $nativeEvidence['screen'] = [ordered]@{ x=$virtual.X; y=$virtual.Y; width=$virtual.Width; height=$virtual.Height }
@@ -658,13 +669,23 @@ try {
     Get-ChildItem -LiteralPath $Output -File -Filter 'packaged-*' -ErrorAction SilentlyContinue |
       Copy-Item -Destination $diagnosticsRoot -Force
     $webviewProcesses = @(Get-IsolatedWebViewProcesses $webviewUserData)
+    $diagnosticWebViewProcessIds = @($webviewProcesses | ForEach-Object { [int]$_.ProcessId })
+    $diagnosticDevToolsListeners = @(
+      if ($devToolsPort -gt 0) {
+        Get-NetTCPConnection -State Listen -LocalPort $devToolsPort -ErrorAction SilentlyContinue |
+          Where-Object {
+            $_.LocalAddress -eq '127.0.0.1' -and
+            $diagnosticWebViewProcessIds -contains [int]($_.OwningProcess)
+          }
+      }
+    )
     [ordered]@{
       schema_version = 1
       isolated_user_data_created = (Test-Path -LiteralPath $webviewUserData -PathType Container)
       selected_loopback_devtools_port = $devToolsPort
       webview_process_scope = 'isolated-user-data-folder'
       webview_process_count = $webviewProcesses.Count
-      webview_remote_debug_argument_observed = @($webviewProcesses | Where-Object { Test-RemoteDebuggingPortCommandLine $_.CommandLine $devToolsPort }).Count -gt 0
+      devtools_listener_owned_by_isolated_webview = $diagnosticDevToolsListeners.Count -eq 1
       host_has_main_window = if ($null -ne $desktopProcess) { $desktopProcess.MainWindowHandle -ne [IntPtr]::Zero } else { $false }
     } | ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $diagnosticsRoot 'webview-startup-summary.json') -Encoding utf8NoBOM
   }
