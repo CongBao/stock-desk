@@ -61,6 +61,7 @@ CRITICAL_INPUTS: Final = LEGACY_CRITICAL_INPUTS + (
     ".github/workflows/signpath.yml",
     ".github/workflows/windows-installed.yml",
     "config/desktop-network-privacy.json",
+    "config/nsis-toolchain-lock.json",
     "config/release-tag-allowed-signers",
     "config/windows-vm-broker-public-key.pem",
     "packaging/nsis/installer-hooks.nsh",
@@ -74,6 +75,8 @@ CRITICAL_INPUTS: Final = LEGACY_CRITICAL_INPUTS + (
     "schemas/deployment-latency-report-v1.schema.json",
     "schemas/deployment-latency-sample-v1.schema.json",
     "schemas/deployment-latency-seal-v1.schema.json",
+    "schemas/nsis-repack-kit-v1.schema.json",
+    "schemas/nsis-repack-receipt-v1.schema.json",
     "schemas/stable-release-readiness-v1.schema.json",
     "schemas/packaged-backtest-evidence-v1.schema.json",
     "schemas/packaged-backtest-host-observation-v1.schema.json",
@@ -97,6 +100,8 @@ CRITICAL_INPUTS: Final = LEGACY_CRITICAL_INPUTS + (
     "scripts/compare_windows_payloads.py",
     "scripts/deployment_latency.py",
     "scripts/e2e_snapshot.py",
+    "scripts/nsis_repack_contract.py",
+    "scripts/secure_artifact_snapshot.py",
     "scripts/signpath_contract.py",
     "scripts/stable_release_readiness.py",
     "scripts/prepare_windows_packaged_backtest_evidence.py",
@@ -118,6 +123,7 @@ CRITICAL_INPUTS: Final = LEGACY_CRITICAL_INPUTS + (
     "scripts/windows_packaged_backtest_evidence.mjs",
     "tests/windows/windows_browser_observer_integration.ps1",
     "tests/windows/windows_desktop_uia_driver_integration.ps1",
+    "tests/windows/nsis_repack_contract_integration.ps1",
     "src-tauri/Cargo.lock",
     "src-tauri/Cargo.toml",
     "src-tauri/tauri.conf.json",
@@ -950,6 +956,15 @@ def _validation_evidence(
             if not required_packaged_backtest.issubset(payload_paths):
                 raise MainValidationProofError(
                     "Windows alpha candidate is missing packaged backtest provenance"
+                )
+            required_nsis_repack = {
+                "nsis-repack-kit/nsis-repack-kit.json",
+                "nsis-repack-verification/repack-a-receipt.json",
+                "nsis-repack-verification/repack-b-receipt.json",
+            }
+            if not required_nsis_repack.issubset(payload_paths):
+                raise MainValidationProofError(
+                    "Windows alpha candidate is missing NSIS repack provenance"
                 )
         for payload_value in manifest["payloads"]:
             payload = _object(payload_value, f"{artifact_name} payload")

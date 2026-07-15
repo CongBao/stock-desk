@@ -191,6 +191,18 @@ _PACKAGED_BACKTEST_PROOF_FILES = frozenset(
         "tests/fixtures/backtest/v1_0_oracle_inputs.json",
     }
 )
+_NSIS_REPACK_PROOF_FILES = frozenset(
+    {
+        "config/nsis-toolchain-lock.json",
+        "schemas/nsis-repack-kit-v1.schema.json",
+        "schemas/nsis-repack-receipt-v1.schema.json",
+        "scripts/nsis_repack_contract.py",
+        "scripts/secure_artifact_snapshot.py",
+        "tests/unit/test_nsis_repack_contract.py",
+        "tests/unit/test_secure_artifact_snapshot.py",
+        "tests/windows/nsis_repack_contract_integration.ps1",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -244,7 +256,7 @@ def _path_domain(path: str) -> str | None:
     Order is security-sensitive: delivery/proof inputs are recognized before the
     broad scripts/tests prefixes so they always fail closed.
     """
-    if path in _PACKAGED_BACKTEST_PROOF_FILES:
+    if path in _PACKAGED_BACKTEST_PROOF_FILES or path in _NSIS_REPACK_PROOF_FILES:
         return "delivery"
     if path in _HIGH_RISK_INSTALLER_FILES:
         return "installer"

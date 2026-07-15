@@ -213,6 +213,32 @@ def test_packaged_backtest_proof_chain_paths_require_full_artifact_proof(
     assert impact.skipped_jobs == ()
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "config/nsis-toolchain-lock.json",
+        "schemas/nsis-repack-kit-v1.schema.json",
+        "schemas/nsis-repack-receipt-v1.schema.json",
+        "scripts/nsis_repack_contract.py",
+        "scripts/secure_artifact_snapshot.py",
+        "tests/unit/test_nsis_repack_contract.py",
+        "tests/unit/test_secure_artifact_snapshot.py",
+        "tests/windows/nsis_repack_contract_integration.ps1",
+    ],
+)
+def test_nsis_repack_proof_chain_paths_require_full_artifact_proof(
+    path: str,
+) -> None:
+    impact = classify_impact("pull_request", [path])
+
+    assert impact.profile == FULL_PROFILE
+    assert impact.full is True
+    assert impact.domains == ("delivery",)
+    assert impact.reason == f"high-risk-path:{path}"
+    assert impact.required_jobs == ALL_GATES
+    assert impact.skipped_jobs == ()
+
+
 def test_one_unknown_path_makes_an_otherwise_targeted_change_full() -> None:
     impact = classify_impact(
         "pull_request", ["README.md", "src/stock_desk/desktop.py", "new-file.txt"]

@@ -42,6 +42,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - CI now separates build and verification responsibilities so candidate and
   release workflows can reuse proved artifacts without repeating unit or E2E
   tests.
+- `v1.1.0-beta.3` closes the unsigned Windows candidate chain with an
+  official-source-pinned NSIS toolchain, a content-addressed private repack
+  kit, two byte-identical independent repacks, and exact-SHA receipts reused by
+  release without rerunning source tests.
 
 ### Security
 

@@ -534,6 +534,117 @@ def test_stage_zero_ci_has_unique_shards_frontend_reports_and_one_oci_build() ->
     assert "attestation.json" not in _read(".github/workflows/ci.yml")
 
 
+def test_windows_candidate_binds_reproducible_nsis_repack_kit_without_new_family() -> (
+    None
+):
+    workflow = _load_github_actions_yaml(_read(".github/workflows/ci.yml"))
+    jobs = workflow["jobs"]
+    builder = jobs["windows-desktop-builder-a"]
+    names = [step.get("name") for step in builder["steps"]]
+    build_index = names.index("Build exact-SHA Windows desktop once")
+    repack_index = names.index("Capture and reproduce fixed NSIS repack kit")
+    cleanup_index = names.index("Clean candidate A build and test state")
+    assert build_index < repack_index < cleanup_index
+    repack = builder["steps"][repack_index]["run"]
+    for required in (
+        "src-tauri\\target\\x86_64-pc-windows-msvc\\release",
+        "bundle\\nsis",
+        "nsis\\x64",
+        "installer.nsi",
+        "FileAssociation.nsh",
+        "utils.nsh",
+        "2\\.11\\.4",
+        "v3.11",
+        "nsis_repack_contract_integration.ps1",
+        "nsis-repack-kit",
+        "nsis-repack-verification",
+        "SourceEpoch",
+    ):
+        assert required in repack
+
+    uploads = [
+        str(step.get("with", {}).get("name", ""))
+        for job in jobs.values()
+        for step in job.get("steps", [])
+        if isinstance(step, dict)
+        and str(step.get("uses", "")).startswith("actions/upload-artifact@")
+    ]
+    assert not any(name.startswith("nsis-repack-") for name in uploads)
+    assert any(name.startswith("windows-desktop-candidate-a-") for name in uploads)
+
+    compare = "\n".join(
+        str(step.get("run", ""))
+        for step in jobs["windows-desktop-compare"]["steps"]
+        if isinstance(step, dict)
+    )
+    for required in (
+        "scripts\\nsis_repack_contract.py verify-kit",
+        "nsis-repack-kit",
+        "repack-a-receipt.json",
+        "repack-b-receipt.json",
+        "verify-receipt",
+        "actualReceiptInventory",
+        "expectedReceiptInventory",
+        "--expected-kit-sha256 $leftKitSha",
+        "$repackPayloadList",
+        "--payload-list $repackPayloadList",
+        "config/nsis-toolchain-lock.json=$toolchainLockHash",
+        "scripts/nsis_repack_contract.py=$repackContractHash",
+        "scripts/secure_artifact_snapshot.py=$snapshotHash",
+        "schemas/nsis-repack-kit-v1.schema.json=$repackKitSchemaHash",
+        "schemas/nsis-repack-receipt-v1.schema.json=$repackReceiptSchemaHash",
+        "tests/windows/nsis_repack_contract_integration.ps1=$repackIntegrationHash",
+    ):
+        assert required in compare
+    assert "$repackPayloads" not in compare
+    assert "@repackPayloads" not in compare
+    assert "payload-list.json" not in _read(".github/workflows/ci.yml")
+    assert "windows-nsis-repack-payloads.json" in compare
+    assert "sort_keys=True" in compare
+    assert 'separators=(",", ":")' in compare
+
+    integration = _read("tests/windows/nsis_repack_contract_integration.ps1")
+    assert integration.count("nsis_repack_contract.py repack") == 2
+    assert integration.count("nsis_repack_contract.py verify-receipt") == 1
+    assert "$receiptPairs = @(" in integration
+    assert integration.count("[PSCustomObject]@{ Receipt =") == 2
+    assert "--receipt $pair.Receipt --kit $Kit --output $pair.Output" in integration
+    assert "$pair[0]" not in integration
+    assert "$pair[1]" not in integration
+    assert "$createKitJson = @(& $python" in integration
+    assert '($createKitJson -join "`n") | ConvertFrom-Json' in integration
+    assert "$expectedKitSha = [string]$createKitResult.kit_sha256" in integration
+    assert integration.count("--expected-kit-sha256 $expectedKitSha") == 4
+    assert integration.count("--expected-source-sha $SourceSha") == 5
+    assert integration.count("--expected-source-tree $SourceTree") == 5
+    assert "--prepare-private-directory" in integration
+    assert "--verify-private-directory" in integration
+    assert (
+        "Get-Content -LiteralPath (Join-Path $stage 'installer.nsi') -Raw"
+        in integration
+    )
+    assert "original unsigned installer snapshot failed" in integration
+    assert (
+        "expected_unsigned_installer=[ordered]@{path='nsis-output.exe'" in integration
+    )
+    assert (
+        "rendered installer.nsi unexpectedly references the final bundle path"
+        in integration
+    )
+    for private_root in (
+        "New-PrivateDirectory $EvidenceRoot",
+        "New-PrivateDirectory $captureRoot",
+        "New-PrivateDirectory $stage",
+        "New-PrivateDirectory $snapshots",
+        "New-PrivateDirectory $privateRepack",
+    ):
+        assert private_root in integration
+    assert "independent fixed NSIS repacks are not byte-identical" in integration
+    assert "does not reproduce the original unsigned candidate" in integration
+    assert "Remove-Item -LiteralPath $captureRoot" in integration
+    assert "Remove-Item -LiteralPath $EvidenceRoot" not in integration
+
+
 def test_legacy_v100_builder_metadata_remains_auditable_but_unreachable() -> None:
     legacy_builder = _read("scripts/build_installer.py")
     release = _read(".github/workflows/release.yml")
@@ -953,7 +1064,7 @@ def test_public_runtime_version_surfaces_match() -> None:
 
     cargo_version = tomllib.loads(_read("src-tauri/Cargo.toml"))["package"]["version"]
     tauri_version = json.loads(_read("src-tauri/tauri.conf.json"))["version"]
-    assert cargo_version == tauri_version == "1.1.0-beta.2"
+    assert cargo_version == tauri_version == "1.1.0-beta.3"
     updater_source = _read("src-tauri/src/updater.rs")
     assert 'const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION")' in updater_source
     app_source = _read("web/src/app/App.tsx")

@@ -199,6 +199,19 @@ def _validation_evidence(
                     "windows-packaged-backtest-promotion.json",
                 )
             )
+            payloads.extend(
+                {
+                    "path": path,
+                    "kind": "provenance",
+                    "size": 1,
+                    "sha256": hashlib.sha256(b"x").hexdigest(),
+                }
+                for path in (
+                    "nsis-repack-kit/nsis-repack-kit.json",
+                    "nsis-repack-verification/repack-a-receipt.json",
+                    "nsis-repack-verification/repack-b-receipt.json",
+                )
+            )
         manifests[policy.artifact_name] = {
             "schema_version": 2,
             "source_sha": commit_sha,
@@ -325,6 +338,15 @@ def test_generate_and_verify_complete_main_validation_proof(tmp_path: Path) -> N
     assert "tests/acceptance/v1_1_requirements.yml" in proof["critical_inputs"]  # type: ignore[operator]
     assert "scripts/verify_zero_telemetry.py" in proof["critical_inputs"]  # type: ignore[operator]
     assert "config/desktop-network-privacy.json" in proof["critical_inputs"]  # type: ignore[operator]
+    for repack_control in (
+        "config/nsis-toolchain-lock.json",
+        "scripts/nsis_repack_contract.py",
+        "scripts/secure_artifact_snapshot.py",
+        "schemas/nsis-repack-kit-v1.schema.json",
+        "schemas/nsis-repack-receipt-v1.schema.json",
+        "tests/windows/nsis_repack_contract_integration.ps1",
+    ):
+        assert repack_control in proof["critical_inputs"]  # type: ignore[operator]
     assert "tests/acceptance/v1_1_requirements.yml" in proof["fixture_hashes"]  # type: ignore[operator]
 
 
@@ -752,6 +774,38 @@ def test_generation_requires_packaged_backtest_promotion_payloads(
     ]
 
     with pytest.raises(MainValidationProofError, match="backtest provenance"):
+        proof_module.generate_proof(
+            repo_root=repo,
+            repository=REPOSITORY,
+            ref=REF,
+            api_evidence=api_evidence,
+            validation_evidence=manifests,
+        )
+
+
+@pytest.mark.parametrize(
+    "missing_path",
+    [
+        "nsis-repack-kit/nsis-repack-kit.json",
+        "nsis-repack-verification/repack-a-receipt.json",
+        "nsis-repack-verification/repack-b-receipt.json",
+    ],
+)
+def test_generation_requires_nsis_repack_provenance(
+    tmp_path: Path, missing_path: str
+) -> None:
+    repo = _repository(tmp_path)
+    api_evidence = _api_evidence(repo)
+    manifests = _validation_evidence(repo, api_evidence)
+    candidate = manifests["windows-desktop-alpha-candidate-manifest"]
+    assert isinstance(candidate, dict)
+    payloads = candidate["payloads"]
+    assert isinstance(payloads, list)
+    candidate["payloads"] = [
+        payload for payload in payloads if payload["path"] != missing_path
+    ]
+
+    with pytest.raises(MainValidationProofError, match="NSIS repack provenance"):
         proof_module.generate_proof(
             repo_root=repo,
             repository=REPOSITORY,

@@ -11,6 +11,7 @@ from scripts.artifact_manifest import (
     create_attestation_binding,
     main,
     manifest_digest,
+    read_payload_list,
     read_manifest,
     validate_manifest,
     verify_for_consumption,
@@ -23,6 +24,20 @@ SOURCE_SHA = "1" * 40
 SOURCE_TREE = "2" * 40
 INPUT_SHA = "3" * 64
 LOCK_SHA = "4" * 64
+
+
+def _write_payload_list(path: Path, payloads: list[dict[str, str]]) -> None:
+    path.write_text(
+        json.dumps(
+            {"schema_version": 1, "payloads": payloads},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n",
+        encoding="utf-8",
+        newline="",
+    )
 
 
 def _manifest(root: Path, *, payload_kind: str = "web") -> dict[str, object]:
@@ -374,3 +389,213 @@ def test_cli_create_then_verify_requires_attestation(
         )
         == 0
     )
+
+
+def test_cli_create_accepts_canonical_payload_list_without_per_file_argv(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (tmp_path / "a.bin").write_bytes(b"a")
+    (tmp_path / "nested").mkdir()
+    (tmp_path / "nested" / "b.bin").write_bytes(b"b")
+    payload_list = tmp_path / "payload-list.json"
+    _write_payload_list(
+        payload_list,
+        [
+            {"kind": "provenance", "path": "a.bin"},
+            {"kind": "provenance", "path": "nested/b.bin"},
+        ],
+    )
+    manifest_path = tmp_path / "manifest.json"
+
+    result = main(
+        [
+            "create",
+            "--root",
+            str(tmp_path),
+            "--output",
+            str(manifest_path),
+            "--source-sha",
+            SOURCE_SHA,
+            "--source-tree",
+            SOURCE_TREE,
+            "--workflow",
+            "CI",
+            "--run-id",
+            "123",
+            "--run-attempt",
+            "1",
+            "--job-id",
+            "windows",
+            "--job-name",
+            "Windows",
+            "--payload-list",
+            str(payload_list),
+            "--critical-input",
+            f"ci={INPUT_SHA}",
+            "--toolchain",
+            "python=3.12",
+            "--lockfile",
+            f"Cargo.lock={LOCK_SHA}",
+        ]
+    )
+
+    assert result == 0
+    assert len(capsys.readouterr().out.strip()) == 64
+    assert [
+        (payload["path"], payload["kind"])
+        for payload in read_manifest(manifest_path)["payloads"]
+    ] == [("a.bin", "provenance"), ("nested/b.bin", "provenance")]
+
+
+@pytest.mark.parametrize(
+    ("content", "message"),
+    [
+        (
+            b'{"payloads":[{"kind":"web","path":"a.bin"}],"schema_version":1}',
+            "canonical UTF-8 JSON",
+        ),
+        (b"\xef\xbb\xbf{}\n", "UTF-8 without BOM"),
+        (b"\xff\n", "UTF-8"),
+        (
+            b'{"payloads":[],"payloads":[],"schema_version":1}\n',
+            "duplicate JSON key",
+        ),
+    ],
+)
+def test_payload_list_requires_strict_canonical_utf8_json(
+    tmp_path: Path, content: bytes, message: str
+) -> None:
+    payload_list = tmp_path / "payload-list.json"
+    payload_list.write_bytes(content)
+
+    with pytest.raises(ManifestError, match=message):
+        read_payload_list(payload_list)
+
+
+@pytest.mark.parametrize(
+    ("document", "message"),
+    [
+        ({"schema_version": True, "payloads": []}, "schema_version"),
+        ({"schema_version": 2, "payloads": []}, "schema_version"),
+        ({"schema_version": 1, "payloads": []}, "non-empty array"),
+        (
+            {"schema_version": 1, "payloads": [], "extra": True},
+            "exactly schema_version and payloads",
+        ),
+        (
+            {
+                "schema_version": 1,
+                "payloads": [{"path": "a.bin", "kind": "unknown"}],
+            },
+            "unsupported payload kind",
+        ),
+        (
+            {
+                "schema_version": 1,
+                "payloads": [{"path": "../a.bin", "kind": "web"}],
+            },
+            "normalized POSIX relative path",
+        ),
+        (
+            {
+                "schema_version": 1,
+                "payloads": [{"path": "C:/a.bin", "kind": "web"}],
+            },
+            "relative path",
+        ),
+        (
+            {
+                "schema_version": 1,
+                "payloads": [{"path": "a\\b.bin", "kind": "web"}],
+            },
+            "relative path",
+        ),
+    ],
+)
+def test_payload_list_rejects_invalid_contract(
+    tmp_path: Path, document: dict[str, object], message: str
+) -> None:
+    payload_list = tmp_path / "payload-list.json"
+    payload_list.write_text(
+        json.dumps(
+            document,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n",
+        encoding="utf-8",
+        newline="",
+    )
+
+    with pytest.raises(ManifestError, match=message):
+        read_payload_list(payload_list)
+
+
+@pytest.mark.parametrize(
+    "paths",
+    [
+        ["a.bin", "a.bin"],
+        ["A.bin", "a.bin"],
+        ["\uff21.bin", "A.bin"],
+    ],
+)
+def test_payload_list_rejects_duplicate_or_windows_colliding_paths(
+    tmp_path: Path, paths: list[str]
+) -> None:
+    payload_list = tmp_path / "payload-list.json"
+    _write_payload_list(
+        payload_list,
+        [{"path": path, "kind": "web"} for path in paths],
+    )
+
+    with pytest.raises(ManifestError, match="colliding payload path"):
+        read_payload_list(payload_list)
+
+
+def test_cli_rejects_duplicate_path_across_inline_and_payload_list(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (tmp_path / "a.bin").write_bytes(b"a")
+    payload_list = tmp_path / "payload-list.json"
+    _write_payload_list(
+        payload_list,
+        [{"path": "A.bin", "kind": "provenance"}],
+    )
+
+    result = main(
+        [
+            "create",
+            "--root",
+            str(tmp_path),
+            "--output",
+            str(tmp_path / "manifest.json"),
+            "--source-sha",
+            SOURCE_SHA,
+            "--source-tree",
+            SOURCE_TREE,
+            "--workflow",
+            "CI",
+            "--run-id",
+            "1",
+            "--run-attempt",
+            "1",
+            "--job-id",
+            "windows",
+            "--job-name",
+            "Windows",
+            "--payload",
+            "a.bin:provenance",
+            "--payload-list",
+            str(payload_list),
+            "--critical-input",
+            f"ci={INPUT_SHA}",
+            "--toolchain",
+            "python=3.12",
+            "--lockfile",
+            f"Cargo.lock={LOCK_SHA}",
+        ]
+    )
+
+    assert result == 2
+    assert "colliding payload path" in capsys.readouterr().err

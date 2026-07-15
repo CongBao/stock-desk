@@ -2507,7 +2507,7 @@ FORBIDDEN_TRACKED_PREFIXES = (
 )
 
 SOURCE_FREE_WINDOWS_INSTALLER_PATTERNS = (
-    "stock-desk-1.1.0-beta.2-unsigned-x64-setup.exe",
+    "stock-desk-1.1.0-beta.3-unsigned-x64-setup.exe",
 )
 
 REQUIRED_PUBLIC_SNIPPETS = {
