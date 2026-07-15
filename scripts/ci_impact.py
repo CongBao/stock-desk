@@ -114,6 +114,12 @@ _DELIVERY_FILES = frozenset(
         "config/tauri-updater-runtime.json",
     }
 )
+_SIGNING_TRUST_FILES = frozenset(
+    {
+        "config/release-auditor-public-key.pem",
+        "config/release-tag-allowed-signers",
+    }
+)
 _HIGH_RISK_DOMAINS = frozenset({"delivery", "dependency", "permissions", "signing"})
 _HIGH_RISK_SCRIPT_NAMES = frozenset(
     {
@@ -244,6 +250,8 @@ def _path_domain(path: str) -> str | None:
         return "installer"
     if path in _DEPENDENCY_FILES:
         return "dependency"
+    if path in _SIGNING_TRUST_FILES:
+        return "signing"
     if path in _DELIVERY_FILES or path.startswith("schemas/"):
         return "delivery"
     if path == ".github/CODEOWNERS":

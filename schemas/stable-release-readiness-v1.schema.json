@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/CongBao/stock-desk/schemas/stable-release-readiness-v1.schema.json",
+  "title": "Stock Desk stable release readiness manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "release_version",
+    "source_sha",
+    "source_tree",
+    "release_tag",
+    "tag_object_sha",
+    "tag_target_sha",
+    "main_proof_sha256",
+    "candidate_manifest_sha256",
+    "candidate_sha256",
+    "signer",
+    "artifacts"
+  ],
+  "properties": {
+    "schema_version": { "const": "stock-desk-stable-release-readiness-v1" },
+    "release_version": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+    },
+    "source_sha": { "$ref": "#/$defs/gitObject" },
+    "source_tree": { "$ref": "#/$defs/gitObject" },
+    "release_tag": {
+      "type": "string",
+      "pattern": "^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+    },
+    "tag_object_sha": { "$ref": "#/$defs/gitObject" },
+    "tag_target_sha": { "$ref": "#/$defs/gitObject" },
+    "main_proof_sha256": { "$ref": "#/$defs/sha256" },
+    "candidate_manifest_sha256": { "$ref": "#/$defs/sha256" },
+    "candidate_sha256": { "$ref": "#/$defs/sha256" },
+    "signer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["subject", "certificate_thumbprint", "timestamp_subject"],
+      "properties": {
+        "subject": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "certificate_thumbprint": {
+          "type": "string",
+          "pattern": "^[0-9A-F]{40,64}$"
+        },
+        "timestamp_subject": { "type": "string", "minLength": 1, "maxLength": 512 }
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "nsis_control_proof",
+        "signpath_receipt",
+        "windows_acceptance_receipt",
+        "windows_10_trust_receipt",
+        "windows_11_trust_receipt",
+        "windows_ux_evidence",
+        "updater_key_ceremony",
+        "latency_ledger",
+        "latency_seal",
+        "latency_report",
+        "final_wiki_evidence",
+        "requirements_completion_evidence",
+        "openspec_completion_evidence"
+      ],
+      "properties": {
+        "nsis_control_proof": { "$ref": "#/$defs/artifactRef" },
+        "signpath_receipt": { "$ref": "#/$defs/artifactRef" },
+        "windows_acceptance_receipt": { "$ref": "#/$defs/artifactRef" },
+        "windows_10_trust_receipt": { "$ref": "#/$defs/artifactRef" },
+        "windows_11_trust_receipt": { "$ref": "#/$defs/artifactRef" },
+        "windows_ux_evidence": { "$ref": "#/$defs/artifactRef" },
+        "updater_key_ceremony": { "$ref": "#/$defs/artifactRef" },
+        "latency_ledger": { "$ref": "#/$defs/artifactRef" },
+        "latency_seal": { "$ref": "#/$defs/artifactRef" },
+        "latency_report": { "$ref": "#/$defs/artifactRef" },
+        "final_wiki_evidence": { "$ref": "#/$defs/artifactRef" },
+        "requirements_completion_evidence": { "$ref": "#/$defs/artifactRef" },
+        "openspec_completion_evidence": { "$ref": "#/$defs/artifactRef" }
+      }
+    }
+  },
+  "$defs": {
+    "gitObject": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\)(?!.*\\u0000)[^/]+(?:/[^/]+)*$"
+    },
+    "artifactRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "attestation_path", "attestation_sha256"],
+      "properties": {
+        "path": { "$ref": "#/$defs/relativePath" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "attestation_path": { "$ref": "#/$defs/relativePath" },
+        "attestation_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    }
+  }
+}
