@@ -1164,6 +1164,13 @@ def test_focus_contact_sheet_uses_explicit_bounded_dimensions() -> None:
     assert "$captureHeight = [int]$capture.height" in contact_sheet
     assert "$sheetHeight = [long]0" in contact_sheet
     assert "$sheetHeight -gt 32768" in contact_sheet
+    save_offset = contact_sheet.index("$sheet.Save($Path")
+    cleanup_offset = contact_sheet.index(
+        "Remove-Item -LiteralPath $focusRegionRoot -Recurse -Force -ErrorAction Stop"
+    )
+    return_offset = contact_sheet.index("return [ordered]@{")
+    assert save_offset < cleanup_offset < return_offset
+    assert "focus-region scratch captures were not removed" in contact_sheet
 
 
 def test_windows_ci_executes_controlled_uia_runtime_fixture() -> None:
@@ -1187,6 +1194,7 @@ def test_windows_ci_executes_controlled_uia_runtime_fixture() -> None:
         "runtime_tree_sha256",
         "runtime_probe_sha256",
         "target_window_capture_sha256",
+        "Runtime probe retained focus-region scratch captures",
     ):
         assert required in integration
     assert "UIA driver runtime integration requires Windows" in integration
@@ -1208,3 +1216,4 @@ def test_windows_ci_executes_controlled_uia_runtime_fixture() -> None:
         "uia-runtime-probe/focus-region-contact-sheet.png:provenance",
     ):
         assert provenance_path in workflow
+    assert "focus-region-parts" not in workflow
