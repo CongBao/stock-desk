@@ -23,6 +23,9 @@ import tempfile
 from typing import Any, BinaryIO, Final, Iterator
 import unicodedata
 
+if __package__ in {None, ""}:
+    sys.path.insert(0, os.fspath(Path(__file__).resolve().parent.parent))
+
 from scripts.secure_artifact_snapshot import (
     private_directory_lease,
     SecureArtifactSnapshotError,

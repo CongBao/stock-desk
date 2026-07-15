@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 from typing import Any, cast
 from collections.abc import Mapping
 
@@ -917,6 +918,26 @@ def test_cli_create_verify_and_fail_closed(
         == 1
     )
     assert "failed" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "entrypoint",
+    [
+        (os.fspath(Path("scripts") / "nsis_repack_contract.py"),),
+        ("-m", "scripts.nsis_repack_contract"),
+    ],
+)
+def test_cli_can_run_from_repository_root(entrypoint: tuple[str, ...]) -> None:
+    result = subprocess.run(
+        [sys.executable, *entrypoint, "--help"],
+        cwd=Path(__file__).resolve().parents[2],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == ""
 
 
 @pytest.mark.parametrize(
