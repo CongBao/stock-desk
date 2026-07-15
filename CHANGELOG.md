@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- `v1.1.0-beta.3` adds checkpointed desktop recovery, explicit v1.1-only
+  uninstall data-retention semantics, expanded responsive interaction,
+  packaged backtest evidence, and default-off updater and hard-disabled
+  formal-release controls.
 - Desktop transport compatibility evidence now covers twelve normal-market
   cells combining MACD/custom-formula, single-symbol/pool, and
   daily/weekly/60-minute inputs against the current direct service, including

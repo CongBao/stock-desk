@@ -45,11 +45,11 @@ it('uses a synchronous ready and no-op fallback outside Tauri', () => {
   expect(bridge.exportDiagnostics()).toBeUndefined();
   expect(bridge.getUpdateState()).toEqual({
     state: 'disabled',
-    currentVersion: '1.1.0-beta.2',
+    currentVersion: '1.1.0-beta.3',
   });
   expect(bridge.checkForUpdates()).toEqual({
     state: 'disabled',
-    currentVersion: '1.1.0-beta.2',
+    currentVersion: '1.1.0-beta.3',
   });
   expect(bridge.dismissUpdate()).toBeUndefined();
   expect(bridge.confirmUpdate()).toBeUndefined();

@@ -953,7 +953,7 @@ def test_public_runtime_version_surfaces_match() -> None:
 
     cargo_version = tomllib.loads(_read("src-tauri/Cargo.toml"))["package"]["version"]
     tauri_version = json.loads(_read("src-tauri/tauri.conf.json"))["version"]
-    assert cargo_version == tauri_version == "1.1.0-beta.2"
+    assert cargo_version == tauri_version == "1.1.0-beta.3"
     updater_source = _read("src-tauri/src/updater.rs")
     assert 'const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION")' in updater_source
     app_source = _read("web/src/app/App.tsx")
