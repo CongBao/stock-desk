@@ -667,6 +667,28 @@ def test_windows_candidate_binds_reproducible_nsis_repack_kit_without_new_family
     assert "$payloadPatch.marker_offset" in integration
     assert "workspace host binary changed" in integration
     assert "original unsigned candidate changed" in integration
+    candidate_pre = integration.index("$originalSourceIdentityBefore =")
+    candidate_snapshot = integration.index("$originalSnapshot =")
+    candidate_snapshot_identity = integration.index("$originalSnapshotIdentity =")
+    candidate_snapshot_gate = integration.index(
+        "original unsigned candidate snapshot does not match pre-capture identity"
+    )
+    assert (
+        candidate_pre
+        < candidate_snapshot
+        < candidate_snapshot_identity
+        < candidate_snapshot_gate
+    )
+    host_pre = integration.index("$mainBinarySourceIdentityBefore =")
+    host_snapshot = integration.index("Copy-PrivateSnapshot `", host_pre)
+    host_snapshot_gate = integration.index(
+        "private host snapshot does not match pre-capture identity"
+    )
+    host_final = integration.index("$mainBinarySourceIdentityAfter =")
+    host_final_gate = integration.index(
+        "workspace host binary changed during NSIS kit and repack work"
+    )
+    assert host_pre < host_snapshot < host_snapshot_gate < host_final < host_final_gate
     assert (
         "Copy-Item -LiteralPath $unpatchedPayload -Destination $patchedPayload"
         in integration

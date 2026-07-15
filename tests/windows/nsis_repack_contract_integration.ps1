@@ -127,6 +127,14 @@ $originalSnapshot = Join-Path $snapshots ("snapshot-{0:D4}" -f $snapshotNumber)
   --entry (Split-Path $originalSource -Leaf) | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'original unsigned installer snapshot failed' }
 $original = Join-Path $originalSnapshot (Split-Path $originalSource -Leaf)
+$originalSnapshotIdentity = [ordered]@{
+  size=(Get-Item -LiteralPath $original).Length
+  sha256=(Get-Sha256 $original)
+}
+if (
+  $originalSnapshotIdentity.size -ne $originalSourceIdentityBefore.size -or
+  $originalSnapshotIdentity.sha256 -cne $originalSourceIdentityBefore.sha256
+) { throw 'original unsigned candidate snapshot does not match pre-capture identity' }
 
 $scriptText = Get-Content -LiteralPath (Join-Path $stage 'installer.nsi') -Raw
 $additionalPluginDefines = @([regex]::Matches(
@@ -197,12 +205,24 @@ if ($mainPathOccurrences -ne 1) {
   throw "rendered MAINBINARYSRCPATH value must occur exactly once, found $mainPathOccurrences"
 }
 
+$mainBinarySourceIdentityBefore = [ordered]@{
+  size=(Get-Item -LiteralPath $mainBinarySource).Length
+  sha256=(Get-Sha256 $mainBinarySource)
+}
 $patchedPayloadRelative = 'captured/main-binary-nss.exe'
 Copy-PrivateSnapshot `
   (Split-Path $mainBinarySource -Parent) `
   @((Split-Path $mainBinarySource -Leaf)) `
   'captured/main-binary-source'
 $unpatchedPayload = Join-Path $stage (Join-Path 'captured/main-binary-source' (Split-Path $mainBinarySource -Leaf))
+$mainBinarySnapshotIdentity = [ordered]@{
+  size=(Get-Item -LiteralPath $unpatchedPayload).Length
+  sha256=(Get-Sha256 $unpatchedPayload)
+}
+if (
+  $mainBinarySnapshotIdentity.size -ne $mainBinarySourceIdentityBefore.size -or
+  $mainBinarySnapshotIdentity.sha256 -cne $mainBinarySourceIdentityBefore.sha256
+) { throw 'private host snapshot does not match pre-capture identity' }
 $patchedPayload = Join-Path $stage $patchedPayloadRelative
 if (Test-Path -LiteralPath $patchedPayload) { throw 'private NSS-patched payload already exists' }
 Copy-Item -LiteralPath $unpatchedPayload -Destination $patchedPayload
@@ -221,8 +241,11 @@ if (
   [string]$payloadPatch.after.sha256 -cne (Get-Sha256 $patchedPayload)
 ) { throw 'private Tauri NSS payload reconstruction identity is invalid' }
 Write-Host ('Tauri NSS payload reconstruction: ' + ($payloadPatch | ConvertTo-Json -Depth 5 -Compress))
-if ((Get-Sha256 $mainBinarySource) -cne [string]$payloadPatch.before.sha256) {
-  throw 'workspace host binary changed while reconstructing the private NSS payload'
+if (
+  [long]$payloadPatch.before.size -ne [long]$mainBinarySourceIdentityBefore.size -or
+  [string]$payloadPatch.before.sha256 -cne [string]$mainBinarySourceIdentityBefore.sha256
+) {
+  throw 'private patched host source does not match pre-capture identity'
 }
 Remove-Item -LiteralPath $unpatchedPayload -Force
 $unpatchedPayloadParent = Split-Path $unpatchedPayload -Parent
@@ -414,4 +437,12 @@ if (
   $originalSourceIdentityAfter.size -ne $originalSourceIdentityBefore.size -or
   $originalSourceIdentityAfter.sha256 -cne $originalSourceIdentityBefore.sha256
 ) { throw 'original unsigned candidate changed during private NSIS reconstruction' }
+$mainBinarySourceIdentityAfter = [ordered]@{
+  size=(Get-Item -LiteralPath $mainBinarySource).Length
+  sha256=(Get-Sha256 $mainBinarySource)
+}
+if (
+  $mainBinarySourceIdentityAfter.size -ne $mainBinarySourceIdentityBefore.size -or
+  $mainBinarySourceIdentityAfter.sha256 -cne $mainBinarySourceIdentityBefore.sha256
+) { throw 'workspace host binary changed during NSIS kit and repack work' }
 Remove-Item -LiteralPath $captureRoot -Recurse -Force
