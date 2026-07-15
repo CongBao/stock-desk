@@ -817,10 +817,30 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  stable-readiness:
+    name: Verify complete stable-release evidence closure
+    # Source-level hard stop. A later reviewed change may remove this only after
+    # every producer exists and the offline release-auditor public key is pinned.
+    if: ${{ false }}
+    needs: [formal-inputs, signpath, windows-installed, trusted-updater-release]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      attestations: read
+      contents: read
+    steps:
+      - name: Refuse incomplete stable-readiness execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Stable readiness remains disabled until every external evidence producer and the pinned offline auditor key exist." >&2
+          exit 1
+
   stable-attest:
     name: Attest exact stable assets
-    if: ${{ inputs.release_tag == 'v1.1.0' }}
-    needs: trusted-updater-release
+    if: ${{ inputs.release_tag == 'v1.1.0' && needs.stable-readiness.result == 'success' }}
+    needs: [trusted-updater-release, stable-readiness]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -869,8 +889,8 @@ jobs:
 
   stable-release:
     name: Publish stable release without rebuilding or rerunning tests
-    if: ${{ inputs.release_tag == 'v1.1.0' && needs.trusted-updater-release.result == 'success' && needs.stable-attest.result == 'success' }}
-    needs: [formal-inputs, signpath, windows-installed, trusted-updater-release, stable-attest]
+    if: ${{ inputs.release_tag == 'v1.1.0' && needs.trusted-updater-release.result == 'success' && needs.stable-readiness.result == 'success' && needs.stable-attest.result == 'success' }}
+    needs: [formal-inputs, signpath, windows-installed, trusted-updater-release, stable-readiness, stable-attest]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     environment: stable-release

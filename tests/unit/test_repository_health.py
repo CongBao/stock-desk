@@ -579,12 +579,19 @@ def test_release_job_dependency_graph_is_acyclic_and_preserves_trust_order() -> 
             "signpath",
             "windows-installed",
         },
-        "stable-attest": {"trusted-updater-release"},
+        "stable-readiness": {
+            "formal-inputs",
+            "signpath",
+            "windows-installed",
+            "trusted-updater-release",
+        },
+        "stable-attest": {"trusted-updater-release", "stable-readiness"},
         "stable-release": {
             "formal-inputs",
             "signpath",
             "windows-installed",
             "trusted-updater-release",
+            "stable-readiness",
             "stable-attest",
         },
     }
@@ -1220,6 +1227,7 @@ def test_release_has_no_native_installer_build_entrypoint() -> None:
         "signpath",
         "windows-installed",
         "trusted-updater-release",
+        "stable-readiness",
         "stable-attest",
         "stable-release",
     } == set(workflow["jobs"])

@@ -46,9 +46,12 @@ Ordinary users do not need GitHub CLI, a source checkout, Docker, or development
 The current source includes a **default-off** trusted-update runtime and a **hard-disabled formal
 signing and release control-plane scaffold**. The scaffold describes the same protected-`main`
 proof/candidate, human-approved SignPath, Windows 10/11 standard-user evidence, and trusted-update
-dependencies, but its signing job has a literal gate that no variable, secret, or configuration can
-enable. A later reviewed change may remove that gate only with NSIS control-semantics equivalence
-and real SmartScreen/MOTW evidence. This stage cannot sign, publish stable, check, download, or install.
+dependencies, but both signing and the complete release-readiness evidence closure have literal gates
+that no variable, secret, or configuration can enable. The readiness contract requires an exact version
+and annotated tag, independent NSIS/Windows/docs/latency evidence, and private requirements and specification
+pre-release audits verified by a pinned offline auditor key that is not yet configured; the current
+workflows cannot produce that complete closure. A later reviewed change may remove those gates only with
+NSIS control-semantics equivalence and real SmartScreen/MOTW evidence. This stage cannot sign, publish stable, check, download, or install.
 The production updater remains disabled.
 
 `v1.1.0` does not ship macOS, Linux, Android, or ARM64 installers, and it does not migrate or delete v1 local data. Refer to the release page and [code-signing policy](docs/code-signing-policy.md) for the authoritative signing status.

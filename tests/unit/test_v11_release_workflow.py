@@ -185,6 +185,7 @@ def test_formal_release_is_a_protected_main_dispatch_with_a_closed_signed_dag() 
         "signpath",
         "windows-installed",
         "trusted-updater-release",
+        "stable-readiness",
         "stable-attest",
         "stable-release",
     }
@@ -228,12 +229,24 @@ def test_formal_release_is_a_protected_main_dispatch_with_a_closed_signed_dag() 
         "WINDOWS_VM_SNAPSHOT_POLICY_SHA256",
         "WINDOWS_VM_ADAPTER_SHA256",
     }
-    assert jobs["stable-attest"]["needs"] == "trusted-updater-release"
+    assert jobs["stable-readiness"]["if"] == "${{ false }}"
+    assert jobs["stable-readiness"]["needs"] == [
+        "formal-inputs",
+        "signpath",
+        "windows-installed",
+        "trusted-updater-release",
+    ]
+    assert jobs["stable-attest"]["needs"] == [
+        "trusted-updater-release",
+        "stable-readiness",
+    ]
+    assert "needs.stable-readiness.result == 'success'" in jobs["stable-attest"]["if"]
     assert jobs["stable-release"]["needs"] == [
         "formal-inputs",
         "signpath",
         "windows-installed",
         "trusted-updater-release",
+        "stable-readiness",
         "stable-attest",
     ]
 
@@ -345,6 +358,7 @@ def test_stable_publish_cannot_run_without_every_real_signed_receipt() -> None:
     assert jobs["stable-release"]["if"] == (
         "${{ inputs.release_tag == 'v1.1.0' && "
         "needs.trusted-updater-release.result == 'success' && "
+        "needs.stable-readiness.result == 'success' && "
         "needs.stable-attest.result == 'success' }}"
     )
     publish = _job_commands(jobs["stable-release"])
