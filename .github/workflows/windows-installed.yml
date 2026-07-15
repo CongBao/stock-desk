@@ -5,10 +5,81 @@
 name: Windows installed VM acceptance
 
 on:
+  workflow_call:
+    inputs:
+      source_sha:
+        description: Exact lowercase 40-hex protected-main commit SHA
+        required: true
+        type: string
+      source_tree:
+        description: Exact lowercase 40-hex protected-main tree SHA
+        required: true
+        type: string
+      candidate_sha256:
+        description: Exact SHA-256 of the Authenticode-signed NSIS candidate
+        required: true
+        type: string
+      candidate_manifest_sha256:
+        description: Exact SHA-256 of the main-proved unsigned candidate manifest
+        required: true
+        type: string
+      signed_artifact_name:
+        description: Closed SignPath artifact produced in this release run
+        required: true
+        type: string
+      signing_request_id:
+        description: Exact non-secret SignPath request identity
+        required: true
+        type: string
+      signpath_run_id:
+        description: Optional completed run containing the signed artifact; current run when empty
+        required: false
+        type: string
+        default: ""
+    outputs:
+      acceptance_artifact_name:
+        description: Exact signed-candidate Windows trust evidence artifact
+        value: ${{ jobs.attest.outputs.acceptance_artifact_name }}
+      acceptance_sha256:
+        description: SHA-256 of the closed Windows trust evidence archive manifest
+        value: ${{ jobs.attest.outputs.acceptance_sha256 }}
+    secrets:
+      WINDOWS_INSTALLED_POLICY_TOKEN:
+        required: true
+      WINDOWS_VM_BROKER_ENDPOINT:
+        required: true
+      WINDOWS_VM_SNAPSHOT_POLICY_SHA256:
+        required: true
+      WINDOWS_VM_ADAPTER_SHA256:
+        required: true
   workflow_dispatch:
     inputs:
       source_sha:
         description: Exact lowercase 40-hex main commit SHA to verify
+        required: true
+        type: string
+      source_tree:
+        description: Exact lowercase 40-hex protected-main tree SHA
+        required: true
+        type: string
+      candidate_sha256:
+        description: Exact SHA-256 of the Authenticode-signed NSIS candidate
+        required: true
+        type: string
+      candidate_manifest_sha256:
+        description: Exact SHA-256 of the main-proved unsigned candidate manifest
+        required: true
+        type: string
+      signed_artifact_name:
+        description: windows-signpath-signed-<source_sha> artifact name
+        required: true
+        type: string
+      signing_request_id:
+        description: Exact non-secret SignPath request identity
+        required: true
+        type: string
+      signpath_run_id:
+        description: Completed main workflow run that produced the signed artifact
         required: true
         type: string
 
@@ -30,19 +101,28 @@ jobs:
       contents: read
     env:
       SOURCE_SHA: ${{ inputs.source_sha }}
-      EXPECTED_WORKFLOW_REF: ${{ format('{0}/.github/workflows/windows-installed.yml@refs/heads/main', github.repository) }}
+      SOURCE_TREE: ${{ inputs.source_tree }}
+      CANDIDATE_SHA256: ${{ inputs.candidate_sha256 }}
+      CANDIDATE_MANIFEST_SHA256: ${{ inputs.candidate_manifest_sha256 }}
+      SIGNED_ARTIFACT_NAME: ${{ inputs.signed_artifact_name }}
+      SIGNING_REQUEST_ID: ${{ inputs.signing_request_id }}
+      SIGNPATH_RUN_ID: ${{ inputs.signpath_run_id }}
     steps:
       - name: Reject every non-main or mutable workflow dispatch
         shell: bash
         run: |
           set -euo pipefail
           [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$SOURCE_TREE" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$CANDIDATE_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$CANDIDATE_MANIFEST_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          test "$SIGNED_ARTIFACT_NAME" = "windows-signpath-signed-$SOURCE_SHA"
+          test -n "$SIGNING_REQUEST_ID"
           test "$GITHUB_REF" = "refs/heads/main"
           test "$GITHUB_REF_TYPE" = "branch"
           test "$GITHUB_REF_NAME" = "main"
           test "$GITHUB_REF_PROTECTED" = "true"
           test "$GITHUB_SHA" = "$SOURCE_SHA"
-          test "$GITHUB_WORKFLOW_REF" = "$EXPECTED_WORKFLOW_REF"
           test "$GITHUB_WORKFLOW_SHA" = "$SOURCE_SHA"
           test "$GITHUB_RUN_ATTEMPT" = "1"
 
@@ -61,6 +141,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git rev-parse 'HEAD^{tree}')" = "$SOURCE_TREE"
           git fetch --no-tags origin \
             +refs/heads/main:refs/remotes/origin/protected-main
           test "$(git rev-parse refs/remotes/origin/protected-main)" = "$SOURCE_SHA"
@@ -94,15 +175,26 @@ jobs:
       contents: read
     env:
       SOURCE_SHA: ${{ inputs.source_sha }}
+      SOURCE_TREE: ${{ inputs.source_tree }}
+      CANDIDATE_SHA256: ${{ inputs.candidate_sha256 }}
+      CANDIDATE_MANIFEST_SHA256: ${{ inputs.candidate_manifest_sha256 }}
+      SIGNED_ARTIFACT_NAME: ${{ inputs.signed_artifact_name }}
+      SIGNING_REQUEST_ID: ${{ inputs.signing_request_id }}
+      SIGNPATH_RUN_ID: ${{ inputs.signpath_run_id }}
     steps:
       - name: Reject non-canonical source identity
         shell: bash
         run: |
           set -euo pipefail
           [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$SOURCE_TREE" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$CANDIDATE_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$CANDIDATE_MANIFEST_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          test "$SIGNED_ARTIFACT_NAME" = "windows-signpath-signed-$SOURCE_SHA"
+          test -n "$SIGNING_REQUEST_ID"
           test "$GITHUB_RUN_ATTEMPT" = "1"
           echo "PROOF_ROOT=$RUNNER_TEMP/windows-installed-preflight/proof" >> "$GITHUB_ENV"
-          echo "CANDIDATE_ROOT=$RUNNER_TEMP/windows-installed-preflight/candidate" >> "$GITHUB_ENV"
+          echo "SIGNED_ROOT=$RUNNER_TEMP/windows-installed-preflight/signed" >> "$GITHUB_ENV"
           echo "CONTROLLER_ROOT=$RUNNER_TEMP/windows-installed-controller" >> "$GITHUB_ENV"
           echo "RECEIPT_ROOT=$RUNNER_TEMP/windows-installed-preflight/receipts" >> "$GITHUB_ENV"
 
@@ -125,6 +217,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git rev-parse 'HEAD^{tree}')" = "$SOURCE_TREE"
           branch="$(gh api "repos/$GITHUB_REPOSITORY/branches/main")"
           jq -e --arg sha "$SOURCE_SHA" \
             '.name == "main" and .protected == true and .commit.sha == $sha' \
@@ -145,31 +238,34 @@ jobs:
           test -n "$run_id"
           echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
 
-      - name: Download exact proof and promoted Windows candidate
+      - name: Download exact proof and closed SignPath candidate
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           MAIN_RUN_ID: ${{ steps.main-run.outputs.run_id }}
         run: |
           set -euo pipefail
-          mkdir -p "$PROOF_ROOT" "$CANDIDATE_ROOT"
+          mkdir -p "$PROOF_ROOT" "$SIGNED_ROOT"
           gh run download "$MAIN_RUN_ID" --repo "$GITHUB_REPOSITORY" \
             --name "main-validation-proof-$SOURCE_SHA" --dir "$PROOF_ROOT"
-          gh run download "$MAIN_RUN_ID" --repo "$GITHUB_REPOSITORY" \
-            --name "windows-desktop-alpha-candidate-$SOURCE_SHA" \
-            --dir "$CANDIDATE_ROOT"
+          artifact_run_id="${SIGNPATH_RUN_ID:-$GITHUB_RUN_ID}"
+          [[ "$artifact_run_id" =~ ^[1-9][0-9]*$ ]]
+          gh run download "$artifact_run_id" --repo "$GITHUB_REPOSITORY" \
+            --name "$SIGNED_ARTIFACT_NAME" --dir "$SIGNED_ROOT"
           for path in \
             "$PROOF_ROOT/proof.json" \
             "$PROOF_ROOT/post-gh-verify-binding.json" \
             "$PROOF_ROOT/proof-attestation-bundle.jsonl" \
-            "$PROOF_ROOT/evidence-attestation-bundle.jsonl" \
-            "$CANDIDATE_ROOT/windows-desktop-alpha-candidate-manifest.json" \
-            "$CANDIDATE_ROOT/manifest-binding.json"
+            "$SIGNED_ROOT/stock-desk-signed-nsis.exe" \
+            "$SIGNED_ROOT/signpath-receipt.json" \
+            "$SIGNED_ROOT/signpath-identity-closure.json" \
+            "$SIGNED_ROOT/signpath-attestation-bundle.jsonl" \
+            "$SIGNED_ROOT/windows-desktop-bundle.json"
           do
             test -s "$path"
           done
 
-      - name: Verify proof attestations, manifest, payload, and digests
+      - name: Verify proof, signed bytes, receipt, and attestations
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -186,14 +282,67 @@ jobs:
             --format json > "$RECEIPT_ROOT/main-proof.json"
           jq -e 'length >= 1' "$RECEIPT_ROOT/main-proof.json" >/dev/null
           gh attestation verify \
-            "$CANDIDATE_ROOT/windows-desktop-alpha-candidate-manifest.json" \
-            --bundle "$PROOF_ROOT/evidence-attestation-bundle.jsonl" \
+            "$SIGNED_ROOT/stock-desk-signed-nsis.exe" \
+            --bundle "$SIGNED_ROOT/signpath-attestation-bundle.jsonl" \
             --repo "$GITHUB_REPOSITORY" \
-            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/ci.yml" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/signpath.yml" \
             --source-ref refs/heads/main --source-digest "$SOURCE_SHA" \
             --signer-digest "$SOURCE_SHA" --deny-self-hosted-runners \
-            --format json > "$RECEIPT_ROOT/windows-candidate.json"
-          jq -e 'length >= 1' "$RECEIPT_ROOT/windows-candidate.json" >/dev/null
+            --format json > "$RECEIPT_ROOT/signed-candidate.json"
+          jq -e 'length >= 1' "$RECEIPT_ROOT/signed-candidate.json" >/dev/null
+          gh attestation verify "$SIGNED_ROOT/signpath-receipt.json" \
+            --bundle "$SIGNED_ROOT/signpath-attestation-bundle.jsonl" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/signpath.yml" \
+            --source-ref refs/heads/main --source-digest "$SOURCE_SHA" \
+            --signer-digest "$SOURCE_SHA" --deny-self-hosted-runners \
+            --format json > "$RECEIPT_ROOT/signpath-receipt.json"
+          jq -e 'length >= 1' "$RECEIPT_ROOT/signpath-receipt.json" >/dev/null
+          SIGNED_SHA256="$(sha256sum "$SIGNED_ROOT/stock-desk-signed-nsis.exe" | cut -d' ' -f1)"
+          test "$SIGNED_SHA256" = "$CANDIDATE_SHA256"
+          jq -e --arg sha "$SOURCE_SHA" --arg digest "$CANDIDATE_SHA256" \
+            --arg request "$SIGNING_REQUEST_ID" \
+            '.schema == "stock-desk-signpath-receipt-v1" and
+             .status == "signed" and .source_sha == $sha and
+             .payload_sha256 == $digest and .request_id == $request and
+             (.signer_subject | type == "string" and length > 0) and
+             (.certificate_thumbprint | test("^[0-9A-F]{40,64}$")) and
+             (.timestamp_subject | type == "string" and length > 0) and
+             (keys | sort) == (["certificate_thumbprint", "payload_sha256", "request_id", "schema", "signer_subject", "source_sha", "status", "timestamp_subject"] | sort)' \
+            "$SIGNED_ROOT/signpath-receipt.json" >/dev/null
+          proof_sha256="$(sha256sum "$PROOF_ROOT/proof.json" | cut -d' ' -f1)"
+          jq -e --arg sha "$SOURCE_SHA" --arg tree "$SOURCE_TREE" \
+            --arg proof "$proof_sha256" \
+            --arg candidate "$CANDIDATE_MANIFEST_SHA256" \
+            --arg signed "$CANDIDATE_SHA256" \
+            --arg request "$SIGNING_REQUEST_ID" \
+            '.schema == "stock-desk-signpath-identity-closure-v1" and
+             .status == "signed" and .request_id == $request and
+             (.request_sha256 | test("^[0-9a-f]{64}$")) and
+             .source == {ref:"refs/heads/main", sha:$sha, tree:$tree} and
+             .proof_sha256 == $proof and .candidate_sha256 == $candidate and
+             (.artifacts | keys | sort) == (["desktop-host", "sidecar", "nsis-installer"] | sort) and
+             .artifacts["nsis-installer"].signed_path == "stock-desk-signed-nsis.exe" and
+             .artifacts["nsis-installer"].signed_sha256 == $signed and
+             ([.artifacts[] | keys | sort] | all(. == (["equivalence_algorithm", "equivalent_content_sha256", "signed_path", "signed_sha256", "unsigned_path", "unsigned_sha256"] | sort))) and
+             .artifacts["desktop-host"].equivalence_algorithm == "pe-authenticode-normalized-sha256-v1" and
+             .artifacts.sidecar.equivalence_algorithm == "pe-authenticode-normalized-sha256-v1" and
+             .artifacts["nsis-installer"].equivalence_algorithm == "nsis-pe-stub-and-extracted-payload-sha256-v1" and
+             ([.artifacts[] | .unsigned_sha256, .signed_sha256, .equivalent_content_sha256] | all(test("^[0-9a-f]{64}$")))' \
+            "$SIGNED_ROOT/signpath-identity-closure.json" >/dev/null
+          nested="$RUNNER_TEMP/windows-installed-preflight/nested-signed"
+          mkdir -p "$nested"
+          7z x -y "-o$nested" "$SIGNED_ROOT/stock-desk-signed-nsis.exe" >/dev/null
+          mapfile -d '' hosts < <(find "$nested" -type f -name stock-desk-desktop.exe -print0)
+          mapfile -d '' sidecars < <(find "$nested" -type f -name stock-desk-sidecar.exe -print0)
+          test "${#hosts[@]}" -eq 1
+          test "${#sidecars[@]}" -eq 1
+          host_sha256="$(sha256sum "${hosts[0]}" | cut -d' ' -f1)"
+          sidecar_sha256="$(sha256sum "${sidecars[0]}" | cut -d' ' -f1)"
+          jq -e --arg host "$host_sha256" --arg sidecar "$sidecar_sha256" \
+            '.artifacts["desktop-host"].signed_sha256 == $host and
+             .artifacts.sidecar.signed_sha256 == $sidecar' \
+            "$SIGNED_ROOT/signpath-identity-closure.json" >/dev/null
           python scripts/main_validation_proof.py verify \
             --repo-root . --repository "$GITHUB_REPOSITORY" \
             --ref refs/heads/main --proof "$PROOF_ROOT/proof.json"
@@ -210,12 +359,6 @@ jobs:
           binding = json.loads(
               (Path(os.environ["PROOF_ROOT"]) / "post-gh-verify-binding.json").read_text()
           )
-          candidate = json.loads(
-              (
-                  Path(os.environ["CANDIDATE_ROOT"])
-                  / "windows-desktop-alpha-candidate-manifest.json"
-              ).read_text()
-          )
           verify_post_gh_attestation_binding(
               proof,
               proof_bytes=proof_bytes,
@@ -224,16 +367,11 @@ jobs:
           )
           if proof["commit_sha"] != os.environ["SOURCE_SHA"]:
               raise SystemExit("main proof source SHA mismatch")
-          if proof["validation_evidence"]["windows-desktop-alpha-candidate-manifest"] != candidate:
-              raise SystemExit("promoted candidate manifest is not the proved manifest")
+          if proof["tree_sha"] != os.environ["SOURCE_TREE"]:
+              raise SystemExit("main proof source tree mismatch")
           PY
-          python scripts/artifact_manifest.py verify \
-            --manifest "$CANDIDATE_ROOT/windows-desktop-alpha-candidate-manifest.json" \
-            --root "$CANDIDATE_ROOT" --source-sha "$SOURCE_SHA" \
-            --source-tree "$tree" \
-            --attestation "$CANDIDATE_ROOT/manifest-binding.json"
 
-      - name: Create verified controller input without VM result claims
+      - name: Create signed-only controller input without VM result claims
         shell: bash
         env:
           MAIN_RUN_ID: ${{ steps.main-run.outputs.run_id }}
@@ -248,21 +386,21 @@ jobs:
           from pathlib import Path
           import shutil
 
-          source = Path(os.environ["CANDIDATE_ROOT"])
+          source = Path(os.environ["SIGNED_ROOT"])
           target = Path(os.environ["CONTROLLER_ROOT"])
-          manifest_path = source / "windows-desktop-alpha-candidate-manifest.json"
-          manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
           bundle = json.loads(
               (source / "windows-desktop-bundle.json").read_text(encoding="utf-8")
           )
-          installers = [
-              item
-              for item in manifest["payloads"]
-              if item["kind"] == "tauri-unsigned"
-              and item["path"].endswith("-unsigned-x64-setup.exe")
-          ]
-          if len(installers) != 1:
-              raise SystemExit("proved candidate must contain exactly one installer")
+          closure = json.loads(
+              (source / "signpath-identity-closure.json").read_text(encoding="utf-8")
+          )
+          signing_receipt = json.loads(
+              (source / "signpath-receipt.json").read_text(encoding="utf-8")
+          )
+          signed_components = {
+              role: closure["artifacts"][role]["signed_sha256"]
+              for role in ("desktop-host", "sidecar", "nsis-installer")
+          }
           webview_installers = [
               item
               for item in bundle["files"]
@@ -272,16 +410,23 @@ jobs:
               raise SystemExit(
                   "proved candidate must identify exactly one WebView2 installer"
               )
-          installer = installers[0]
           webview_installer = webview_installers[0]
-          installer_source = source / installer["path"]
+          installer_source = source / "stock-desk-signed-nsis.exe"
           installer_target = target / "candidate" / installer_source.name
           shutil.copy2(installer_source, installer_target)
-          for name in (
-              "windows-desktop-alpha-candidate-manifest.json",
-              "manifest-binding.json",
-              "windows-desktop-bundle.json",
-          ):
+          webview_matches = [
+              path
+              for path in source.rglob(Path(webview_installer["path"]).name)
+              if path.is_file()
+              and hashlib.sha256(path.read_bytes()).hexdigest()
+              == webview_installer["sha256"]
+          ]
+          if len(webview_matches) != 1:
+              raise SystemExit("signed artifact WebView installer identity mismatch")
+          webview_source = webview_matches[0]
+          webview_target = target / "candidate" / webview_source.name
+          shutil.copy2(webview_source, webview_target)
+          for name in ("windows-desktop-bundle.json",):
               shutil.copy2(source / name, target / "candidate" / name)
           proof_root = Path(os.environ["PROOF_ROOT"])
           proof_bytes = (proof_root / "proof.json").read_bytes()
@@ -289,14 +434,19 @@ jobs:
               "proof.json",
               "post-gh-verify-binding.json",
               "proof-attestation-bundle.jsonl",
-              "evidence-attestation-bundle.jsonl",
           ):
               shutil.copy2(proof_root / name, target / "trust" / name)
           receipt_root = Path(os.environ["RECEIPT_ROOT"])
           receipt_target = target / "trust" / "receipts"
           receipt_target.mkdir()
-          for name in ("main-proof.json", "windows-candidate.json"):
+          for name in ("main-proof.json", "signed-candidate.json", "signpath-receipt.json"):
               shutil.copy2(receipt_root / name, receipt_target / name)
+          for name in (
+              "signpath-receipt.json",
+              "signpath-identity-closure.json",
+              "signpath-attestation-bundle.jsonl",
+          ):
+              shutil.copy2(source / name, target / "trust" / name)
           for reviewed in (
               "scripts/windows_installed_guest_harness.ps1",
               "scripts/windows_desktop_uia_driver.ps1",
@@ -309,7 +459,7 @@ jobs:
           request = {
               "schema": "stock-desk-windows-installed-controller-request-v2",
               "source_sha": os.environ["SOURCE_SHA"],
-              "tree_sha": manifest["source_tree"],
+              "tree_sha": os.environ["SOURCE_TREE"],
               "main_run_id": int(os.environ["MAIN_RUN_ID"]),
               "evidence_kind": "observed-windows-vm",
               "status": "authorized",
@@ -319,10 +469,25 @@ jobs:
                   *[f"win11-dpi-{dpi}" for dpi in (100, 125, 150, 175, 200)],
                   "win10-22h2-dpi-100-webview-offline",
               ],
-              "candidate_manifest_sha256": manifest["manifest_sha256"],
               "main_proof_sha256": hashlib.sha256(proof_bytes).hexdigest(),
-              "candidate_sha256": installer["sha256"],
+              "candidate_manifest_sha256": os.environ["CANDIDATE_MANIFEST_SHA256"],
+              "candidate_sha256": os.environ["CANDIDATE_SHA256"],
+              "signpath_request_id": os.environ["SIGNING_REQUEST_ID"],
+              "candidate_kind": "signed",
               "webview_installer_sha256": webview_installer["sha256"],
+              "smartscreen_evidence": {
+                  "schema": "stock-desk-smartscreen-evidence-policy-v1",
+                  "required": True,
+                  "delivery_method": "https-internet-download",
+                  "launch_api": "ShellExecuteExW",
+                  "required_disposition": "allowed-no-warning",
+              },
+              "signed_components": signed_components,
+              "authenticode_expectation": {
+                  "signer_subject": signing_receipt["signer_subject"],
+                  "certificate_thumbprint": signing_receipt["certificate_thumbprint"],
+                  "timestamp_subject": signing_receipt["timestamp_subject"],
+              },
               "guest_harness_sha256": hashlib.sha256(
                   (target / "reviewed" / "windows_installed_guest_harness.ps1").read_bytes()
               ).hexdigest(),
@@ -334,15 +499,17 @@ jobs:
               ).hexdigest(),
               "installer": {
                   "path": f"candidate/{installer_target.name}",
-                  "sha256": installer["sha256"],
-                  "size": installer["size"],
+                  "sha256": os.environ["CANDIDATE_SHA256"],
+                  "size": installer_target.stat().st_size,
               },
           }
           (target / "controller-request.json").write_text(
               json.dumps(request, indent=2, sort_keys=True) + "\n", encoding="utf-8"
           )
-          if hashlib.sha256(installer_target.read_bytes()).hexdigest() != installer["sha256"]:
+          if hashlib.sha256(installer_target.read_bytes()).hexdigest() != os.environ["CANDIDATE_SHA256"]:
               raise SystemExit("controller installer digest mismatch")
+          if hashlib.sha256(webview_target.read_bytes()).hexdigest() != webview_installer["sha256"]:
+              raise SystemExit("controller WebView installer digest mismatch")
           PY
           (
             cd "$CONTROLLER_ROOT"
@@ -474,6 +641,7 @@ jobs:
       contents: read
     env:
       SOURCE_SHA: ${{ inputs.source_sha }}
+      CANDIDATE_SHA256: ${{ inputs.candidate_sha256 }}
       APPROVED_SNAPSHOT_POLICY_SHA256: ${{ secrets.WINDOWS_VM_SNAPSHOT_POLICY_SHA256 }}
       APPROVED_ADAPTER_SHA256: ${{ secrets.WINDOWS_VM_ADAPTER_SHA256 }}
     steps:
@@ -533,12 +701,22 @@ jobs:
           MAIN_PROOF_SHA256="$(jq -er '.main_proof_sha256 | select(test("^[0-9a-f]{64}$"))' "$request")"
           CANDIDATE_SHA256="$(jq -er '.candidate_sha256 | select(test("^[0-9a-f]{64}$"))' "$request")"
           WEBVIEW_INSTALLER_SHA256="$(jq -er '.webview_installer_sha256 | select(test("^[0-9a-f]{64}$"))' "$request")"
+          DESKTOP_HOST_SHA256="$(jq -er '.signed_components["desktop-host"] | select(test("^[0-9a-f]{64}$"))' "$request")"
+          SIDECAR_SHA256="$(jq -er '.signed_components.sidecar | select(test("^[0-9a-f]{64}$"))' "$request")"
+          SIGNER_SUBJECT="$(jq -er '.authenticode_expectation.signer_subject | select(type == "string" and length > 0)' "$request")"
+          CERTIFICATE_THUMBPRINT="$(jq -er '.authenticode_expectation.certificate_thumbprint | select(test("^[0-9A-F]{40,64}$"))' "$request")"
+          TIMESTAMP_SUBJECT="$(jq -er '.authenticode_expectation.timestamp_subject | select(type == "string" and length > 0)' "$request")"
           test "$(sha256sum "$policy" | cut -d' ' -f1)" = "$APPROVED_SNAPSHOT_POLICY_SHA256"
           uv run --frozen python scripts/verify_windows_desktop_raw_evidence.py \
             --policy "$policy" --output-root "$output" \
             --source-sha "$SOURCE_SHA" --source-tree "$tree" \
             --main-proof-sha256 "$MAIN_PROOF_SHA256" \
             --candidate-sha256 "$CANDIDATE_SHA256" \
+            --desktop-host-sha256 "$DESKTOP_HOST_SHA256" \
+            --sidecar-sha256 "$SIDECAR_SHA256" \
+            --signer-subject "$SIGNER_SUBJECT" \
+            --certificate-thumbprint "$CERTIFICATE_THUMBPRINT" \
+            --timestamp-subject "$TIMESTAMP_SUBJECT" \
             --webview-installer-sha256 "$WEBVIEW_INSTALLER_SHA256" \
             --snapshot-policy-sha256 "$APPROVED_SNAPSHOT_POLICY_SHA256" \
             --adapter-sha256 "$APPROVED_ADAPTER_SHA256" \
@@ -552,6 +730,8 @@ jobs:
             --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
             "${packages[@]}"
           test "$(jq -r .status "$output/acceptance-receipt.json")" = accepted
+          test -s "$output/windows-10-trust-receipt.json"
+          test -s "$output/windows-11-trust-receipt.json"
 
       - name: Upload derived evidence and receipt
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -572,6 +752,9 @@ jobs:
       attestations: write
       contents: read
       id-token: write
+    outputs:
+      acceptance_artifact_name: ${{ steps.closed.outputs.artifact_name }}
+      acceptance_sha256: ${{ steps.closed.outputs.acceptance_sha256 }}
     steps:
       - name: Download verifier-derived exact-SHA acceptance
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -589,9 +772,70 @@ jobs:
           test -f "$receipt"
           test "$(jq -er '.status' "$receipt")" = accepted
           test "$(jq -er '.source_sha' "$receipt")" = "$SOURCE_SHA"
+          for platform_receipt in \
+            windows-10-trust-receipt.json windows-11-trust-receipt.json
+          do
+            if test "$platform_receipt" = windows-10-trust-receipt.json; then
+              expected_platform=windows_10_22h2_x64
+              expected_cases=6
+            else
+              expected_platform=windows_11_x64
+              expected_cases=5
+            fi
+            test -s "$RUNNER_TEMP/windows-installed-attest/$platform_receipt"
+            jq -e --arg sha "$SOURCE_SHA" --arg digest "${{ inputs.candidate_sha256 }}" \
+              --arg platform "$expected_platform" --argjson cases "$expected_cases" \
+              '.schema == "stock-desk-windows-trust-receipt-v1" and
+               .source_sha == $sha and .payload_sha256 == $digest and
+               .platform == $platform and
+               .verifier == "WinVerifyTrust" and
+               .authenticode_status == "Valid" and
+               .standard_user_install == "passed" and
+               .smartscreen_status == "allowed-no-warning" and
+               .smartscreen_observer == "external-protected-vm-observer" and
+               (.smartscreen_case_receipts | length) == $cases and
+               ([.smartscreen_case_receipts[] |
+                 (.observation_sha256 | test("^[0-9a-f]{64}$")) and
+                 (.motw_sha256 | test("^[0-9a-f]{64}$")) and
+                 (.evidence_sha256 | test("^[0-9a-f]{64}$"))] | all)' \
+              "$RUNNER_TEMP/windows-installed-attest/$platform_receipt" >/dev/null
+          done
 
       - name: Attest the verifier-derived exact-SHA acceptance receipt
         id: attest
         uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
         with:
-          subject-path: ${{ runner.temp }}/windows-installed-attest/acceptance-receipt.json
+          subject-path: |
+            ${{ runner.temp }}/windows-installed-attest/acceptance-receipt.json
+            ${{ runner.temp }}/windows-installed-attest/windows-10-trust-receipt.json
+            ${{ runner.temp }}/windows-installed-attest/windows-11-trust-receipt.json
+
+      - name: Close and upload platform trust evidence
+        id: closed
+        shell: bash
+        env:
+          BUNDLE_PATH: ${{ steps.attest.outputs.bundle-path }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/windows-installed-attest"
+          test -s "$BUNDLE_PATH"
+          cp "$BUNDLE_PATH" "$root/windows-trust-attestation.jsonl"
+          (
+            cd "$root"
+            find . -maxdepth 1 -type f ! -name windows-trust-digests.sha256 \
+              -printf '%f\0' | sort -z | xargs -0 sha256sum \
+              > windows-trust-digests.sha256
+          )
+          acceptance_sha256="$(sha256sum "$root/windows-trust-digests.sha256" | cut -d' ' -f1)"
+          artifact_name="windows-installed-trust-$SOURCE_SHA"
+          echo "acceptance_sha256=$acceptance_sha256" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=$artifact_name" >> "$GITHUB_OUTPUT"
+
+      - name: Upload closed Windows platform trust evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-installed-trust-${{ inputs.source_sha }}
+          path: ${{ runner.temp }}/windows-installed-attest/
+          if-no-files-found: error
+          retention-days: 90

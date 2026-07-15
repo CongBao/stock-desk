@@ -52,6 +52,8 @@ REQUIRED_FILES = {
     ".github/workflows/codeql.yml",
     ".github/workflows/release.yml",
     ".github/workflows/security.yml",
+    ".github/workflows/signpath.yml",
+    ".github/workflows/windows-installed.yml",
 }
 
 VERIFIED_ACTION_PINS = {
@@ -102,6 +104,10 @@ VERIFIED_ACTION_PINS = {
     "pnpm/action-setup": (
         "0ebf47130e4866e96fce0953f49152a61190b271",
         "v6.0.9",
+    ),
+    "signpath/github-action-submit-signing-request": (
+        "b9d91eadd323de506c0c81cf0c7fe7438f3360fd",
+        "v2.2",
     ),
     "actions/dependency-review-action": (
         "2031cfc080254a8a887f58cffee85186f0e49e48",
@@ -322,13 +328,35 @@ def test_workflow_trigger_validation_rejects_missing_or_misspelled_on() -> None:
             _workflow_triggers(_load_github_actions_yaml(content))
 
 
+def test_workflow_yaml_has_no_duplicate_mapping_keys() -> None:
+    def visit(node: yaml.Node, location: str) -> None:
+        if isinstance(node, yaml.MappingNode):
+            seen: set[tuple[str, str]] = set()
+            for key, value in node.value:
+                identity = (key.tag, key.value)
+                assert identity not in seen, (
+                    f"duplicate YAML key at {location}: {key.value}"
+                )
+                seen.add(identity)
+                visit(value, f"{location}.{key.value}")
+        elif isinstance(node, yaml.SequenceNode):
+            for index, value in enumerate(node.value):
+                visit(value, f"{location}[{index}]")
+
+    for workflow_path in _workflow_paths():
+        document = yaml.compose(workflow_path.read_text(encoding="utf-8"))
+        assert document is not None
+        visit(document, workflow_path.name)
+
+
 def test_workflows_declare_the_expected_github_triggers() -> None:
     expected_triggers = {
         "ci.yml": {"push", "pull_request"},
         "codeql.yml": {"push", "pull_request", "schedule"},
-        "release.yml": {"push"},
+        "release.yml": {"push", "workflow_dispatch"},
         "security.yml": {"push", "pull_request"},
-        "windows-installed.yml": {"workflow_dispatch"},
+        "signpath.yml": {"workflow_call"},
+        "windows-installed.yml": {"workflow_call", "workflow_dispatch"},
     }
     loaded_triggers: dict[str, dict[str, Any]] = {}
 
@@ -339,7 +367,13 @@ def test_workflows_declare_the_expected_github_triggers() -> None:
         loaded_triggers[workflow_path.name] = triggers
         assert set(triggers) == expected_triggers[workflow_path.name]
 
-    assert loaded_triggers["release.yml"] == {"push": {"tags": ["v1.1.0", "v1.1.0-*"]}}
+    release_triggers = loaded_triggers["release.yml"]
+    assert release_triggers["push"] == {"tags": ["v1.1.0-alpha.*", "v1.1.0-beta.*"]}
+    assert release_triggers["workflow_dispatch"]["inputs"]["release_tag"] == {
+        "description": "Existing annotated v1.1.0 or v1.1.0-rc.N tag on exact protected main",
+        "required": True,
+        "type": "string",
+    }
 
 
 def test_workflow_job_environment_avoids_runtime_only_contexts() -> None:
@@ -537,6 +571,22 @@ def test_release_job_dependency_graph_is_acyclic_and_preserves_trust_order() -> 
         "tag-policy": set(),
         "prerelease-verify": {"tag-policy"},
         "prerelease": {"prerelease-verify"},
+        "formal-inputs": {"tag-policy"},
+        "signpath": {"formal-inputs"},
+        "windows-installed": {"formal-inputs", "signpath"},
+        "trusted-updater-release": {
+            "formal-inputs",
+            "signpath",
+            "windows-installed",
+        },
+        "stable-attest": {"trusted-updater-release"},
+        "stable-release": {
+            "formal-inputs",
+            "signpath",
+            "windows-installed",
+            "trusted-updater-release",
+            "stable-attest",
+        },
     }
 
     visited: set[str] = set()
@@ -562,10 +612,13 @@ def test_prerelease_reuses_exact_main_evidence_without_running_stable_path() -> 
     release = _load_github_actions_yaml(_read(".github/workflows/release.yml"))
     jobs = release["jobs"]
     tag_policy = jobs["tag-policy"]
-    assert tag_policy["name"] == "Enforce supported v1.1 prerelease tag policy"
+    assert (
+        tag_policy["name"]
+        == "Enforce split unsigned-prerelease and formal-release policy"
+    )
     tag_policy_command = tag_policy["steps"][0]["run"]
     assert "^v1\\.1\\.0-(alpha|beta)\\.[1-9][0-9]*$" in tag_policy_command
-    assert set(jobs) == {"tag-policy", "prerelease-verify", "prerelease"}
+    assert {"tag-policy", "prerelease-verify", "prerelease"} <= set(jobs)
 
     verify = jobs["prerelease-verify"]
     assert "startsWith(github.ref_name, 'v1.1.0-alpha.')" in verify["if"]
@@ -733,8 +786,19 @@ def test_all_workflow_actions_use_verified_immutable_release_pins() -> None:
     for workflow_path in _workflow_paths():
         content = workflow_path.read_text("utf-8")
         uses_lines = re.findall(r"^\s*-?\s*uses:.*$", content, re.MULTILINE)
+        local_workflow_lines = [
+            line
+            for line in uses_lines
+            if re.match(r"^\s*uses:\s*\./\.github/workflows/[^\s]+$", line)
+        ]
+        assert set(line.strip() for line in local_workflow_lines) <= {
+            "uses: ./.github/workflows/signpath.yml",
+            "uses: ./.github/workflows/windows-installed.yml",
+        }
         matches = uses_pattern.findall(content)
-        assert len(matches) == len(uses_lines), workflow_path
+        assert len(matches) + len(local_workflow_lines) == len(uses_lines), (
+            workflow_path
+        )
         for action, sha, release_tag in matches:
             seen_actions.add(action)
             assert VERIFIED_ACTION_PINS[action] == (sha, release_tag)
@@ -750,6 +814,23 @@ def test_workflows_have_least_permissions_timeouts_and_bounded_concurrency() -> 
         jobs = workflow["jobs"]
         assert jobs
         for job_name, job in jobs.items():
+            if "uses" in job:
+                assert set(job) <= {
+                    "name",
+                    "if",
+                    "needs",
+                    "permissions",
+                    "uses",
+                    "with",
+                    "secrets",
+                }
+                assert job["permissions"] == {
+                    "actions": "read",
+                    "attestations": "write",
+                    "contents": "read",
+                    "id-token": "write",
+                }
+                continue
             maximum = 60 if workflow_path.name == "ci.yml" else 45
             if workflow_path.name == "release.yml" and job_name == "verify":
                 maximum = 60
@@ -1077,7 +1158,8 @@ def test_ci_and_release_gate_the_chromium_end_to_end_slice() -> None:
     assert "scripts/verify_release.py" in release
     assert "gh attestation verify" in release
     assert "contents: write" in release
-    assert 'tags:\n      - "v1.1.0"\n      - "v1.1.0-*"' in release
+    assert 'tags:\n      - "v1.1.0-alpha.*"\n      - "v1.1.0-beta.*"' in release
+    assert "workflow_dispatch:" in release
 
 
 def test_release_never_rebuilds_after_exact_proof_verification() -> None:
@@ -1130,7 +1212,17 @@ def test_release_workflow_reuses_only_the_attested_exact_main_proof() -> None:
 def test_release_has_no_native_installer_build_entrypoint() -> None:
     workflow_text = _read(".github/workflows/release.yml")
     workflow = _load_github_actions_yaml(workflow_text)
-    assert set(workflow["jobs"]) == {"tag-policy", "prerelease-verify", "prerelease"}
+    assert {
+        "tag-policy",
+        "prerelease-verify",
+        "prerelease",
+        "formal-inputs",
+        "signpath",
+        "windows-installed",
+        "trusted-updater-release",
+        "stable-attest",
+        "stable-release",
+    } == set(workflow["jobs"])
     assert "scripts.build_installer" not in workflow_text
     assert "scripts.build_windows_desktop" not in workflow_text
 
@@ -1592,14 +1684,16 @@ def test_changelog_roadmap_and_architecture_match_current_release_scope() -> Non
         assert boundary in architecture.casefold()
 
 
-def test_release_workflow_is_tag_only_and_scopes_write_permission() -> None:
+def test_release_workflow_splits_unsigned_tags_and_protected_formal_dispatch() -> None:
     release = _read(".github/workflows/release.yml")
     assert re.search(r"^\s+tags:\s*$", release, re.MULTILINE)
-    assert re.search(r'^\s+- ["\']v1\.1\.0-\*["\']\s*$', release, re.MULTILINE)
+    assert re.search(r'^\s+- ["\']v1\.1\.0-alpha\.\*["\']\s*$', release, re.MULTILINE)
+    assert re.search(r'^\s+- ["\']v1\.1\.0-beta\.\*["\']\s*$', release, re.MULTILINE)
+    assert "workflow_dispatch:" in release
     assert "pull_request:" not in release
     assert "branches:" not in release
     assert "schedule:" not in release
-    assert release.count("contents: write") == 1
+    assert release.count("contents: write") == 2
     assert re.search(
         r"prerelease:\n(?:.|\n)*?permissions:\n"
         r"\s+actions: read\n\s+contents: write",
@@ -1609,9 +1703,14 @@ def test_release_workflow_is_tag_only_and_scopes_write_permission() -> None:
     assert "GH_REPO: ${{ github.repository }}" in release
     assert "UNSIGNED-TEST-ONLY-SHA256SUMS" in release
     jobs = _load_github_actions_yaml(release)["jobs"]
-    assert set(jobs) == {"tag-policy", "prerelease-verify", "prerelease"}
+    assert {"tag-policy", "prerelease-verify", "prerelease"} <= set(jobs)
     assert jobs["prerelease"]["permissions"] == {
         "actions": "read",
+        "contents": "write",
+    }
+    assert jobs["stable-release"]["permissions"] == {
+        "actions": "read",
+        "attestations": "read",
         "contents": "write",
     }
 
@@ -1683,15 +1782,20 @@ def test_release_checksum_manifest_is_flat_and_verified_before_publish() -> None
     assert release_steps.index(checksum_step) < create_step_index
 
 
-def test_release_reuses_attested_sbom_evidence_instead_of_regenerating_it() -> None:
+def test_release_generates_and_attests_sbom_from_exact_signed_distribution() -> None:
     workflow = _load_github_actions_yaml(_read(".github/workflows/release.yml"))
     commands = "\n".join(
         str(step.get("run", ""))
         for step in workflow["jobs"]["prerelease-verify"]["steps"]
     )
+    release = _read(".github/workflows/release.yml")
     assert "oci-security-evidence" in commands
     assert "gh attestation verify" in commands
-    assert "anchore/sbom-action" not in _read(".github/workflows/release.yml")
+    assert "anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610" in release
+    assert "trusted-release/sbom-root" in release
+    assert "upload-artifact: false" in release
+    assert "upload-release-assets: false" in release
+    assert "generated SPDX SBOM has no dependency packages" in release
 
 
 def test_release_publish_gate_rejects_a_moved_remote_tag() -> None:

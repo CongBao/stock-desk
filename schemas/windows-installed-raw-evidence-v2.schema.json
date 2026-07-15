@@ -13,13 +13,15 @@
     "identity": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["source_sha", "source_tree", "main_proof_sha256", "candidate_sha256", "webview_installer_sha256"],
+      "required": ["source_sha", "source_tree", "main_proof_sha256", "candidate_sha256", "webview_installer_sha256", "signed_components", "authenticode_expectation"],
       "properties": {
         "source_sha": { "$ref": "#/$defs/gitObject" },
         "source_tree": { "$ref": "#/$defs/gitObject" },
         "main_proof_sha256": { "$ref": "#/$defs/sha256" },
         "candidate_sha256": { "$ref": "#/$defs/sha256" },
-        "webview_installer_sha256": { "$ref": "#/$defs/sha256" }
+        "webview_installer_sha256": { "$ref": "#/$defs/sha256" },
+        "signed_components": { "$ref": "#/$defs/signedComponents" },
+        "authenticode_expectation": { "$ref": "#/$defs/authenticodeExpectation" }
       }
     },
     "execution": {
@@ -90,7 +92,7 @@
         "additionalProperties": false,
         "required": ["kind", "path", "sha256", "size_bytes", "media_type"],
         "properties": {
-          "kind": { "enum": ["observation-stream", "install-log", "uia-action-trace", "uia-tree", "focus-region-contact-sheet", "window-capture-standard", "window-capture-narrow", "failure-diagnostic"] },
+          "kind": { "enum": ["observation-stream", "install-log", "smartscreen-observation", "motw-zone-identifier", "uia-action-trace", "uia-tree", "focus-region-contact-sheet", "window-capture-standard", "window-capture-narrow", "failure-diagnostic"] },
           "path": { "type": "string", "pattern": "^raw/[a-z0-9][a-z0-9._-]{0,95}$" },
           "sha256": { "$ref": "#/$defs/sha256" },
           "size_bytes": { "type": "integer", "minimum": 1, "maximum": 8388608 },
@@ -103,6 +105,26 @@
     "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
     "gitObject": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
     "utcTimestamp": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$" },
+    "signedComponents": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["desktop-host", "sidecar", "nsis-installer"],
+      "properties": {
+        "desktop-host": { "$ref": "#/$defs/sha256" },
+        "sidecar": { "$ref": "#/$defs/sha256" },
+        "nsis-installer": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "authenticodeExpectation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["signer_subject", "certificate_thumbprint", "timestamp_subject"],
+      "properties": {
+        "signer_subject": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "certificate_thumbprint": { "type": "string", "pattern": "^[0-9A-F]{40,64}$" },
+        "timestamp_subject": { "type": "string", "minLength": 1, "maxLength": 512 }
+      }
+    },
     "failureInjection": {
       "oneOf": [
         { "type": "null" },

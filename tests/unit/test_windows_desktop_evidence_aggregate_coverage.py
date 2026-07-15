@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+from scripts import trusted_updater_release as trusted_release
 from scripts import verify_windows_desktop_raw_evidence as verifier
 
 
@@ -16,6 +17,11 @@ SOURCE_TREE = "b" * 40
 MAIN_PROOF_SHA256 = "c" * 64
 CANDIDATE_SHA256 = "d" * 64
 WEBVIEW_INSTALLER_SHA256 = "e" * 64
+DESKTOP_HOST_SHA256 = "6" * 64
+SIDECAR_SHA256 = "7" * 64
+SIGNER_SUBJECT = "CN=Stock Desk Release"
+CERTIFICATE_THUMBPRINT = "A" * 40
+TIMESTAMP_SUBJECT = "CN=Trusted Timestamp"
 ADAPTER_SHA256 = "f" * 64
 CONTROLLER_REQUEST_SHA256 = "1" * 64
 GUEST_HARNESS_SHA256 = "2" * 64
@@ -72,6 +78,11 @@ def _matrix_arguments(
         "expected_source_tree": SOURCE_TREE,
         "expected_main_proof_sha256": MAIN_PROOF_SHA256,
         "expected_candidate_sha256": CANDIDATE_SHA256,
+        "expected_desktop_host_sha256": DESKTOP_HOST_SHA256,
+        "expected_sidecar_sha256": SIDECAR_SHA256,
+        "expected_signer_subject": SIGNER_SUBJECT,
+        "expected_certificate_thumbprint": CERTIFICATE_THUMBPRINT,
+        "expected_timestamp_subject": TIMESTAMP_SUBJECT,
         "expected_webview_installer_sha256": WEBVIEW_INSTALLER_SHA256,
         "expected_policy_sha256": policy_sha256,
         "expected_adapter_sha256": ADAPTER_SHA256,
@@ -117,11 +128,45 @@ def _install_aggregate_fakes(
         )
         if case_id == fail_case:
             raise verifier.DesktopEvidenceError(f"injected rejection for {case_id}")
+        role_digests = {
+            "desktop-host": DESKTOP_HOST_SHA256,
+            "sidecar": SIDECAR_SHA256,
+            "nsis-installer": CANDIDATE_SHA256,
+        }
+        roles = (
+            ("nsis-installer",)
+            if case_id.endswith("-webview-offline")
+            else tuple(role_digests)
+        )
         return {
             "schema_version": 2,
             "artifact": "windows-installed-evidence",
             "case_id": case_id,
             "assignment_marker": assignment["assignment_marker"],
+            "security": {
+                "authenticode": {
+                    "verification_api": "Get-AuthenticodeSignature/WinVerifyTrust",
+                    "artifacts": {
+                        role: {
+                            "role": role,
+                            "file_name": verifier.STOCK_DESK_SIGNED_FILENAMES[role],
+                            "sha256": role_digests[role],
+                            "status": "Valid",
+                            "signer_subject": SIGNER_SUBJECT,
+                            "certificate_thumbprint": CERTIFICATE_THUMBPRINT,
+                            "timestamp_subject": TIMESTAMP_SUBJECT,
+                            "timestamp_thumbprint": "B" * 40,
+                        }
+                        for role in roles
+                    },
+                },
+                "smartscreen": {
+                    "observer": {"source": "external-protected-vm-observer"},
+                    "reputation": {"disposition": "allowed-no-warning"},
+                    "motw_sha256": _sha256(f"motw:{case_id}".encode()),
+                    "observation_sha256": _sha256(f"smartscreen:{case_id}".encode()),
+                },
+            },
             "raw_package_sha256": _sha256(f"raw:{case_id}".encode()),
         }
 
@@ -157,6 +202,11 @@ def test_verify_matrix_derives_ordered_exact_case_outputs_and_receipt(
         "expected_source_tree": SOURCE_TREE,
         "expected_main_proof_sha256": MAIN_PROOF_SHA256,
         "expected_candidate_sha256": CANDIDATE_SHA256,
+        "expected_desktop_host_sha256": DESKTOP_HOST_SHA256,
+        "expected_sidecar_sha256": SIDECAR_SHA256,
+        "expected_signer_subject": SIGNER_SUBJECT,
+        "expected_certificate_thumbprint": CERTIFICATE_THUMBPRINT,
+        "expected_timestamp_subject": TIMESTAMP_SUBJECT,
         "expected_webview_installer_sha256": WEBVIEW_INSTALLER_SHA256,
         "expected_policy_sha256": policy_sha256,
         "expected_adapter_sha256": ADAPTER_SHA256,
@@ -177,6 +227,8 @@ def test_verify_matrix_derives_ordered_exact_case_outputs_and_receipt(
     assert {path.name for path in output_root.iterdir()} == {
         *(f"{case_id}.json" for case_id in case_ids),
         "acceptance-receipt.json",
+        "windows-10-trust-receipt.json",
+        "windows-11-trust-receipt.json",
     }
     parsed_receipt = json.loads(
         (output_root / "acceptance-receipt.json").read_text(encoding="utf-8")
@@ -204,6 +256,45 @@ def test_verify_matrix_derives_ordered_exact_case_outputs_and_receipt(
         "status": "accepted",
     }
     assert [item["case_id"] for item in receipt["case_receipts"]] == list(case_ids)
+
+    for filename, platform, expected_cases in (
+        ("windows-10-trust-receipt.json", "windows_10_22h2_x64", 6),
+        ("windows-11-trust-receipt.json", "windows_11_x64", 5),
+    ):
+        trust = json.loads((output_root / filename).read_text(encoding="utf-8"))
+        assert trust["platform"] == platform
+        assert trust["authenticode_status"] == "Valid"
+        assert trust["standard_user_install"] == "passed"
+        assert trust["smartscreen_status"] == "allowed-no-warning"
+        assert trust["smartscreen_observer"] == "external-protected-vm-observer"
+        assert trust["signed_components"] == {
+            "desktop-host": DESKTOP_HOST_SHA256,
+            "sidecar": SIDECAR_SHA256,
+            "nsis-installer": CANDIDATE_SHA256,
+        }
+        assert trust["signer_subject"] == SIGNER_SUBJECT
+        assert trust["certificate_thumbprint"] == CERTIFICATE_THUMBPRINT
+        assert trust["timestamp_subject"] == TIMESTAMP_SUBJECT
+        assert trust["timestamp_thumbprints"] == ["B" * 40]
+        assert len(trust["case_receipts"]) == expected_cases
+        assert len(trust["smartscreen_case_receipts"]) == expected_cases
+        assert all(
+            len(item["observation_sha256"]) == 64
+            and len(item["motw_sha256"]) == 64
+            and len(item["evidence_sha256"]) == 64
+            for item in trust["smartscreen_case_receipts"]
+        )
+        trusted_release._verify_windows_receipt(
+            output_root / filename,
+            platform,
+            SOURCE_SHA,
+            CANDIDATE_SHA256,
+            trusted_release.AuthenticodeEvidence(
+                signer_subject=SIGNER_SUBJECT,
+                certificate_thumbprint=CERTIFICATE_THUMBPRINT,
+                timestamp_subject=TIMESTAMP_SUBJECT,
+            ),
+        )
 
     for item in receipt["case_receipts"]:
         case_id = item["case_id"]
@@ -363,6 +454,16 @@ def _main_arguments(tmp_path: Path) -> list[str]:
         MAIN_PROOF_SHA256,
         "--candidate-sha256",
         CANDIDATE_SHA256,
+        "--desktop-host-sha256",
+        DESKTOP_HOST_SHA256,
+        "--sidecar-sha256",
+        SIDECAR_SHA256,
+        "--signer-subject",
+        SIGNER_SUBJECT,
+        "--certificate-thumbprint",
+        CERTIFICATE_THUMBPRINT,
+        "--timestamp-subject",
+        TIMESTAMP_SUBJECT,
         "--webview-installer-sha256",
         WEBVIEW_INSTALLER_SHA256,
         "--snapshot-policy-sha256",
@@ -415,6 +516,11 @@ def test_main_validates_cli_identity_and_delegates_exact_paths(
     assert captured["output_root"] == tmp_path / "derived"
     assert captured["expected_source_sha"] == SOURCE_SHA
     assert captured["expected_source_tree"] == SOURCE_TREE
+    assert captured["expected_desktop_host_sha256"] == DESKTOP_HOST_SHA256
+    assert captured["expected_sidecar_sha256"] == SIDECAR_SHA256
+    assert captured["expected_signer_subject"] == SIGNER_SUBJECT
+    assert captured["expected_certificate_thumbprint"] == CERTIFICATE_THUMBPRINT
+    assert captured["expected_timestamp_subject"] == TIMESTAMP_SUBJECT
     assert captured["expected_run_id"] == RUN_ID
     assert captured["expected_run_attempt"] == RUN_ATTEMPT
 

@@ -58,6 +58,7 @@ LEGACY_CRITICAL_INPUTS: Final = (
     "uv.lock",
 )
 CRITICAL_INPUTS: Final = LEGACY_CRITICAL_INPUTS + (
+    ".github/workflows/signpath.yml",
     ".github/workflows/windows-installed.yml",
     "config/desktop-network-privacy.json",
     "config/windows-vm-broker-public-key.pem",
@@ -68,6 +69,10 @@ CRITICAL_INPUTS: Final = LEGACY_CRITICAL_INPUTS + (
     "packaging/stock-desk-sidecar.spec",
     "playwright.config.ts",
     "schemas/artifact-manifest-v2.schema.json",
+    "schemas/deployment-latency-ledger-v1.schema.json",
+    "schemas/deployment-latency-report-v1.schema.json",
+    "schemas/deployment-latency-sample-v1.schema.json",
+    "schemas/deployment-latency-seal-v1.schema.json",
     "schemas/packaged-backtest-evidence-v1.schema.json",
     "schemas/packaged-backtest-host-observation-v1.schema.json",
     "schemas/windows-packaged-backtest-promotion-v1.schema.json",
@@ -88,7 +93,9 @@ CRITICAL_INPUTS: Final = LEGACY_CRITICAL_INPUTS + (
     "scripts/ci_test_inventory.py",
     "scripts/clean_build_artifacts.py",
     "scripts/compare_windows_payloads.py",
+    "scripts/deployment_latency.py",
     "scripts/e2e_snapshot.py",
+    "scripts/signpath_contract.py",
     "scripts/prepare_windows_packaged_backtest_evidence.py",
     "scripts/capture_packaged_backtest_semantics.py",
     "scripts/verify_ci_cache_policy.py",

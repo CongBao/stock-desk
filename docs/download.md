@@ -8,7 +8,7 @@
 
 ## 代码签名状态
 
-**Free code signing provided by [SignPath.io](https://signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).** Stock Desk 的 SignPath Foundation 申请和 CI 接入仍在进行中；在公开清单与 Windows Authenticode 验证都明确成功前，任何现有资产都应视为未签名。
+**Free code signing provided by [SignPath.io](https://signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).** Stock Desk 的 SignPath Foundation 申请仍在审核；正式签名发布控制面目前只是硬禁用骨架，签名 job 无法由配置或密钥启用。NSIS 控制语义证明、真实 SmartScreen/MOTW 证据、生产配置与回执全部完成前，任何现有资产都应视为未签名。
 
 完整规则、维护者角色、人工批准和构建来源限制见[代码签名政策](code-signing-policy.md)。隐私与网络行为见[隐私政策](privacy.md)。
 
@@ -24,4 +24,4 @@
 
 ## English summary
 
-Download Stock Desk only from its [GitHub Releases](https://github.com/CongBao/stock-desk/releases). Verify the release SHA-256 files and manifest. The trusted-update gate hashes the actual installer bytes and requires a repository-pinned Tauri Minisign/Ed25519 signature, WinVerifyTrust, exact-SHA SignPath attestation, and exact-SHA Windows 10/11 x64 receipts. Claimed booleans or digests are not proof; any missing evidence fails closed. The production updater key and formal SignPath integration are still pending, so trusted updates remain disabled and existing artifacts remain unsigned unless independently proven otherwise.
+Download Stock Desk only from its [GitHub Releases](https://github.com/CongBao/stock-desk/releases). Verify the release SHA-256 files and manifest. The trusted-update gate hashes the actual installer bytes and requires a repository-pinned Tauri Minisign/Ed25519 signature, WinVerifyTrust, exact-SHA SignPath attestation, and exact-SHA Windows 10/11 x64 receipts. Claimed booleans or digests are not proof; any missing evidence fails closed. The formal signing and release control plane is a hard-disabled scaffold until NSIS control-semantics proof, real SmartScreen/MOTW evidence, the production key, approved SignPath integration, VM broker, and real receipts all exist; current artifacts remain unsigned unless independently proven otherwise.

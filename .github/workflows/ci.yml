@@ -367,7 +367,9 @@ jobs:
           if (-not (Test-Path -LiteralPath $python -PathType Leaf)) { throw 'locked Python environment is missing' }
           $tauriConfig = Get-Content -LiteralPath 'src-tauri\tauri.conf.json' -Raw | ConvertFrom-Json
           $releaseVersion = $tauriConfig.version
-          if ($releaseVersion -notmatch '^1\.1\.0-(alpha|beta)\.[1-9][0-9]*$') { throw 'Tauri release version is not an allowed unsigned prerelease' }
+          if ($releaseVersion -match '^1\.1\.0-(alpha|beta)\.[1-9][0-9]*$') { $releaseChannel = 'prerelease' }
+          elseif ($releaseVersion -match '^1\.1\.0(-rc\.[1-9][0-9]*)?$') { $releaseChannel = 'formal-candidate' }
+          else { throw 'Tauri release version is not an allowed unsigned candidate' }
           & $python scripts/verify_windows_desktop_bundle.py $payload `
             --version $releaseVersion --source-sha $env:SOURCE_SHA `
             --toolchain "python=$env:PYTHON_VERSION" --toolchain "node=$env:NODE_VERSION" `
@@ -378,7 +380,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Windows bundle verifier failed' }
           if (-not (Test-Path -LiteralPath $manifestOutput -PathType Leaf) -or (Get-Item -LiteralPath $manifestOutput).Length -le 0) { throw 'Windows bundle manifest was not created' }
           $manifest = Get-Content -LiteralPath $manifestOutput -Raw | ConvertFrom-Json
-          if ($manifest.artifact -ne 'windows-desktop-bundle' -or $manifest.source_sha -ne $env:SOURCE_SHA -or $manifest.release.version -ne $releaseVersion) { throw 'Windows bundle manifest identity is invalid' }
+          if ($manifest.artifact -ne 'windows-desktop-bundle' -or $manifest.source_sha -ne $env:SOURCE_SHA -or $manifest.release.version -ne $releaseVersion -or $manifest.release.channel -ne $releaseChannel -or $manifest.release.signature -ne 'unsigned') { throw 'Windows bundle manifest identity is invalid' }
           Copy-Item $installers[0].FullName (Join-Path $out 'stock-desk-unsigned-nsis.exe')
           [ordered]@{schema_version=1;builder='A';source_sha=$env:SOURCE_SHA;source_tree=(git rev-parse 'HEAD^{tree}');runner_os=$env:RUNNER_OS;runner_arch=$env:RUNNER_ARCH;run_id=$env:GITHUB_RUN_ID;run_attempt=$env:GITHUB_RUN_ATTEMPT;job_id=$env:GITHUB_JOB} | ConvertTo-Json -Compress | Set-Content -Encoding utf8NoBOM (Join-Path $out 'provenance.json')
       - name: Generate exact-SHA light and dark icon evidence
@@ -581,12 +583,14 @@ jobs:
           if (-not (Test-Path -LiteralPath $python -PathType Leaf)) { throw 'locked Python environment is missing' }
           $tauriConfig = Get-Content -LiteralPath 'src-tauri\tauri.conf.json' -Raw | ConvertFrom-Json
           $releaseVersion = $tauriConfig.version
-          if ($releaseVersion -notmatch '^1\.1\.0-(alpha|beta)\.[1-9][0-9]*$') { throw 'Tauri release version is not an allowed unsigned prerelease' }
+          if ($releaseVersion -match '^1\.1\.0-(alpha|beta)\.[1-9][0-9]*$') { $releaseChannel = 'prerelease' }
+          elseif ($releaseVersion -match '^1\.1\.0(-rc\.[1-9][0-9]*)?$') { $releaseChannel = 'formal-candidate' }
+          else { throw 'Tauri release version is not an allowed unsigned candidate' }
           & $python scripts/verify_windows_desktop_bundle.py $payload --version $releaseVersion --source-sha $env:SOURCE_SHA --toolchain "python=$env:PYTHON_VERSION" --toolchain "node=$env:NODE_VERSION" --toolchain "pnpm=$env:PNPM_VERSION" --toolchain "rust=$env:RUST_VERSION" --lock "uv.lock=$uvLock" --lock "pnpm-lock.yaml=$pnpmLock" --lock "Cargo.lock=$cargoLock" --installer (Join-Path $payload 'stock-desk-unsigned-nsis.exe') --sidecar $sidecar[0].FullName --output $manifestOutput
           if ($LASTEXITCODE -ne 0) { throw 'Windows bundle verifier failed' }
           if (-not (Test-Path -LiteralPath $manifestOutput -PathType Leaf) -or (Get-Item -LiteralPath $manifestOutput).Length -le 0) { throw 'Windows bundle manifest was not created' }
           $manifest=Get-Content -LiteralPath $manifestOutput -Raw | ConvertFrom-Json
-          if ($manifest.artifact -ne 'windows-desktop-bundle' -or $manifest.source_sha -ne $env:SOURCE_SHA -or $manifest.release.version -ne $releaseVersion) { throw 'Windows bundle manifest identity is invalid' }
+          if ($manifest.artifact -ne 'windows-desktop-bundle' -or $manifest.source_sha -ne $env:SOURCE_SHA -or $manifest.release.version -ne $releaseVersion -or $manifest.release.channel -ne $releaseChannel -or $manifest.release.signature -ne 'unsigned') { throw 'Windows bundle manifest identity is invalid' }
           Copy-Item $installers[0].FullName (Join-Path $out 'stock-desk-unsigned-nsis.exe')
           [ordered]@{schema_version=1;builder='B';source_sha=$env:SOURCE_SHA;source_tree=(git rev-parse 'HEAD^{tree}');runner_os=$env:RUNNER_OS;runner_arch=$env:RUNNER_ARCH;run_id=$env:GITHUB_RUN_ID;run_attempt=$env:GITHUB_RUN_ATTEMPT;job_id=$env:GITHUB_JOB} | ConvertTo-Json -Compress | Set-Content -Encoding utf8NoBOM (Join-Path $out 'provenance.json')
       - name: Upload source-free candidate B
@@ -687,7 +691,14 @@ jobs:
           }
           $tauriConfig = Get-Content -LiteralPath 'src-tauri\tauri.conf.json' -Raw | ConvertFrom-Json
           $releaseVersion = $tauriConfig.version
-          if ($releaseVersion -notmatch '^1\.1\.0-(alpha|beta)\.[1-9][0-9]*$') { throw 'Tauri release version is not an allowed unsigned prerelease' }
+          if ($releaseVersion -match '^1\.1\.0-(alpha|beta)\.[1-9][0-9]*$') { $releaseChannel = 'prerelease' }
+          elseif ($releaseVersion -match '^1\.1\.0(-rc\.[1-9][0-9]*)?$') { $releaseChannel = 'formal-candidate' }
+          else { throw 'Tauri release version is not an allowed unsigned candidate' }
+          $leftManifest = Get-Content -LiteralPath $left.Manifest -Raw | ConvertFrom-Json
+          $rightManifest = Get-Content -LiteralPath $right.Manifest -Raw | ConvertFrom-Json
+          foreach ($candidateManifest in @($leftManifest, $rightManifest)) {
+            if ($candidateManifest.source_sha -ne $env:SOURCE_SHA -or $candidateManifest.release.version -ne $releaseVersion -or $candidateManifest.release.channel -ne $releaseChannel -or $candidateManifest.release.signature -ne 'unsigned') { throw 'promoted Windows bundle manifest identity is invalid' }
+          }
           $installerName = "stock-desk-$releaseVersion-unsigned-x64-setup.exe"
           Copy-Item $left.Manifest (Join-Path $diagnostics 'left-windows-desktop-bundle.json')
           Copy-Item $right.Manifest (Join-Path $diagnostics 'right-windows-desktop-bundle.json')

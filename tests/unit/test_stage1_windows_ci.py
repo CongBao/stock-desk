@@ -130,8 +130,14 @@ def test_builders_fail_closed_when_bundle_manifest_is_not_materialized() -> None
         assert "(Get-Item -LiteralPath $manifestOutput).Length -le 0" in commands
         assert "$manifest.source_sha -ne $env:SOURCE_SHA" in commands
         assert "$releaseVersion = $tauriConfig.version" in commands
+        assert "^1\\.1\\.0-(alpha|beta)\\.[1-9][0-9]*$" in commands
+        assert "^1\\.1\\.0(-rc\\.[1-9][0-9]*)?$" in commands
+        assert "$releaseChannel = 'prerelease'" in commands
+        assert "$releaseChannel = 'formal-candidate'" in commands
         assert "--version $releaseVersion" in commands
         assert "$manifest.release.version -ne $releaseVersion" in commands
+        assert "$manifest.release.channel -ne $releaseChannel" in commands
+        assert "$manifest.release.signature -ne 'unsigned'" in commands
         assert "Windows bundle manifest was not created" in commands
         assert "Windows bundle manifest identity is invalid" in commands
 
@@ -181,6 +187,18 @@ def test_comparison_promotes_only_a_and_main_proof_attests_both_identities() -> 
     assert "windows-payload-comparison-manifest.json" in commands
     assert "$left = Get-CompleteCandidate (Join-Path $root 'a') 'left'" in commands
     assert "$right = Get-CompleteCandidate (Join-Path $root 'b') 'right'" in commands
+    assert "$releaseVersion = $tauriConfig.version" in commands
+    assert "^1\\.1\\.0-(alpha|beta)\\.[1-9][0-9]*$" in commands
+    assert "^1\\.1\\.0(-rc\\.[1-9][0-9]*)?$" in commands
+    assert "$releaseChannel = 'prerelease'" in commands
+    assert "$releaseChannel = 'formal-candidate'" in commands
+    assert "$leftManifest = Get-Content -LiteralPath $left.Manifest" in commands
+    assert "$rightManifest = Get-Content -LiteralPath $right.Manifest" in commands
+    assert "$candidateManifest.release.version -ne $releaseVersion" in commands
+    assert "$candidateManifest.release.channel -ne $releaseChannel" in commands
+    assert "$candidateManifest.release.signature -ne 'unsigned'" in commands
+    assert "stock-desk-$releaseVersion-unsigned-x64-setup.exe" in commands
+    assert "gh release" not in commands
     assert "a\\windows-desktop-bundle.json" not in commands
     assert "b\\windows-desktop-bundle.json" not in commands
     assert "manifest-binding.json" in commands

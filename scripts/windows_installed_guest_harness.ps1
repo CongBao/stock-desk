@@ -45,6 +45,9 @@ param(
   [Parameter(Mandatory = $true)]
   [string]$FilesystemObservationPath,
 
+  [Parameter(Mandatory = $true)]
+  [string]$SmartScreenObservationPath,
+
   [ValidateRange(1, 1)]
   [int]$ScenarioAttempt = 1,
 
@@ -530,6 +533,30 @@ function Get-FileDigest {
   return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 
+function Get-StockDeskAuthenticodeObservation {
+  param(
+    [Parameter(Mandatory = $true)]
+    [ValidateSet('nsis-installer', 'desktop-host', 'sidecar')]
+    [string]$Role,
+    [Parameter(Mandatory = $true)][string]$Path
+  )
+
+  Assert-RegularFile -Path $Path -Label "Stock Desk $Role executable"
+  $signature = Get-AuthenticodeSignature -LiteralPath $Path
+  $signer = $signature.SignerCertificate
+  $timestamp = $signature.TimeStamperCertificate
+  return [ordered]@{
+    role = $Role
+    file_name = [IO.Path]::GetFileName($Path)
+    sha256 = Get-FileDigest -Path $Path
+    status = [string]$signature.Status
+    signer_subject = if ($null -eq $signer) { $null } else { [string]$signer.Subject }
+    certificate_thumbprint = if ($null -eq $signer) { $null } else { ([string]$signer.Thumbprint).ToUpperInvariant() }
+    timestamp_subject = if ($null -eq $timestamp) { $null } else { [string]$timestamp.Subject }
+    timestamp_thumbprint = if ($null -eq $timestamp) { $null } else { ([string]$timestamp.Thumbprint).ToUpperInvariant() }
+  }
+}
+
 function Get-StringDigest {
   param([Parameter(Mandatory = $true)][string]$Value)
   $sha = [Security.Cryptography.SHA256]::Create()
@@ -906,6 +933,47 @@ Assert-RegularFile -Path $installerPath -Label 'Verified Stock Desk installer'
 if ((Get-FileDigest -Path $installerPath) -ne $request.candidate_sha256) {
   throw 'Installer digest changed inside the guest'
 }
+if (
+  $request.smartscreen_evidence.schema -ne 'stock-desk-smartscreen-evidence-policy-v1' -or
+  $request.smartscreen_evidence.required -ne $true -or
+  $request.smartscreen_evidence.delivery_method -ne 'https-internet-download' -or
+  $request.smartscreen_evidence.launch_api -ne 'ShellExecuteExW' -or
+  $request.smartscreen_evidence.required_disposition -ne 'allowed-no-warning'
+) {
+  throw 'Controller request does not require the closed SmartScreen evidence policy'
+}
+$zoneIdentifierPath = "$installerPath`:Zone.Identifier"
+try {
+  $motwText = Get-Content -LiteralPath $zoneIdentifierPath -Raw -ErrorAction Stop
+} catch {
+  throw 'Signed Stock Desk installer lacks an Internet Mark-of-the-Web stream'
+}
+$zoneIdMatch = [regex]::Match($motwText, '(?im)^ZoneId=(?<zone>[0-9]+)\s*$')
+$hostUrlMatch = [regex]::Match($motwText, '(?im)^HostUrl=(?<url>https://[^\r\n]+)\s*$')
+if (-not $zoneIdMatch.Success -or $zoneIdMatch.Groups['zone'].Value -ne '3' -or -not $hostUrlMatch.Success) {
+  throw 'Signed Stock Desk installer is not bound to an Internet-zone HTTPS download'
+}
+$motwHostUrl = [Uri]$hostUrlMatch.Groups['url'].Value
+if (
+  $motwHostUrl.Scheme -ne 'https' -or
+  -not [string]::IsNullOrEmpty($motwHostUrl.UserInfo) -or
+  -not [string]::IsNullOrEmpty($motwHostUrl.Query) -or
+  -not [string]::IsNullOrEmpty($motwHostUrl.Fragment)
+) {
+  throw 'Installer Mark-of-the-Web HostUrl is not a public immutable HTTPS URL'
+}
+$motwSha256 = Get-StringDigest -Value $motwText
+$expectedSignedComponents = $request.signed_components
+if (
+  $null -eq $expectedSignedComponents -or
+  $expectedSignedComponents.'nsis-installer' -ne $request.candidate_sha256
+) {
+  throw 'Controller request does not bind the signed Stock Desk component roles'
+}
+$stockDeskAuthenticodeObservations = [Collections.Generic.List[object]]::new()
+$stockDeskAuthenticodeObservations.Add(
+  (Get-StockDeskAuthenticodeObservation -Role 'nsis-installer' -Path $installerPath)
+)
 
 $publicRoot = Join-Path $EvidenceRoot 'public'
 $rawRoot = Join-Path $publicRoot 'raw'
@@ -978,7 +1046,7 @@ if (@($script:BrowserTimeline[0].windows).Count -ne 0) {
   throw 'Protected clean snapshot must have an empty external-browser baseline'
 }
 $installLogPath = Join-Path $rawRoot 'install.log'
-$installerProcess = Start-Process -FilePath $installerPath -ArgumentList '/S' -PassThru
+$installerProcess = Start-Process -FilePath $installerPath -ArgumentList '/S' -Verb Open -PassThru
 $installerToken = Get-ProcessTokenObservation -Role 'installer' -Process $installerProcess -Started $true
 Wait-ProcessAndObserveUac -Process $installerProcess -ConsentBaseline $consentBefore -ObserveBrowser
 $installExitCode = $installerProcess.ExitCode
@@ -988,6 +1056,11 @@ $uninstallPath = Join-Path $installRoot 'uninstall.exe'
 $applicationFilesPresent = (Test-Path -LiteralPath $appPath -PathType Leaf)
 $shortcutPresent = Test-ShortcutPresent
 $webviewAfter = Get-WebViewRuntime
+if ($applicationFilesPresent) {
+  $stockDeskAuthenticodeObservations.Add(
+    (Get-StockDeskAuthenticodeObservation -Role 'desktop-host' -Path $appPath)
+  )
+}
 $webviewChildObservation = [ordered]@{
   observed = $false
   executable_name = $null
@@ -1076,8 +1149,13 @@ if ($Scenario -ne 'webview-install-failure' -and $installExitCode -eq 0 -and $ap
     $_.ParentProcessId -eq $desktopProcess.Id -and $_.Name -like 'stock-desk-sidecar*'
   } | Select-Object -First 1
   if ($sidecarProcess) {
+    $sidecarPath = [string]$sidecarProcess.ExecutablePath
+    Assert-RegularFile -Path $sidecarPath -Label 'Installed Stock Desk sidecar'
     $sidecarNative = Get-Process -Id $sidecarProcess.ProcessId -ErrorAction Stop
     $sidecarToken = Get-ProcessTokenObservation -Role 'sidecar' -Process $sidecarNative -Started $true
+    $stockDeskAuthenticodeObservations.Add(
+      (Get-StockDeskAuthenticodeObservation -Role 'sidecar' -Path $sidecarPath)
+    )
   }
   $mainWindowCount = if ($desktopProcess.MainWindowHandle -ne [IntPtr]::Zero) { 1 } else { 0 }
   if ($mainWindowCount -eq 1) {
@@ -1169,6 +1247,10 @@ foreach ($browserEvent in $script:BrowserWindowEvents) {
 
 Add-Observation -Kind 'desktop-host-process-token' -Producer 'windows-process-token' -Value $desktopToken
 Add-Observation -Kind 'sidecar-process-token' -Producer 'windows-process-token' -Value $sidecarToken
+Add-Observation -Kind 'stock-desk-authenticode' -Producer 'powershell-get-authenticodesignature-winverifytrust' -Value ([ordered]@{
+    verification_api = 'Get-AuthenticodeSignature/WinVerifyTrust'
+    artifacts = @($stockDeskAuthenticodeObservations)
+  })
 if ($Scenario -eq 'installed-first-use') {
   Add-Observation -Kind 'hardware-observation' -Producer 'protected-vm-hardware-observer' -Value (Get-Content -LiteralPath $HardwareObservationPath -Raw | ConvertFrom-Json)
   Add-Observation -Kind 'network-observation' -Producer 'protected-vm-network-observer' -Value (Get-Content -LiteralPath $NetworkObservationPath -Raw | ConvertFrom-Json)
@@ -1228,7 +1310,18 @@ $logLines = @(
 )
 Write-Utf8NoBom -Path $installLogPath -Text (($logLines -join "`n") + "`n")
 $detailPath = if ($Scenario -eq 'webview-install-failure') { $failureDiagnosticPath } else { $captureTextPath }
-$publicText = ($script:Events -join "`n") + "`n" + (Get-Content -LiteralPath $installLogPath -Raw) + "`n" + (Get-Content -LiteralPath $detailPath -Raw)
+Assert-RegularFile -Path $SmartScreenObservationPath -Label 'Protected SmartScreen observation'
+$smartScreenRawText = Get-Content -LiteralPath $SmartScreenObservationPath -Raw
+$smartScreenObservation = $smartScreenRawText | ConvertFrom-Json
+if (
+  $smartScreenObservation.schema -ne 'stock-desk-smartscreen-raw-observation-v1' -or
+  $smartScreenObservation.case_id -ne $CaseId -or
+  $smartScreenObservation.candidate.sha256 -ne [string]$request.candidate_sha256 -or
+  $smartScreenObservation.download.zone_identifier_sha256 -ne $motwSha256
+) {
+  throw 'Protected SmartScreen observation is not bound to this candidate and MOTW stream'
+}
+$publicText = ($script:Events -join "`n") + "`n" + (Get-Content -LiteralPath $installLogPath -Raw) + "`n" + (Get-Content -LiteralPath $detailPath -Raw) + "`n" + $smartScreenRawText + "`n" + $motwText
 $secretPattern = '(?i)(api[_-]?key|token|password|secret)\s*[:=]\s*[^\s,]+'
 $usernamePattern = [regex]::Escape($username)
 $absolutePathPattern = '(?i)[a-z]:\\users\\'
@@ -1246,6 +1339,10 @@ if ($redaction.secret_match_count -ne 0 -or $redaction.username_match_count -ne 
 
 $observationPath = Join-Path $rawRoot 'observations.jsonl'
 Write-Utf8NoBom -Path $observationPath -Text (($script:Events -join "`n") + "`n")
+$smartScreenRecordPath = Join-Path $rawRoot 'smartscreen-observation.json'
+Write-Utf8NoBom -Path $smartScreenRecordPath -Text ($smartScreenRawText.TrimEnd() + "`n")
+$motwRecordPath = Join-Path $rawRoot 'zone-identifier.txt'
+Write-Utf8NoBom -Path $motwRecordPath -Text $motwText
 $completedAt = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
 $records = @(
   [ordered]@{
@@ -1260,6 +1357,20 @@ $records = @(
     path = 'raw/install.log'
     sha256 = Get-FileDigest -Path $installLogPath
     size_bytes = (Get-Item -LiteralPath $installLogPath).Length
+    media_type = 'text/plain; charset=utf-8'
+  },
+  [ordered]@{
+    kind = 'smartscreen-observation'
+    path = 'raw/smartscreen-observation.json'
+    sha256 = Get-FileDigest -Path $smartScreenRecordPath
+    size_bytes = (Get-Item -LiteralPath $smartScreenRecordPath).Length
+    media_type = 'application/json'
+  },
+  [ordered]@{
+    kind = 'motw-zone-identifier'
+    path = 'raw/zone-identifier.txt'
+    sha256 = Get-FileDigest -Path $motwRecordPath
+    size_bytes = (Get-Item -LiteralPath $motwRecordPath).Length
     media_type = 'text/plain; charset=utf-8'
   }
 )
@@ -1305,6 +1416,16 @@ $manifest = [ordered]@{
     main_proof_sha256 = [string]$request.main_proof_sha256
     candidate_sha256 = [string]$request.candidate_sha256
     webview_installer_sha256 = [string]$request.webview_installer_sha256
+    signed_components = [ordered]@{
+      'desktop-host' = [string]$request.signed_components.'desktop-host'
+      sidecar = [string]$request.signed_components.sidecar
+      'nsis-installer' = [string]$request.signed_components.'nsis-installer'
+    }
+    authenticode_expectation = [ordered]@{
+      signer_subject = [string]$request.authenticode_expectation.signer_subject
+      certificate_thumbprint = [string]$request.authenticode_expectation.certificate_thumbprint
+      timestamp_subject = [string]$request.authenticode_expectation.timestamp_subject
+    }
   }
   execution = [ordered]@{
     repository = $ActionsRepository

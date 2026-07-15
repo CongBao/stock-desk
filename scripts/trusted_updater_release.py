@@ -190,7 +190,13 @@ def evaluate_trusted_updater_release(
         ):
             receipt_path = evidence[receipt_key]  # type: ignore[literal-required]
             attestation_path = evidence[attestation_key]  # type: ignore[literal-required]
-            _verify_windows_receipt(receipt_path, platform, source_sha, payload_digest)
+            _verify_windows_receipt(
+                receipt_path,
+                platform,
+                source_sha,
+                payload_digest,
+                authenticode,
+            )
             _verify_gh_attestation(
                 receipt_path,
                 attestation_path,
@@ -338,19 +344,150 @@ def _verify_signpath_receipt(
 
 
 def _verify_windows_receipt(
-    path: Path, platform: str, source_sha: str, payload_digest: str
+    path: Path,
+    platform: str,
+    source_sha: str,
+    payload_digest: str,
+    authenticode: AuthenticodeEvidence,
 ) -> None:
     record = _read_exact_json(path, "Windows receipt")
-    expected = {
-        "schema": "stock-desk-windows-trust-receipt-v1",
-        "platform": platform,
-        "source_sha": source_sha,
-        "payload_sha256": payload_digest,
-        "verifier": "WinVerifyTrust",
-        "authenticode_status": "Valid",
-        "standard_user_install": "passed",
+    expected_keys = {
+        "schema",
+        "platform",
+        "source_sha",
+        "payload_sha256",
+        "verifier",
+        "authenticode_status",
+        "standard_user_install",
+        "signed_components",
+        "signer_subject",
+        "certificate_thumbprint",
+        "timestamp_subject",
+        "timestamp_thumbprints",
+        "case_receipts",
+        "smartscreen_status",
+        "smartscreen_observer",
+        "smartscreen_case_receipts",
     }
-    if record != expected:
+    _require_exact_keys(record, expected_keys, "Windows receipt")
+    expected_case_ids = {
+        "windows_10_22h2_x64": {
+            "win10-22h2-dpi-100",
+            "win10-22h2-dpi-125",
+            "win10-22h2-dpi-150",
+            "win10-22h2-dpi-175",
+            "win10-22h2-dpi-200",
+            "win10-22h2-dpi-100-webview-offline",
+        },
+        "windows_11_x64": {
+            "win11-dpi-100",
+            "win11-dpi-125",
+            "win11-dpi-150",
+            "win11-dpi-175",
+            "win11-dpi-200",
+        },
+    }
+    if platform not in expected_case_ids:
+        raise TrustedUpdaterReleaseError("Windows receipt platform is unsupported")
+    components = record["signed_components"]
+    timestamps = record["timestamp_thumbprints"]
+    cases = record["case_receipts"]
+    smartscreen_cases = record["smartscreen_case_receipts"]
+    if (
+        record["schema"] != "stock-desk-windows-trust-receipt-v1"
+        or record["platform"] != platform
+        or record["source_sha"] != source_sha
+        or record["payload_sha256"] != payload_digest
+        or record["verifier"] != "WinVerifyTrust"
+        or record["authenticode_status"] != "Valid"
+        or record["standard_user_install"] != "passed"
+        or record["smartscreen_status"] != "allowed-no-warning"
+        or record["smartscreen_observer"] != "external-protected-vm-observer"
+        or record["signer_subject"] != authenticode["signer_subject"]
+        or record["certificate_thumbprint"] != authenticode["certificate_thumbprint"]
+        or record["timestamp_subject"] != authenticode["timestamp_subject"]
+        or not isinstance(components, dict)
+        or set(components) != {"desktop-host", "sidecar", "nsis-installer"}
+        or components["nsis-installer"] != payload_digest
+        or any(
+            not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+            for digest in components.values()
+        )
+        or not isinstance(timestamps, list)
+        or not timestamps
+        or timestamps != sorted(set(timestamps))
+        or any(
+            not isinstance(thumbprint, str)
+            or re.fullmatch(r"[0-9A-F]{40,64}", thumbprint) is None
+            for thumbprint in timestamps
+        )
+        or not isinstance(cases, list)
+        or not isinstance(smartscreen_cases, list)
+    ):
+        raise TrustedUpdaterReleaseError(
+            "Windows receipt is not exact-SHA trust evidence"
+        )
+    observed_cases: set[str] = set()
+    for case in cases:
+        if not isinstance(case, dict) or set(case) != {
+            "case_id",
+            "roles",
+            "authenticode_sha256",
+        }:
+            raise TrustedUpdaterReleaseError(
+                "Windows receipt is not exact-SHA trust evidence"
+            )
+        case_id = case["case_id"]
+        roles = case["roles"]
+        digest = case["authenticode_sha256"]
+        expected_roles = ["desktop-host", "nsis-installer", "sidecar"]
+        if case_id == "win10-22h2-dpi-100-webview-offline":
+            expected_roles = ["nsis-installer"]
+        if (
+            not isinstance(case_id, str)
+            or case_id in observed_cases
+            or roles != expected_roles
+            or not isinstance(digest, str)
+            or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+        ):
+            raise TrustedUpdaterReleaseError(
+                "Windows receipt is not exact-SHA trust evidence"
+            )
+        observed_cases.add(case_id)
+    if observed_cases != expected_case_ids[platform]:
+        raise TrustedUpdaterReleaseError(
+            "Windows receipt is not exact-SHA trust evidence"
+        )
+    observed_smartscreen_cases: set[str] = set()
+    for case in smartscreen_cases:
+        if not isinstance(case, dict) or set(case) != {
+            "case_id",
+            "observation_sha256",
+            "motw_sha256",
+            "evidence_sha256",
+        }:
+            raise TrustedUpdaterReleaseError(
+                "Windows receipt is not exact-SHA trust evidence"
+            )
+        case_id = case["case_id"]
+        if (
+            not isinstance(case_id, str)
+            or case_id in observed_smartscreen_cases
+            or any(
+                not isinstance(case[field], str)
+                or re.fullmatch(r"[0-9a-f]{64}", case[field]) is None
+                for field in (
+                    "observation_sha256",
+                    "motw_sha256",
+                    "evidence_sha256",
+                )
+            )
+        ):
+            raise TrustedUpdaterReleaseError(
+                "Windows receipt is not exact-SHA trust evidence"
+            )
+        observed_smartscreen_cases.add(case_id)
+    if observed_smartscreen_cases != observed_cases:
         raise TrustedUpdaterReleaseError(
             "Windows receipt is not exact-SHA trust evidence"
         )

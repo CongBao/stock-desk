@@ -30,12 +30,20 @@ def _commands(workflow: dict[str, object]) -> str:
     )
 
 
-def test_v11_release_has_only_exact_proof_reuse_and_unsigned_publish_jobs() -> None:
+def _job_commands(job: dict[str, object]) -> str:
+    return "\n".join(
+        str(step.get("run", ""))
+        for step in job.get("steps", [])
+        if isinstance(step, dict)
+    )
+
+
+def test_v11_release_preserves_exact_proof_reuse_and_unsigned_publish_jobs() -> None:
     workflow = _workflow()
     jobs = workflow["jobs"]
     assert isinstance(jobs, dict)
 
-    assert set(jobs) == {"tag-policy", "prerelease-verify", "prerelease"}
+    assert {"tag-policy", "prerelease-verify", "prerelease"} <= set(jobs)
     assert jobs["prerelease-verify"]["needs"] == "tag-policy"
     assert jobs["prerelease"]["needs"] == "prerelease-verify"
 
@@ -120,7 +128,7 @@ def test_v11_release_cannot_rebuild_retest_or_publish_legacy_platforms() -> None
         assert forbidden not in source
 
 
-def test_v11_tag_policy_fails_closed_until_trusted_stable_chain_exists() -> None:
+def test_v11_tag_policy_splits_unsigned_tag_push_from_formal_main_dispatch() -> None:
     workflow = _workflow()
     jobs = workflow["jobs"]
     assert isinstance(jobs, dict)
@@ -132,8 +140,10 @@ def test_v11_tag_policy_fails_closed_until_trusted_stable_chain_exists() -> None
     assert r"^v1\.1\.0-(alpha|beta)\.[1-9][0-9]*$" in command
     assert r"^v[0-9]+\.[0-9]+\.[0-9]+$" not in command
     assert "v1.1.0-rc" not in command
-    assert '      - "v1.1.0"' in source
-    assert '      - "v1.1.0-*"' in source
+    assert '      - "v1.1.0-alpha.*"' in source
+    assert '      - "v1.1.0-beta.*"' in source
+    assert "workflow_dispatch:" in source
+    assert "release_tag:" in source
 
 
 def test_v11_prerelease_asset_selection_is_version_agnostic_and_windows_only() -> None:
@@ -155,3 +165,171 @@ def test_v11_prerelease_asset_selection_is_version_agnostic_and_windows_only() -
     assert "docs/releases/$GITHUB_REF_NAME.md" in commands
     assert "*.exe" in commands
     assert "*.dmg" not in commands
+
+
+def test_formal_release_is_a_protected_main_dispatch_with_a_closed_signed_dag() -> None:
+    workflow = _workflow()
+    triggers = workflow.get("on", workflow.get(True))
+    assert isinstance(triggers, dict)
+    assert set(triggers) == {"push", "workflow_dispatch"}
+    dispatch = triggers["workflow_dispatch"]
+    assert dispatch["inputs"]["release_tag"]["required"] is True
+
+    jobs = workflow["jobs"]
+    assert isinstance(jobs, dict)
+    assert set(jobs) == {
+        "tag-policy",
+        "prerelease-verify",
+        "prerelease",
+        "formal-inputs",
+        "signpath",
+        "windows-installed",
+        "trusted-updater-release",
+        "stable-attest",
+        "stable-release",
+    }
+    assert jobs["signpath"]["uses"] == "./.github/workflows/signpath.yml"
+    assert jobs["signpath"]["needs"] == "formal-inputs"
+    assert jobs["signpath"]["with"]["release_tag"] == "${{ inputs.release_tag }}"
+    assert jobs["windows-installed"]["uses"] == (
+        "./.github/workflows/windows-installed.yml"
+    )
+    assert jobs["windows-installed"]["needs"] == ["formal-inputs", "signpath"]
+    assert jobs["trusted-updater-release"]["needs"] == [
+        "formal-inputs",
+        "signpath",
+        "windows-installed",
+    ]
+    assert jobs["trusted-updater-release"]["runs-on"] == "windows-2025"
+    assert jobs["trusted-updater-release"]["if"] == (
+        "${{ github.event_name == 'workflow_dispatch' && "
+        "inputs.release_tag == 'v1.1.0' }}"
+    )
+    assert workflow["permissions"] == {"contents": "read"}
+    for reusable in ("signpath", "windows-installed"):
+        assert jobs[reusable]["permissions"] == {
+            "actions": "read",
+            "attestations": "write",
+            "contents": "read",
+            "id-token": "write",
+        }
+        assert jobs[reusable]["secrets"] != "inherit"
+    assert set(jobs["signpath"]["secrets"]) == {
+        "SIGNPATH_API_TOKEN",
+        "SIGNPATH_ORGANIZATION_ID",
+        "SIGNPATH_PROJECT_SLUG",
+        "SIGNPATH_SIGNING_POLICY_SLUG",
+        "SIGNPATH_ARTIFACT_CONFIGURATION_SLUG",
+        "SIGNPATH_POLICY_TOKEN",
+    }
+    assert set(jobs["windows-installed"]["secrets"]) == {
+        "WINDOWS_INSTALLED_POLICY_TOKEN",
+        "WINDOWS_VM_BROKER_ENDPOINT",
+        "WINDOWS_VM_SNAPSHOT_POLICY_SHA256",
+        "WINDOWS_VM_ADAPTER_SHA256",
+    }
+    assert jobs["stable-attest"]["needs"] == "trusted-updater-release"
+    assert jobs["stable-release"]["needs"] == [
+        "formal-inputs",
+        "signpath",
+        "windows-installed",
+        "trusted-updater-release",
+        "stable-attest",
+    ]
+
+
+def test_formal_release_reuses_exact_main_bytes_and_fails_closed() -> None:
+    workflow = _workflow()
+    commands = _commands(workflow)
+    source = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+    for required in (
+        'test "$GITHUB_REF" = refs/heads/main',
+        'test "$GITHUB_REF_PROTECTED" = true',
+        'git cat-file -t "refs/tags/$RELEASE_TAG"',
+        "refs/remotes/origin/protected-main",
+        "main-validation-proof-$SOURCE_SHA",
+        "windows-desktop-alpha-candidate-$SOURCE_SHA",
+        "scripts/main_validation_proof.py verify",
+        "scripts/artifact_manifest.py verify",
+        "TAURI_SIGNING_PRIVATE_KEY",
+        "scripts/trusted_updater_release.py",
+        "latest.json",
+        "SHA256SUMS",
+        "sbom.spdx.json",
+        "provenance.json",
+        "gh release create",
+        "--verify-tag",
+    ):
+        assert required in commands
+    assert "anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610" in source
+
+    for forbidden in (
+        "pytest",
+        "pnpm test",
+        "pnpm e2e",
+        "cargo test",
+        "cargo build",
+        "scripts.build_installer",
+        "scripts.build_windows_desktop",
+        "continue-on-error",
+        "|| true",
+    ):
+        assert forbidden not in source
+    assert "UNSIGNED-TEST-ONLY" not in _job_commands(workflow["jobs"]["stable-release"])
+
+
+def test_stable_publish_cannot_run_without_every_real_signed_receipt() -> None:
+    workflow = _workflow()
+    jobs = workflow["jobs"]
+    signpath_workflow = yaml.safe_load(
+        (ROOT / ".github" / "workflows" / "signpath.yml").read_text(encoding="utf-8")
+    )
+    assert signpath_workflow["jobs"]["sign"]["if"] == "${{ false }}"
+    assert isinstance(jobs, dict)
+    verify = _job_commands(jobs["trusted-updater-release"])
+    verify_job = str(jobs["trusted-updater-release"])
+    assert "needs.signpath.outputs.signed_artifact_name" in verify_job
+    assert "needs.windows-installed.outputs.acceptance_artifact_name" in verify_job
+    for required in (
+        "signpath-receipt.json",
+        "signpath-attestation-bundle.jsonl",
+        "windows-10-trust-receipt.json",
+        "windows-11-trust-receipt.json",
+        "windows-trust-attestation.jsonl",
+        "--installer-attestation",
+        "--signpath-attestation",
+        "--windows-10-attestation",
+        "--windows-11-attestation",
+    ):
+        assert required in verify
+    assert "TAURI_SIGNING_PRIVATE_KEY" not in jobs["trusted-updater-release"]["env"]
+    signing_step = next(
+        step
+        for step in jobs["trusted-updater-release"]["steps"]
+        if step.get("name")
+        == "Create detached Tauri signature and strict stable metadata"
+    )
+    assert set(signing_step["env"]) == {
+        "TAURI_SIGNING_PRIVATE_KEY",
+        "TAURI_SIGNING_PRIVATE_KEY_PASSWORD",
+    }
+    assert ".verified.exe" not in verify
+    assert (
+        'verified="$RUNNER_TEMP/trusted-release/verified/stock-desk-$version-windows-x64-setup.exe"'
+        in verify
+    )
+    assert jobs["stable-release"]["if"] == (
+        "${{ inputs.release_tag == 'v1.1.0' && "
+        "needs.trusted-updater-release.result == 'success' && "
+        "needs.stable-attest.result == 'success' }}"
+    )
+    publish = _job_commands(jobs["stable-release"])
+    assert jobs["stable-release"]["permissions"] == {
+        "actions": "read",
+        "attestations": "read",
+        "contents": "write",
+    }
+    assert "gh attestation verify" in publish
+    assert "stable-assets-attestation.jsonl" in publish
+    assert "--signer-workflow" in publish
+    assert "--source-ref refs/heads/main" in publish

@@ -123,6 +123,7 @@ _HIGH_RISK_SCRIPT_NAMES = frozenset(
         "check_requirement_coverage.py",
         "ci_impact.py",
         "ci_test_inventory.py",
+        "deployment_latency.py",
         "main_validation_proof.py",
         "verify_ci_cache_policy.py",
         "verify_installed_app.py",

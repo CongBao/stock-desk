@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/CongBao/stock-desk/schemas/deployment-latency-seal-v1.schema.json",
+  "title": "Stock Desk deployment latency ledger continuity seal v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "record_count", "head_hash"],
+  "properties": {
+    "schema_version": { "const": "stock-desk-deployment-latency-seal-v1" },
+    "record_count": { "type": "integer", "minimum": 0 },
+    "head_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  }
+}

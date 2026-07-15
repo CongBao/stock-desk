@@ -14,6 +14,11 @@ SOURCE_SHA = "a" * 40
 SOURCE_TREE = "b" * 40
 MAIN_PROOF_SHA256 = "1" * 64
 CANDIDATE_SHA256 = "2" * 64
+DESKTOP_HOST_SHA256 = "0" * 64
+SIDECAR_SHA256 = "a" * 64
+SIGNER_SUBJECT = "CN=Stock Desk Release"
+CERTIFICATE_THUMBPRINT = "A" * 40
+TIMESTAMP_SUBJECT = "CN=Trusted Timestamp"
 WEBVIEW_INSTALLER_SHA256 = "3" * 64
 ADAPTER_SHA256 = "4" * 64
 CONTROLLER_REQUEST_SHA256 = "5" * 64
@@ -245,6 +250,7 @@ def _values(assignment: dict[str, Any], *, offline: bool) -> dict[str, Any]:
         },
         "webview-after": _webview_state(present=not offline),
         "installer-process-token": _process("installer", started=True),
+        "stock-desk-authenticode": {"proof": "validator-owned"},
         "desktop-host-process-token": _process("desktop-host", started=started),
         "sidecar-process-token": _process("sidecar", started=started),
         "uninstaller-process-token": _process("uninstaller", started=started),
@@ -315,7 +321,12 @@ def _exercise_package(
         if offline
         else ("observation-stream", "observations.jsonl")
     )
-    records_spec = [record_roles, ("install-log", "install.log")]
+    records_spec = [
+        record_roles,
+        ("install-log", "install.log"),
+        ("smartscreen-observation", "smartscreen-observation.json"),
+        ("motw-zone-identifier", "motw-zone-identifier.txt"),
+    ]
     if offline:
         records_spec.append(("failure-diagnostic", "failure-diagnostic.txt"))
     else:
@@ -347,6 +358,16 @@ def _exercise_package(
             "main_proof_sha256": MAIN_PROOF_SHA256,
             "candidate_sha256": CANDIDATE_SHA256,
             "webview_installer_sha256": WEBVIEW_INSTALLER_SHA256,
+            "signed_components": {
+                "desktop-host": DESKTOP_HOST_SHA256,
+                "sidecar": SIDECAR_SHA256,
+                "nsis-installer": CANDIDATE_SHA256,
+            },
+            "authenticode_expectation": {
+                "signer_subject": SIGNER_SUBJECT,
+                "certificate_thumbprint": CERTIFICATE_THUMBPRINT,
+                "timestamp_subject": TIMESTAMP_SUBJECT,
+            },
         },
         "execution": {
             "repository": "CongBao/stock-desk",
@@ -406,6 +427,24 @@ def _exercise_package(
     monkeypatch.setattr(
         verifier, "_validate_uia_raw_records", lambda *args, **kwargs: None
     )
+    monkeypatch.setattr(
+        verifier,
+        "_validate_smartscreen_raw_records",
+        lambda *args, **kwargs: {
+            "observer": {"source": "external-protected-vm-observer"},
+            "reputation": {"disposition": "allowed-no-warning"},
+            "observation_sha256": "b" * 64,
+            "motw_sha256": "c" * 64,
+        },
+    )
+    monkeypatch.setattr(
+        verifier,
+        "_validate_stock_desk_authenticode",
+        lambda *args, **kwargs: {
+            "verification_api": "Get-AuthenticodeSignature/WinVerifyTrust",
+            "artifacts": {},
+        },
+    )
 
     return verifier.verify_package(
         package,
@@ -414,6 +453,11 @@ def _exercise_package(
         expected_source_tree=SOURCE_TREE,
         expected_main_proof_sha256=MAIN_PROOF_SHA256,
         expected_candidate_sha256=CANDIDATE_SHA256,
+        expected_desktop_host_sha256=DESKTOP_HOST_SHA256,
+        expected_sidecar_sha256=SIDECAR_SHA256,
+        expected_signer_subject=SIGNER_SUBJECT,
+        expected_certificate_thumbprint=CERTIFICATE_THUMBPRINT,
+        expected_timestamp_subject=TIMESTAMP_SUBJECT,
         expected_webview_installer_sha256=WEBVIEW_INSTALLER_SHA256,
         expected_policy_sha256=policy_sha256,
         expected_adapter_sha256=ADAPTER_SHA256,

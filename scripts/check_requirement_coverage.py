@@ -517,7 +517,7 @@ V11_CANONICAL_REQUIREMENTS: dict[str, dict[str, Any]] = {
         "publication",
         "unsigned_prerelease_exact_proof_reuse",
         4,
-        "0aac23d06ff6a1cbfa7f70e966bbf0e843fd922b0eb72a0cff73852e416c8e08",
+        "ce0c8e5311596ed020be9e636dd522020048562d595b009255682109204bfc81",
         (
             "trusted-windows-distribution",
             "independent-candidate-build-and-no-duplicate-release",
@@ -610,6 +610,40 @@ V11_CANONICAL_REQUIREMENTS: dict[str, dict[str, Any]] = {
             "windows-desktop-shell",
             "task-checkpoint-and-recovery-choice",
             "active-tasks-on-confirmed-exit",
+        ),
+    ),
+    "V11-R-020": _authority(
+        "publication",
+        "publication",
+        "protected_formal_windows_release_control_plane",
+        4,
+        "24a2b5f5598a314dc300617781b526800fadd152439d597081ee5d493d169413",
+        (
+            "trusted-windows-distribution",
+            "trusted-code-signing-and-smartscreen-gate",
+            "sign-formal-candidate",
+        ),
+        (
+            "trusted-windows-distribution",
+            "trusted-code-signing-and-smartscreen-gate",
+            "signature-or-smartscreen-verification-fails",
+        ),
+        (
+            "trusted-windows-distribution",
+            "independent-candidate-build-and-no-duplicate-release",
+            "release-consumes-main-proof",
+        ),
+    ),
+    "V11-R-021": _authority(
+        "performance",
+        "performance",
+        "comparable_deployment_latency_evidence",
+        4,
+        "511c96b855a7e93a0c39f38d8b7c5af7dd208d2576e243b1c99d106f3e1a1f77",
+        (
+            "trusted-windows-distribution",
+            "safe-cache-boundaries-and-deployment-budgets",
+            "calibrate-deployment-budget",
         ),
     ),
 }
@@ -1510,25 +1544,25 @@ def validate_v11_manifest(
         raise ValidationError("v1.1 schema_version must be integer 1")
     requirements = _expect_list(matrix["requirements"], "v1.1 requirements")
     non_goals = _expect_list(matrix["non_goals"], "v1.1 non_goals")
-    expected = [f"V11-R-{index:03d}" for index in range(1, 20)]
+    expected = [f"V11-R-{index:03d}" for index in range(1, 22)]
     if [
         item.get("id") if isinstance(item, dict) else None for item in requirements
     ] != expected:
         raise ValidationError(
-            "v1.1 requirements must contain exactly V11-R-001 through V11-R-019"
+            "v1.1 requirements must contain exactly V11-R-001 through V11-R-021"
         )
     if non_goals:
         raise ValidationError("v1.1 non_goals must be empty for the frozen increment")
     if list(V11_CANONICAL_REQUIREMENTS) != expected:
         raise ValidationError(
-            "v1.1 canonical registry must contain exactly V11-R-001 through V11-R-019"
+            "v1.1 canonical registry must contain exactly V11-R-001 through V11-R-021"
         )
     if (
         list(V11_AUTHORITATIVE_BEHAVIOR_KEYS) != expected
         or list(V11_AUTHORITATIVE_ACCEPTANCE_SHA256) != expected
     ):
         raise ValidationError(
-            "v1.1 authoritative contract must contain exactly V11-R-001 through V11-R-019"
+            "v1.1 authoritative contract must contain exactly V11-R-001 through V11-R-021"
         )
     tracked_paths = _tracked_paths(repo_root)
     behavior_keys: set[str] = set()

@@ -692,7 +692,7 @@ requirements:
     category: publication
     kind: publication
     behavior_key: unsigned_prerelease_exact_proof_reuse
-    acceptance: "Unsigned v1.1 alpha and beta publication consumes the exact tagged main proof and exact-version Windows candidate, verifies their identities and digests, and publishes only clearly unsigned Windows prerelease assets without rerunning source tests or rebuilding; stable and rc tags remain fail-closed until the separate trusted signing and installed-matrix chain exists."
+    acceptance: "Unsigned v1.1 alpha and beta publication consumes the exact tagged main proof and exact-version Windows candidate, verifies their identities and digests, and publishes only clearly unsigned Windows prerelease assets without rerunning source tests or rebuilding; rc and stable are excluded from this unsigned publication path."
     source_refs:
       - {
           capability: trusted-windows-distribution,
@@ -711,8 +711,8 @@ requirements:
         runner: pytest
         kind: contract
         path: tests/unit/test_v11_release_workflow.py
-        selector: tests/unit/test_v11_release_workflow.py::test_v11_release_has_only_exact_proof_reuse_and_unsigned_publish_jobs
-        assertion: The current v1.1 release workflow contains only tag policy, exact proof and candidate verification, and unsigned prerelease publication jobs.
+        selector: tests/unit/test_v11_release_workflow.py::test_v11_release_preserves_exact_proof_reuse_and_unsigned_publish_jobs
+        assertion: The v1.1 release workflow preserves the exact proof and candidate verification plus clearly unsigned prerelease publication jobs alongside the separate fail-closed formal DAG.
       - state: existing
         runner: pytest
         kind: absence
@@ -723,8 +723,8 @@ requirements:
         runner: pytest
         kind: contract
         path: tests/unit/test_v11_release_workflow.py
-        selector: tests/unit/test_v11_release_workflow.py::test_v11_tag_policy_fails_closed_until_trusted_stable_chain_exists
-        assertion: Stable and rc tags are visibly rejected while only version-matched unsigned alpha and beta tags are accepted.
+        selector: tests/unit/test_v11_release_workflow.py::test_v11_tag_policy_splits_unsigned_tag_push_from_formal_main_dispatch
+        assertion: Only version-matched unsigned alpha and beta tags use the push publication path; stable and rc require a protected-main formal dispatch and every external trust input.
       - state: existing
         runner: pytest
         kind: contract
@@ -1002,4 +1002,114 @@ requirements:
         path: tests/unit/test_windows_desktop_evidence_contract.py
         selector: tests/unit/test_windows_desktop_evidence_contract.py::test_packaged_backtest_matrix_uses_webview_host_ipc_and_new_worker_resume
         assertion: The Windows candidate contract requires the installed WebView host-IPC matrix, refuses demo and router bypasses, checkpoints through the desktop shutdown protocol, restarts the packaged sidecar, and verifies a different Worker identity after resume.
+  - id: V11-R-020
+    category: publication
+    kind: publication
+    behavior_key: protected_formal_windows_release_control_plane
+    acceptance: "The checked-in formal v1.1 release scaffold validates only exact annotated rc or stable tags on protected main and defines immutable proof, candidate, signing, Windows, updater, attestation, and publication dependencies, but its SignPath job is unconditionally disabled by a literal gate that no input, variable, secret, or environment can enable. Neither rc nor stable can sign or publish until a later reviewed source change adds NSIS installation-control equivalence and real fresh-machine SmartScreen/MOTW evidence and removes that gate; unsigned alpha and beta publication remains separate, and every missing production key, signature, receipt, or attestation fails closed."
+    source_refs:
+      - {
+          capability: trusted-windows-distribution,
+          requirement: trusted-code-signing-and-smartscreen-gate,
+          scenario: sign-formal-candidate,
+        }
+      - {
+          capability: trusted-windows-distribution,
+          requirement: trusted-code-signing-and-smartscreen-gate,
+          scenario: signature-or-smartscreen-verification-fails,
+        }
+      - {
+          capability: trusted-windows-distribution,
+          requirement: independent-candidate-build-and-no-duplicate-release,
+          scenario: release-consumes-main-proof,
+        }
+    owning_stage: 4
+    status: mapped
+    evidence:
+      - state: existing
+        runner: pytest
+        kind: contract
+        path: tests/unit/test_v11_release_workflow.py
+        selector: tests/unit/test_v11_release_workflow.py::test_formal_release_is_a_protected_main_dispatch_with_a_closed_signed_dag
+        assertion: The formal scaffold accepts only exact protected-main rc or stable tags and defines signing, installed validation, trusted updater, attestation, and publication as one conditional DAG behind the hard signing gate.
+      - state: existing
+        runner: pytest
+        kind: security
+        path: tests/unit/test_v11_release_workflow.py
+        selector: tests/unit/test_v11_release_workflow.py::test_formal_release_reuses_exact_main_bytes_and_fails_closed
+        assertion: The scaffold consumes the exact proved candidate bytes and refuses missing or placeholder production trust inputs without rebuilding or rerunning source tests.
+      - state: existing
+        runner: pytest
+        kind: security
+        path: tests/unit/test_v11_release_workflow.py
+        selector: tests/unit/test_v11_release_workflow.py::test_stable_publish_cannot_run_without_every_real_signed_receipt
+        assertion: No stable publication bypass exists around the signed, installed-machine, updater, and attestation dependencies, and the literal SignPath gate prevents the chain from starting in this stage.
+      - state: existing
+        runner: pytest
+        kind: security
+        path: tests/unit/test_signpath_contract.py
+        selector: tests/unit/test_signpath_contract.py::test_workflow_is_reusable_protected_and_pinned
+        assertion: The reusable SignPath workflow is exact-main protected, second-person approved, pinned, and unconditionally disabled by a literal job gate before any signing request.
+      - state: existing
+        runner: pytest
+        kind: contract
+        path: tests/unit/test_windows_installed_workflow.py
+        selector: tests/unit/test_windows_installed_workflow.py::test_formal_mode_requires_exact_signed_candidate_identity
+        assertion: The external Windows acceptance workflow requires the exact signed candidate and protected source identities rather than accepting an unsigned or substituted installer.
+      - state: existing
+        runner: pytest
+        kind: security
+        path: tests/unit/test_windows_installed_workflow.py
+        selector: tests/unit/test_windows_installed_workflow.py::test_formal_acceptance_emits_exact_platform_receipts_and_attestation
+        assertion: Windows 10 and 11 acceptance derives exact platform receipts and an attestation only after the complete real standard-user matrix succeeds.
+  - id: V11-R-021
+    category: performance
+    kind: performance
+    behavior_key: comparable_deployment_latency_evidence
+    acceptance: "Deployment latency evidence is retained in a tamper-evident append-only ledger and continuity seal with every successful, failed, cancelled, timed-out, skipped, and invalidated attempt preserved; P50 and P95 are computed only from the active segment of at least five consecutive distinct runs sharing the exact category, workflow, ref, and full environment baseline, retries cannot inflate completeness, identity drift is reported transparently, and interrupted ledger-plus-seal updates recover atomically or fail closed. Reports remain explicitly incomplete until that comparable five-run threshold is met and cannot improve measured results by dropping failed attempts or security gates."
+    source_refs:
+      - {
+          capability: trusted-windows-distribution,
+          requirement: safe-cache-boundaries-and-deployment-budgets,
+          scenario: calibrate-deployment-budget,
+        }
+    owning_stage: 4
+    status: mapped
+    evidence:
+      - state: existing
+        runner: pytest
+        kind: performance
+        path: tests/unit/test_deployment_latency.py
+        selector: tests/unit/test_deployment_latency.py::test_fewer_than_five_samples_per_category_is_incomplete
+        assertion: Every latency category remains incomplete until it has five consecutive comparable distinct runs.
+      - state: existing
+        runner: pytest
+        kind: performance
+        path: tests/unit/test_deployment_latency.py
+        selector: tests/unit/test_deployment_latency.py::test_complete_report_uses_every_success_failure_and_invalidated_sample
+        assertion: A completed report retains all terminal outcomes and derives percentiles without erasing failures or invalidated evidence.
+      - state: existing
+        runner: pytest
+        kind: security
+        path: tests/unit/test_deployment_latency.py
+        selector: tests/unit/test_deployment_latency.py::test_retries_cannot_inflate_five_run_completeness
+        assertion: Multiple attempts for one workflow run remain visible but count only once toward the five-run threshold.
+      - state: existing
+        runner: pytest
+        kind: performance
+        path: tests/unit/test_deployment_latency.py
+        selector: tests/unit/test_deployment_latency.py::test_identity_drift_resets_streak_and_is_reported_transparently
+        assertion: Workflow, ref, or environment-baseline drift starts a new comparable segment while preserving the prior segment in the report.
+      - state: existing
+        runner: pytest
+        kind: security
+        path: tests/unit/test_deployment_latency.py
+        selector: tests/unit/test_deployment_latency.py::test_hash_chain_rejects_historical_modification_and_middle_deletion
+        assertion: Historical modification or selective deletion breaks the ledger hash chain and fails validation.
+      - state: existing
+        runner: pytest
+        kind: security
+        path: tests/unit/test_deployment_latency.py
+        selector: tests/unit/test_deployment_latency.py::test_cli_recovers_an_interrupted_two_file_commit_without_losing_history
+        assertion: The CLI recovers an interrupted ledger-and-seal transaction without losing valid history or accepting unsealed state.
 non_goals: []
