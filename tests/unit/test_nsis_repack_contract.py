@@ -763,7 +763,7 @@ def test_repack_uses_only_fixed_argv_and_environment_and_writes_receipt(
 
     command = cast(list[str], observed["command"])
     assert command[1:] == manifest["argv"]
-    assert observed["stdout"] is subprocess.DEVNULL
+    assert isinstance(observed["stdout"], int)
     assert observed["stderr"] is subprocess.STDOUT
     execution_environment = cast(dict[str, str], observed["env"])
     assert execution_environment["SOURCE_DATE_EPOCH"] == str(EPOCH)
@@ -1240,6 +1240,84 @@ def test_repack_execution_failures_are_closed(
     monkeypatch.setattr("scripts.nsis_repack_contract.subprocess.run", fake_run)
     with pytest.raises(contract.NsisRepackContractError):
         _repack(kit, tmp_path / "out.exe", tmp_path / "receipt.json")
+
+
+def test_repack_nonzero_reports_only_a_bounded_redacted_tool_tail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    kit, _manifest = _create(tmp_path)
+    observed_work: Path | None = None
+
+    def fake_run(
+        command: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[bytes]:
+        nonlocal observed_work
+        observed_work = Path(str(kwargs["cwd"]))
+        output_fd = cast(int, kwargs["stdout"])
+        spaced_drive_path = "".join(
+            ("C:", "/", "Users", "/", "Runner Name", "/private/file.nsi")
+        )
+        forward_unc_path = "".join(("/", "/", "SERVER", "/share/private/file.nsi"))
+        os.write(output_fd, b"discarded-prefix" + b"x" * 65536 + b"\n")
+        os.write(
+            output_fd,
+            (
+                f"Error in script {observed_work}\\installer.nsi on line 576"
+                "\u009b\u202e\n"
+                f"Secondary {spaced_drive_path}\n"
+                f"UNC {forward_unc_path}\n"
+            ).encode(),
+        )
+        return subprocess.CompletedProcess(command, 7)
+
+    monkeypatch.setattr("scripts.nsis_repack_contract.subprocess.run", fake_run)
+
+    with pytest.raises(contract.NsisRepackContractError) as captured:
+        _repack(kit, tmp_path / "out.exe", tmp_path / "receipt.json")
+
+    message = str(captured.value)
+    assert "NSIS toolchain returned 7" in message
+    assert "NSIS> Error in script @STOCK_DESK_PRIVATE_WORK@" in message
+    assert observed_work is not None
+    assert str(observed_work) not in message
+    assert "discarded-prefix" not in message
+    assert "@ABSOLUTE_PATH@" in message
+    assert "Runner Name" not in message
+    assert "SERVER" not in message
+    assert "\u009b" not in message
+    assert "\u202e" not in message
+    assert len(message.encode()) <= contract.NSIS_DIAGNOSTIC_TAIL_BYTES + 1024
+
+
+def test_repack_closes_both_pipe_fds_when_diagnostic_reader_cannot_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    kit, _manifest = _create(tmp_path)
+    real_pipe = os.pipe
+    opened_fds: list[int] = []
+
+    def observed_pipe() -> tuple[int, int]:
+        pair = real_pipe()
+        opened_fds.extend(pair)
+        return pair
+
+    class FailingThread:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def start(self) -> None:
+            raise RuntimeError("forced start failure")
+
+    monkeypatch.setattr(contract.os, "pipe", observed_pipe)
+    monkeypatch.setattr(contract.threading, "Thread", FailingThread)
+
+    with pytest.raises(contract.NsisRepackContractError, match="could not start"):
+        _repack(kit, tmp_path / "out.exe", tmp_path / "receipt.json")
+
+    assert len(opened_fds) == 2
+    for file_descriptor in opened_fds:
+        with pytest.raises(OSError):
+            os.fstat(file_descriptor)
 
 
 def test_repack_rejects_existing_destinations(tmp_path: Path) -> None:

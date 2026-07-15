@@ -20,6 +20,8 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from typing import Any, BinaryIO, Final, Iterator
 import unicodedata
 
@@ -41,6 +43,8 @@ SCHEMA_VERSION: Final = 1
 MAX_JSON_BYTES: Final = 2 * 1024 * 1024
 MAX_FILE_BYTES: Final = 2 * 1024 * 1024 * 1024
 MAX_FILES: Final = 4096
+NSIS_DIAGNOSTIC_TAIL_BYTES: Final = 32 * 1024
+_NSIS_DIAGNOSTIC_MAX_LINES: Final = 40
 TOOLCHAIN_LOCK_PATH: Final = (
     Path(__file__).resolve().parents[1] / "config" / "nsis-toolchain-lock.json"
 )
@@ -1972,6 +1976,65 @@ def repack(
         )
 
 
+def _drain_bounded_output_tail(
+    read_fd: int,
+    stop: threading.Event,
+    tail: bytearray,
+    failures: list[OSError],
+) -> None:
+    empty_polls_after_stop = 0
+    try:
+        while True:
+            try:
+                chunk = os.read(read_fd, 8192)
+            except BlockingIOError:
+                if stop.is_set():
+                    empty_polls_after_stop += 1
+                    if empty_polls_after_stop >= 10:
+                        return
+                    time.sleep(0.01)
+                else:
+                    stop.wait(0.01)
+                continue
+            if not chunk:
+                return
+            empty_polls_after_stop = 0
+            tail.extend(chunk)
+            if len(tail) > NSIS_DIAGNOSTIC_TAIL_BYTES:
+                del tail[:-NSIS_DIAGNOSTIC_TAIL_BYTES]
+    except OSError as error:
+        failures.append(error)
+    finally:
+        try:
+            os.close(read_fd)
+        except OSError as error:
+            failures.append(error)
+
+
+def _format_nsis_diagnostic(payload: bytes, work: Path) -> str:
+    text = payload.decode("utf-8", errors="replace").replace("\r\n", "\n")
+    for private_path in {str(work), str(work).replace("\\", "/")}:
+        text = re.sub(
+            re.escape(private_path),
+            "@STOCK_DESK_PRIVATE_WORK@",
+            text,
+            flags=re.IGNORECASE,
+        )
+    text = re.sub(
+        r"(?im)(?<![A-Za-z0-9])(?:[A-Z]:[\\/]|[\\/]{2}[^\\/\s]+[\\/])[^\r\n]*",
+        "@ABSOLUTE_PATH@",
+        text,
+    )
+    text = "".join(
+        character
+        if character in "\t\n" or not unicodedata.category(character).startswith("C")
+        else "?"
+        for character in text
+    )
+    lines = [line for line in text.splitlines() if line.strip()]
+    return "\n".join(f"NSIS> {line}" for line in lines[-_NSIS_DIAGNOSTIC_MAX_LINES:])
+
+
 def _repack_verified_snapshot(
     *,
     verified_snapshot: Path,
@@ -2017,22 +2080,75 @@ def _repack_verified_snapshot(
         generated_parent = work / PurePosixPath(str(expected["path"])).parent
         generated_parent.mkdir(parents=True, exist_ok=True)
         os.chmod(generated_parent, 0o700)
+        diagnostic_tail = bytearray()
+        diagnostic_failures: list[OSError] = []
+        diagnostic_read_fd, diagnostic_write_fd = os.pipe()
+        try:
+            os.set_blocking(diagnostic_read_fd, False)
+        except OSError as error:
+            os.close(diagnostic_read_fd)
+            os.close(diagnostic_write_fd)
+            raise NsisRepackContractError(
+                "NSIS output capture could not be configured"
+            ) from error
+        diagnostic_stop = threading.Event()
+        diagnostic_reader = threading.Thread(
+            target=_drain_bounded_output_tail,
+            args=(
+                diagnostic_read_fd,
+                diagnostic_stop,
+                diagnostic_tail,
+                diagnostic_failures,
+            ),
+            name="stock-desk-nsis-output",
+            daemon=True,
+        )
+        try:
+            diagnostic_reader.start()
+        except (OSError, RuntimeError) as error:
+            os.close(diagnostic_read_fd)
+            os.close(diagnostic_write_fd)
+            raise NsisRepackContractError(
+                "NSIS output capture could not start"
+            ) from error
+        execution_error: OSError | subprocess.TimeoutExpired | None = None
+        completed: subprocess.CompletedProcess[bytes] | None = None
         try:
             completed = subprocess.run(
                 [str(executable), *[str(argument) for argument in argv]],
                 cwd=work,
                 env=execution_environment,
                 stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
+                stdout=diagnostic_write_fd,
                 stderr=subprocess.STDOUT,
                 check=False,
                 timeout=900,
             )
         except (OSError, subprocess.TimeoutExpired) as error:
-            raise NsisRepackContractError("NSIS toolchain execution failed") from error
-        if completed.returncode != 0:
+            execution_error = error
+        finally:
+            try:
+                os.close(diagnostic_write_fd)
+            except OSError as error:
+                diagnostic_failures.append(error)
+            diagnostic_stop.set()
+            diagnostic_reader.join(timeout=5)
+        if execution_error is not None:
             raise NsisRepackContractError(
-                f"NSIS toolchain returned {completed.returncode}"
+                "NSIS toolchain execution failed"
+            ) from execution_error
+        if diagnostic_reader.is_alive():
+            raise NsisRepackContractError("NSIS output capture did not terminate")
+        if diagnostic_failures:
+            raise NsisRepackContractError(
+                "NSIS output capture failed"
+            ) from diagnostic_failures[0]
+        assert completed is not None
+        if completed.returncode != 0:
+            diagnostic = _format_nsis_diagnostic(bytes(diagnostic_tail), work)
+            suffix = f"\n{diagnostic}" if diagnostic else ""
+            raise NsisRepackContractError(
+                f"NSIS toolchain returned {completed.returncode}{suffix}"
             )
         generated = _safe_child(work, str(expected["path"]), "generated installer")
         size, digest = _hash_regular_file(generated, "generated installer")
