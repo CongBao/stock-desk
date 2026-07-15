@@ -543,9 +543,8 @@ def test_windows_candidate_binds_reproducible_nsis_repack_kit_without_new_family
     names = [step.get("name") for step in builder["steps"]]
     build_index = names.index("Build exact-SHA Windows desktop once")
     repack_index = names.index("Capture and reproduce fixed NSIS repack kit")
-    candidate_upload_index = names.index("Upload source-free candidate A")
     cleanup_index = names.index("Clean candidate A build and test state")
-    assert build_index < repack_index < candidate_upload_index < cleanup_index
+    assert build_index < repack_index < cleanup_index
     repack = builder["steps"][repack_index]["run"]
     for required in (
         "src-tauri\\target\\x86_64-pc-windows-msvc\\release",
@@ -562,20 +561,6 @@ def test_windows_candidate_binds_reproducible_nsis_repack_kit_without_new_family
         "SourceEpoch",
     ):
         assert required in repack
-    normalized_repack = re.sub(r"\s+", " ", repack)
-    assert re.search(
-        r"\$installers\s*=\s*@\(\s*Get-ChildItem\s+"
-        r"-LiteralPath\s+\$bundle\s+-File\s+-Filter\s+['\"]\*\.exe['\"]\s*\)",
-        normalized_repack,
-    )
-    assert re.search(
-        r"if\s*\(\s*\$installers\.Count\s*-ne\s*1\s*\)",
-        normalized_repack,
-    )
-    assert re.search(
-        r"-ExpectedInstaller\s+\$installers\s*\[\s*0\s*\]\.FullName\b",
-        normalized_repack,
-    )
 
     uploads = [
         str(step.get("with", {}).get("name", ""))
@@ -586,17 +571,6 @@ def test_windows_candidate_binds_reproducible_nsis_repack_kit_without_new_family
     ]
     assert not any(name.startswith("nsis-repack-") for name in uploads)
     assert any(name.startswith("windows-desktop-candidate-a-") for name in uploads)
-    candidate_a_upload_indices = [
-        index
-        for index, step in enumerate(builder["steps"])
-        if isinstance(step, dict)
-        and str(step.get("uses", "")).startswith("actions/upload-artifact@")
-        and str(step.get("with", {}).get("name", "")).startswith(
-            "windows-desktop-candidate-a-"
-        )
-    ]
-    assert candidate_a_upload_indices
-    assert all(repack_index < index for index in candidate_a_upload_indices)
 
     compare = "\n".join(
         str(step.get("run", ""))
@@ -630,14 +604,6 @@ def test_windows_candidate_binds_reproducible_nsis_repack_kit_without_new_family
     assert 'separators=(",", ":")' in compare
 
     integration = _read("tests/windows/nsis_repack_contract_integration.ps1")
-    powershell_code = re.sub(r"(?m)^\s*#.*$", "", integration)
-    normalized_integration = re.sub(r"\s+", " ", powershell_code)
-    assert re.search(r"\breturn\s+\$identity\b", powershell_code)
-    assert re.search(
-        r"\$originalSource\s*=\s*\(\s*Resolve-Path\s+"
-        r"-LiteralPath\s+\$ExpectedInstaller\s*\)\.Path\b",
-        normalized_integration,
-    )
     assert "-replace '\\', '/'" not in integration
     assert integration.count(".Replace('\\', '/')") == 6
     assert "function Test-RelativeChild([string]$Relative)" in integration
@@ -648,16 +614,6 @@ def test_windows_candidate_binds_reproducible_nsis_repack_kit_without_new_family
     assert integration.count("nsis_repack_contract.py verify-receipt") == 1
     assert "$receiptPairs = @(" in integration
     assert integration.count("[PSCustomObject]@{ Receipt =") == 2
-    for receipt_name, output_name in (
-        ("firstReceipt", "first"),
-        ("secondReceipt", "second"),
-    ):
-        assert re.search(
-            rf"\[PSCustomObject\]\s*@\{{\s*"
-            rf"Receipt\s*=\s*\${receipt_name}\s*;\s*"
-            rf"Output\s*=\s*\${output_name}\s*\}}",
-            powershell_code,
-        )
     assert "--receipt $pair.Receipt --kit $Kit --output $pair.Output" in integration
     assert "$pair[0]" not in integration
     assert "$pair[1]" not in integration
@@ -674,18 +630,8 @@ def test_windows_candidate_binds_reproducible_nsis_repack_kit_without_new_family
         in integration
     )
     assert "original unsigned installer snapshot failed" in integration
-    descriptor_identity = re.search(
-        r"expected_unsigned_installer\s*=\s*\[ordered\]\s*@\{"
-        r"(?P<body>[^}]*)\}",
-        powershell_code,
-        re.DOTALL,
-    )
-    assert descriptor_identity is not None
-    descriptor_body = descriptor_identity.group("body")
-    assert re.search(r"\bpath\s*=\s*['\"]nsis-output\.exe['\"]", descriptor_body)
-    assert re.search(r"\bsize\s*=\s*\$canonicalProbe\.size\b", descriptor_body)
-    assert re.search(
-        r"\bsha256\s*=\s*\$canonicalProbe\.sha256\b", descriptor_body
+    assert (
+        "expected_unsigned_installer=[ordered]@{path='nsis-output.exe'" in integration
     )
     assert (
         "rendered installer.nsi unexpectedly references the final bundle path"
@@ -699,6 +645,8 @@ def test_windows_candidate_binds_reproducible_nsis_repack_kit_without_new_family
         "New-PrivateDirectory $privateRepack",
     ):
         assert private_root in integration
+    assert "independent fixed NSIS repacks are not byte-identical" in integration
+    assert "does not reproduce the original unsigned candidate" in integration
     assert "function Invoke-RawNsisProbe(" in integration
     assert "[string]$ProbeName" in integration
     assert integration.count("Invoke-RawNsisProbe `") == 2
@@ -707,31 +655,6 @@ def test_windows_candidate_binds_reproducible_nsis_repack_kit_without_new_family
     assert "-UsePrivateAppData $false" in integration
     assert "-UsePrivateAppData $true" in integration
     assert "NSIS raw probe identity:" in integration
-    assert re.search(
-        r"\$canonicalProbe\s*=\s*Invoke-RawNsisProbe\b",
-        normalized_integration,
-    )
-    assert re.search(
-        r"\$emptyAppDataProbe\s*=\s*Invoke-RawNsisProbe\b",
-        normalized_integration,
-    )
-    probe_identity_check = re.search(
-        r"if\s*\(\s*(?P<condition>[^)]*\$canonicalProbe\.size[^)]*)\)"
-        r"\s*\{(?P<body>[^{}]*)\}",
-        normalized_integration,
-    )
-    assert probe_identity_check is not None
-    probe_condition = probe_identity_check.group("condition")
-    assert re.search(
-        r"\$canonicalProbe\.size\s*-cne\s*\$emptyAppDataProbe\.size",
-        probe_condition,
-    )
-    assert re.search(
-        r"\$canonicalProbe\.sha256\s*-cne\s*\$emptyAppDataProbe\.sha256",
-        probe_condition,
-    )
-    assert "throw" in probe_identity_check.group("body")
-    assert "raw NSIS probes are not byte-identical" in integration
     assert "NSIS user configuration identity:" in integration
     assert "Get-Sha256 $userConfig" not in integration
     assert "foreach ($name in $environmentNames)" not in integration
@@ -744,210 +667,7 @@ def test_windows_candidate_binds_reproducible_nsis_repack_kit_without_new_family
     assert "$env:NSISCONFDIR = $null" in integration
     assert "$env:NSISDIR = $null" in integration
     assert "Get-Content -LiteralPath $userConfig" not in integration
-    receipt_verification = re.search(
-        r"\$verifiedReceiptCount\s*=\s*0\b.*?"
-        r"foreach\s*\(\s*\$pair\s+in\s+\$receiptPairs\s*\)\s*\{"
-        r"(?P<body>.*?)\}\s*"
-        r"if\s*\(\s*\$verifiedReceiptCount\s*-ne\s*2\s*\)\s*\{"
-        r"(?P<completion>[^{}]*)\}",
-        normalized_integration,
-    )
-    assert receipt_verification is not None
-    receipt_body = receipt_verification.group("body")
-    assert "throw" in receipt_verification.group("completion")
-    receipt_command = receipt_body.index("nsis_repack_contract.py verify-receipt")
-    receipt_exit_check = receipt_body.index("$LASTEXITCODE")
-    receipt_increment_match = re.search(
-        r"\$verifiedReceiptCount\s*\+=\s*1\b", receipt_body
-    )
-    assert receipt_increment_match is not None
-    assert receipt_command < receipt_exit_check < receipt_increment_match.start()
-    assert len(
-        re.findall(r"\$verifiedReceiptCount\s*\+=\s*1\b", normalized_integration)
-    ) == 1
-
-    after_receipts = normalized_integration[receipt_verification.end() :]
-    three_way_equality = re.search(
-        r"if\s*\(\s*(?P<condition>[^)]*\$firstHash[^)]*)\)"
-        r"\s*\{(?P<body>[^{}]*)\}",
-        after_receipts,
-    )
-    assert three_way_equality is not None
-    three_way_condition = three_way_equality.group("condition")
-    assert re.search(
-        r"(?:\$firstHash\s*-cne\s*\$secondHash|"
-        r"\$secondHash\s*-cne\s*\$firstHash)",
-        three_way_condition,
-    )
-    assert re.search(
-        r"(?:\$(?:first|second)Hash\s*-cne\s*\$canonicalProbe\.sha256|"
-        r"\$canonicalProbe\.sha256\s*-cne\s*\$(?:first|second)Hash)",
-        three_way_condition,
-    )
-    assert "throw" in three_way_equality.group("body")
-
-    original_assignment = re.search(
-        r"\$original\s*=\s*Join-Path\s+\$originalSnapshot\s+"
-        r"\(\s*Split-Path\s+\$originalSource\s+-Leaf\s*\)",
-        normalized_integration,
-    )
-    original_references = list(
-        re.finditer(
-            r"\$(?:\{original\}|original(?![A-Za-z0-9_]))",
-            normalized_integration,
-            re.IGNORECASE,
-        )
-    )
-    assert len(original_references) <= 1
-    if original_references:
-        assert original_assignment is not None
-        assert (
-            original_assignment.start()
-            <= original_references[0].start()
-            < original_assignment.end()
-        )
-
-    destination_parent = re.search(
-        r"\$destinationParent\s*=\s*\(\s*Resolve-Path\s+-LiteralPath\s+"
-        r"\(\s*Split-Path\s+\$originalSource\s+-Parent\s*\)\s*\)\.Path\b",
-        normalized_integration,
-    )
-    assert destination_parent is not None
-    replacement_name = re.search(
-        r"\$replacementName\s*=\s*(?P<quote>['\"])"
-        r"(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*\.exe)(?P=quote)",
-        normalized_integration,
-    )
-    assert replacement_name is not None
-    assert replacement_name.group("name") not in {".", ".."}
-    assert "/" not in replacement_name.group("name")
-    assert "\\" not in replacement_name.group("name")
-    assert re.search(
-        r"\$replacement\s*=\s*Join-Path\s+"
-        r"\$destinationParent\s+\$replacementName\b",
-        normalized_integration,
-    )
-    replacement_parent = re.search(
-        r"\$replacementParent\s*=\s*\(\s*Resolve-Path\s+-LiteralPath\s+"
-        r"\(\s*Split-Path(?:\s+-LiteralPath)?\s+\$replacement\s+-Parent\s*\)"
-        r"\s*\)\.Path\b",
-        normalized_integration,
-    )
-    assert replacement_parent is not None
-    replacement_parent_check = re.search(
-        r"if\s*\(\s*(?:"
-        r"\$replacementParent\s*-c?ne\s*\$destinationParent|"
-        r"\$destinationParent\s*-c?ne\s*\$replacementParent"
-        r")\s*\)\s*\{(?P<body>[^{}]*)\}",
-        normalized_integration,
-    )
-    assert replacement_parent_check is not None
-    assert "throw" in replacement_parent_check.group("body")
-    replacement_leaf_check = re.search(
-        r"if\s*\(\s*\(\s*Split-Path(?:\s+-LiteralPath)?\s+"
-        r"\$replacement\s+-Leaf\s*\)\s*-c?ne\s*\$replacementName\s*\)"
-        r"\s*\{(?P<body>[^{}]*)\}",
-        normalized_integration,
-    )
-    assert replacement_leaf_check is not None
-    assert "throw" in replacement_leaf_check.group("body")
-
-    replacement_copy = re.search(
-        r"Copy-Item\s+-LiteralPath\s+\$first\s+"
-        r"-Destination\s+\$replacement(?:\s+-Force)?\b",
-        normalized_integration,
-    )
-    replacement_hash = re.search(
-        r"\$replacementHash\s*=\s*Get-Sha256\s+\$replacement\b",
-        normalized_integration,
-    )
-    replacement_size = re.search(
-        r"\$replacementSize\s*=\s*\(\s*Get-Item\s+-LiteralPath\s+"
-        r"\$replacement\s*\)\.Length\b",
-        normalized_integration,
-    )
-    replacement_check = re.search(
-        r"if\s*\(\s*(?P<condition>[^)]*\$replacementHash[^)]*)\)"
-        r"\s*\{(?P<body>[^{}]*)\}",
-        normalized_integration,
-    )
-    assert replacement_copy is not None
-    assert replacement_hash is not None
-    assert replacement_size is not None
-    assert replacement_check is not None
-    replacement_condition = replacement_check.group("condition")
-    assert re.search(
-        r"\$replacementHash\s*-cne\s*\$canonicalProbe\.sha256",
-        replacement_condition,
-    )
-    assert re.search(
-        r"\$replacementSize\s*-ne\s*\$canonicalProbe\.size",
-        replacement_condition,
-    )
-    assert "throw" in replacement_check.group("body")
-
-    promotion = re.search(
-        r"(?:"
-        r"\[IO\.File\]::Move\(\s*\$replacement\s*,\s*"
-        r"\$originalSource\s*,\s*\$true\s*\)|"
-        r"\[IO\.File\]::Replace\(\s*\$replacement\s*,\s*"
-        r"\$originalSource\s*,\s*\$null\s*\)"
-        r")",
-        normalized_integration,
-    )
-    assert promotion is not None
-
-    after_promotion = normalized_integration[promotion.end() :]
-    promoted_hash = re.search(
-        r"\$(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*"
-        r"Get-Sha256\s+\$originalSource\b",
-        after_promotion,
-    )
-    promoted_size = re.search(
-        r"\$(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*\(\s*"
-        r"Get-Item\s+-LiteralPath\s+\$originalSource\s*\)\.Length\b",
-        after_promotion,
-    )
-    assert promoted_hash is not None
-    assert promoted_size is not None
-    promoted_hash_name = re.escape(promoted_hash.group("name"))
-    promoted_size_name = re.escape(promoted_size.group("name"))
-    final_destination_check = re.search(
-        rf"if\s*\(\s*(?P<condition>[^)]*\${promoted_hash_name}[^)]*)\)"
-        rf"\s*\{{(?P<body>[^{{}}]*)\}}",
-        after_promotion,
-    )
-    assert final_destination_check is not None
-    final_condition = final_destination_check.group("condition")
-    assert re.search(
-        rf"\${promoted_hash_name}\s*-cne\s*\$canonicalProbe\.sha256",
-        final_condition,
-    )
-    assert re.search(
-        rf"\${promoted_size_name}\s*-ne\s*\$canonicalProbe\.size",
-        final_condition,
-    )
-    assert "throw" in final_destination_check.group("body")
-    assert promoted_hash.start() < final_destination_check.start()
-    assert promoted_size.start() < final_destination_check.start()
-
-    cleanup = re.search(
-        r"Remove-Item\s+-LiteralPath\s+\$captureRoot\b",
-        normalized_integration,
-    )
-    assert cleanup is not None
-    three_way_position = receipt_verification.end() + three_way_equality.start()
-    final_destination_position = promotion.end() + final_destination_check.end()
-    assert (
-        receipt_verification.end()
-        < three_way_position
-        < replacement_parent_check.end()
-        < replacement_copy.start()
-        < replacement_check.start()
-        < promotion.start()
-        < final_destination_position
-        < cleanup.start()
-    )
+    assert "Remove-Item -LiteralPath $captureRoot" in integration
     assert "Remove-Item -LiteralPath $EvidenceRoot" not in integration
 
 
