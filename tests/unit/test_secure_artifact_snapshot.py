@@ -1512,6 +1512,57 @@ def test_owned_tree_rollback_removes_only_the_expected_recursive_tree(
     assert replacement.is_dir()
 
 
+@pytest.mark.parametrize("failure_point", ["close", "rollback"])
+def test_windows_private_directory_preserves_primary_error_when_cleanup_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure_point: str
+) -> None:
+    destination = (tmp_path / "private").resolve()
+    allowed = frozenset({"S-1-5-21-1", "S-1-5-18", "S-1-5-32-544"})
+    events: list[str] = []
+
+    @contextmanager
+    def hold(_path: Path) -> Iterator[None]:
+        yield
+
+    monkeypatch.setattr(secure_snapshot, "_running_on_windows", lambda: True)
+    monkeypatch.setattr(secure_snapshot, "_hold_windows_source_root", hold)
+    monkeypatch.setattr(
+        secure_snapshot, "_expected_windows_private_sids", lambda: allowed
+    )
+    monkeypatch.setattr(
+        secure_snapshot,
+        "_set_windows_private_dacl",
+        lambda path, _sids, *, create=False: path.mkdir(mode=0o700) if create else None,
+    )
+    monkeypatch.setattr(
+        secure_snapshot,
+        "_open_windows_directory_handle",
+        lambda _path, *, share_mode: 91,
+    )
+
+    def close_handle(_handle: int) -> None:
+        events.append("close")
+        if failure_point == "close":
+            raise OSError(6, "invalid handle")
+
+    monkeypatch.setattr(secure_snapshot, "_close_windows_handle", close_handle)
+
+    def fail_rollback(_path: Path, _identity: object) -> None:
+        events.append("rollback")
+        if failure_point == "rollback":
+            raise OSError(145, "directory is not empty")
+
+    monkeypatch.setattr(secure_snapshot, "_remove_owned_tree", fail_rollback)
+
+    with pytest.raises(
+        SecureArtifactSnapshotError, match="primary verification failed"
+    ):
+        with secure_snapshot._create_private_directory(destination):
+            raise SecureArtifactSnapshotError("primary verification failed")
+
+    assert events == ["close", "rollback"]
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX rollback fixture")
 def test_posix_rollback_rejects_special_entries_and_incomplete_lease(
     tmp_path: Path,

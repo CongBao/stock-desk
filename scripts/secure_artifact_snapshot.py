@@ -1358,10 +1358,17 @@ def _create_private_directory(path: Path) -> Iterator[_PrivateDirectoryLease]:
                 ) from error
             except Exception:
                 if target_handle is not None:
-                    _close_windows_handle(target_handle)
-                    target_handle = None
+                    try:
+                        _close_windows_handle(target_handle)
+                    except Exception:
+                        pass
+                    finally:
+                        target_handle = None
                 if created_identity is not None:
-                    _remove_owned_tree(path, created_identity)
+                    try:
+                        _remove_owned_tree(path, created_identity)
+                    except Exception:
+                        pass
                 raise
             finally:
                 if target_handle is not None:
@@ -1784,9 +1791,11 @@ def snapshot_artifacts(
 ) -> SnapshotResult:
     """Copy selected artifacts once into a verified owner-only snapshot.
 
-    ``destination`` must not exist.  A failed call removes only the private
-    destination it created.  Callers must pass ``SnapshotResult.root`` (and no
-    path below ``source_root``) to every later packaging or signing operation.
+    ``destination`` must not exist.  A failed call attempts to remove only the exact
+    private destination it created.  If that rollback cannot complete, the primary
+    failure is preserved and the caller must discard the isolated run parent.
+    Callers must pass ``SnapshotResult.root`` (and no path below ``source_root``) to
+    every later packaging or signing operation.
     """
 
     limits.validate()
