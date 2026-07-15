@@ -366,7 +366,14 @@ def test_create_and_verify_content_addressed_kit(tmp_path: Path) -> None:
     assert trust["tree"] == contract._canonical_toolchain_tree(
         cast(list[Mapping[str, object]], created["files"])
     )
-    assert "C:\\runner" not in (kit / "content/installer.nsi").read_text()
+    normalized_script = (kit / "content/installer.nsi").read_text()
+    assert "C:\\runner" not in normalized_script
+    assert '!define MAIN "payload\\stock-desk.exe"' in normalized_script
+    assert '!define HOOK "packaging\\installer-hooks.nsh"' in normalized_script
+    assert {
+        str(item["target"])
+        for item in cast(list[Mapping[str, object]], normalization["mapped_targets"])
+    } >= {"payload/stock-desk.exe", "packaging/installer-hooks.nsh"}
 
 
 def test_independent_directories_produce_identical_kit_digest(tmp_path: Path) -> None:

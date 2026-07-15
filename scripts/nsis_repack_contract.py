@@ -1238,7 +1238,7 @@ def _normalize_rendered_script(
         structural_text = structural_text.replace(
             source, f"@STOCK_DESK_PATH_MAP[{target}]@"
         )
-        text = text.replace(source, target)
+        text = text.replace(source, target.replace("/", "\\"))
         mapped_targets.append({"target": target, "occurrence_count": expected_count})
     for mapping in mappings:
         if str(mapping["source_absolute"]) in text:
