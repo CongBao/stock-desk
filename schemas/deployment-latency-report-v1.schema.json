@@ -1,0 +1,191 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/CongBao/stock-desk/schemas/deployment-latency-report-v1.schema.json",
+  "title": "Stock Desk deployment latency P50/P95 report v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "source_record_count", "source_head_hash", "categories"],
+  "properties": {
+    "schema_version": { "const": "stock-desk-deployment-latency-report-v1" },
+    "source_record_count": { "type": "integer", "minimum": 0 },
+    "source_head_hash": { "$ref": "#/$defs/sha256" },
+    "categories": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "typical-pr",
+        "high-risk-pr",
+        "main",
+        "candidate",
+        "signpath-queue",
+        "proved-tag-to-release"
+      ],
+      "properties": {
+        "typical-pr": { "$ref": "#/$defs/category" },
+        "high-risk-pr": { "$ref": "#/$defs/category" },
+        "main": { "$ref": "#/$defs/category" },
+        "candidate": { "$ref": "#/$defs/category" },
+        "signpath-queue": { "$ref": "#/$defs/category" },
+        "proved-tag-to-release": { "$ref": "#/$defs/category" }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "percentiles": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["p50", "p95"],
+      "properties": {
+        "p50": { "type": ["number", "null"], "minimum": 0 },
+        "p95": { "type": ["number", "null"], "minimum": 0 }
+      }
+    },
+    "counts": {
+      "type": "object",
+      "additionalProperties": { "type": "integer", "minimum": 1 }
+    },
+    "category": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "minimum_sample_count",
+        "minimum_consecutive_run_count",
+        "sample_count",
+        "active_segment_sample_count",
+        "consecutive_run_count",
+        "included_sample_ids",
+        "outcome_counts",
+        "cache_status_counts",
+        "invalidated_count",
+        "queue_seconds",
+        "wall_seconds",
+        "percentile_method",
+        "run_duration_representatives",
+        "active_identity_hash",
+        "active_comparison_identity",
+        "drift_detected",
+        "comparison_groups"
+      ],
+      "properties": {
+        "status": { "enum": ["complete", "incomplete"] },
+        "minimum_sample_count": { "const": 5 },
+        "minimum_consecutive_run_count": { "const": 5 },
+        "sample_count": { "type": "integer", "minimum": 0 },
+        "active_segment_sample_count": { "type": "integer", "minimum": 0 },
+        "consecutive_run_count": { "type": "integer", "minimum": 0 },
+        "included_sample_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[1-9][0-9]*/[1-9][0-9]*$" }
+        },
+        "outcome_counts": { "$ref": "#/$defs/counts" },
+        "cache_status_counts": { "$ref": "#/$defs/counts" },
+        "invalidated_count": { "type": "integer", "minimum": 0 },
+        "queue_seconds": { "$ref": "#/$defs/percentiles" },
+        "wall_seconds": { "$ref": "#/$defs/percentiles" },
+        "percentile_method": { "const": "nearest-rank-over-slowest-attempt-per-distinct-run" },
+        "run_duration_representatives": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/run_duration_representative" }
+        },
+        "active_identity_hash": {
+          "oneOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }]
+        },
+        "active_comparison_identity": {
+          "oneOf": [{ "$ref": "#/$defs/comparison_identity" }, { "type": "null" }]
+        },
+        "drift_detected": { "type": "boolean" },
+        "comparison_groups": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/comparison_group" }
+        }
+      }
+    },
+    "comparison_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["category", "workflow", "ref", "environment_baseline"],
+      "properties": {
+        "category": {
+          "enum": [
+            "typical-pr",
+            "high-risk-pr",
+            "main",
+            "candidate",
+            "signpath-queue",
+            "proved-tag-to-release"
+          ]
+        },
+        "workflow": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "ref": { "type": "string", "pattern": "^refs/", "maxLength": 512 },
+        "environment_baseline": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["os", "architecture", "runner_image", "toolchain"],
+          "properties": {
+            "os": { "type": "string", "minLength": 1, "maxLength": 256 },
+            "architecture": { "type": "string", "minLength": 1, "maxLength": 64 },
+            "runner_image": { "type": "string", "minLength": 1, "maxLength": 256 },
+            "toolchain": { "type": "string", "minLength": 1, "maxLength": 1024 }
+          }
+        }
+      }
+    },
+    "run_duration_representative": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "included_sample_ids", "queue_seconds", "wall_seconds"],
+      "properties": {
+        "run_id": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+        "included_sample_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[1-9][0-9]*/[1-9][0-9]*$" }
+        },
+        "queue_seconds": { "type": "number", "minimum": 0 },
+        "wall_seconds": { "type": "number", "minimum": 0 }
+      }
+    },
+    "comparison_group": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "segment_index",
+        "identity_hash",
+        "identity",
+        "sample_count",
+        "distinct_run_count",
+        "run_ids",
+        "included_sample_ids",
+        "outcome_counts",
+        "cache_status_counts",
+        "invalidated_count"
+      ],
+      "properties": {
+        "segment_index": { "type": "integer", "minimum": 1 },
+        "identity_hash": { "$ref": "#/$defs/sha256" },
+        "identity": { "$ref": "#/$defs/comparison_identity" },
+        "sample_count": { "type": "integer", "minimum": 1 },
+        "distinct_run_count": { "type": "integer", "minimum": 1 },
+        "run_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[1-9][0-9]*$" }
+        },
+        "included_sample_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[1-9][0-9]*/[1-9][0-9]*$" }
+        },
+        "outcome_counts": { "$ref": "#/$defs/counts" },
+        "cache_status_counts": { "$ref": "#/$defs/counts" },
+        "invalidated_count": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

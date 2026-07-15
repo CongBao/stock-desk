@@ -128,6 +128,84 @@ def test_verifier_emits_closed_public_safe_manifest(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
+    ("version", "channel"),
+    [
+        ("1.1.0-alpha.1", "prerelease"),
+        ("1.1.0-beta.27", "prerelease"),
+        ("1.1.0-rc.1", "formal-candidate"),
+        ("1.1.0", "formal-candidate"),
+    ],
+)
+def test_release_version_strictly_selects_unsigned_channel(
+    tmp_path: Path, version: str, channel: str
+) -> None:
+    _payload(tmp_path)
+
+    manifest = verifier.verify_bundle(
+        tmp_path,
+        version=version,
+        source_sha=SOURCE_SHA,
+        toolchain={"rust": "1.88.0"},
+        locks={"Cargo.lock": LOCK_SHA},
+        signature_verifier=lambda _path: verifier.SignatureIdentity(
+            valid=True, subject="CN=Microsoft Corporation"
+        ),
+    )
+
+    assert manifest["release"] == {
+        "version": version,
+        "channel": channel,
+        "signature": "unsigned",
+    }
+
+
+@pytest.mark.parametrize(
+    "version",
+    [
+        "v1.1.0",
+        "1.1.0-alpha.0",
+        "1.1.0-alpha.01",
+        "1.1.0-beta",
+        "1.1.0-rc.0",
+        "1.1.0-rc.01",
+        "1.1.0-rc.1+build",
+        "1.1.1",
+        "1.2.0-beta.1",
+    ],
+)
+def test_release_version_allowlist_rejects_all_other_versions(
+    tmp_path: Path, version: str
+) -> None:
+    _payload(tmp_path)
+
+    with pytest.raises(verifier.BundleVerificationError, match="version is invalid"):
+        verifier.verify_bundle(
+            tmp_path,
+            version=version,
+            source_sha=SOURCE_SHA,
+            toolchain={"rust": "1.88.0"},
+            locks={"Cargo.lock": LOCK_SHA},
+            signature_verifier=lambda _path: verifier.SignatureIdentity(
+                valid=True, subject="CN=Microsoft Corporation"
+            ),
+        )
+
+
+def test_manifest_channel_must_match_the_strict_version_class(tmp_path: Path) -> None:
+    _payload(tmp_path)
+    manifest = _verify(tmp_path)
+    release = manifest["release"]
+    assert isinstance(release, dict)
+    release["channel"] = "formal-candidate"
+    manifest["manifest_sha256"] = verifier.manifest_digest(manifest)
+
+    with pytest.raises(
+        verifier.BundleVerificationError, match="channel does not match"
+    ):
+        verifier.validate_manifest(manifest)
+
+
+@pytest.mark.parametrize(
     "relative",
     [
         "src/main.py",

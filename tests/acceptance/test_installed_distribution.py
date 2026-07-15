@@ -74,7 +74,17 @@ def test_v11_distribution_contract_is_windows_only_and_reuses_main_candidate() -
     jobs = workflow["jobs"]
     rendered = RELEASE_WORKFLOW.read_text(encoding="utf-8")
 
-    assert set(jobs) == {"tag-policy", "prerelease-verify", "prerelease"}
+    assert {
+        "tag-policy",
+        "prerelease-verify",
+        "prerelease",
+        "formal-inputs",
+        "signpath",
+        "windows-installed",
+        "trusted-updater-release",
+        "stable-attest",
+        "stable-release",
+    } == set(jobs)
     assert "windows-desktop-alpha-candidate-$GITHUB_SHA" in rendered
     assert "stock-desk-*-unsigned-x64-setup.exe" in rendered
     for legacy_job in (
@@ -119,7 +129,7 @@ def test_windows_candidate_is_bound_to_tag_version_before_publish() -> None:
     rendered = "\n".join(
         _commands(job["steps"])
         for job in workflow["jobs"].values()
-        if isinstance(job, dict)
+        if isinstance(job, dict) and isinstance(job.get("steps"), list)
     )
 
     assert 'expected_version="${GITHUB_REF_NAME#v}"' in rendered
@@ -141,7 +151,7 @@ def test_release_workflow_generates_checksums_sbom_and_provenance() -> None:
     assert "pull_request" not in workflow_text
 
 
-def test_trusted_updater_foundation_cannot_publish_stable_metadata() -> None:
+def test_trusted_updater_metadata_requires_the_complete_formal_chain() -> None:
     workflow_text = RELEASE_WORKFLOW.read_text(encoding="utf-8")
     contract = (ROOT / "scripts" / "trusted_updater_release.py").read_text(
         encoding="utf-8"
@@ -153,8 +163,26 @@ def test_trusted_updater_foundation_cannot_publish_stable_metadata() -> None:
     )
 
     assert "^v1\\.1\\.0-(alpha|beta)" in workflow_text
-    assert "latest.json" not in workflow_text
-    assert "TAURI_SIGNING_PRIVATE_KEY" not in workflow_text
+    assert "latest.json" in workflow_text
+    assert "TAURI_SIGNING_PRIVATE_KEY" in workflow_text
+    assert "scripts/trusted_updater_release.py" in workflow_text
+    workflow = _workflow()
+    jobs = workflow["jobs"]
+    assert jobs["trusted-updater-release"]["needs"] == [
+        "formal-inputs",
+        "signpath",
+        "windows-installed",
+    ]
+    assert jobs["stable-release"]["needs"] == [
+        "formal-inputs",
+        "signpath",
+        "windows-installed",
+        "trusted-updater-release",
+        "stable-attest",
+    ]
+    assert jobs["stable-release"]["if"].startswith("${{ inputs.release_tag == 'v1.1.0'")
+    assert "continue-on-error" not in workflow_text
+    assert "|| true" not in workflow_text
     assert schema["properties"]["channel"] == {"const": "stable"}
     for required_gate in (
         "TRUSTED_TAURI_PUBLIC_KEY",

@@ -180,7 +180,10 @@ def test_legacy_native_manifest_remains_revision_bound_but_not_v11_reachable(
     workflow = _workflow()
     jobs = workflow["jobs"]
     assert isinstance(jobs, dict)
-    assert set(jobs) == {"tag-policy", "prerelease-verify", "prerelease"}
+    assert {"tag-policy", "prerelease-verify", "prerelease"} <= set(jobs)
+    assert {"formal-inputs", "signpath", "windows-installed", "stable-release"} <= set(
+        jobs
+    )
     rendered_workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
     assert "build-installers" not in rendered_workflow
     assert "build_installer.py" not in rendered_workflow

@@ -19,6 +19,7 @@ import json
 from pathlib import Path
 import re
 from typing import Any, Final
+import urllib.parse
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
@@ -30,6 +31,7 @@ SHA256_RE: Final = re.compile(r"^[0-9a-f]{64}$")
 GIT_RE: Final = re.compile(r"^[0-9a-f]{40}$")
 UTC_RE: Final = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 SAFE_PATH_RE: Final = re.compile(r"^raw/[a-z0-9][a-z0-9._-]{0,95}$")
+CERTIFICATE_THUMBPRINT_RE: Final = re.compile(r"^[0-9A-F]{40,64}$")
 PUBLIC_TEXT_LEAK_RE: Final = re.compile(
     r"(authorization\s*:|bearer\s+[a-z0-9._-]+|api[_-]?key\s*[=:]"
     r"|password\s*[=:]|github[_-]?token"
@@ -66,9 +68,16 @@ EXPECTED_DIALOGS: Final = {
 }
 EXPECTED_SIZES: Final = ((1366, 768), (640, 360))
 EXPECTED_DPIS: Final = (100, 125, 150, 175, 200)
+STOCK_DESK_SIGNED_FILENAMES: Final = {
+    "desktop-host": "stock-desk-desktop.exe",
+    "sidecar": "stock-desk-sidecar.exe",
+    "nsis-installer": "stock-desk-signed-nsis.exe",
+}
 EXPECTED_RECORD_MEDIA: Final = {
     "observation-stream": "application/x-ndjson",
     "install-log": "text/plain; charset=utf-8",
+    "smartscreen-observation": "application/json",
+    "motw-zone-identifier": "text/plain; charset=utf-8",
     "uia-action-trace": "application/json",
     "uia-tree": "application/json",
     "focus-region-contact-sheet": "image/png",
@@ -89,6 +98,7 @@ SUCCESS_EVENT_KINDS: Final = {
     "installer-process-token",
     "desktop-host-process-token",
     "sidecar-process-token",
+    "stock-desk-authenticode",
     "uninstaller-process-token",
     "uac-observation",
     "install-observation",
@@ -113,6 +123,7 @@ FAILURE_EVENT_KINDS: Final = {
     "installer-process-token",
     "desktop-host-process-token",
     "sidecar-process-token",
+    "stock-desk-authenticode",
     "uninstaller-process-token",
     "uac-observation",
     "install-observation",
@@ -1470,6 +1481,370 @@ def _validate_process(
     return process
 
 
+def _validate_stock_desk_authenticode(
+    value: object,
+    *,
+    expected_components: Mapping[str, str],
+    expected_signer_subject: str,
+    expected_certificate_thumbprint: str,
+    expected_timestamp_subject: str,
+    include_installed_components: bool,
+) -> dict[str, Any]:
+    """Derive trusted Stock Desk identities from raw WinVerifyTrust observations."""
+    observation = _exact(
+        value,
+        ("verification_api", "artifacts"),
+        "Stock Desk Authenticode observation",
+    )
+    if (
+        observation.get("verification_api")
+        != "Get-AuthenticodeSignature/WinVerifyTrust"
+    ):
+        raise DesktopEvidenceError(
+            "Stock Desk signature observation did not use WinVerifyTrust"
+        )
+    expected_roles = (
+        set(STOCK_DESK_SIGNED_FILENAMES)
+        if include_installed_components
+        else {"nsis-installer"}
+    )
+    if set(expected_components) != set(STOCK_DESK_SIGNED_FILENAMES):
+        raise DesktopEvidenceError("signed Stock Desk component identity is not closed")
+    artifacts_raw = _array(observation.get("artifacts"), "Stock Desk signatures")
+    if len(artifacts_raw) != len(expected_roles):
+        raise DesktopEvidenceError("Stock Desk signature role inventory is incomplete")
+    artifacts: dict[str, dict[str, Any]] = {}
+    for raw in artifacts_raw:
+        artifact = _exact(
+            raw,
+            (
+                "role",
+                "file_name",
+                "sha256",
+                "status",
+                "signer_subject",
+                "certificate_thumbprint",
+                "timestamp_subject",
+                "timestamp_thumbprint",
+            ),
+            "Stock Desk Authenticode artifact",
+        )
+        role = _text(artifact.get("role"), "Stock Desk signature role", maximum=32)
+        if role not in expected_roles or role in artifacts:
+            raise DesktopEvidenceError(
+                "Stock Desk signature role is missing or duplicated"
+            )
+        digest = _digest(artifact.get("sha256"), f"{role} signed digest")
+        signer_subject = _text(artifact.get("signer_subject"), f"{role} signer subject")
+        certificate_thumbprint = _text(
+            artifact.get("certificate_thumbprint"),
+            f"{role} certificate thumbprint",
+            maximum=64,
+        )
+        timestamp_subject = _text(
+            artifact.get("timestamp_subject"), f"{role} timestamp subject"
+        )
+        timestamp_thumbprint = _text(
+            artifact.get("timestamp_thumbprint"),
+            f"{role} timestamp thumbprint",
+            maximum=64,
+        )
+        if (
+            artifact.get("status") != "Valid"
+            or artifact.get("file_name") != STOCK_DESK_SIGNED_FILENAMES[role]
+            or digest != expected_components[role]
+            or signer_subject != expected_signer_subject
+            or certificate_thumbprint != expected_certificate_thumbprint
+            or timestamp_subject != expected_timestamp_subject
+            or CERTIFICATE_THUMBPRINT_RE.fullmatch(certificate_thumbprint) is None
+            or CERTIFICATE_THUMBPRINT_RE.fullmatch(timestamp_thumbprint) is None
+        ):
+            raise DesktopEvidenceError(
+                f"{role} is unsigned, substituted, or not bound to the approved signer"
+            )
+        artifacts[role] = artifact
+    if set(artifacts) != expected_roles:
+        raise DesktopEvidenceError("Stock Desk signature role inventory is incomplete")
+    return {
+        "verification_api": observation["verification_api"],
+        "artifacts": artifacts,
+    }
+
+
+def _validate_smartscreen_raw_records(
+    observation_bytes: bytes,
+    motw_bytes: bytes,
+    *,
+    assignment: Mapping[str, Any],
+    expected_candidate_sha256: str,
+    expected_adapter_sha256: str,
+) -> dict[str, Any]:
+    """Validate broker-bound raw SmartScreen evidence from a fresh Windows VM."""
+    try:
+        motw_text = motw_bytes.decode("utf-8")
+        observation = _exact(
+            json.loads(observation_bytes),
+            (
+                "schema",
+                "case_id",
+                "candidate",
+                "observer",
+                "download",
+                "launch",
+                "reputation",
+            ),
+            "SmartScreen raw observation",
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise DesktopEvidenceError("SmartScreen raw evidence is unreadable") from error
+    lines = [line.strip() for line in motw_text.replace("\r\n", "\n").split("\n")]
+    if not lines or lines[0] != "[ZoneTransfer]":
+        raise DesktopEvidenceError("candidate lacks a raw ZoneTransfer MOTW stream")
+    zone_fields: dict[str, str] = {}
+    allowed_zone_fields = {
+        "ZoneId",
+        "HostUrl",
+        "ReferrerUrl",
+        "LastWriterPackageFamilyName",
+    }
+    for line in lines[1:]:
+        if not line:
+            continue
+        if "=" not in line:
+            raise DesktopEvidenceError("candidate MOTW stream is malformed")
+        key, value = line.split("=", 1)
+        if key not in allowed_zone_fields or key in zone_fields or not value:
+            raise DesktopEvidenceError("candidate MOTW stream fields are not closed")
+        zone_fields[key] = value
+    if zone_fields.get("ZoneId") != "3" or "HostUrl" not in zone_fields:
+        raise DesktopEvidenceError("candidate is not marked as an Internet download")
+    for field in ("HostUrl", "ReferrerUrl"):
+        url = zone_fields.get(field)
+        if url is None:
+            continue
+        parsed = urllib.parse.urlsplit(url)
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise DesktopEvidenceError("candidate MOTW contains a non-public URL")
+
+    if (
+        observation.get("schema") != "stock-desk-smartscreen-raw-observation-v1"
+        or observation.get("case_id") != assignment["case_id"]
+    ):
+        raise DesktopEvidenceError("SmartScreen observation identity is invalid")
+    candidate = _exact(
+        observation.get("candidate"),
+        ("sha256", "file_name"),
+        "SmartScreen candidate",
+    )
+    if (
+        _digest(candidate.get("sha256"), "SmartScreen candidate digest")
+        != expected_candidate_sha256
+        or candidate.get("file_name") != "stock-desk-signed-nsis.exe"
+    ):
+        raise DesktopEvidenceError("SmartScreen observed a substituted candidate")
+    observer = _exact(
+        observation.get("observer"),
+        (
+            "identity",
+            "source",
+            "adapter_sha256",
+            "snapshot_sha256",
+            "image_sha256",
+            "machine_state",
+        ),
+        "SmartScreen observer",
+    )
+    if (
+        observer.get("identity") != "stock-desk-protected-smartscreen-observer-v1"
+        or observer.get("source") != "external-protected-vm-observer"
+        or observer.get("adapter_sha256") != expected_adapter_sha256
+        or observer.get("snapshot_sha256") != assignment["snapshot_sha256"]
+        or observer.get("image_sha256") != assignment["image_sha256"]
+        or observer.get("machine_state") != "restored-clean-snapshot"
+    ):
+        raise DesktopEvidenceError(
+            "SmartScreen evidence is not from the protected fresh-machine observer"
+        )
+    download = _exact(
+        observation.get("download"),
+        (
+            "method",
+            "source_url",
+            "tls_system_validation",
+            "completed_at_utc",
+            "byte_count",
+            "candidate_sha256",
+            "zone_identifier_sha256",
+        ),
+        "SmartScreen download",
+    )
+    if (
+        download.get("method") != "https-internet-download"
+        or download.get("source_url") != zone_fields["HostUrl"]
+        or download.get("tls_system_validation") is not True
+        or _integer(download.get("byte_count"), "SmartScreen download bytes", minimum=1)
+        < 1
+        or download.get("candidate_sha256") != expected_candidate_sha256
+        or download.get("zone_identifier_sha256") != _sha256(motw_bytes)
+    ):
+        raise DesktopEvidenceError(
+            "SmartScreen evidence lacks the real HTTPS download and MOTW boundary"
+        )
+    download_time = datetime.strptime(
+        _timestamp(download.get("completed_at_utc"), "SmartScreen download completion"),
+        "%Y-%m-%dT%H:%M:%SZ",
+    ).replace(tzinfo=timezone.utc)
+    launch = _exact(
+        observation.get("launch"),
+        (
+            "api",
+            "requested_at_utc",
+            "account_token",
+            "candidate_sha256",
+        ),
+        "SmartScreen launch",
+    )
+    launch_time = datetime.strptime(
+        _timestamp(launch.get("requested_at_utc"), "SmartScreen launch request"),
+        "%Y-%m-%dT%H:%M:%SZ",
+    ).replace(tzinfo=timezone.utc)
+    if (
+        launch.get("api") != "ShellExecuteExW"
+        or launch.get("account_token") != "standard-user-medium-integrity"
+        or launch.get("candidate_sha256") != expected_candidate_sha256
+        or launch_time < download_time
+    ):
+        raise DesktopEvidenceError(
+            "SmartScreen candidate was not ShellExecute-launched as a standard user"
+        )
+    reputation = _exact(
+        observation.get("reputation"),
+        (
+            "provider",
+            "policy_mode",
+            "disposition",
+            "decision_source",
+            "cloud_service_contact_count",
+            "correlation_sha256",
+            "completed_at_utc",
+            "event_records",
+            "window_samples",
+        ),
+        "SmartScreen reputation",
+    )
+    correlation = _digest(
+        reputation.get("correlation_sha256"), "SmartScreen correlation"
+    )
+    completed_time = datetime.strptime(
+        _timestamp(reputation.get("completed_at_utc"), "SmartScreen completion"),
+        "%Y-%m-%dT%H:%M:%SZ",
+    ).replace(tzinfo=timezone.utc)
+    if (
+        reputation.get("provider") != "Microsoft Defender SmartScreen"
+        or reputation.get("policy_mode") != "warn-or-block-unrecognized-apps"
+        or reputation.get("disposition") != "allowed-no-warning"
+        or reputation.get("decision_source") != "cloud-reputation"
+        or _integer(
+            reputation.get("cloud_service_contact_count"),
+            "SmartScreen cloud contact count",
+            minimum=1,
+        )
+        < 1
+        or completed_time < launch_time
+    ):
+        raise DesktopEvidenceError(
+            "SmartScreen reputation was unavailable, warned, blocked, or unobserved"
+        )
+    event_records = _array(reputation.get("event_records"), "SmartScreen event records")
+    if not event_records:
+        raise DesktopEvidenceError("SmartScreen evidence has no raw provider events")
+    previous_record_id = 0
+    for raw_event in event_records:
+        event = _exact(
+            raw_event,
+            (
+                "provider",
+                "event_id",
+                "record_id",
+                "captured_at_utc",
+                "correlation_sha256",
+                "payload_sha256",
+            ),
+            "SmartScreen provider event",
+        )
+        record_id = _integer(
+            event.get("record_id"), "SmartScreen event record id", minimum=1
+        )
+        if (
+            event.get("provider") != "Microsoft-Windows-SmartScreen"
+            or _integer(event.get("event_id"), "SmartScreen event id", minimum=1) < 1
+            or record_id <= previous_record_id
+            or event.get("correlation_sha256") != correlation
+        ):
+            raise DesktopEvidenceError(
+                "SmartScreen raw provider event is contradictory"
+            )
+        _timestamp(event.get("captured_at_utc"), "SmartScreen event time")
+        _digest(event.get("payload_sha256"), "SmartScreen raw event payload")
+        previous_record_id = record_id
+    samples = _array(reputation.get("window_samples"), "SmartScreen window samples")
+    if len(samples) < 3:
+        raise DesktopEvidenceError("SmartScreen window timeline is incomplete")
+    installer_observed = False
+    sample_times: list[datetime] = []
+    for sequence, raw_sample in enumerate(samples, start=1):
+        sample = _exact(
+            raw_sample,
+            (
+                "sequence",
+                "captured_at_utc",
+                "smartscreen_window_count",
+                "installer_process_observed",
+            ),
+            "SmartScreen window sample",
+        )
+        sample_time = datetime.strptime(
+            _timestamp(sample.get("captured_at_utc"), "SmartScreen sample time"),
+            "%Y-%m-%dT%H:%M:%SZ",
+        ).replace(tzinfo=timezone.utc)
+        if (
+            sample.get("sequence") != sequence
+            or sample.get("smartscreen_window_count") != 0
+            or not isinstance(sample.get("installer_process_observed"), bool)
+        ):
+            raise DesktopEvidenceError(
+                "SmartScreen window timeline observed a warning or is malformed"
+            )
+        installer_observed = installer_observed or bool(
+            sample.get("installer_process_observed")
+        )
+        sample_times.append(sample_time)
+    if (
+        sample_times != sorted(sample_times)
+        or sample_times[0] < launch_time
+        or sample_times[-1] > completed_time
+        or not installer_observed
+    ):
+        raise DesktopEvidenceError(
+            "SmartScreen window timeline does not prove an allowed installer launch"
+        )
+    return {
+        "observer": observer,
+        "download": download,
+        "launch": launch,
+        "reputation": reputation,
+        "motw_sha256": _sha256(motw_bytes),
+        "observation_sha256": _sha256(observation_bytes),
+    }
+
+
 def _validate_webview_state(value: object, label: str) -> dict[str, Any]:
     state = _exact(
         value,
@@ -1965,6 +2340,11 @@ def verify_package(
     expected_source_tree: str,
     expected_main_proof_sha256: str,
     expected_candidate_sha256: str,
+    expected_desktop_host_sha256: str,
+    expected_sidecar_sha256: str,
+    expected_signer_subject: str,
+    expected_certificate_thumbprint: str,
+    expected_timestamp_subject: str,
     expected_webview_installer_sha256: str,
     expected_policy_sha256: str,
     expected_adapter_sha256: str,
@@ -2011,12 +2391,24 @@ def verify_package(
     ):
         raise DesktopEvidenceError("raw manifest does not match its policy assignment")
     identity = _object(manifest.get("identity"), "raw identity")
+    expected_components = {
+        "desktop-host": expected_desktop_host_sha256,
+        "sidecar": expected_sidecar_sha256,
+        "nsis-installer": expected_candidate_sha256,
+    }
+    expected_authenticode = {
+        "signer_subject": expected_signer_subject,
+        "certificate_thumbprint": expected_certificate_thumbprint,
+        "timestamp_subject": expected_timestamp_subject,
+    }
     expected_identity = {
         "source_sha": expected_source_sha,
         "source_tree": expected_source_tree,
         "main_proof_sha256": expected_main_proof_sha256,
         "candidate_sha256": expected_candidate_sha256,
         "webview_installer_sha256": expected_webview_installer_sha256,
+        "signed_components": expected_components,
+        "authenticode_expectation": expected_authenticode,
     }
     if identity != expected_identity:
         raise DesktopEvidenceError("raw package immutable identity mismatch")
@@ -2024,6 +2416,12 @@ def verify_package(
     _git(identity["source_tree"], "source tree")
     for field in ("main_proof_sha256", "candidate_sha256", "webview_installer_sha256"):
         _digest(identity[field], field)
+    for role, digest in expected_components.items():
+        _digest(digest, f"{role} expected signed digest")
+    _text(expected_signer_subject, "expected signer subject")
+    _text(expected_timestamp_subject, "expected timestamp subject")
+    if CERTIFICATE_THUMBPRINT_RE.fullmatch(expected_certificate_thumbprint) is None:
+        raise DesktopEvidenceError("expected signing certificate thumbprint is invalid")
     execution = _exact(
         manifest.get("execution"),
         (
@@ -2123,11 +2521,19 @@ def verify_package(
 
     records, inventory_digest = _records(package, manifest)
     expected_record_roles = (
-        {"observation-stream", "install-log", "failure-diagnostic"}
+        {
+            "observation-stream",
+            "install-log",
+            "failure-diagnostic",
+            "smartscreen-observation",
+            "motw-zone-identifier",
+        }
         if assignment["scenario"] == "webview-install-failure"
         else {
             "observation-stream",
             "install-log",
+            "smartscreen-observation",
+            "motw-zone-identifier",
             "uia-action-trace",
             "uia-tree",
             "focus-region-contact-sheet",
@@ -2139,6 +2545,13 @@ def verify_package(
         raise DesktopEvidenceError(
             "raw record role inventory is incomplete or expanded"
         )
+    smartscreen = _validate_smartscreen_raw_records(
+        records["smartscreen-observation"],
+        records["motw-zone-identifier"],
+        assignment=assignment,
+        expected_candidate_sha256=expected_candidate_sha256,
+        expected_adapter_sha256=expected_adapter_sha256,
+    )
     if assignment["scenario"] == "installed-first-use":
         _validate_png_capture(
             records["window-capture-standard"],
@@ -2212,6 +2625,14 @@ def verify_package(
         _value(events, "installer-process-token"),
         "installer process",
         expected_started=True,
+    )
+    authenticode = _validate_stock_desk_authenticode(
+        _value(events, "stock-desk-authenticode"),
+        expected_components=expected_components,
+        expected_signer_subject=expected_signer_subject,
+        expected_certificate_thumbprint=expected_certificate_thumbprint,
+        expected_timestamp_subject=expected_timestamp_subject,
+        include_installed_components=assignment["scenario"] == "installed-first-use",
     )
     before = _validate_webview_state(
         _value(events, "webview-before"), "WebView2 before"
@@ -2538,7 +2959,12 @@ def verify_package(
         "display": display,
         "webview": {"before": before, "installation": installation, "after": after},
         "network": network,
-        "security": {"uac": uac, "processes": processes},
+        "security": {
+            "uac": uac,
+            "processes": processes,
+            "authenticode": authenticode,
+            "smartscreen": smartscreen,
+        },
         "install": install,
         "journey": journey,
         "uia": uia,
@@ -2559,6 +2985,11 @@ def verify_matrix(
     expected_source_tree: str,
     expected_main_proof_sha256: str,
     expected_candidate_sha256: str,
+    expected_desktop_host_sha256: str,
+    expected_sidecar_sha256: str,
+    expected_signer_subject: str,
+    expected_certificate_thumbprint: str,
+    expected_timestamp_subject: str,
     expected_webview_installer_sha256: str,
     expected_policy_sha256: str,
     expected_adapter_sha256: str,
@@ -2595,6 +3026,11 @@ def verify_matrix(
             expected_source_tree=expected_source_tree,
             expected_main_proof_sha256=expected_main_proof_sha256,
             expected_candidate_sha256=expected_candidate_sha256,
+            expected_desktop_host_sha256=expected_desktop_host_sha256,
+            expected_sidecar_sha256=expected_sidecar_sha256,
+            expected_signer_subject=expected_signer_subject,
+            expected_certificate_thumbprint=expected_certificate_thumbprint,
+            expected_timestamp_subject=expected_timestamp_subject,
             expected_webview_installer_sha256=expected_webview_installer_sha256,
             expected_policy_sha256=expected_policy_sha256,
             expected_adapter_sha256=expected_adapter_sha256,
@@ -2630,6 +3066,74 @@ def verify_matrix(
                 "derived_sha256": _sha256(data),
                 "raw_package_sha256": value["raw_package_sha256"],
             }
+        )
+    for profile, filename, platform in (
+        ("win10-22h2", "windows-10-trust-receipt.json", "windows_10_22h2_x64"),
+        ("win11", "windows-11-trust-receipt.json", "windows_11_x64"),
+    ):
+        platform_cases = [
+            derived[case_id]
+            for case_id in expected_case_ids()
+            if case_id.startswith(profile)
+        ]
+        signature_receipts = []
+        smartscreen_receipts = []
+        timestamp_thumbprints: set[str] = set()
+        for value in platform_cases:
+            security = _object(value["security"], "derived security")
+            authenticode = _object(security["authenticode"], "derived Authenticode")
+            smartscreen = _object(security["smartscreen"], "derived SmartScreen")
+            artifacts = _object(
+                authenticode["artifacts"], "derived Authenticode artifacts"
+            )
+            timestamp_thumbprints.update(
+                str(
+                    _object(artifact, "derived signed artifact")["timestamp_thumbprint"]
+                )
+                for artifact in artifacts.values()
+            )
+            signature_receipts.append(
+                {
+                    "case_id": value["case_id"],
+                    "roles": sorted(artifacts),
+                    "authenticode_sha256": _canonical_digest(authenticode),
+                }
+            )
+            smartscreen_receipts.append(
+                {
+                    "case_id": value["case_id"],
+                    "observation_sha256": smartscreen["observation_sha256"],
+                    "motw_sha256": smartscreen["motw_sha256"],
+                    "evidence_sha256": _canonical_digest(smartscreen),
+                }
+            )
+        platform_receipt = {
+            "schema": "stock-desk-windows-trust-receipt-v1",
+            "source_sha": expected_source_sha,
+            "payload_sha256": expected_candidate_sha256,
+            "verifier": "WinVerifyTrust",
+            "authenticode_status": "Valid",
+            "standard_user_install": "passed",
+            "smartscreen_status": "allowed-no-warning",
+            "smartscreen_observer": "external-protected-vm-observer",
+            "platform": platform,
+            "signed_components": {
+                "desktop-host": expected_desktop_host_sha256,
+                "sidecar": expected_sidecar_sha256,
+                "nsis-installer": expected_candidate_sha256,
+            },
+            "signer_subject": expected_signer_subject,
+            "certificate_thumbprint": expected_certificate_thumbprint,
+            "timestamp_subject": expected_timestamp_subject,
+            "timestamp_thumbprints": sorted(timestamp_thumbprints),
+            "case_receipts": signature_receipts,
+            "smartscreen_case_receipts": smartscreen_receipts,
+        }
+        (output_root / filename).write_bytes(
+            json.dumps(
+                platform_receipt, ensure_ascii=False, indent=2, sort_keys=True
+            ).encode()
+            + b"\n"
         )
     receipt = {
         "schema": "stock-desk-windows-installed-acceptance-receipt-v2",
@@ -2668,6 +3172,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--source-tree", required=True)
     parser.add_argument("--main-proof-sha256", required=True)
     parser.add_argument("--candidate-sha256", required=True)
+    parser.add_argument("--desktop-host-sha256", required=True)
+    parser.add_argument("--sidecar-sha256", required=True)
+    parser.add_argument("--signer-subject", required=True)
+    parser.add_argument("--certificate-thumbprint", required=True)
+    parser.add_argument("--timestamp-subject", required=True)
     parser.add_argument("--webview-installer-sha256", required=True)
     parser.add_argument("--snapshot-policy-sha256", required=True)
     parser.add_argument("--adapter-sha256", required=True)
@@ -2700,6 +3209,23 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
             expected_candidate_sha256=_digest(
                 arguments.candidate_sha256, "expected candidate"
+            ),
+            expected_desktop_host_sha256=_digest(
+                arguments.desktop_host_sha256, "expected desktop host"
+            ),
+            expected_sidecar_sha256=_digest(
+                arguments.sidecar_sha256, "expected sidecar"
+            ),
+            expected_signer_subject=_text(
+                arguments.signer_subject, "expected signer subject"
+            ),
+            expected_certificate_thumbprint=_text(
+                arguments.certificate_thumbprint,
+                "expected certificate thumbprint",
+                maximum=64,
+            ),
+            expected_timestamp_subject=_text(
+                arguments.timestamp_subject, "expected timestamp subject"
             ),
             expected_webview_installer_sha256=_digest(
                 arguments.webview_installer_sha256, "expected WebView2 installer"

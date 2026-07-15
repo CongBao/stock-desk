@@ -1183,6 +1183,18 @@ def test_windows_receipt_must_match_platform_source_and_payload(
     tmp_path: Path,
 ) -> None:
     receipt = tmp_path / "windows-receipt.json"
+    authenticode = trusted_release.AuthenticodeEvidence(
+        signer_subject="CN=Stock Desk",
+        certificate_thumbprint="A" * 40,
+        timestamp_subject="CN=Trusted Timestamp",
+    )
+    case_ids = [
+        "win11-dpi-100",
+        "win11-dpi-125",
+        "win11-dpi-150",
+        "win11-dpi-175",
+        "win11-dpi-200",
+    ]
     payload = {
         "schema": "stock-desk-windows-trust-receipt-v1",
         "platform": "windows_11_x64",
@@ -1191,18 +1203,46 @@ def test_windows_receipt_must_match_platform_source_and_payload(
         "verifier": "WinVerifyTrust",
         "authenticode_status": "Valid",
         "standard_user_install": "passed",
+        "smartscreen_status": "allowed-no-warning",
+        "smartscreen_observer": "external-protected-vm-observer",
+        "signed_components": {
+            "desktop-host": "c" * 64,
+            "sidecar": "d" * 64,
+            "nsis-installer": "b" * 64,
+        },
+        "signer_subject": authenticode["signer_subject"],
+        "certificate_thumbprint": authenticode["certificate_thumbprint"],
+        "timestamp_subject": authenticode["timestamp_subject"],
+        "timestamp_thumbprints": ["B" * 40],
+        "case_receipts": [
+            {
+                "case_id": case_id,
+                "roles": ["desktop-host", "nsis-installer", "sidecar"],
+                "authenticode_sha256": "e" * 64,
+            }
+            for case_id in case_ids
+        ],
+        "smartscreen_case_receipts": [
+            {
+                "case_id": case_id,
+                "observation_sha256": "f" * 64,
+                "motw_sha256": "1" * 64,
+                "evidence_sha256": "2" * 64,
+            }
+            for case_id in case_ids
+        ],
     }
     receipt.write_text(json.dumps(payload), encoding="utf-8")
 
     trusted_release._verify_windows_receipt(
-        receipt, "windows_11_x64", SOURCE_SHA, "b" * 64
+        receipt, "windows_11_x64", SOURCE_SHA, "b" * 64, authenticode
     )
 
     payload["source_sha"] = "c" * 40
     receipt.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(TrustedUpdaterReleaseError, match="exact-SHA trust evidence"):
         trusted_release._verify_windows_receipt(
-            receipt, "windows_11_x64", SOURCE_SHA, "b" * 64
+            receipt, "windows_11_x64", SOURCE_SHA, "b" * 64, authenticode
         )
 
 

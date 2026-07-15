@@ -532,35 +532,39 @@ async function expectNonColorStatusCues(page: Page) {
   const statuses = page.locator(
     '[role="status"]:visible, [role="alert"]:visible, [aria-live="polite"]:visible, [aria-live="assertive"]:visible',
   );
-  for (let index = 0; index < (await statuses.count()); index += 1) {
-    const status = statuses.nth(index);
-    const cue = await status.evaluate((element) =>
-      (
+  const statusSnapshots = await statuses.evaluateAll((elements) =>
+    elements.map((element) => ({
+      cue: (
         element.getAttribute('aria-label') ??
         element.getAttribute('title') ??
         element.textContent ??
         ''
       ).trim(),
-    );
-    if (cue.length === 0) {
-      await expect(status).not.toHaveAttribute('data-state');
-      await expect(status).not.toHaveAttribute('data-status');
+      hasState: element.hasAttribute('data-state'),
+      hasStatus: element.hasAttribute('data-status'),
+    })),
+  );
+  for (const status of statusSnapshots) {
+    if (status.cue.length === 0) {
+      expect(status.hasState).toBe(false);
+      expect(status.hasStatus).toBe(false);
     }
   }
 
   const visibleStateCues = page.locator(
     '[data-state]:visible, [data-status]:visible',
   );
-  for (let index = 0; index < (await visibleStateCues.count()); index += 1) {
-    const cue = visibleStateCues.nth(index);
-    const nonColorCue = await cue.evaluate((element) =>
+  const nonColorCues = await visibleStateCues.evaluateAll((elements) =>
+    elements.map((element) =>
       (
         element.getAttribute('aria-label') ??
         element.getAttribute('title') ??
         element.textContent ??
         ''
       ).trim(),
-    );
+    ),
+  );
+  for (const nonColorCue of nonColorCues) {
     expect(nonColorCue.length).toBeGreaterThan(0);
   }
 }

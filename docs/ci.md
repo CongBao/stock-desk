@@ -24,7 +24,7 @@ Web、Python、OCI、SBOM/provenance 等产物都有内容 manifest，记录 sou
 
 ### Release 复用
 
-当前未签名的 `v1.1.0-alpha.N` 和 `v1.1.0-beta.N` 标签只消费同一提交已经成功生成的 exact-SHA `main` proof 与 Windows candidate。Release 会重新验证 tag、GitHub attestation、proof、candidate manifest、版本化安装器文件名和内容摘要，然后只发布显著标记的 Windows x64 unsigned prerelease；它不重跑 unit/E2E，也不重建桌面安装包。`v1.1.0` stable 和 `rc` 标签在独立的 SignPath、可信更新及 Windows 10/11 普通用户安装链完成前保持 fail closed。SignPath 申请已提交但仍为 pending，因此当前证据不代表 Authenticode、SmartScreen 或正式发布门禁已经通过。
+当前未签名的 `v1.1.0-alpha.N` 和 `v1.1.0-beta.N` 标签只消费同一提交已经成功生成的 exact-SHA `main` proof 与 Windows candidate。Release 会重新验证 tag、GitHub attestation、proof、candidate manifest、版本化安装器文件名和内容摘要，然后只发布显著标记的 Windows x64 unsigned prerelease；它不重跑 unit/E2E，也不重建桌面安装包。仓库中的 formal DAG 目前只是硬禁用骨架：SignPath job 使用字面 `false` 门禁，任何 input、变量、密钥或环境配置都不能启动它，因此 `v1.1.0-rc.N` 和 stable 都无法签名或发布。后续受审变更必须先加入 NSIS 安装控制语义等价证明与真实 SmartScreen/MOTW 新机证据，才能移除门禁。SignPath 申请仍为 pending，当前证据不代表 Authenticode、SmartScreen 或正式发布门禁已经通过。
 
 PR 与 main 都使用锁定版本 `cargo-audit 0.22.2` 对 `src-tauri/Cargo.lock`
 执行 RustSec 检查。已知漏洞使用工具默认的非零失败语义，yanked crate 由
@@ -47,7 +47,7 @@ PR 与 main 还运行 GitHub-hosted Windows browser/UIA observer integrations：
 
 ### 优化前基线
 
-已记录基线包括：Python 全量关键路径最高约 `41m32s`、Chromium E2E 约 `16m54s`、本地连续候选约 `85m`；2026-07-11 最终 main run 的完整 CI 为 `32m48s`。v1.1 目标是普通 PR 10–20 分钟、高风险 PR 20–30 分钟、main 25–35 分钟。P50/P95 只能根据至少五次连续同类运行公布，不能通过跳过门禁美化。
+已记录基线包括：Python 全量关键路径最高约 `41m32s`、Chromium E2E 约 `16m54s`、本地连续候选约 `85m`；2026-07-11 最终 main run 的完整 CI 为 `32m48s`。v1.1 目标是普通 PR 10–20 分钟、高风险 PR 20–30 分钟、main 25–35 分钟。部署耗时台账保存成功、失败、取消、超时、跳过和已废弃的原始样本，并以不可变哈希链与外部连续性 seal 防止删尾；ledger 与 seal 通过可恢复事务日志提交，半提交只能继续既定追加，不能改写既有历史。报告始终输出六个固定分类，零样本分类也明确标记为 `incomplete`。P50/P95 只能根据至少连续五次可比运行公布；可比身份由分类、workflow、完整 ref 和完整环境基线共同确定，任一字段漂移都会开始新的连续段并在报告中保留全部漂移段。重试 attempt 仍保留为原始证据，但同一 run id 只能计作一次连续运行；每个 run 的 queue/wall 代表值分别取该 run 所有 attempt 的最大值，再计算 nearest-rank，因此快速重试不能压低百分位。不足五次必须标为 `incomplete`，不能通过重试、跳过门禁或删除失败/已废弃样本美化。
 
 ## English
 
@@ -79,7 +79,7 @@ never audit conclusions, reports, proofs, or release artifacts.
 
 ### Release reuse
 
-Current unsigned `v1.1.0-alpha.N` and `v1.1.0-beta.N` tags consume only the exact-SHA `main` proof and Windows candidate already produced successfully for the same commit. Release revalidates the tag, GitHub attestation, proof, candidate manifest, versioned installer name, and content digests, then publishes only a clearly labelled Windows x64 unsigned prerelease; it neither reruns unit/E2E nor rebuilds the desktop installer. `v1.1.0` stable and `rc` tags remain fail-closed until the separate SignPath, trusted-update, and Windows 10/11 standard-user installation chain exists. The SignPath application is submitted but still pending, so this evidence does not claim that Authenticode, SmartScreen, or formal-release gates have passed.
+Current unsigned `v1.1.0-alpha.N` and `v1.1.0-beta.N` tags consume only the exact-SHA `main` proof and Windows candidate already produced successfully for the same commit. Release revalidates the tag, GitHub attestation, proof, candidate manifest, versioned installer name, and content digests, then publishes only a clearly labelled Windows x64 unsigned prerelease; it neither reruns unit/E2E nor rebuilds the desktop installer. The checked-in formal DAG is currently a hard-disabled scaffold: the SignPath job has a literal `false` gate that no input, variable, secret, or environment can enable, so neither `v1.1.0-rc.N` nor stable can sign or publish. A later reviewed change must add NSIS installation-control equivalence and real fresh-machine SmartScreen/MOTW evidence before removing that gate. The SignPath application is still pending, and current evidence does not claim that Authenticode, SmartScreen, or formal-release gates have passed.
 
 ### Installed Windows acceptance
 
@@ -95,4 +95,4 @@ PR and `main` also run GitHub-hosted Windows browser/UIA observer integrations. 
 
 ### Pre-optimization baseline
 
-Recorded baselines include a Python critical path of about `41m32s`, Chromium E2E of about `16m54s`, and consecutive local candidates of about `85m`; the final 2026-07-11 main CI completed in `32m48s`. v1.1 targets 10–20 minutes for a typical PR, 20–30 minutes for a high-risk PR, and 25–35 minutes for `main`. P50/P95 figures require at least five consecutive comparable runs and may never be improved by skipping gates.
+Recorded baselines include a Python critical path of about `41m32s`, Chromium E2E of about `16m54s`, and consecutive local candidates of about `85m`; the final 2026-07-11 main CI completed in `32m48s`. v1.1 targets 10–20 minutes for a typical PR, 20–30 minutes for a high-risk PR, and 25–35 minutes for `main`. The deployment-latency ledger retains raw successful, failed, cancelled, timed-out, skipped, and invalidated samples in an immutable hash chain with an external continuity seal. A recoverable transaction journal commits the ledger and seal, so an interrupted commit can only finish its predetermined append and cannot rewrite existing history. Reports always emit all six fixed categories, with zero-sample categories explicitly marked `incomplete`. P50/P95 figures require five consecutive comparable runs whose category, workflow, full ref, and full environment baseline are identical; any drift starts a new streak and every drift segment remains visible. Retry attempts remain raw evidence, but one run id counts only once toward completeness. Each run's queue and wall representatives are the respective maxima across all its attempts before nearest-rank calculation, so fast retries cannot lower a percentile. Fewer than five are reported as `incomplete`, and figures may never be improved with retries, skipped gates, or deletion of failed or invalidated samples.

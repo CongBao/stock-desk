@@ -133,7 +133,10 @@ def test_bilingual_readme_baseline_contains_verified_installation_and_use() -> N
 
     workflow = _workflow()
     jobs = workflow["jobs"]
-    assert set(jobs) == {"tag-policy", "prerelease-verify", "prerelease"}
+    assert {"tag-policy", "prerelease-verify", "prerelease"} <= set(jobs)
+    assert {"formal-inputs", "signpath", "windows-installed", "stable-release"} <= set(
+        jobs
+    )
     assert jobs["prerelease-verify"]["needs"] == "tag-policy"
     assert jobs["prerelease"]["needs"] == "prerelease-verify"
     verify_steps = jobs["prerelease-verify"]["steps"]

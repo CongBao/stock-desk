@@ -39,6 +39,8 @@ PE_X86_MACHINE: Final = 0x014C
 HEX_40: Final = re.compile(r"[0-9a-f]{40}")
 HEX_64: Final = re.compile(r"[0-9a-f]{64}")
 PUBLIC_KEY: Final = re.compile(r"[A-Za-z0-9_.-]+")
+PRERELEASE_VERSION: Final = re.compile(r"1\.1\.0-(?:alpha|beta)\.[1-9][0-9]*")
+FORMAL_CANDIDATE_VERSION: Final = re.compile(r"1\.1\.0(?:-rc\.[1-9][0-9]*)?")
 AUTHENTICODE_STATUS_CODES: Final = {
     0: "UnknownError",
     1: "Valid",
@@ -140,6 +142,15 @@ def manifest_digest(manifest: Mapping[str, object]) -> str:
     unsigned = dict(manifest)
     unsigned.pop("manifest_sha256", None)
     return hashlib.sha256(canonical_json(unsigned)).hexdigest()
+
+
+def release_channel(version: str) -> str:
+    """Return the only unsigned channel permitted for an exact v1.1 version."""
+    if PRERELEASE_VERSION.fullmatch(version) is not None:
+        return "prerelease"
+    if FORMAL_CANDIDATE_VERSION.fullmatch(version) is not None:
+        return "formal-candidate"
+    raise BundleVerificationError("release version is invalid")
 
 
 def is_reparse_point(metadata: object) -> bool:
@@ -570,12 +581,7 @@ def verify_bundle(
     limits: Limits = Limits(),
     signature_verifier: SignatureVerifier = verify_windows_authenticode,
 ) -> dict[str, object]:
-    if (
-        not version
-        or "-" not in version
-        or any(character in version for character in "\\/\x00")
-    ):
-        raise BundleVerificationError("release version is invalid")
+    channel = release_channel(version)
     if HEX_40.fullmatch(source_sha) is None:
         raise BundleVerificationError("source_sha must be a lowercase 40-character SHA")
     safe_toolchain = _assert_public_map(
@@ -649,7 +655,7 @@ def verify_bundle(
                     )
             elif pe.signed:
                 raise BundleVerificationError(
-                    f"unsigned prerelease contains signed PE: {relative}"
+                    f"unsigned release candidate contains signed PE: {relative}"
                 )
             if len(pe_payload) != size:
                 raise BundleVerificationError(
@@ -687,7 +693,7 @@ def verify_bundle(
         "artifact": ARTIFACT_KIND,
         "release": {
             "version": version,
-            "channel": "prerelease",
+            "channel": channel,
             "signature": "unsigned",
         },
         "source_sha": source_sha,
@@ -724,13 +730,15 @@ def validate_manifest(raw: object) -> dict[str, object]:
     if (
         not isinstance(release_raw, dict)
         or set(release_raw) != {"version", "channel", "signature"}
-        or release_raw.get("channel") != "prerelease"
         or release_raw.get("signature") != "unsigned"
     ):
-        raise BundleVerificationError("release must be an unsigned prerelease")
+        raise BundleVerificationError("release must be an unsigned candidate")
     version = release_raw["version"]
-    if not isinstance(version, str) or not version or "-" not in version:
+    if not isinstance(version, str):
         raise BundleVerificationError("release version is invalid")
+    expected_channel = release_channel(version)
+    if release_raw.get("channel") != expected_channel:
+        raise BundleVerificationError("release channel does not match version")
     source_sha = raw["source_sha"]
     if not isinstance(source_sha, str) or HEX_40.fullmatch(source_sha) is None:
         raise BundleVerificationError("source_sha is invalid")

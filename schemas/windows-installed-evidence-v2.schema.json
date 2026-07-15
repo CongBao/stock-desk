@@ -37,14 +37,34 @@
     "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
     "gitObject": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
     "timestamp": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$" },
+    "signedComponents": {
+      "type": "object", "additionalProperties": false,
+      "required": ["desktop-host", "sidecar", "nsis-installer"],
+      "properties": {
+        "desktop-host": { "$ref": "#/$defs/sha256" },
+        "sidecar": { "$ref": "#/$defs/sha256" },
+        "nsis-installer": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "authenticodeExpectation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["signer_subject", "certificate_thumbprint", "timestamp_subject"],
+      "properties": {
+        "signer_subject": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "certificate_thumbprint": { "type": "string", "pattern": "^[0-9A-F]{40,64}$" },
+        "timestamp_subject": { "type": "string", "minLength": 1, "maxLength": 512 }
+      }
+    },
     "caseId": { "type": "string", "pattern": "^(win10-22h2|win11)-dpi-(100|125|150|175|200)(-webview-offline)?$" },
     "identity": {
       "type": "object", "additionalProperties": false,
-      "required": ["source_sha", "source_tree", "main_proof_sha256", "candidate_sha256", "webview_installer_sha256"],
+      "required": ["source_sha", "source_tree", "main_proof_sha256", "candidate_sha256", "webview_installer_sha256", "signed_components", "authenticode_expectation"],
       "properties": {
         "source_sha": { "$ref": "#/$defs/gitObject" }, "source_tree": { "$ref": "#/$defs/gitObject" },
         "main_proof_sha256": { "$ref": "#/$defs/sha256" }, "candidate_sha256": { "$ref": "#/$defs/sha256" },
-        "webview_installer_sha256": { "$ref": "#/$defs/sha256" }
+        "webview_installer_sha256": { "$ref": "#/$defs/sha256" },
+        "signed_components": { "$ref": "#/$defs/signedComponents" },
+        "authenticode_expectation": { "$ref": "#/$defs/authenticodeExpectation" }
       }
     },
     "execution": {
@@ -170,10 +190,126 @@
       "type": "object", "additionalProperties": false, "required": ["uac_prompt_count", "elevation_requested"],
       "properties": { "uac_prompt_count": { "const": 0 }, "elevation_requested": { "const": false } }
     },
+    "authenticodeArtifact": {
+      "type": "object", "additionalProperties": false,
+      "required": ["role", "file_name", "sha256", "status", "signer_subject", "certificate_thumbprint", "timestamp_subject", "timestamp_thumbprint"],
+      "properties": {
+        "role": { "enum": ["desktop-host", "sidecar", "nsis-installer"] },
+        "file_name": { "enum": ["stock-desk-desktop.exe", "stock-desk-sidecar.exe", "stock-desk-signed-nsis.exe"] },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "status": { "const": "Valid" },
+        "signer_subject": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "certificate_thumbprint": { "type": "string", "pattern": "^[0-9A-F]{40,64}$" },
+        "timestamp_subject": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "timestamp_thumbprint": { "type": "string", "pattern": "^[0-9A-F]{40,64}$" }
+      }
+    },
+    "authenticode": {
+      "type": "object", "additionalProperties": false,
+      "required": ["verification_api", "artifacts"],
+      "properties": {
+        "verification_api": { "const": "Get-AuthenticodeSignature/WinVerifyTrust" },
+        "artifacts": {
+          "type": "object", "additionalProperties": false, "minProperties": 1,
+          "properties": {
+            "desktop-host": { "$ref": "#/$defs/authenticodeArtifact" },
+            "sidecar": { "$ref": "#/$defs/authenticodeArtifact" },
+            "nsis-installer": { "$ref": "#/$defs/authenticodeArtifact" }
+          },
+          "required": ["nsis-installer"]
+        }
+      }
+    },
+    "smartscreenObserver": {
+      "type": "object", "additionalProperties": false,
+      "required": ["identity", "source", "adapter_sha256", "snapshot_sha256", "image_sha256", "machine_state"],
+      "properties": {
+        "identity": { "const": "stock-desk-protected-smartscreen-observer-v1" },
+        "source": { "const": "external-protected-vm-observer" },
+        "adapter_sha256": { "$ref": "#/$defs/sha256" },
+        "snapshot_sha256": { "$ref": "#/$defs/sha256" },
+        "image_sha256": { "$ref": "#/$defs/sha256" },
+        "machine_state": { "const": "restored-clean-snapshot" }
+      }
+    },
+    "smartscreenDownload": {
+      "type": "object", "additionalProperties": false,
+      "required": ["method", "source_url", "tls_system_validation", "completed_at_utc", "byte_count", "candidate_sha256", "zone_identifier_sha256"],
+      "properties": {
+        "method": { "const": "https-internet-download" },
+        "source_url": { "type": "string", "pattern": "^https://" },
+        "tls_system_validation": { "const": true },
+        "completed_at_utc": { "$ref": "#/$defs/timestamp" },
+        "byte_count": { "type": "integer", "minimum": 1 },
+        "candidate_sha256": { "$ref": "#/$defs/sha256" },
+        "zone_identifier_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "smartscreenLaunch": {
+      "type": "object", "additionalProperties": false,
+      "required": ["api", "requested_at_utc", "account_token", "candidate_sha256"],
+      "properties": {
+        "api": { "const": "ShellExecuteExW" },
+        "requested_at_utc": { "$ref": "#/$defs/timestamp" },
+        "account_token": { "const": "standard-user-medium-integrity" },
+        "candidate_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "smartscreenEvent": {
+      "type": "object", "additionalProperties": false,
+      "required": ["provider", "event_id", "record_id", "captured_at_utc", "correlation_sha256", "payload_sha256"],
+      "properties": {
+        "provider": { "const": "Microsoft-Windows-SmartScreen" },
+        "event_id": { "type": "integer", "minimum": 1 },
+        "record_id": { "type": "integer", "minimum": 1 },
+        "captured_at_utc": { "$ref": "#/$defs/timestamp" },
+        "correlation_sha256": { "$ref": "#/$defs/sha256" },
+        "payload_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "smartscreenWindowSample": {
+      "type": "object", "additionalProperties": false,
+      "required": ["sequence", "captured_at_utc", "smartscreen_window_count", "installer_process_observed"],
+      "properties": {
+        "sequence": { "type": "integer", "minimum": 1 },
+        "captured_at_utc": { "$ref": "#/$defs/timestamp" },
+        "smartscreen_window_count": { "const": 0 },
+        "installer_process_observed": { "type": "boolean" }
+      }
+    },
+    "smartscreenReputation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["provider", "policy_mode", "disposition", "decision_source", "cloud_service_contact_count", "correlation_sha256", "completed_at_utc", "event_records", "window_samples"],
+      "properties": {
+        "provider": { "const": "Microsoft Defender SmartScreen" },
+        "policy_mode": { "const": "warn-or-block-unrecognized-apps" },
+        "disposition": { "const": "allowed-no-warning" },
+        "decision_source": { "const": "cloud-reputation" },
+        "cloud_service_contact_count": { "type": "integer", "minimum": 1 },
+        "correlation_sha256": { "$ref": "#/$defs/sha256" },
+        "completed_at_utc": { "$ref": "#/$defs/timestamp" },
+        "event_records": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/smartscreenEvent" } },
+        "window_samples": { "type": "array", "minItems": 3, "items": { "$ref": "#/$defs/smartscreenWindowSample" } }
+      }
+    },
+    "smartscreen": {
+      "type": "object", "additionalProperties": false,
+      "required": ["observer", "download", "launch", "reputation", "motw_sha256", "observation_sha256"],
+      "properties": {
+        "observer": { "$ref": "#/$defs/smartscreenObserver" },
+        "download": { "$ref": "#/$defs/smartscreenDownload" },
+        "launch": { "$ref": "#/$defs/smartscreenLaunch" },
+        "reputation": { "$ref": "#/$defs/smartscreenReputation" },
+        "motw_sha256": { "$ref": "#/$defs/sha256" },
+        "observation_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
     "security": {
-      "type": "object", "additionalProperties": false, "required": ["uac", "processes"],
+      "type": "object", "additionalProperties": false, "required": ["uac", "processes", "authenticode", "smartscreen"],
       "properties": {
         "uac": { "$ref": "#/$defs/uac" },
+        "authenticode": { "$ref": "#/$defs/authenticode" },
+        "smartscreen": { "$ref": "#/$defs/smartscreen" },
         "processes": {
           "type": "object", "additionalProperties": false,
           "properties": { "installer": { "$ref": "#/$defs/process" }, "desktop_host": { "$ref": "#/$defs/process" }, "sidecar": { "$ref": "#/$defs/process" }, "uninstaller": { "$ref": "#/$defs/process" } },

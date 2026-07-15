@@ -1,0 +1,337 @@
+# Formal SignPath control plane. This reusable workflow remains fail closed
+# until the release-signing environment, SignPath project, nested Authenticode
+# configuration, submitter token, and second-review policy exist outside Git.
+name: Formal Windows SignPath signing
+
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        description: Exact protected-main commit to sign
+        required: true
+        type: string
+      release_tag:
+        description: Annotated formal tag pointing exactly to source_sha
+        required: true
+        type: string
+      source_tree:
+        description: Exact Git tree for source_sha
+        required: true
+        type: string
+      proof_sha256:
+        description: SHA-256 of the exact-main proof.json
+        required: true
+        type: string
+      candidate_sha256:
+        description: SHA-256 of the proved candidate manifest
+        required: true
+        type: string
+      unsigned_artifact_name:
+        description: Same-run closed formal input artifact
+        required: true
+        type: string
+    secrets:
+      SIGNPATH_API_TOKEN:
+        required: true
+      SIGNPATH_ORGANIZATION_ID:
+        required: true
+      SIGNPATH_PROJECT_SLUG:
+        required: true
+      SIGNPATH_SIGNING_POLICY_SLUG:
+        required: true
+      SIGNPATH_ARTIFACT_CONFIGURATION_SLUG:
+        required: true
+      SIGNPATH_POLICY_TOKEN:
+        required: true
+    outputs:
+      signed_artifact_name:
+        description: Closed signed candidate artifact name
+        value: ${{ jobs.sign.outputs.signed_artifact_name }}
+      signing_request_id:
+        description: Real SignPath request identifier
+        value: ${{ jobs.sign.outputs.signing_request_id }}
+      signed_candidate_sha256:
+        description: SHA-256 of the signed NSIS installer
+        value: ${{ jobs.sign.outputs.signed_candidate_sha256 }}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: signpath-${{ inputs.source_sha }}
+  cancel-in-progress: false
+
+jobs:
+  sign:
+    name: Approve and sign exact protected-main Windows candidate
+    # Stage 10 intentionally cannot submit a real signing request. A later
+    # reviewed Stage 11 change may remove this literal gate only together with
+    # NSIS control-data equivalence and real SmartScreen/MOTW evidence.
+    if: ${{ false }}
+    environment: release-signing
+    runs-on: windows-2025
+    timeout-minutes: 40
+    permissions:
+      actions: read
+      attestations: write
+      contents: read
+      id-token: write
+    outputs:
+      signed_artifact_name: ${{ steps.outputs.outputs.artifact_name }}
+      signing_request_id: ${{ steps.signpath.outputs.signing-request-id }}
+      signed_candidate_sha256: ${{ steps.outputs.outputs.signed_sha256 }}
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      SOURCE_TREE: ${{ inputs.source_tree }}
+      PROOF_SHA256: ${{ inputs.proof_sha256 }}
+      CANDIDATE_SHA256: ${{ inputs.candidate_sha256 }}
+      SIGNPATH_INTEGRATION_STATUS: ${{ vars.SIGNPATH_INTEGRATION_STATUS }}
+    steps:
+      - name: Reject mutable, retried, or non-protected invocation
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:SOURCE_SHA -notmatch '^[0-9a-f]{40}$') { throw 'source SHA is invalid' }
+          if ($env:SOURCE_TREE -notmatch '^[0-9a-f]{40}$') { throw 'source tree is invalid' }
+          if ($env:PROOF_SHA256 -notmatch '^[0-9a-f]{64}$') { throw 'proof digest is invalid' }
+          if ($env:CANDIDATE_SHA256 -notmatch '^[0-9a-f]{64}$') { throw 'candidate digest is invalid' }
+          if ($env:GITHUB_SHA -ne $env:SOURCE_SHA) { throw 'caller is not the exact source commit' }
+          if ($env:GITHUB_REF_TYPE -ne 'branch' -or $env:GITHUB_REF_NAME -ne 'main') { throw 'formal signing caller must be main' }
+          if ($env:GITHUB_REF_PROTECTED -ne 'true') { throw 'formal signing caller must be protected main' }
+          if ($env:RELEASE_TAG -notmatch '^v1\.1\.0(?:-rc\.[1-9][0-9]*)?$') { throw 'formal tag is invalid' }
+          if ($env:GITHUB_RUN_ATTEMPT -ne '1') { throw 'signing reruns are forbidden' }
+          $roots = @{
+            INPUT_ROOT = Join-Path $env:RUNNER_TEMP 'stock-desk-signpath-input'
+            REQUEST_ROOT = Join-Path $env:RUNNER_TEMP 'stock-desk-signpath-request'
+            SIGNED_ROOT = Join-Path $env:RUNNER_TEMP 'stock-desk-signpath-result'
+            FORMAL_ROOT = Join-Path $env:RUNNER_TEMP 'stock-desk-formal-signed'
+            UNSIGNED_EXTRACT_ROOT = Join-Path $env:RUNNER_TEMP 'stock-desk-signpath-unsigned-extract'
+            SIGNED_EXTRACT_ROOT = Join-Path $env:RUNNER_TEMP 'stock-desk-signpath-signed-extract'
+          }
+          foreach ($entry in $roots.GetEnumerator()) {
+            "$($entry.Key)=$($entry.Value)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            Set-Item -Path "Env:$($entry.Key)" -Value $entry.Value
+          }
+          New-Item -ItemType Directory -Force $env:INPUT_ROOT, $env:REQUEST_ROOT, $env:SIGNED_ROOT, $env:FORMAL_ROOT, $env:UNSIGNED_EXTRACT_ROOT, $env:SIGNED_EXTRACT_ROOT | Out-Null
+
+      - name: Check out the immutable requested source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ inputs.source_sha }}
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+
+      - name: Prove exact protected main head and source tree
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ((git rev-parse HEAD) -ne $env:SOURCE_SHA) { throw 'checkout SHA mismatch' }
+          if ((git rev-parse 'HEAD^{tree}') -ne $env:SOURCE_TREE) { throw 'checkout tree mismatch' }
+          git fetch --no-tags origin '+refs/heads/main:refs/remotes/origin/protected-main'
+          if ((git rev-parse refs/remotes/origin/protected-main) -ne $env:SOURCE_SHA) { throw 'source is not exact main head' }
+          $branch = gh api "repos/$env:GITHUB_REPOSITORY/branches/main" | ConvertFrom-Json
+          if ($branch.name -ne 'main' -or $branch.protected -ne $true -or $branch.commit.sha -ne $env:SOURCE_SHA) {
+            throw 'GitHub protected-main identity mismatch'
+          }
+
+      - name: Prove annotated formal tag points exactly to protected main
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $remote = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY.git"
+          $directLines = @(git ls-remote --refs $remote "refs/tags/$env:RELEASE_TAG")
+          $peeledLines = @(git ls-remote $remote "refs/tags/$env:RELEASE_TAG^{}")
+          if ($directLines.Count -ne 1 -or $peeledLines.Count -ne 1) { throw 'formal tag must be one annotated remote tag' }
+          $direct = ($directLines[0] -split "`t")[0]
+          $peeled = ($peeledLines[0] -split "`t")[0]
+          if ($direct -notmatch '^[0-9a-f]{40}$' -or $peeled -ne $env:SOURCE_SHA) { throw 'formal tag identity mismatch' }
+          $refspec = '+refs/tags/{0}:refs/tags/{0}' -f $env:RELEASE_TAG
+          git fetch --force --no-tags origin $refspec
+          if ((git cat-file -t "refs/tags/$env:RELEASE_TAG") -ne 'tag') { throw 'formal tag must be annotated' }
+          if ((git rev-parse "refs/tags/$env:RELEASE_TAG^{commit}") -ne $env:SOURCE_SHA) { throw 'formal tag commit mismatch' }
+
+      - name: Verify release-signing manual approval policy
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.SIGNPATH_POLICY_TOKEN }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $environment = Join-Path $env:RUNNER_TEMP 'release-signing-environment.json'
+          $branches = Join-Path $env:RUNNER_TEMP 'release-signing-branches.json'
+          gh api "repos/$env:GITHUB_REPOSITORY/environments/release-signing" | Set-Content -Encoding utf8NoBOM $environment
+          gh api "repos/$env:GITHUB_REPOSITORY/environments/release-signing/deployment-branch-policies" | Set-Content -Encoding utf8NoBOM $branches
+          python scripts/signpath_contract.py verify-environment `
+            --environment $environment --branch-policies $branches `
+            --repository $env:GITHUB_REPOSITORY
+
+      - name: Fail closed unless the integration state and identities are exact
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python scripts/signpath_contract.py preflight `
+            --status $env:SIGNPATH_INTEGRATION_STATUS `
+            --source-sha $env:SOURCE_SHA --source-tree $env:SOURCE_TREE `
+            --proof-digest $env:PROOF_SHA256 --candidate-digest $env:CANDIDATE_SHA256
+
+      - name: Download the same-run closed formal input
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ inputs.unsigned_artifact_name }}
+          path: ${{ env.INPUT_ROOT }}
+
+      - name: Verify proof, candidate, bundle, and three-role request
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $proofs = @(Get-ChildItem $env:INPUT_ROOT -Recurse -File -Filter 'proof.json')
+          $candidates = @(Get-ChildItem $env:INPUT_ROOT -Recurse -File -Filter 'windows-desktop-alpha-candidate-manifest.json')
+          $bundles = @(Get-ChildItem $env:INPUT_ROOT -Recurse -File -Filter 'windows-desktop-bundle.json')
+          $installers = @(Get-ChildItem $env:INPUT_ROOT -Recurse -File -Filter 'stock-desk-unsigned-nsis.exe')
+          if ($proofs.Count -ne 1 -or $candidates.Count -ne 1 -or $bundles.Count -ne 1 -or $installers.Count -ne 1) {
+            throw 'formal input does not contain one closed proof/candidate/bundle/installer set'
+          }
+          if ((Get-FileHash $proofs[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:PROOF_SHA256) { throw 'proof digest mismatch' }
+          if ((Get-FileHash $candidates[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:CANDIDATE_SHA256) { throw 'candidate digest mismatch' }
+          $proof = Get-Content -LiteralPath $proofs[0].FullName -Raw | ConvertFrom-Json
+          if ($proof.ref -ne 'refs/heads/main' -or $proof.commit_sha -ne $env:SOURCE_SHA -or $proof.tree_sha -ne $env:SOURCE_TREE) { throw 'proof source identity mismatch' }
+          $candidate = Get-Content -LiteralPath $candidates[0].FullName -Raw | ConvertFrom-Json
+          if ($candidate.source_sha -ne $env:SOURCE_SHA -or $candidate.source_tree -ne $env:SOURCE_TREE) { throw 'candidate source identity mismatch' }
+          $unsigned = @($candidate.payloads | Where-Object { $_.kind -eq 'tauri-unsigned' })
+          $installerSha = (Get-FileHash $installers[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($unsigned.Count -ne 1 -or $unsigned[0].sha256 -ne $installerSha) { throw 'candidate does not bind the normalized installer bytes' }
+          Copy-Item $installers[0].FullName (Join-Path $env:REQUEST_ROOT 'stock-desk-unsigned-nsis.exe')
+          python scripts/signpath_contract.py create-request `
+            --source-sha $env:SOURCE_SHA --source-tree $env:SOURCE_TREE `
+            --proof-digest $env:PROOF_SHA256 --candidate-digest $env:CANDIDATE_SHA256 `
+            --candidate-manifest $candidates[0].FullName `
+            --bundle-manifest $bundles[0].FullName `
+            --installer (Join-Path $env:REQUEST_ROOT 'stock-desk-unsigned-nsis.exe') `
+            --output (Join-Path $env:REQUEST_ROOT 'signpath-request.json')
+          Copy-Item $bundles[0].FullName (Join-Path $env:FORMAL_ROOT 'windows-desktop-bundle.json')
+
+      - name: Preserve the manifest-bound WebView2 offline installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & 7z x -y "-o$env:UNSIGNED_EXTRACT_ROOT" (Join-Path $env:REQUEST_ROOT 'stock-desk-unsigned-nsis.exe') | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'unsigned NSIS extraction failed' }
+          $bundle = Get-Content -LiteralPath (Join-Path $env:FORMAL_ROOT 'windows-desktop-bundle.json') -Raw | ConvertFrom-Json
+          $records = @($bundle.files | Where-Object { $_.role -eq 'webview2-offline-installer' })
+          if ($records.Count -ne 1) { throw 'bundle must bind one WebView2 offline installer' }
+          $matches = @(Get-ChildItem $env:UNSIGNED_EXTRACT_ROOT -Recurse -File -Filter ([IO.Path]::GetFileName($records[0].path)) | Where-Object {
+            (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() -eq $records[0].sha256
+          })
+          if ($matches.Count -ne 1) { throw 'extracted WebView2 identity mismatch' }
+          Copy-Item $matches[0].FullName (Join-Path $env:FORMAL_ROOT $matches[0].Name)
+
+      - name: Upload exact request bytes for SignPath origin verification
+        id: upload_unsigned
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: signpath-request-${{ inputs.source_sha }}
+          path: |
+            ${{ env.REQUEST_ROOT }}\stock-desk-unsigned-nsis.exe
+            ${{ env.REQUEST_ROOT }}\signpath-request.json
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Submit nested Authenticode request and wait for manual approval
+        id: signpath
+        uses: signpath/github-action-submit-signing-request@b9d91eadd323de506c0c81cf0c7fe7438f3360fd # v2.2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ secrets.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ secrets.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: ${{ secrets.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
+          github-artifact-id: ${{ steps.upload_unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 1800
+          output-artifact-directory: ${{ env.SIGNED_ROOT }}
+
+      - name: Close real host, sidecar, NSIS, signer, and timestamp identities
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $requestId = '${{ steps.signpath.outputs.signing-request-id }}'
+          if ([string]::IsNullOrWhiteSpace($requestId)) { throw 'SignPath request ID is missing' }
+          $signedInstallers = @(Get-ChildItem $env:SIGNED_ROOT -Recurse -File -Filter 'stock-desk-unsigned-nsis.exe')
+          if ($signedInstallers.Count -ne 1) { throw 'SignPath did not return one signed NSIS installer' }
+          $signedInstaller = Join-Path $env:FORMAL_ROOT 'stock-desk-signed-nsis.exe'
+          Copy-Item $signedInstallers[0].FullName $signedInstaller
+          & 7z x -y "-o$env:SIGNED_EXTRACT_ROOT" $signedInstaller | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'signed NSIS extraction failed' }
+          $unsignedHosts = @(Get-ChildItem $env:UNSIGNED_EXTRACT_ROOT -Recurse -File -Filter 'stock-desk-desktop.exe')
+          $unsignedSidecars = @(Get-ChildItem $env:UNSIGNED_EXTRACT_ROOT -Recurse -File -Filter 'stock-desk-sidecar.exe')
+          $hosts = @(Get-ChildItem $env:SIGNED_EXTRACT_ROOT -Recurse -File -Filter 'stock-desk-desktop.exe')
+          $sidecars = @(Get-ChildItem $env:SIGNED_EXTRACT_ROOT -Recurse -File -Filter 'stock-desk-sidecar.exe')
+          if ($unsignedHosts.Count -ne 1 -or $unsignedSidecars.Count -ne 1 -or $hosts.Count -ne 1 -or $sidecars.Count -ne 1) { throw 'nested executable closure is invalid' }
+          $signedFiles = @($hosts[0].FullName, $sidecars[0].FullName, $signedInstaller)
+          $signatures = @($signedFiles | ForEach-Object { Get-AuthenticodeSignature -LiteralPath $_ })
+          foreach ($signature in $signatures) {
+            if ($signature.Status -ne 'Valid' -or $null -eq $signature.SignerCertificate -or $null -eq $signature.TimeStamperCertificate) {
+              throw 'signed output lacks valid signer or timestamp identity'
+            }
+          }
+          $outer = $signatures[2]
+          foreach ($signature in $signatures) {
+            if ($signature.SignerCertificate.Thumbprint -ne $outer.SignerCertificate.Thumbprint) { throw 'nested signer identity mismatch' }
+          }
+          python scripts/signpath_contract.py create-receipt `
+            --request (Join-Path $env:REQUEST_ROOT 'signpath-request.json') `
+            --request-id $requestId `
+            --unsigned "desktop-host=$($unsignedHosts[0].FullName)" `
+            --unsigned "sidecar=$($unsignedSidecars[0].FullName)" `
+            --unsigned "nsis-installer=$(Join-Path $env:REQUEST_ROOT 'stock-desk-unsigned-nsis.exe')" `
+            --signed "desktop-host=$($hosts[0].FullName)" `
+            --signed "sidecar=$($sidecars[0].FullName)" `
+            --signed "nsis-installer=$signedInstaller" `
+            --unsigned-extract-root $env:UNSIGNED_EXTRACT_ROOT `
+            --signed-extract-root $env:SIGNED_EXTRACT_ROOT `
+            --signer-subject $outer.SignerCertificate.Subject `
+            --certificate-thumbprint $outer.SignerCertificate.Thumbprint `
+            --timestamp-subject $outer.TimeStamperCertificate.Subject `
+            --closure-output (Join-Path $env:FORMAL_ROOT 'signpath-identity-closure.json') `
+            --receipt-output (Join-Path $env:FORMAL_ROOT 'signpath-receipt.json')
+          Copy-Item (Join-Path $env:REQUEST_ROOT 'signpath-request.json') (Join-Path $env:FORMAL_ROOT 'signpath-request.json')
+
+      - name: Attest the complete formal candidate and both exact receipts
+        id: attest
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        with:
+          subject-path: |
+            ${{ env.FORMAL_ROOT }}\*.exe
+            ${{ env.FORMAL_ROOT }}\windows-desktop-bundle.json
+            ${{ env.FORMAL_ROOT }}\signpath-request.json
+            ${{ env.FORMAL_ROOT }}\signpath-receipt.json
+            ${{ env.FORMAL_ROOT }}\signpath-identity-closure.json
+
+      - name: Preserve attestation and publish closed outputs
+        id: outputs
+        shell: pwsh
+        env:
+          ATTESTATION_BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Test-Path -LiteralPath $env:ATTESTATION_BUNDLE -PathType Leaf)) { throw 'attestation bundle is missing' }
+          Copy-Item $env:ATTESTATION_BUNDLE (Join-Path $env:FORMAL_ROOT 'signpath-attestation-bundle.jsonl')
+          $signedSha = (Get-FileHash (Join-Path $env:FORMAL_ROOT 'stock-desk-signed-nsis.exe') -Algorithm SHA256).Hash.ToLowerInvariant()
+          $artifactName = "windows-signpath-signed-$env:SOURCE_SHA"
+          "signed_sha256=$signedSha" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "artifact_name=$artifactName" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Upload formal signed candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-signpath-signed-${{ inputs.source_sha }}
+          path: ${{ env.FORMAL_ROOT }}\
+          if-no-files-found: error
+          retention-days: 30

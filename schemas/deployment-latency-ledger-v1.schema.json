@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/CongBao/stock-desk/schemas/deployment-latency-ledger-v1.schema.json",
+  "title": "Stock Desk append-only deployment latency ledger v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "records", "record_count", "head_hash"],
+  "properties": {
+    "schema_version": { "const": "stock-desk-deployment-latency-ledger-v1" },
+    "records": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["ordinal", "previous_hash", "sample", "record_hash"],
+        "properties": {
+          "ordinal": { "type": "integer", "minimum": 1 },
+          "previous_hash": { "$ref": "#/$defs/sha256" },
+          "sample": { "$ref": "deployment-latency-sample-v1.schema.json" },
+          "record_hash": { "$ref": "#/$defs/sha256" }
+        }
+      }
+    },
+    "record_count": { "type": "integer", "minimum": 0 },
+    "head_hash": { "$ref": "#/$defs/sha256" }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  }
+}

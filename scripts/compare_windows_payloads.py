@@ -55,7 +55,7 @@ def compare_nsis_installers(left: Path, right: Path) -> dict[str, object]:
         raise PayloadComparisonError(str(error)) from error
     if left_pe.signed or right_pe.signed:
         raise PayloadComparisonError(
-            "NSIS comparison accepts only unsigned prerelease installers"
+            "NSIS comparison accepts only unsigned candidate installers"
         )
     if len(left_payload) != len(right_payload):
         raise PayloadComparisonError(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import copy
 import hashlib
 import io
@@ -17,6 +18,249 @@ from scripts import windows_vm_broker_client as broker
 
 SHA = "a" * 40
 DIGEST = "b" * 64
+
+
+def test_windows_raw_verifier_has_no_duplicate_literal_dictionary_keys() -> None:
+    path = Path("scripts/verify_windows_desktop_raw_evidence.py")
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    duplicates: list[tuple[int, str]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Dict):
+            continue
+        seen: set[str] = set()
+        for key in node.keys:
+            if not isinstance(key, ast.Constant) or not isinstance(key.value, str):
+                continue
+            if key.value in seen:
+                duplicates.append((key.lineno, key.value))
+            seen.add(key.value)
+
+    assert duplicates == []
+
+
+def _stock_desk_authenticode_observation() -> dict[str, object]:
+    return {
+        "verification_api": "Get-AuthenticodeSignature/WinVerifyTrust",
+        "artifacts": [
+            {
+                "role": role,
+                "file_name": filename,
+                "sha256": hashlib.sha256(role.encode()).hexdigest(),
+                "status": "Valid",
+                "signer_subject": "CN=Stock Desk Release",
+                "certificate_thumbprint": "A" * 40,
+                "timestamp_subject": "CN=Trusted Timestamp",
+                "timestamp_thumbprint": "B" * 40,
+            }
+            for role, filename in verifier.STOCK_DESK_SIGNED_FILENAMES.items()
+        ],
+    }
+
+
+def _stock_desk_component_digests() -> dict[str, str]:
+    return {
+        role: hashlib.sha256(role.encode()).hexdigest()
+        for role in verifier.STOCK_DESK_SIGNED_FILENAMES
+    }
+
+
+def test_stock_desk_authenticode_is_derived_from_all_raw_role_observations() -> None:
+    result = verifier._validate_stock_desk_authenticode(
+        _stock_desk_authenticode_observation(),
+        expected_components=_stock_desk_component_digests(),
+        expected_signer_subject="CN=Stock Desk Release",
+        expected_certificate_thumbprint="A" * 40,
+        expected_timestamp_subject="CN=Trusted Timestamp",
+        include_installed_components=True,
+    )
+
+    assert set(result["artifacts"]) == {"desktop-host", "sidecar", "nsis-installer"}
+    assert result["artifacts"]["desktop-host"]["status"] == "Valid"
+
+
+def test_stock_desk_authenticode_rejects_unsigned_component() -> None:
+    observation = _stock_desk_authenticode_observation()
+    observation["artifacts"][0]["status"] = "NotSigned"  # type: ignore[index]
+
+    with pytest.raises(verifier.DesktopEvidenceError, match="unsigned"):
+        verifier._validate_stock_desk_authenticode(
+            observation,
+            expected_components=_stock_desk_component_digests(),
+            expected_signer_subject="CN=Stock Desk Release",
+            expected_certificate_thumbprint="A" * 40,
+            expected_timestamp_subject="CN=Trusted Timestamp",
+            include_installed_components=True,
+        )
+
+
+def test_stock_desk_authenticode_rejects_substituted_component_digest() -> None:
+    observation = _stock_desk_authenticode_observation()
+    observation["artifacts"][1]["sha256"] = "f" * 64  # type: ignore[index]
+
+    with pytest.raises(verifier.DesktopEvidenceError, match="substituted"):
+        verifier._validate_stock_desk_authenticode(
+            observation,
+            expected_components=_stock_desk_component_digests(),
+            expected_signer_subject="CN=Stock Desk Release",
+            expected_certificate_thumbprint="A" * 40,
+            expected_timestamp_subject="CN=Trusted Timestamp",
+            include_installed_components=True,
+        )
+
+
+def test_stock_desk_authenticode_rejects_missing_installed_role_signature() -> None:
+    observation = _stock_desk_authenticode_observation()
+    observation["artifacts"].pop()  # type: ignore[union-attr]
+
+    with pytest.raises(verifier.DesktopEvidenceError, match="inventory"):
+        verifier._validate_stock_desk_authenticode(
+            observation,
+            expected_components=_stock_desk_component_digests(),
+            expected_signer_subject="CN=Stock Desk Release",
+            expected_certificate_thumbprint="A" * 40,
+            expected_timestamp_subject="CN=Trusted Timestamp",
+            include_installed_components=True,
+        )
+
+
+def _smartscreen_raw_observation(assignment: dict[str, object], motw: bytes) -> bytes:
+    value = {
+        "schema": "stock-desk-smartscreen-raw-observation-v1",
+        "case_id": assignment["case_id"],
+        "candidate": {
+            "sha256": DIGEST,
+            "file_name": "stock-desk-signed-nsis.exe",
+        },
+        "observer": {
+            "identity": "stock-desk-protected-smartscreen-observer-v1",
+            "source": "external-protected-vm-observer",
+            "adapter_sha256": "d" * 64,
+            "snapshot_sha256": assignment["snapshot_sha256"],
+            "image_sha256": assignment["image_sha256"],
+            "machine_state": "restored-clean-snapshot",
+        },
+        "download": {
+            "method": "https-internet-download",
+            "source_url": "https://downloads.example.test/stock-desk-signed-nsis.exe",
+            "tls_system_validation": True,
+            "completed_at_utc": "2026-07-15T01:00:00Z",
+            "byte_count": 42,
+            "candidate_sha256": DIGEST,
+            "zone_identifier_sha256": hashlib.sha256(motw).hexdigest(),
+        },
+        "launch": {
+            "api": "ShellExecuteExW",
+            "requested_at_utc": "2026-07-15T01:00:01Z",
+            "account_token": "standard-user-medium-integrity",
+            "candidate_sha256": DIGEST,
+        },
+        "reputation": {
+            "provider": "Microsoft Defender SmartScreen",
+            "policy_mode": "warn-or-block-unrecognized-apps",
+            "disposition": "allowed-no-warning",
+            "decision_source": "cloud-reputation",
+            "cloud_service_contact_count": 1,
+            "correlation_sha256": "e" * 64,
+            "completed_at_utc": "2026-07-15T01:00:04Z",
+            "event_records": [
+                {
+                    "provider": "Microsoft-Windows-SmartScreen",
+                    "event_id": 1000,
+                    "record_id": 42,
+                    "captured_at_utc": "2026-07-15T01:00:02Z",
+                    "correlation_sha256": "e" * 64,
+                    "payload_sha256": "f" * 64,
+                }
+            ],
+            "window_samples": [
+                {
+                    "sequence": 1,
+                    "captured_at_utc": "2026-07-15T01:00:01Z",
+                    "smartscreen_window_count": 0,
+                    "installer_process_observed": False,
+                },
+                {
+                    "sequence": 2,
+                    "captured_at_utc": "2026-07-15T01:00:02Z",
+                    "smartscreen_window_count": 0,
+                    "installer_process_observed": False,
+                },
+                {
+                    "sequence": 3,
+                    "captured_at_utc": "2026-07-15T01:00:03Z",
+                    "smartscreen_window_count": 0,
+                    "installer_process_observed": True,
+                },
+            ],
+        },
+    }
+    return json.dumps(value, sort_keys=True).encode()
+
+
+def test_smartscreen_requires_external_fresh_machine_motw_and_raw_signals() -> None:
+    assignment = _assignment("win11", 100)
+    motw = (
+        b"[ZoneTransfer]\r\nZoneId=3\r\n"
+        b"HostUrl=https://downloads.example.test/stock-desk-signed-nsis.exe\r\n"
+    )
+
+    result = verifier._validate_smartscreen_raw_records(
+        _smartscreen_raw_observation(assignment, motw),
+        motw,
+        assignment=assignment,
+        expected_candidate_sha256=DIGEST,
+        expected_adapter_sha256="d" * 64,
+    )
+
+    assert result["reputation"]["disposition"] == "allowed-no-warning"
+    assert result["observer"]["source"] == "external-protected-vm-observer"
+
+
+def test_smartscreen_rejects_non_internet_or_missing_motw() -> None:
+    assignment = _assignment("win11", 100)
+    motw = (
+        b"[ZoneTransfer]\r\nZoneId=2\r\n"
+        b"HostUrl=https://downloads.example.test/stock-desk-signed-nsis.exe\r\n"
+    )
+
+    with pytest.raises(verifier.DesktopEvidenceError, match="Internet download"):
+        verifier._validate_smartscreen_raw_records(
+            _smartscreen_raw_observation(assignment, motw),
+            motw,
+            assignment=assignment,
+            expected_candidate_sha256=DIGEST,
+            expected_adapter_sha256="d" * 64,
+        )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    (
+        (("reputation", "disposition", "warned"), "warned"),
+        (("reputation", "event_records", []), "raw provider events"),
+        (("observer", "source", "guest-self-report"), "fresh-machine observer"),
+    ),
+)
+def test_smartscreen_rejects_warning_missing_raw_events_or_guest_self_report(
+    mutation: tuple[str, str, object], message: str
+) -> None:
+    assignment = _assignment("win10-22h2", 100)
+    motw = (
+        b"[ZoneTransfer]\r\nZoneId=3\r\n"
+        b"HostUrl=https://downloads.example.test/stock-desk-signed-nsis.exe\r\n"
+    )
+    value = json.loads(_smartscreen_raw_observation(assignment, motw))
+    section, field, replacement = mutation
+    value[section][field] = replacement
+
+    with pytest.raises(verifier.DesktopEvidenceError, match=message):
+        verifier._validate_smartscreen_raw_records(
+            json.dumps(value).encode(),
+            motw,
+            assignment=assignment,
+            expected_candidate_sha256=DIGEST,
+            expected_adapter_sha256="d" * 64,
+        )
 
 
 @pytest.mark.parametrize(

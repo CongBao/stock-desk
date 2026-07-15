@@ -43,11 +43,11 @@ MACD/参数化自定义公式、单股/股票池、日线/周线/60 分钟的 12
 
 普通用户无需 GitHub CLI、源码检出、Docker 或开发工具。稳定版下载真实性验证见[下载说明](docs/download.md)；beta.2 的校验和与不可变构建证明位于其预发布页。
 
-当前源码已包含**默认关闭**的可信更新运行链：它只接受 Stock Desk GitHub Release 的
-Windows x64 stable 元数据，限制下载大小，依次校验 Tauri 签名、SHA-256 和 Windows
-可信签名，并在安全关闭内置服务后才启动同一个已验证安装器。生产公钥、SignPath、
-Windows 10/11 实机证据和正式发布契约未全部通过前，该功能保持关闭；本阶段不会在
-后台检查、下载或安装更新。
+当前源码已包含**默认关闭**的可信更新运行链，以及**硬禁用的正式签名发布控制面骨架**。
+骨架描述同一受保护 `main` 的 proof/candidate、人工批准的 SignPath、Windows 10/11 普通用户
+证据和可信更新依赖，但签名 job 使用不可由配置或密钥解除的字面关闭门禁。只有后续受审变更
+补齐 NSIS 安装控制语义等价证明与真实 SmartScreen/MOTW 证据后，才能移除该门禁。
+因此 production updater 仍保持关闭；本阶段不会签名、正式发布、后台检查、下载或安装更新。
 
 `v1.1.0` 不发布 macOS、Linux、Android 或 ARM64 安装包，也不会迁移或删除 v1 的本地数据。正式版签名状态以发布页和[代码签名政策](docs/code-signing-policy.md)为准。
 

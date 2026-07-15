@@ -41,8 +41,16 @@ def _commands(job: dict[str, Any]) -> str:
 def test_workflow_is_manual_exact_main_and_github_hosted_only() -> None:
     workflow = _workflow()
     triggers = _triggers(workflow)
-    assert set(triggers) == {"workflow_dispatch"}
+    assert set(triggers) == {"workflow_call", "workflow_dispatch"}
     dispatch = triggers["workflow_dispatch"]
+    call = triggers["workflow_call"]
+    assert set(call["secrets"]) == {
+        "WINDOWS_INSTALLED_POLICY_TOKEN",
+        "WINDOWS_VM_BROKER_ENDPOINT",
+        "WINDOWS_VM_SNAPSHOT_POLICY_SHA256",
+        "WINDOWS_VM_ADAPTER_SHA256",
+    }
+    assert all(secret["required"] is True for secret in call["secrets"].values())
     assert isinstance(dispatch, dict)
     source_sha = dispatch["inputs"]["source_sha"]
     assert source_sha["required"] is True
@@ -74,7 +82,6 @@ def test_workflow_is_manual_exact_main_and_github_hosted_only() -> None:
         'test "$GITHUB_REF_NAME" = "main"',
         'test "$GITHUB_REF_PROTECTED" = "true"',
         'test "$GITHUB_SHA" = "$SOURCE_SHA"',
-        'test "$GITHUB_WORKFLOW_REF" = "$EXPECTED_WORKFLOW_REF"',
         'test "$GITHUB_WORKFLOW_SHA" = "$SOURCE_SHA"',
         'test "$GITHUB_RUN_ATTEMPT" = "1"',
         "+refs/heads/main:refs/remotes/origin/protected-main",
@@ -90,10 +97,6 @@ def test_workflow_is_manual_exact_main_and_github_hosted_only() -> None:
     guard_job = workflow["jobs"]["dispatch-guard"]
     assert guard_job["environment"] == "windows-installed-acceptance"
     assert guard_job["env"]["SOURCE_SHA"] == "${{ inputs.source_sha }}"
-    assert (
-        "windows-installed.yml@refs/heads/main"
-        in guard_job["env"]["EXPECTED_WORKFLOW_REF"]
-    )
     checkout = next(
         step
         for step in guard_job["steps"]
@@ -108,6 +111,186 @@ def test_workflow_is_manual_exact_main_and_github_hosted_only() -> None:
         "windows-installed",
     ]
     assert workflow["jobs"]["attest"]["needs"] == "aggregate"
+
+
+def test_formal_mode_requires_exact_signed_candidate_identity() -> None:
+    workflow = _workflow()
+    triggers = _triggers(workflow)
+    assert set(triggers) == {"workflow_call", "workflow_dispatch"}
+    for trigger_name in ("workflow_call", "workflow_dispatch"):
+        inputs = triggers[trigger_name]["inputs"]
+        for name in (
+            "source_sha",
+            "source_tree",
+            "candidate_sha256",
+            "candidate_manifest_sha256",
+            "signed_artifact_name",
+            "signing_request_id",
+        ):
+            assert inputs[name]["required"] is True
+
+    preflight = _commands(workflow["jobs"]["preflight"])
+    for required in (
+        "windows-signpath-signed-",
+        "signpath-receipt.json",
+        "signpath-attestation-bundle.jsonl",
+        "gh attestation verify",
+        ".github/workflows/signpath.yml",
+        'test "$SIGNED_SHA256" = "$CANDIDATE_SHA256"',
+        'test "$SIGNED_ARTIFACT_NAME" = "windows-signpath-signed-$SOURCE_SHA"',
+    ):
+        assert required in preflight
+    assert "windows-desktop-alpha-candidate-$SOURCE_SHA" not in preflight
+    assert "tauri-unsigned" not in preflight
+    assert "unsigned-x64-setup.exe" not in preflight
+
+
+def test_formal_acceptance_emits_exact_platform_receipts_and_attestation() -> None:
+    workflow = _workflow()
+    aggregate = _commands(workflow["jobs"]["aggregate"])
+    attest = _commands(workflow["jobs"]["attest"])
+    verifier = (ROOT / "scripts" / "verify_windows_desktop_raw_evidence.py").read_text(
+        encoding="utf-8"
+    )
+    for required in (
+        "scripts/verify_windows_desktop_raw_evidence.py",
+        "--desktop-host-sha256",
+        "--sidecar-sha256",
+        "--signer-subject",
+        "--certificate-thumbprint",
+        "--timestamp-subject",
+        "windows-10-trust-receipt.json",
+        "windows-11-trust-receipt.json",
+    ):
+        assert required in aggregate
+    for required in (
+        "stock-desk-windows-trust-receipt-v1",
+        "windows_10_22h2_x64",
+        "windows_11_x64",
+        "WinVerifyTrust",
+        '"authenticode_status": "Valid"',
+        '"standard_user_install": "passed"',
+        '"smartscreen_status": "allowed-no-warning"',
+        '"smartscreen_observer": "external-protected-vm-observer"',
+    ):
+        assert required in verifier
+    assert "common = {" not in aggregate
+    assert "windows-trust-attestation.jsonl" in attest
+    closed = next(
+        step
+        for step in workflow["jobs"]["attest"]["steps"]
+        if step.get("name") == "Close and upload platform trust evidence"
+    )
+    assert closed["env"]["SOURCE_SHA"] == "${{ inputs.source_sha }}"
+    assert workflow["jobs"]["attest"]["outputs"]["acceptance_artifact_name"]
+    assert workflow["jobs"]["attest"]["outputs"]["acceptance_sha256"]
+
+
+def test_guest_collects_actual_stock_desk_authenticode_without_declaring_success() -> (
+    None
+):
+    harness = (ROOT / "scripts" / "windows_installed_guest_harness.ps1").read_text(
+        encoding="utf-8"
+    )
+    start = harness.index("function Get-StockDeskAuthenticodeObservation")
+    end = harness.index("function Get-StringDigest", start)
+    observer = harness[start:end]
+
+    for required in (
+        "Get-AuthenticodeSignature",
+        "$signature.Status",
+        "$signature.SignerCertificate",
+        "$signature.TimeStamperCertificate",
+        "certificate_thumbprint",
+        "timestamp_thumbprint",
+    ):
+        assert required in observer
+    assert "status = 'Valid'" not in observer
+
+
+def test_smartscreen_gate_requires_real_motw_external_observer_and_shell_execute() -> (
+    None
+):
+    workflow = _workflow()
+    preflight = _commands(workflow["jobs"]["preflight"])
+    attest = _commands(workflow["jobs"]["attest"])
+    harness = (ROOT / "scripts" / "windows_installed_guest_harness.ps1").read_text(
+        encoding="utf-8"
+    )
+    verifier = (ROOT / "scripts" / "verify_windows_desktop_raw_evidence.py").read_text(
+        encoding="utf-8"
+    )
+
+    for required in (
+        '"schema": "stock-desk-smartscreen-evidence-policy-v1"',
+        '"required": True',
+        '"delivery_method": "https-internet-download"',
+        '"launch_api": "ShellExecuteExW"',
+        '"required_disposition": "allowed-no-warning"',
+    ):
+        assert required in preflight
+    for required in (
+        "Zone.Identifier",
+        "ZoneId=",
+        "-Verb Open",
+        "SmartScreenObservationPath",
+        "stock-desk-smartscreen-raw-observation-v1",
+    ):
+        assert required in harness
+    for required in (
+        "external-protected-vm-observer",
+        "restored-clean-snapshot",
+        "https-internet-download",
+        "Microsoft-Windows-SmartScreen",
+        "cloud-reputation",
+        "smartscreen-observation",
+        "motw-zone-identifier",
+    ):
+        assert required in verifier
+    assert '.smartscreen_status == "allowed-no-warning"' in attest
+    assert ".smartscreen_case_receipts | length" in attest
+    ci_docs = (ROOT / "docs" / "ci.md").read_text(encoding="utf-8")
+    assert "当前证据不代表 Authenticode、SmartScreen 或正式发布门禁已经通过" in ci_docs
+    assert (
+        "current evidence does not claim that Authenticode, SmartScreen, or "
+        "formal-release gates have passed"
+    ) in ci_docs
+
+
+def test_real_vm_controller_contains_only_signed_nsis() -> None:
+    workflow = _workflow()
+    preflight = _commands(workflow["jobs"]["preflight"])
+    broker = _commands(workflow["jobs"]["windows-installed"])
+    for commands in (preflight, broker):
+        assert "-unsigned-x64-setup.exe" not in commands
+        assert "tauri-unsigned" not in commands
+    assert '"candidate_sha256": os.environ["CANDIDATE_SHA256"]' in preflight
+    assert '"signpath_request_id"' in preflight
+    assert '"signed"' in preflight
+    assert 'source.rglob(Path(webview_installer["path"]).name)' in preflight
+    assert "signed artifact WebView installer identity mismatch" in preflight
+
+
+def test_signpath_closure_binds_proof_unsigned_manifest_and_signed_nsis() -> None:
+    commands = _commands(_workflow()["jobs"]["preflight"])
+    for required in (
+        "stock-desk-signpath-identity-closure-v1",
+        'source == {ref:"refs/heads/main", sha:$sha, tree:$tree}',
+        ".proof_sha256 == $proof",
+        ".candidate_sha256 == $candidate",
+        '(["desktop-host", "sidecar", "nsis-installer"] | sort)',
+        '.artifacts["nsis-installer"].signed_sha256 == $signed',
+        '(["equivalence_algorithm", "equivalent_content_sha256", "signed_path", "signed_sha256", "unsigned_path", "unsigned_sha256"] | sort)',
+        '.artifacts["desktop-host"].equivalence_algorithm == "pe-authenticode-normalized-sha256-v1"',
+        '.artifacts["nsis-installer"].equivalence_algorithm == "nsis-pe-stub-and-extracted-payload-sha256-v1"',
+        ".equivalent_content_sha256",
+        'find "$nested" -type f -name stock-desk-desktop.exe',
+        'find "$nested" -type f -name stock-desk-sidecar.exe',
+        '.artifacts["desktop-host"].signed_sha256 == $host',
+        ".artifacts.sidecar.signed_sha256 == $sidecar",
+        "CANDIDATE_MANIFEST_SHA256",
+    ):
+        assert required in commands
 
 
 def test_oidc_is_fixed_to_protected_broker_job_and_tokens_are_not_artifacts() -> None:
@@ -137,7 +320,7 @@ def test_oidc_is_fixed_to_protected_broker_job_and_tokens_are_not_artifacts() ->
 
     source = WORKFLOW_PATH.read_text(encoding="utf-8")
     guard = workflow["jobs"]["dispatch-guard"]
-    assert source.count("WINDOWS_INSTALLED_POLICY_TOKEN") == 1
+    assert source.count("WINDOWS_INSTALLED_POLICY_TOKEN") == 2
     policy_step = next(
         step
         for step in guard["steps"]
@@ -212,6 +395,7 @@ def test_aggregate_consumes_raw_bytes_and_isolated_job_attests_receipt() -> None
     assert aggregate["environment"] == "windows-installed-acceptance"
     assert aggregate["env"] == {
         "SOURCE_SHA": "${{ inputs.source_sha }}",
+        "CANDIDATE_SHA256": "${{ inputs.candidate_sha256 }}",
         "APPROVED_SNAPSHOT_POLICY_SHA256": "${{ secrets.WINDOWS_VM_SNAPSHOT_POLICY_SHA256 }}",
         "APPROVED_ADAPTER_SHA256": "${{ secrets.WINDOWS_VM_ADAPTER_SHA256 }}",
     }
@@ -268,22 +452,22 @@ def test_preflight_controller_request_is_raw_only_and_content_bound() -> None:
         'event == "push"',
         'conclusion == "success"',
         "main-validation-proof-$SOURCE_SHA",
-        "windows-desktop-alpha-candidate-$SOURCE_SHA",
         "proof-attestation-bundle.jsonl",
-        "evidence-attestation-bundle.jsonl",
+        "windows-signpath-signed-$SOURCE_SHA",
+        "signpath-attestation-bundle.jsonl",
         '"schema": "stock-desk-windows-installed-controller-request-v2"',
         '"status": "authorized"',
         '"raw_only": True',
         '"case_ids"',
-        '"candidate_manifest_sha256"',
         '"main_proof_sha256"',
         '"candidate_sha256"',
         '"webview_installer_sha256"',
+        '"smartscreen_evidence"',
         '"guest_harness_sha256"',
         '"uia_driver_sha256"',
         '"broker_public_key_sha256"',
-        "windows-desktop-alpha-candidate-manifest.json",
-        "manifest-binding.json",
+        "signpath-receipt.json",
+        "signpath-identity-closure.json",
         "gh attestation verify",
         "--source-ref refs/heads/main",
         '--source-digest "$SOURCE_SHA"',
@@ -291,7 +475,6 @@ def test_preflight_controller_request_is_raw_only_and_content_bound() -> None:
         "--deny-self-hosted-runners",
         "scripts/main_validation_proof.py verify",
         "verify_post_gh_attestation_binding",
-        "scripts/artifact_manifest.py verify",
         "controller-digests.sha256",
     ):
         assert text in commands
@@ -325,12 +508,12 @@ def test_workflow_cannot_publish_sign_or_substitute_fake_vm_evidence() -> None:
         "if-no-files-found: ignore",
         "gh release",
         "action-gh-release",
-        "signpath",
         "cosign",
         "signtool",
         "|| true",
     ):
         assert forbidden not in lowered
+    assert "signpath/submit-signing-request" not in lowered
     assert "derived-verifier-receipt" not in lowered
     assert "verification-receipt" not in lowered
     assert "actions/attest@" in lowered

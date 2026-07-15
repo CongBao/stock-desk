@@ -3,8 +3,14 @@ name: Release
 on:
   push:
     tags:
-      - "v1.1.0"
-      - "v1.1.0-*"
+      - "v1.1.0-alpha.*"
+      - "v1.1.0-beta.*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing annotated v1.1.0 or v1.1.0-rc.N tag on exact protected main
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -15,15 +21,24 @@ concurrency:
 
 jobs:
   tag-policy:
-    name: Enforce supported v1.1 prerelease tag policy
+    name: Enforce split unsigned-prerelease and formal-release policy
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Reject untrusted stable or candidate tags
+      - name: Reject every unsupported event or tag
         shell: bash
         run: |
           set -euo pipefail
-          [[ "$GITHUB_REF_NAME" =~ ^v1\.1\.0-(alpha|beta)\.[1-9][0-9]*$ ]]
+          if test "$GITHUB_EVENT_NAME" = push; then
+            [[ "$GITHUB_REF_NAME" =~ ^v1\.1\.0-(alpha|beta)\.[1-9][0-9]*$ ]]
+            test "$GITHUB_REF_TYPE" = tag
+          elif test "$GITHUB_EVENT_NAME" = workflow_dispatch; then
+            [[ "${{ inputs.release_tag }}" =~ ^v1\.1\.0(-rc\.[1-9][0-9]*)?$ ]]
+            test "$GITHUB_REF" = refs/heads/main
+            test "$GITHUB_REF_PROTECTED" = true
+          else
+            exit 64
+          fi
 
   prerelease-verify:
     name: Verify Windows-only unsigned prerelease from immutable main proof
@@ -329,3 +344,596 @@ jobs:
             --latest=false \
             --notes-file "$asset_root/release-notes.md" \
             --title "Stock Desk $GITHUB_REF_NAME — UNSIGNED PRERELEASE / 未签名预发布"
+
+  formal-inputs:
+    name: Close annotated tag, protected main, proof, and unsigned candidate
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    needs: tag-policy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      actions: read
+      attestations: read
+      contents: read
+    outputs:
+      source_tree: ${{ steps.identity.outputs.source_tree }}
+      proof_sha256: ${{ steps.identity.outputs.proof_sha256 }}
+      candidate_sha256: ${{ steps.identity.outputs.candidate_sha256 }}
+      unsigned_artifact_name: ${{ steps.identity.outputs.unsigned_artifact_name }}
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      SOURCE_SHA: ${{ github.sha }}
+    steps:
+      - name: Configure isolated formal release roots
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "PROOF_ROOT=$RUNNER_TEMP/formal-release/proof" >> "$GITHUB_ENV"
+          echo "CANDIDATE_ROOT=$RUNNER_TEMP/formal-release/candidate" >> "$GITHUB_ENV"
+          echo "INPUT_ROOT=$RUNNER_TEMP/formal-release/input" >> "$GITHUB_ENV"
+      - name: Check out the immutable formal release source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+      - name: Prove protected main and exact annotated release tag
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/main
+          test "$GITHUB_REF_TYPE" = branch
+          test "$GITHUB_REF_NAME" = main
+          test "$GITHUB_REF_PROTECTED" = true
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$RELEASE_TAG" =~ ^v1\.1\.0(-rc\.[1-9][0-9]*)?$ ]]
+          git fetch --force origin \
+            refs/heads/main:refs/remotes/origin/protected-main \
+            "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          test "$(git rev-parse refs/remotes/origin/protected-main)" = "$SOURCE_SHA"
+          test "$(git cat-file -t "refs/tags/$RELEASE_TAG")" = tag
+          test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$SOURCE_SHA"
+          branch="$(gh api "repos/$GITHUB_REPOSITORY/branches/main")"
+          jq -e --arg sha "$SOURCE_SHA" \
+            '.name == "main" and .protected == true and .commit.sha == $sha' \
+            <<<"$branch" >/dev/null
+      - name: Locate successful exact-SHA main validation run
+        id: main-run
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          payload="$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" -f branch=main -f event=push -f status=success -f per_page=100)"
+          run_id="$(jq -r --arg sha "$SOURCE_SHA" '[.workflow_runs[] | select(.head_sha == $sha and .head_branch == "main" and .event == "push" and .status == "completed" and .conclusion == "success" and .run_attempt == 1)] | sort_by(.id) | last | .id // empty' <<<"$payload")"
+          test -n "$run_id"
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+      - name: Download exact main proof and promoted unsigned candidate
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MAIN_RUN_ID: ${{ steps.main-run.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$PROOF_ROOT" "$CANDIDATE_ROOT"
+          gh run download "$MAIN_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name "main-validation-proof-$SOURCE_SHA" --dir "$PROOF_ROOT"
+          gh run download "$MAIN_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name "windows-desktop-alpha-candidate-$SOURCE_SHA" \
+            --dir "$CANDIDATE_ROOT"
+          for path in \
+            "$PROOF_ROOT/proof.json" \
+            "$PROOF_ROOT/post-gh-verify-binding.json" \
+            "$PROOF_ROOT/proof-attestation-bundle.jsonl" \
+            "$PROOF_ROOT/evidence-attestation-bundle.jsonl" \
+            "$CANDIDATE_ROOT/windows-desktop-alpha-candidate-manifest.json" \
+            "$CANDIDATE_ROOT/manifest-binding.json" \
+            "$CANDIDATE_ROOT/windows-desktop-bundle.json"
+          do
+            test -s "$path"
+          done
+      - name: Verify exact proof, candidate attestation, and candidate bytes
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tree="$(git rev-parse 'HEAD^{tree}')"
+          gh attestation verify "$PROOF_ROOT/proof.json" \
+            --bundle "$PROOF_ROOT/proof-attestation-bundle.jsonl" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/ci.yml" \
+            --source-ref refs/heads/main --source-digest "$SOURCE_SHA" \
+            --signer-digest "$SOURCE_SHA" --deny-self-hosted-runners \
+            --format json > "$RUNNER_TEMP/formal-proof-verification.json"
+          jq -e 'length >= 1' "$RUNNER_TEMP/formal-proof-verification.json" >/dev/null
+          gh attestation verify \
+            "$CANDIDATE_ROOT/windows-desktop-alpha-candidate-manifest.json" \
+            --bundle "$PROOF_ROOT/evidence-attestation-bundle.jsonl" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/ci.yml" \
+            --source-ref refs/heads/main --source-digest "$SOURCE_SHA" \
+            --signer-digest "$SOURCE_SHA" --deny-self-hosted-runners \
+            --format json > "$RUNNER_TEMP/formal-candidate-verification.json"
+          jq -e 'length >= 1' "$RUNNER_TEMP/formal-candidate-verification.json" >/dev/null
+          python scripts/main_validation_proof.py verify \
+            --repo-root . --repository "$GITHUB_REPOSITORY" \
+            --ref refs/heads/main --proof "$PROOF_ROOT/proof.json"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          from scripts.main_validation_proof import verify_post_gh_attestation_binding
+
+          proof_path = Path(os.environ["PROOF_ROOT"]) / "proof.json"
+          proof_bytes = proof_path.read_bytes()
+          proof = json.loads(proof_bytes)
+          binding = json.loads(
+              (Path(os.environ["PROOF_ROOT"]) / "post-gh-verify-binding.json").read_text()
+          )
+          candidate = json.loads(
+              (Path(os.environ["CANDIDATE_ROOT"]) / "windows-desktop-alpha-candidate-manifest.json").read_text()
+          )
+          verify_post_gh_attestation_binding(
+              proof,
+              proof_bytes=proof_bytes,
+              binding_value=binding,
+              expected_repository=os.environ["GITHUB_REPOSITORY"],
+          )
+          if proof["commit_sha"] != os.environ["SOURCE_SHA"]:
+              raise SystemExit("formal proof source mismatch")
+          if proof["validation_evidence"]["windows-desktop-alpha-candidate-manifest"] != candidate:
+              raise SystemExit("formal candidate is not the proved candidate")
+          PY
+          python scripts/artifact_manifest.py verify \
+            --manifest "$CANDIDATE_ROOT/windows-desktop-alpha-candidate-manifest.json" \
+            --root "$CANDIDATE_ROOT" --source-sha "$SOURCE_SHA" \
+            --source-tree "$tree" --attestation "$CANDIDATE_ROOT/manifest-binding.json"
+      - name: Close canonical SignPath input without rebuilding payload
+        id: identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$INPUT_ROOT"
+          mkdir -p "$INPUT_ROOT"
+          expected_version="${RELEASE_TAG#v}"
+          jq -e --arg version "$expected_version" \
+            '.artifact == "windows-desktop-bundle" and .release.version == $version' \
+            "$CANDIDATE_ROOT/windows-desktop-bundle.json" >/dev/null
+          mapfile -t installers < <(find "$CANDIDATE_ROOT" -maxdepth 1 -type f \
+            -name 'stock-desk-*-unsigned-x64-setup.exe' -printf '%f\n' | sort)
+          test "${#installers[@]}" -eq 1
+          cp "$PROOF_ROOT/proof.json" "$INPUT_ROOT/proof.json"
+          cp "$CANDIDATE_ROOT/windows-desktop-alpha-candidate-manifest.json" \
+            "$INPUT_ROOT/windows-desktop-alpha-candidate-manifest.json"
+          cp "$CANDIDATE_ROOT/windows-desktop-bundle.json" \
+            "$INPUT_ROOT/windows-desktop-bundle.json"
+          cp "$CANDIDATE_ROOT/${installers[0]}" \
+            "$INPUT_ROOT/stock-desk-unsigned-nsis.exe"
+          source_tree="$(git rev-parse 'HEAD^{tree}')"
+          proof_sha256="$(sha256sum "$INPUT_ROOT/proof.json" | cut -d' ' -f1)"
+          candidate_sha256="$(sha256sum "$INPUT_ROOT/windows-desktop-alpha-candidate-manifest.json" | cut -d' ' -f1)"
+          unsigned_artifact_name="windows-formal-unsigned-$SOURCE_SHA"
+          echo "source_tree=$source_tree" >> "$GITHUB_OUTPUT"
+          echo "proof_sha256=$proof_sha256" >> "$GITHUB_OUTPUT"
+          echo "candidate_sha256=$candidate_sha256" >> "$GITHUB_OUTPUT"
+          echo "unsigned_artifact_name=$unsigned_artifact_name" >> "$GITHUB_OUTPUT"
+      - name: Upload closed canonical SignPath input
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-formal-unsigned-${{ github.sha }}
+          path: ${{ runner.temp }}/formal-release/input/
+          if-no-files-found: error
+          retention-days: 7
+
+  signpath:
+    name: Human-approved SignPath signing
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    needs: formal-inputs
+    permissions:
+      actions: read
+      attestations: write
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/signpath.yml
+    with:
+      release_tag: ${{ inputs.release_tag }}
+      source_sha: ${{ github.sha }}
+      source_tree: ${{ needs.formal-inputs.outputs.source_tree }}
+      proof_sha256: ${{ needs.formal-inputs.outputs.proof_sha256 }}
+      candidate_sha256: ${{ needs.formal-inputs.outputs.candidate_sha256 }}
+      unsigned_artifact_name: ${{ needs.formal-inputs.outputs.unsigned_artifact_name }}
+    secrets:
+      SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+      SIGNPATH_ORGANIZATION_ID: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
+      SIGNPATH_PROJECT_SLUG: ${{ secrets.SIGNPATH_PROJECT_SLUG }}
+      SIGNPATH_SIGNING_POLICY_SLUG: ${{ secrets.SIGNPATH_SIGNING_POLICY_SLUG }}
+      SIGNPATH_ARTIFACT_CONFIGURATION_SLUG: ${{ secrets.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
+      SIGNPATH_POLICY_TOKEN: ${{ secrets.SIGNPATH_POLICY_TOKEN }}
+
+  windows-installed:
+    name: Signed candidate Windows 10 and 11 acceptance
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    needs: [formal-inputs, signpath]
+    permissions:
+      actions: read
+      attestations: write
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/windows-installed.yml
+    with:
+      source_sha: ${{ github.sha }}
+      source_tree: ${{ needs.formal-inputs.outputs.source_tree }}
+      candidate_sha256: ${{ needs.signpath.outputs.signed_candidate_sha256 }}
+      candidate_manifest_sha256: ${{ needs.formal-inputs.outputs.candidate_sha256 }}
+      signed_artifact_name: ${{ needs.signpath.outputs.signed_artifact_name }}
+      signing_request_id: ${{ needs.signpath.outputs.signing_request_id }}
+    secrets:
+      WINDOWS_INSTALLED_POLICY_TOKEN: ${{ secrets.WINDOWS_INSTALLED_POLICY_TOKEN }}
+      WINDOWS_VM_BROKER_ENDPOINT: ${{ secrets.WINDOWS_VM_BROKER_ENDPOINT }}
+      WINDOWS_VM_SNAPSHOT_POLICY_SHA256: ${{ secrets.WINDOWS_VM_SNAPSHOT_POLICY_SHA256 }}
+      WINDOWS_VM_ADAPTER_SHA256: ${{ secrets.WINDOWS_VM_ADAPTER_SHA256 }}
+
+  trusted-updater-release:
+    name: Verify trusted updater and prepare immutable formal assets
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag == 'v1.1.0' }}
+    needs: [formal-inputs, signpath, windows-installed]
+    runs-on: windows-2025
+    timeout-minutes: 20
+    environment: stable-release
+    permissions:
+      actions: read
+      attestations: read
+      contents: read
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      SOURCE_SHA: ${{ github.sha }}
+      SOURCE_TREE: ${{ needs.formal-inputs.outputs.source_tree }}
+      PROOF_SHA256: ${{ needs.formal-inputs.outputs.proof_sha256 }}
+      SIGNED_SHA256: ${{ needs.signpath.outputs.signed_candidate_sha256 }}
+      WINDOWS_ACCEPTANCE_SHA256: ${{ needs.windows-installed.outputs.acceptance_sha256 }}
+      NODE_VERSION: "24.14.0"
+      PNPM_VERSION: "11.7.0"
+    steps:
+      - name: Check out exact trusted verifier source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+      - name: Set up locked Python dependency resolver
+        uses: astral-sh/setup-uv@d31148d669074a8d0a63714ba94f3201e7020bc3 # v8.3.0
+      - name: Set up pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: ${{ env.PNPM_VERSION }}
+          run_install: false
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Restore exact-lock pnpm downloads
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ~/.pnpm-store
+          key: trusted-updater-pnpm-${{ runner.os }}-${{ runner.arch }}-node-${{ env.NODE_VERSION }}-pnpm-${{ env.PNPM_VERSION }}-${{ hashFiles('pnpm-lock.yaml') }}
+      - name: Install exact locked Tauri signer only
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv sync --frozen
+          pnpm config set store-dir "$HOME/.pnpm-store"
+          pnpm install --frozen-lockfile --ignore-scripts
+      - name: Download closed SignPath candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.signpath.outputs.signed_artifact_name }}
+          path: ${{ runner.temp }}/trusted-release/signpath
+      - name: Download closed Windows trust evidence
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.windows-installed.outputs.acceptance_artifact_name }}
+          path: ${{ runner.temp }}/trusted-release/windows
+      - name: Verify all closed identities before updater signing
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$SOURCE_TREE" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$PROOF_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$SIGNED_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$WINDOWS_ACCEPTANCE_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git rev-parse 'HEAD^{tree}')" = "$SOURCE_TREE"
+          test -s config/tauri-updater-public-key.pub
+          signpath="$RUNNER_TEMP/trusted-release/signpath"
+          windows="$RUNNER_TEMP/trusted-release/windows"
+          test "$(sha256sum "$signpath/stock-desk-signed-nsis.exe" | cut -d' ' -f1)" = "$SIGNED_SHA256"
+          test "$(sha256sum "$windows/windows-trust-digests.sha256" | cut -d' ' -f1)" = "$WINDOWS_ACCEPTANCE_SHA256"
+          (cd "$windows" && sha256sum --check --strict windows-trust-digests.sha256)
+          for path in \
+            "$signpath/signpath-receipt.json" \
+            "$signpath/signpath-attestation-bundle.jsonl" \
+            "$windows/windows-10-trust-receipt.json" \
+            "$windows/windows-11-trust-receipt.json" \
+            "$windows/windows-trust-attestation.jsonl"
+          do
+            test -s "$path"
+          done
+      - name: Create detached Tauri signature and strict stable metadata
+        if: ${{ inputs.release_tag == 'v1.1.0' }}
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$TAURI_SIGNING_PRIVATE_KEY"
+          test -n "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD"
+          assets="$RUNNER_TEMP/trusted-release/assets"
+          mkdir -p "$assets"
+          version="${RELEASE_TAG#v}"
+          installer="$assets/stock-desk-$version-windows-x64-setup.exe"
+          cp "$RUNNER_TEMP/trusted-release/signpath/stock-desk-signed-nsis.exe" "$installer"
+          key="$RUNNER_TEMP/tauri-updater-private.key"
+          umask 077
+          printf '%s' "$TAURI_SIGNING_PRIVATE_KEY" > "$key"
+          trap 'rm -f "$key"' EXIT
+          pnpm exec tauri signer sign --private-key "$key" \
+            --password "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" "$installer"
+          rm -f "$key"
+          signature="$installer.sig"
+          test -s "$signature"
+          python - "$installer" "$signature" "$assets/latest.json" <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import sys
+
+          installer, signature, output = map(Path, sys.argv[1:])
+          version = os.environ["RELEASE_TAG"].removeprefix("v")
+          payload = {
+              "schema_version": "stock-desk-trusted-updater-v1",
+              "channel": "stable",
+              "version": version,
+              "target": "windows-x86_64-nsis",
+              "arch": "x86_64",
+              "source_sha": os.environ["SOURCE_SHA"],
+              "url": f"https://github.com/CongBao/stock-desk/releases/download/v{version}/{installer.name}",
+              "sha256": hashlib.sha256(installer.read_bytes()).hexdigest(),
+              "signature": signature.read_text(encoding="utf-8").rstrip("\r\n"),
+          }
+          output.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+          PY
+      - name: Verify the complete trusted stable updater chain
+        if: ${{ inputs.release_tag == 'v1.1.0' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          assets="$RUNNER_TEMP/trusted-release/assets"
+          signpath="$RUNNER_TEMP/trusted-release/signpath"
+          windows="$RUNNER_TEMP/trusted-release/windows"
+          version="${RELEASE_TAG#v}"
+          installer="$assets/stock-desk-$version-windows-x64-setup.exe"
+          verified="$RUNNER_TEMP/trusted-release/verified/stock-desk-$version-windows-x64-setup.exe"
+          mkdir -p "$(dirname "$verified")"
+          uv run --frozen python scripts/trusted_updater_release.py \
+            "$assets/latest.json" "$installer" "$installer.sig" \
+            --verified-installer "$verified" \
+            --expected-version "$version" --source-sha "$SOURCE_SHA" \
+            --installer-attestation "$signpath/signpath-attestation-bundle.jsonl" \
+            --signpath-receipt "$signpath/signpath-receipt.json" \
+            --signpath-attestation "$signpath/signpath-attestation-bundle.jsonl" \
+            --windows-10-receipt "$windows/windows-10-trust-receipt.json" \
+            --windows-10-attestation "$windows/windows-trust-attestation.jsonl" \
+            --windows-11-receipt "$windows/windows-11-trust-receipt.json" \
+            --windows-11-attestation "$windows/windows-trust-attestation.jsonl"
+          cmp --silent "$installer" "$verified"
+          rm "$verified"
+      - name: Prepare exact signed distribution for dependency SBOM
+        if: ${{ inputs.release_tag == 'v1.1.0' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/trusted-release/sbom-root"
+          rm -rf "$root"
+          mkdir -p "$root/payload" "$root/locks"
+          installer="$RUNNER_TEMP/trusted-release/assets/stock-desk-1.1.0-windows-x64-setup.exe"
+          7z x -y "-o$root/payload" "$installer" >/dev/null
+          cp uv.lock pyproject.toml pnpm-lock.yaml package.json "$root/locks/"
+          cp src-tauri/Cargo.lock src-tauri/Cargo.toml "$root/locks/"
+          test "$(find "$root/payload" -type f -name stock-desk-desktop.exe | wc -l)" -eq 1
+          test "$(find "$root/payload" -type f -name stock-desk-sidecar.exe | wc -l)" -eq 1
+      - name: Generate SPDX SBOM from exact signed distribution
+        if: ${{ inputs.release_tag == 'v1.1.0' }}
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          path: ${{ runner.temp }}/trusted-release/sbom-root
+          format: spdx-json
+          output-file: ${{ runner.temp }}/trusted-release/assets/sbom.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+      - name: Prepare checksums, SBOM, and immutable provenance
+        if: ${{ inputs.release_tag == 'v1.1.0' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          assets="$RUNNER_TEMP/trusted-release/assets"
+          signpath="$RUNNER_TEMP/trusted-release/signpath"
+          windows="$RUNNER_TEMP/trusted-release/windows"
+          cp "$signpath/signpath-receipt.json" "$assets/signpath-receipt.json"
+          cp "$windows/windows-10-trust-receipt.json" "$assets/windows-10-trust-receipt.json"
+          cp "$windows/windows-11-trust-receipt.json" "$assets/windows-11-trust-receipt.json"
+          python - "$assets" <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import sys
+
+          root = Path(sys.argv[1])
+          sbom = json.loads((root / "sbom.spdx.json").read_text(encoding="utf-8"))
+          required = {"spdxVersion", "dataLicense", "SPDXID", "name", "documentNamespace", "creationInfo", "packages"}
+          if not required <= set(sbom) or sbom["spdxVersion"] != "SPDX-2.3":
+              raise SystemExit("generated SPDX SBOM is incomplete")
+          if not sbom["creationInfo"].get("created") or not sbom["creationInfo"].get("creators"):
+              raise SystemExit("generated SPDX SBOM creation identity is incomplete")
+          if not sbom["packages"]:
+              raise SystemExit("generated SPDX SBOM has no dependency packages")
+          provenance = {
+              "schema": "stock-desk-formal-release-provenance-v1",
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "tag": os.environ["RELEASE_TAG"],
+              "source_sha": os.environ["SOURCE_SHA"],
+              "source_tree": os.environ["SOURCE_TREE"],
+              "main_proof_sha256": os.environ["PROOF_SHA256"],
+              "signed_candidate_sha256": os.environ["SIGNED_SHA256"],
+              "windows_acceptance_sha256": os.environ["WINDOWS_ACCEPTANCE_SHA256"],
+              "workflow_run_id": os.environ["GITHUB_RUN_ID"],
+              "workflow_run_attempt": 1,
+          }
+          (root / "provenance.json").write_text(json.dumps(provenance, sort_keys=True) + "\n")
+          PY
+          (cd "$assets" && sha256sum -- * > SHA256SUMS)
+      - name: Upload verified formal stable assets
+        if: ${{ inputs.release_tag == 'v1.1.0' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: verified-stable-assets-${{ github.sha }}
+          path: ${{ runner.temp }}/trusted-release/assets/
+          if-no-files-found: error
+          retention-days: 30
+
+  stable-attest:
+    name: Attest exact stable assets
+    if: ${{ inputs.release_tag == 'v1.1.0' }}
+    needs: trusted-updater-release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      attestations: write
+      contents: read
+      id-token: write
+    steps:
+      - name: Download verified stable assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: verified-stable-assets-${{ github.sha }}
+          path: ${{ runner.temp }}/stable-assets
+      - name: Recheck stable checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/stable-assets"
+          sha256sum --check --strict SHA256SUMS
+      - name: Attest installer, updater metadata, checksums, SBOM, and provenance
+        id: attest
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        with:
+          subject-path: |
+            ${{ runner.temp }}/stable-assets/stock-desk-1.1.0-windows-x64-setup.exe
+            ${{ runner.temp }}/stable-assets/stock-desk-1.1.0-windows-x64-setup.exe.sig
+            ${{ runner.temp }}/stable-assets/latest.json
+            ${{ runner.temp }}/stable-assets/SHA256SUMS
+            ${{ runner.temp }}/stable-assets/sbom.spdx.json
+            ${{ runner.temp }}/stable-assets/provenance.json
+      - name: Preserve stable asset attestation bundle
+        shell: bash
+        env:
+          BUNDLE_PATH: ${{ steps.attest.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          test -s "$BUNDLE_PATH"
+          cp "$BUNDLE_PATH" "$RUNNER_TEMP/stable-assets/stable-assets-attestation.jsonl"
+      - name: Upload attested stable assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: attested-stable-assets-${{ github.sha }}
+          path: ${{ runner.temp }}/stable-assets/
+          if-no-files-found: error
+          retention-days: 90
+
+  stable-release:
+    name: Publish stable release without rebuilding or rerunning tests
+    if: ${{ inputs.release_tag == 'v1.1.0' && needs.trusted-updater-release.result == 'success' && needs.stable-attest.result == 'success' }}
+    needs: [formal-inputs, signpath, windows-installed, trusted-updater-release, stable-attest]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: stable-release
+    permissions:
+      actions: read
+      attestations: read
+      contents: write
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      SOURCE_SHA: ${{ github.sha }}
+    steps:
+      - name: Check out exact protected-main release source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - name: Download attested stable assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: attested-stable-assets-${{ github.sha }}
+          path: stable-assets
+      - name: Recheck tag, complete evidence identities, and all asset checksums
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          test "$(git cat-file -t "refs/tags/$RELEASE_TAG")" = tag
+          test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$SOURCE_SHA"
+          cd stable-assets
+          sha256sum --check --strict SHA256SUMS
+          test -s stable-assets-attestation.jsonl
+          for subject in \
+            stock-desk-1.1.0-windows-x64-setup.exe \
+            stock-desk-1.1.0-windows-x64-setup.exe.sig \
+            latest.json SHA256SUMS sbom.spdx.json provenance.json
+          do
+            gh attestation verify "$subject" \
+              --bundle stable-assets-attestation.jsonl \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+              --source-ref refs/heads/main --source-digest "$SOURCE_SHA" \
+              --signer-digest "$SOURCE_SHA" --deny-self-hosted-runners \
+              --format json > "$RUNNER_TEMP/stable-$subject-attestation.json"
+            jq -e 'length >= 1' "$RUNNER_TEMP/stable-$subject-attestation.json" >/dev/null
+          done
+          jq -e --arg sha "$SOURCE_SHA" --arg tag "$RELEASE_TAG" \
+            '.schema == "stock-desk-formal-release-provenance-v1" and
+             .source_sha == $sha and .tag == $tag and
+             (.main_proof_sha256 | test("^[0-9a-f]{64}$")) and
+             (.signed_candidate_sha256 | test("^[0-9a-f]{64}$")) and
+             (.windows_acceptance_sha256 | test("^[0-9a-f]{64}$"))' \
+            provenance.json >/dev/null
+      - name: Create trusted stable release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh release create "$RELEASE_TAG" stable-assets/* \
+            --verify-tag --latest \
+            --title "Stock Desk $RELEASE_TAG" \
+            --generate-notes
