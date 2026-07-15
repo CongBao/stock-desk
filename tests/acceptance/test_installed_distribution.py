@@ -82,6 +82,7 @@ def test_v11_distribution_contract_is_windows_only_and_reuses_main_candidate() -
         "signpath",
         "windows-installed",
         "trusted-updater-release",
+        "stable-readiness",
         "stable-attest",
         "stable-release",
     } == set(jobs)
@@ -178,6 +179,7 @@ def test_trusted_updater_metadata_requires_the_complete_formal_chain() -> None:
         "signpath",
         "windows-installed",
         "trusted-updater-release",
+        "stable-readiness",
         "stable-attest",
     ]
     assert jobs["stable-release"]["if"].startswith("${{ inputs.release_tag == 'v1.1.0'")
