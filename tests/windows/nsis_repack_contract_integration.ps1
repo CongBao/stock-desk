@@ -62,7 +62,7 @@ function Copy-PrivateSnapshot(
   $script:snapshotNumber += 1
   $snapshot = Join-Path $snapshots ("snapshot-{0:D4}" -f $script:snapshotNumber)
   $arguments = @('scripts\secure_artifact_snapshot.py', '--source-root', $SourceRoot, '--destination', $snapshot)
-  foreach ($entry in $Entries) { $arguments += @('--entry', ($entry -replace '\', '/')) }
+  foreach ($entry in $Entries) { $arguments += @('--entry', $entry.Replace('\', '/')) }
   & $python @arguments | Out-Null
   if ($LASTEXITCODE -ne 0) { throw "secure artifact snapshot failed for $SourceRoot" }
   foreach ($file in Get-ChildItem -LiteralPath $snapshot -Recurse -File) {
@@ -121,15 +121,15 @@ foreach ($source in $absoluteValues) {
       Copy-PrivateSnapshot $source @((Get-ChildItem -LiteralPath $source -Force | ForEach-Object Name)) 'toolchain/Plugins/x86-unicode/additional'
       $target = 'toolchain/Plugins/x86-unicode/additional'
     } else {
-      $target = ('toolchain/' + ($relativeToToolchain -replace '\', '/')).TrimEnd('/')
+      $target = ('toolchain/' + $relativeToToolchain.Replace('\', '/')).TrimEnd('/')
     }
   } elseif (Test-Path -LiteralPath $source -PathType Leaf) {
     $relativeToRender = [IO.Path]::GetRelativePath($render, $source)
     $relativeToToolchain = [IO.Path]::GetRelativePath($nsis, $source)
     if ($relativeToRender -ne '..' -and -not $relativeToRender.StartsWith("..$([IO.Path]::DirectorySeparatorChar)")) {
-      $target = $relativeToRender -replace '\', '/'
+      $target = $relativeToRender.Replace('\', '/')
     } elseif ($relativeToToolchain -ne '..' -and -not $relativeToToolchain.StartsWith("..$([IO.Path]::DirectorySeparatorChar)")) {
-      $target = 'toolchain/' + ($relativeToToolchain -replace '\', '/')
+      $target = 'toolchain/' + $relativeToToolchain.Replace('\', '/')
     } else {
       $prefix = "captured/{0:D3}" -f $mappingIndex
       Copy-PrivateSnapshot (Split-Path $source -Parent) @((Split-Path $source -Leaf)) $prefix
@@ -156,12 +156,12 @@ $pluginPaths = @{}
 foreach ($plugin in $pluginNames) {
   $candidates = @(Get-ChildItem -LiteralPath (Join-Path $stage 'toolchain\Plugins\x86-unicode') -Recurse -File -Filter "$plugin.dll")
   if ($candidates.Count -ne 1) { throw "expected one pinned x86-unicode plugin for $plugin, found $($candidates.Count)" }
-  $pluginPaths[$plugin] = [IO.Path]::GetRelativePath($stage, $candidates[0].FullName) -replace '\', '/'
+  $pluginPaths[$plugin] = [IO.Path]::GetRelativePath($stage, $candidates[0].FullName).Replace('\', '/')
 }
 
 $records = @()
 foreach ($file in Get-ChildItem -LiteralPath $stage -Recurse -File) {
-  $relative = [IO.Path]::GetRelativePath($stage, $file.FullName) -replace '\', '/'
+  $relative = [IO.Path]::GetRelativePath($stage, $file.FullName).Replace('\', '/')
   $lower = $relative.ToLowerInvariant()
   if ($relative -eq 'installer.nsi') { $role = 'nsis-rendered-script' }
   elseif ($relative -eq 'source/tauri.conf.json') { $role = 'tauri-config' }

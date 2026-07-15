@@ -604,6 +604,8 @@ def test_windows_candidate_binds_reproducible_nsis_repack_kit_without_new_family
     assert 'separators=(",", ":")' in compare
 
     integration = _read("tests/windows/nsis_repack_contract_integration.ps1")
+    assert "-replace '\\', '/'" not in integration
+    assert integration.count(".Replace('\\', '/')") == 6
     assert integration.count("nsis_repack_contract.py repack") == 2
     assert integration.count("nsis_repack_contract.py verify-receipt") == 1
     assert "$receiptPairs = @(" in integration
