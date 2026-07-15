@@ -404,6 +404,309 @@ def _evaluate(
     return dict(decision), calls
 
 
+def _cli_arguments(tmp_path: Path) -> list[str]:
+    return [
+        "--manifest",
+        str(tmp_path / "stable-readiness.json"),
+        "--evidence-root",
+        str(tmp_path / "evidence"),
+        "--expected-version",
+        "1.1.0",
+        "--source-sha",
+        SHA,
+        "--source-tree",
+        TREE,
+        "--expected-main-proof-sha256",
+        MAIN_PROOF,
+        "--expected-candidate-manifest-sha256",
+        CANDIDATE_MANIFEST,
+        "--expected-candidate-sha256",
+        CANDIDATE,
+        "--signed-candidate",
+        str(tmp_path / "signed-candidate.exe"),
+        "--updater-public-key",
+        str(tmp_path / "updater.pub"),
+    ]
+
+
+def test_cli_passes_every_trusted_input_and_prints_the_decision(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    observed: dict[str, object] = {}
+    decision: readiness.StableReleaseDecision = {
+        "eligible": True,
+        "version": "1.1.0",
+        "source_sha": SHA,
+        "source_tree": TREE,
+        "release_tag": "v1.1.0",
+        "tag_object_sha": TAG_OBJECT,
+        "candidate_manifest_sha256": CANDIDATE_MANIFEST,
+        "candidate_sha256": CANDIDATE,
+        "evidence_count": 13,
+    }
+
+    def evaluate(**kwargs: object) -> readiness.StableReleaseDecision:
+        observed.update(kwargs)
+        return decision
+
+    monkeypatch.setattr(readiness, "evaluate_stable_release_readiness", evaluate)
+    assert readiness.main(_cli_arguments(tmp_path)) == 0
+    assert observed == {
+        "manifest_path": tmp_path / "stable-readiness.json",
+        "evidence_root": tmp_path / "evidence",
+        "expected_version": "1.1.0",
+        "expected_source_sha": SHA,
+        "expected_source_tree": TREE,
+        "expected_main_proof_sha256": MAIN_PROOF,
+        "expected_candidate_manifest_sha256": CANDIDATE_MANIFEST,
+        "expected_candidate_sha256": CANDIDATE,
+        "signed_candidate_path": tmp_path / "signed-candidate.exe",
+        "updater_public_key_path": tmp_path / "updater.pub",
+    }
+    assert json.loads(capsys.readouterr().out) == decision
+
+
+def test_cli_converts_readiness_errors_to_a_fail_closed_exit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def reject(**_kwargs: object) -> readiness.StableReleaseDecision:
+        raise StableReleaseReadinessError("evidence is incomplete")
+
+    monkeypatch.setattr(readiness, "evaluate_stable_release_readiness", reject)
+    with pytest.raises(SystemExit, match="evidence is incomplete"):
+        readiness.main(_cli_arguments(tmp_path))
+
+
+@pytest.mark.parametrize(
+    ("operation", "message"),
+    [
+        (lambda: readiness._decode_json(b'{"a":1,"a":2}', "record"), "duplicate"),
+        (lambda: readiness._decode_json(b"\xff", "record"), "UTF-8 JSON"),
+        (lambda: readiness._decode_json(b"[]", "record"), "JSON object"),
+        (lambda: readiness._exact({}, {"required"}, "record"), "missing required"),
+        (lambda: readiness._git_id("A" * 40, "commit"), "lowercase 40-hex"),
+        (lambda: readiness._digest("F" * 64, "artifact"), "lowercase SHA-256"),
+        (lambda: readiness._safe_relative("bad\\path", "path"), "safe relative"),
+        (lambda: readiness._safe_relative("../escape", "path"), "safe relative"),
+    ],
+)
+def test_strict_json_identity_and_path_helpers_fail_closed(
+    operation: Any, message: str
+) -> None:
+    with pytest.raises(StableReleaseReadinessError, match=message):
+        operation()
+
+
+def test_regular_file_reader_and_evidence_path_resolution_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    oversized = tmp_path / "oversized.json"
+    oversized.write_bytes(b"x")
+    with pytest.raises(StableReleaseReadinessError, match="bounded regular file"):
+        readiness._read_regular(oversized, "oversized file", limit=0)
+
+    subject = tmp_path / "subject.json"
+    subject.write_text("{}", encoding="utf-8")
+    with monkeypatch.context() as context:
+        context.setattr(
+            readiness.os,
+            "lstat",
+            lambda _path: (_ for _ in ()).throw(FileNotFoundError()),
+        )
+        with pytest.raises(StableReleaseReadinessError, match="path changed"):
+            readiness._read_regular(subject, "subject")
+
+    root = tmp_path / "root"
+    root.mkdir()
+    with pytest.raises(StableReleaseReadinessError, match="parent is unavailable"):
+        readiness._resolve_under(root, Path("missing/record.json"), "record")
+
+
+def test_external_command_failures_do_not_become_release_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def unavailable(
+        *_args: object, **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        raise OSError("unavailable")
+
+    monkeypatch.setattr(readiness.subprocess, "run", unavailable)
+    with pytest.raises(StableReleaseReadinessError, match="attestation.*unavailable"):
+        readiness._verify_github_attestation(
+            tmp_path / "subject", tmp_path / "bundle", SHA, "workflow.yml"
+        )
+    with pytest.raises(StableReleaseReadinessError, match="trusted source blob"):
+        readiness._read_tracked_source_file(SHA, "authority.yml")
+
+    monkeypatch.setattr(
+        readiness.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 1, "", "failed"),
+    )
+    with pytest.raises(StableReleaseReadinessError, match="attestation.*failed"):
+        readiness._verify_github_attestation(
+            tmp_path / "subject", tmp_path / "bundle", SHA, "workflow.yml"
+        )
+    with pytest.raises(StableReleaseReadinessError, match="missing or oversized"):
+        readiness._read_tracked_source_file(SHA, "authority.yml")
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        (lambda manifest: manifest.update(artifacts=[]), "artifacts must be an object"),
+        (
+            lambda manifest: manifest["artifacts"].update(nsis_control_proof=[]),
+            "must be an object",
+        ),
+        (
+            lambda manifest: manifest["artifacts"]["nsis_control_proof"].update(
+                attestation_path=manifest["artifacts"]["nsis_control_proof"]["path"]
+            ),
+            "paths must be unique",
+        ),
+        (
+            lambda manifest: manifest["artifacts"]["nsis_control_proof"].update(
+                sha256="0" * 64
+            ),
+            "digest does not match",
+        ),
+        (
+            lambda manifest: manifest["artifacts"]["nsis_control_proof"].update(
+                attestation_sha256="0" * 64
+            ),
+            "attestation digest does not match",
+        ),
+    ],
+)
+def test_artifact_index_rejects_ambiguous_or_unbound_inputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: Any,
+    message: str,
+) -> None:
+    manifest_path, evidence, _, auditor_public, _ = _write_closure(tmp_path)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    mutation(manifest)
+    _patch_external_verifiers(monkeypatch, auditor_public)
+    with pytest.raises(StableReleaseReadinessError, match=message):
+        readiness._load_artifacts(manifest, evidence, SHA)
+
+
+def test_nsis_control_receipt_rejects_malformed_observations(tmp_path: Path) -> None:
+    documents, _, _ = _evidence_documents(tmp_path)
+    valid = documents["nsis_control_proof"]
+    mutations: list[tuple[Any, str]] = [
+        (
+            lambda record: record.update(candidate_manifest_sha256="0" * 64),
+            "candidate manifest",
+        ),
+        (lambda record: record.update(schema="unknown"), "authoritative observed"),
+        (lambda record: record["cases"].__setitem__(0, "invalid"), "must be objects"),
+        (
+            lambda record: record["cases"][1].update(
+                case_id=record["cases"][0]["case_id"]
+            ),
+            "invalid or duplicated",
+        ),
+        (lambda record: record["cases"][0].update(result=1), "result is invalid"),
+    ]
+    for mutate, message in mutations:
+        record = copy.deepcopy(valid)
+        mutate(record)
+        with pytest.raises(StableReleaseReadinessError, match=message):
+            readiness._verify_nsis(
+                record,
+                source_sha=SHA,
+                source_tree=TREE,
+                main_proof=MAIN_PROOF,
+                candidate_manifest=CANDIDATE_MANIFEST,
+                candidate=CANDIDATE,
+            )
+
+
+def test_windows_receipts_reject_malformed_case_collections(tmp_path: Path) -> None:
+    documents, _, _ = _evidence_documents(tmp_path)
+    acceptance = documents["windows_acceptance_receipt"]
+    acceptance_mutations: list[tuple[Any, str]] = [
+        (lambda record: record.update(status="skipped"), "authoritative first-attempt"),
+        (lambda record: record.update(case_receipts={}), "must be a list"),
+        (
+            lambda record: record["case_receipts"].__setitem__(0, "invalid"),
+            "must be an object",
+        ),
+        (
+            lambda record: record["case_receipts"][1].update(
+                case_id=record["case_receipts"][0]["case_id"]
+            ),
+            "case is duplicated",
+        ),
+    ]
+    for mutate, message in acceptance_mutations:
+        record = copy.deepcopy(acceptance)
+        mutate(record)
+        with pytest.raises(StableReleaseReadinessError, match=message):
+            readiness._verify_windows_acceptance(
+                record,
+                source_sha=SHA,
+                source_tree=TREE,
+                main_proof=MAIN_PROOF,
+                candidate=CANDIDATE,
+            )
+
+    ux = documents["windows_ux_evidence"]
+    ux_mutations: list[tuple[Any, str]] = [
+        (lambda record: record.update(case_receipts={}), "must be a list"),
+        (
+            lambda record: record["case_receipts"].__setitem__(0, "invalid"),
+            "must be an object",
+        ),
+        (
+            lambda record: record["case_receipts"][1].update(
+                case_id=record["case_receipts"][0]["case_id"]
+            ),
+            "case is duplicated",
+        ),
+        (lambda record: record["case_receipts"].pop(), "cover all eleven"),
+    ]
+    for mutate, message in ux_mutations:
+        record = copy.deepcopy(ux)
+        mutate(record)
+        with pytest.raises(StableReleaseReadinessError, match=message):
+            readiness._verify_windows_ux(
+                record,
+                source_sha=SHA,
+                source_tree=TREE,
+                main_proof=MAIN_PROOF,
+                candidate=CANDIDATE,
+            )
+
+
+def test_key_ceremony_rejects_malformed_identity_and_encoding(tmp_path: Path) -> None:
+    documents, public_key, _ = _evidence_documents(tmp_path)
+    valid = documents["updater_key_ceremony"]
+    mutations: list[tuple[Any, str]] = [
+        (lambda record: record.update(status="claimed"), "exact-SHA witnessed"),
+        (
+            lambda record: record.update(challenge_signature="%%%"),
+            "signature is invalid",
+        ),
+        (lambda record: record.update(key_id="00" * 8), "identity is invalid"),
+    ]
+    for mutate, message in mutations:
+        record = copy.deepcopy(valid)
+        mutate(record)
+        with pytest.raises(StableReleaseReadinessError, match=message):
+            readiness._verify_key_ceremony(
+                record,
+                source_sha=SHA,
+                source_tree=TREE,
+                public_key_path=public_key,
+            )
+
+
 def test_schema_and_verifier_require_the_same_complete_evidence_closure() -> None:
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     assert schema["additionalProperties"] is False
