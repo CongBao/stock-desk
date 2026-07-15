@@ -102,7 +102,17 @@ FILE_ROLES: Final = frozenset(
         "payload",
     }
 )
-_REQUIRED_ROLES: Final = FILE_ROLES
+_REQUIRED_ROLES: Final = frozenset(
+    {
+        "tauri-config",
+        "nsis-toolchain",
+        "nsis-plugin",
+        "nsis-template",
+        "nsis-rendered-script",
+        "nsis-include",
+        "nsis-language",
+    }
+)
 _SCRIPT_ROLES: Final = frozenset(
     {"nsis-rendered-script", "nsis-include", "nsis-hook", "nsis-language"}
 )

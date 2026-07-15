@@ -959,6 +959,18 @@ def test_primitive_contract_validators_fail_closed(call: Any, match: str) -> Non
         call()
 
 
+@pytest.mark.parametrize("role", ["icon", "nsis-hook", "payload", "webview2"])
+def test_file_roles_used_only_by_rendered_script_are_not_shape_requirements(
+    tmp_path: Path, role: str
+) -> None:
+    _source, descriptor = _fixture(tmp_path)
+    files = [record for record in descriptor["files"] if record["role"] != role]
+
+    normalized = contract._normalize_file_records(files)
+
+    assert role not in {record["role"] for record in normalized}
+
+
 @pytest.mark.parametrize(
     "case",
     [
