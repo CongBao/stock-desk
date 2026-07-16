@@ -1771,7 +1771,11 @@ def test_repack_uses_only_fixed_argv_and_environment_and_writes_receipt(
     receipt = _repack(kit, output, receipt_path)
 
     command = cast(list[str], observed["command"])
-    assert command[1:] == manifest["argv"]
+    manifest_argv = cast(list[str], manifest["argv"])
+    work = Path(str(observed["cwd"]))
+    assert command[1:-1] == manifest_argv[:-1]
+    assert command[-1] == os.fspath(work / manifest_argv[-1])
+    assert Path(command[-1]).is_absolute()
     assert isinstance(observed["stdout"], int)
     assert observed["stderr"] is subprocess.STDOUT
     execution_environment = cast(dict[str, str], observed["env"])

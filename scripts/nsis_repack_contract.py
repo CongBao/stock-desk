@@ -3266,6 +3266,7 @@ def _repack_verified_snapshot(
         os.chmod(executable, 0o500)
         argv = manifest["argv"]
         assert isinstance(argv, list)
+        rendered_script = _safe_child(work, str(argv[-1]), "rendered NSIS script")
         environment = manifest["environment"]
         assert isinstance(environment, dict)
         cleared_environment = manifest["cleared_environment"]
@@ -3325,7 +3326,11 @@ def _repack_verified_snapshot(
         completed: subprocess.CompletedProcess[bytes] | None = None
         try:
             completed = subprocess.run(
-                [str(executable), *[str(argument) for argument in argv]],
+                [
+                    str(executable),
+                    *[str(argument) for argument in argv[:-1]],
+                    os.fspath(rendered_script),
+                ],
                 cwd=work,
                 env=execution_environment,
                 stdin=subprocess.DEVNULL,
