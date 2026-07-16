@@ -753,9 +753,55 @@ def _walk_posix_directory(
             os.close(child)
 
 
+def _validate_closed_root_entries(names: Sequence[str], entries: Sequence[str]) -> None:
+    if any(len(PurePosixPath(entry).parts) != 1 for entry in entries):
+        raise SecureArtifactSnapshotError(
+            "closed source root entries must be direct children"
+        )
+    normalized_names: list[str] = []
+    folded: set[str] = set()
+    for name in names:
+        _validate_name(name)
+        normalized = unicodedata.normalize("NFKC", name).casefold()
+        if normalized in folded:
+            raise SecureArtifactSnapshotError(
+                "closed source root has a case-insensitive path collision"
+            )
+        folded.add(normalized)
+        normalized_names.append(name)
+    if sorted(normalized_names, key=lambda value: value.encode("utf-8")) != sorted(
+        entries, key=lambda value: value.encode("utf-8")
+    ):
+        raise SecureArtifactSnapshotError(
+            "closed source root contains missing or unselected entries"
+        )
+
+
+def _reject_inventory_empty_directories(inventory: _Inventory) -> None:
+    for directory in inventory.directories:
+        prefix = f"{directory}/"
+        if not any(path.startswith(prefix) for path in inventory.files):
+            raise SecureArtifactSnapshotError(
+                f"artifact tree contains an empty directory: {directory}"
+            )
+
+
 def _inventory_posix(
-    root_fd: int, entries: Sequence[str], limits: SnapshotLimits
+    root_fd: int,
+    entries: Sequence[str],
+    limits: SnapshotLimits,
+    *,
+    reject_empty_directories: bool = False,
+    closed_source_root: bool = False,
 ) -> _Inventory:
+    if closed_source_root:
+        try:
+            root_names = os.listdir(root_fd)
+        except OSError as error:
+            raise SecureArtifactSnapshotError(
+                "closed source root cannot be enumerated"
+            ) from error
+        _validate_closed_root_entries(root_names, entries)
     files: dict[str, _Identity] = {}
     directories: dict[str, _Identity] = {}
     for relative in entries:
@@ -804,6 +850,8 @@ def _inventory_posix(
         raise SecureArtifactSnapshotError("snapshot selection contains no files")
     inventory = _Inventory(files=files, directories=directories)
     _validate_global_collisions(inventory)
+    if reject_empty_directories:
+        _reject_inventory_empty_directories(inventory)
     return inventory
 
 
@@ -985,7 +1033,13 @@ def _hold_windows_source_root(path: Path) -> Iterator[None]:
 
 
 def _inventory_windows(
-    root: Path, entries: Sequence[str], limits: SnapshotLimits
+    root: Path,
+    entries: Sequence[str],
+    limits: SnapshotLimits,
+    *,
+    allow_hardlinks: bool = True,
+    reject_empty_directories: bool = False,
+    closed_source_root: bool = False,
 ) -> _Inventory:
     # Native Windows build tools legitimately reuse files through hard links. The
     # enclosing snapshot holds every ancestor without delete sharing, opens each file
@@ -994,6 +1048,14 @@ def _inventory_windows(
     # stricter one-link policy because it has no equivalent mandatory sharing lock.
     files: dict[str, _Identity] = {}
     directories: dict[str, _Identity] = {}
+    if closed_source_root:
+        try:
+            root_names = [entry.name for entry in os.scandir(root)]
+        except (OSError, UnicodeError) as error:
+            raise SecureArtifactSnapshotError(
+                "closed source root cannot be enumerated"
+            ) from error
+        _validate_closed_root_entries(root_names, entries)
 
     def walk(directory: Path, relative: str) -> None:
         if len(PurePosixPath(relative).parts) > limits.max_depth:
@@ -1036,7 +1098,11 @@ def _inventory_windows(
                         "artifact entry changed or is unsafe"
                     ) from error
                 _add_inventory_file(
-                    files, child_relative, opened, limits, allow_hardlinks=True
+                    files,
+                    child_relative,
+                    opened,
+                    limits,
+                    allow_hardlinks=allow_hardlinks,
                 )
             elif stat.S_ISDIR(metadata.st_mode):
                 if child_relative in directories:
@@ -1069,7 +1135,9 @@ def _inventory_windows(
                 raise SecureArtifactSnapshotError(
                     "snapshot entry is missing or unsafe"
                 ) from error
-            _add_inventory_file(files, relative, opened, limits, allow_hardlinks=True)
+            _add_inventory_file(
+                files, relative, opened, limits, allow_hardlinks=allow_hardlinks
+            )
         elif stat.S_ISDIR(metadata.st_mode):
             if relative in directories:
                 raise SecureArtifactSnapshotError(
@@ -1085,6 +1153,8 @@ def _inventory_windows(
         raise SecureArtifactSnapshotError("snapshot selection contains no files")
     inventory = _Inventory(files=files, directories=directories)
     _validate_global_collisions(inventory)
+    if reject_empty_directories:
+        _reject_inventory_empty_directories(inventory)
     return inventory
 
 
@@ -1788,6 +1858,9 @@ def snapshot_artifacts(
     destination: Path,
     *,
     limits: SnapshotLimits = SnapshotLimits(),
+    allow_windows_hardlinks: bool = True,
+    reject_empty_directories: bool = False,
+    closed_source_root: bool = False,
 ) -> SnapshotResult:
     """Copy selected artifacts once into a verified owner-only snapshot.
 
@@ -1799,6 +1872,13 @@ def snapshot_artifacts(
     """
 
     limits.validate()
+    for option_name, option in (
+        ("allow_windows_hardlinks", allow_windows_hardlinks),
+        ("reject_empty_directories", reject_empty_directories),
+        ("closed_source_root", closed_source_root),
+    ):
+        if not isinstance(option, bool):
+            raise SecureArtifactSnapshotError(f"{option_name} must be a boolean")
     source = _absolute_directory(source_root, "artifact source root")
     normalized_entries = tuple(_relative_entry(entry) for entry in entries)
     if not normalized_entries:
@@ -1818,7 +1898,16 @@ def snapshot_artifacts(
     with _create_private_directory(destination) as lease:
         if _running_on_windows():
             with _hold_windows_source_root(source):
-                first = _inventory_windows(source, normalized_entries, limits)
+                windows_inventory_options: dict[str, bool] = {}
+                if not allow_windows_hardlinks:
+                    windows_inventory_options["allow_hardlinks"] = False
+                if reject_empty_directories:
+                    windows_inventory_options["reject_empty_directories"] = True
+                if closed_source_root:
+                    windows_inventory_options["closed_source_root"] = True
+                first = _inventory_windows(
+                    source, normalized_entries, limits, **windows_inventory_options
+                )
                 root_fd: int | None = None
                 root_identity = _identity(source.stat(follow_symlinks=False))
                 records = tuple(
@@ -1834,7 +1923,9 @@ def snapshot_artifacts(
                         first.files, key=lambda value: value.encode()
                     )
                 )
-                second = _inventory_windows(source, normalized_entries, limits)
+                second = _inventory_windows(
+                    source, normalized_entries, limits, **windows_inventory_options
+                )
                 if _identity(source.stat(follow_symlinks=False)) != root_identity:
                     raise SecureArtifactSnapshotError("artifact source root changed")
         else:
@@ -1842,7 +1933,14 @@ def snapshot_artifacts(
                 root_identity = _identity(os.fstat(opened_root))
                 if _identity(source.stat(follow_symlinks=False)) != root_identity:
                     raise SecureArtifactSnapshotError("artifact source root changed")
-                first = _inventory_posix(opened_root, normalized_entries, limits)
+                posix_inventory_options: dict[str, bool] = {}
+                if reject_empty_directories:
+                    posix_inventory_options["reject_empty_directories"] = True
+                if closed_source_root:
+                    posix_inventory_options["closed_source_root"] = True
+                first = _inventory_posix(
+                    opened_root, normalized_entries, limits, **posix_inventory_options
+                )
                 records = tuple(
                     _write_snapshot_file(
                         lease,
@@ -1856,7 +1954,9 @@ def snapshot_artifacts(
                         first.files, key=lambda value: value.encode()
                     )
                 )
-                second = _inventory_posix(opened_root, normalized_entries, limits)
+                second = _inventory_posix(
+                    opened_root, normalized_entries, limits, **posix_inventory_options
+                )
                 if (
                     _identity(os.fstat(opened_root)) != root_identity
                     or _identity(source.stat(follow_symlinks=False)) != root_identity

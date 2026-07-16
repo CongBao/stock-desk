@@ -406,6 +406,39 @@ def test_overlapping_directory_and_file_entries_fail_closed(tmp_path: Path) -> N
         )
 
 
+def test_closed_source_root_rejects_an_unselected_direct_sibling(
+    tmp_path: Path,
+) -> None:
+    source = _source(tmp_path).resolve()
+    with pytest.raises(SecureArtifactSnapshotError, match="closed source root"):
+        snapshot_artifacts(
+            source,
+            ["app"],
+            (tmp_path / "closed-snapshot").resolve(),
+            closed_source_root=True,
+        )
+
+
+def test_reject_empty_directories_is_explicit_and_default_compatible(
+    tmp_path: Path,
+) -> None:
+    source = _source(tmp_path).resolve()
+    (source / "app" / "empty").mkdir()
+    default = snapshot_artifacts(
+        source,
+        ["app"],
+        (tmp_path / "default-empty-snapshot").resolve(),
+    )
+    assert default.file_count == 2
+    with pytest.raises(SecureArtifactSnapshotError, match="empty director"):
+        snapshot_artifacts(
+            source,
+            ["app"],
+            (tmp_path / "strict-empty-snapshot").resolve(),
+            reject_empty_directories=True,
+        )
+
+
 @pytest.mark.skipif(os.name == "nt", reason="case-distinct names require POSIX")
 def test_case_insensitive_collisions_are_rejected(tmp_path: Path) -> None:
     source = _source(tmp_path).resolve()
@@ -744,6 +777,23 @@ def test_windows_inventory_accepts_native_build_hardlinks(tmp_path: Path) -> Non
     assert inventory.files["native-build/stock-desk-copy.nsi"].links == 2
 
 
+def test_windows_inventory_strict_policy_rejects_native_build_hardlinks(
+    tmp_path: Path,
+) -> None:
+    source = _source(tmp_path).resolve()
+    nested = source / "native-build"
+    nested.mkdir()
+    os.link(source / "stock-desk.nsi", nested / "stock-desk-copy.nsi")
+
+    with pytest.raises(SecureArtifactSnapshotError, match="hard links"):
+        secure_snapshot._inventory_windows(
+            source,
+            ["stock-desk.nsi", "native-build"],
+            SnapshotLimits(),
+            allow_hardlinks=False,
+        )
+
+
 def test_windows_source_file_stat_uses_the_secured_handle(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -899,9 +949,31 @@ def test_windows_snapshot_branch_holds_root_and_consumes_only_snapshot(
 
     monkeypatch.setattr(os, "fchmod", forbid_fchmod)
 
-    result = snapshot_artifacts(source, ["app"], destination)
+    original_inventory = secure_snapshot._inventory_windows
+    observed_hardlink_policies: list[bool] = []
+
+    def inventory(
+        root: Path,
+        entries: tuple[str, ...],
+        limits: SnapshotLimits,
+        *,
+        allow_hardlinks: bool = True,
+    ) -> Any:
+        observed_hardlink_policies.append(allow_hardlinks)
+        return original_inventory(
+            root, entries, limits, allow_hardlinks=allow_hardlinks
+        )
+
+    monkeypatch.setattr(secure_snapshot, "_inventory_windows", inventory)
+    result = snapshot_artifacts(
+        source,
+        ["app"],
+        destination,
+        allow_windows_hardlinks=False,
+    )
 
     assert held == [destination.parent, source]
+    assert observed_hardlink_policies == [False, False]
     assert result.file_count == 2
     assert (destination / "app" / "stock-desk-desktop.exe").read_bytes() == b"desktop\n"
 

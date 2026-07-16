@@ -41,6 +41,21 @@ from scripts.secure_artifact_snapshot import (
 KIT_ARTIFACT: Final = "stock-desk-nsis-repack-kit"
 RECEIPT_ARTIFACT: Final = "stock-desk-nsis-repack-receipt-v1"
 PROVENANCE_SET_ARTIFACT: Final = "stock-desk-nsis-repack-provenance-set-v1"
+PROVENANCE_SUMMARY_FIELDS: Final = frozenset(
+    {
+        "schema_version",
+        "artifact",
+        "source_ref",
+        "source_sha",
+        "source_tree",
+        "source_epoch",
+        "kit",
+        "transformation",
+        "transformation_sha256",
+        "receipts",
+        "installer",
+    }
+)
 KIT_MANIFEST: Final = "nsis-repack-kit.json"
 SCHEMA_VERSION: Final = 1
 MAX_JSON_BYTES: Final = 2 * 1024 * 1024
@@ -236,6 +251,7 @@ def _read_descriptor_secure(path: Path) -> object:
                     max_total_size=MAX_JSON_BYTES,
                     max_depth=1,
                 ),
+                allow_windows_hardlinks=False,
             )
         except SecureArtifactSnapshotError as error:
             raise NsisRepackContractError("could not secure the descriptor") from error
@@ -895,6 +911,10 @@ def patch_tauri_bundle_payload(
             "Tauri payload is outside the private root"
         ) from error
     portable_relative = PurePosixPath(*relative.parts).as_posix()
+    if portable_relative != TAURI_TRANSFORMED_PAYLOAD_PATH:
+        raise NsisRepackContractError(
+            f"Tauri payload path must be {TAURI_TRANSFORMED_PAYLOAD_PATH}"
+        )
     secured_payload = _safe_child(
         private_root, portable_relative, "private Tauri host payload"
     )
@@ -1014,7 +1034,7 @@ def patch_tauri_bundle_payload(
             "commit": TAURI_SOURCE_COMMIT,
             "path": TAURI_SOURCE_PATH,
         },
-        "payload_path": portable_relative,
+        "payload_path": TAURI_TRANSFORMED_PAYLOAD_PATH,
         "before_token": TAURI_BUNDLE_MARKER_UNKNOWN.decode("ascii"),
         "after_token": TAURI_BUNDLE_MARKER_NSIS.decode("ascii"),
         "marker_offset": marker_offset,
@@ -1227,6 +1247,7 @@ def _snapshot_source_files(
                 max_total_size=8 * 1024 * 1024 * 1024,
                 max_depth=32,
             ),
+            allow_windows_hardlinks=False,
         )
     except SecureArtifactSnapshotError as error:
         raise NsisRepackContractError("secure artifact snapshot failed") from error
@@ -2402,6 +2423,7 @@ def _verify_snapshot_files(kit: Path, manifest: Mapping[str, object]) -> None:
             raise NsisRepackContractError(f"files[{index}] content identity mismatch")
         expected.add(relative)
     actual: set[str] = set()
+    actual_directories: set[str] = set()
     for root, directories, filenames in os.walk(content, followlinks=False):
         root_path = Path(root)
         for name in [*directories, *filenames]:
@@ -2409,11 +2431,20 @@ def _verify_snapshot_files(kit: Path, manifest: Mapping[str, object]) -> None:
             metadata = os.lstat(candidate)
             if stat.S_ISLNK(metadata.st_mode):
                 raise NsisRepackContractError("kit content contains a link")
+        for name in directories:
+            actual_directories.add((root_path / name).relative_to(content).as_posix())
         for name in filenames:
             actual.add((root_path / name).relative_to(content).as_posix())
     _assert_case_unique(sorted(actual), "snapshot files")
     if actual != expected:
         raise NsisRepackContractError("kit content has missing or unbound files")
+    expected_directories: set[str] = set()
+    for relative in expected:
+        for parent in PurePosixPath(relative).parents:
+            if parent != PurePosixPath("."):
+                expected_directories.add(parent.as_posix())
+    if actual_directories != expected_directories:
+        raise NsisRepackContractError("kit content has unbound directories")
     _verify_transformation_payload(content, manifest)
     _audit_scripts(content, manifest)
 
@@ -2523,9 +2554,14 @@ def _verify_private_kit(
 ) -> dict[str, object]:
     if kit.is_symlink() or not kit.is_dir():
         raise NsisRepackContractError("kit must be a non-link directory")
-    manifest = _normalize_contract(
-        _read_json(kit / KIT_MANIFEST, "kit manifest"), manifest=True
+    manifest_bytes = _read_regular_file(
+        kit / KIT_MANIFEST, "kit manifest", limit=MAX_JSON_BYTES
     )
+    manifest = _normalize_contract(
+        _parse_json(manifest_bytes, "kit manifest"), manifest=True
+    )
+    if manifest_bytes != _canonical_json(manifest):
+        raise NsisRepackContractError("kit manifest must use canonical JSON encoding")
     if manifest["source_ref"] != _source_ref(
         expected_source_ref, "expected_source_ref"
     ):
@@ -2560,16 +2596,12 @@ def _verified_kit_snapshot(
     """Keep the exact verified private snapshot alive for its consumer."""
     if kit.is_symlink() or not kit.is_dir():
         raise NsisRepackContractError("kit must be a non-link directory")
-    source_entries = sorted(entry.name for entry in os.scandir(kit))
-    _assert_case_unique(source_entries, "kit root entries")
-    if not source_entries:
-        raise NsisRepackContractError("kit root is empty")
     with tempfile.TemporaryDirectory(prefix="stock-desk-verify-nsis-kit-") as temporary:
         snapshot = (Path(temporary) / "snapshot").resolve(strict=False)
         try:
             snapshot_artifacts(
                 kit.absolute(),
-                source_entries,
+                [KIT_MANIFEST, "content"],
                 snapshot.absolute(),
                 limits=SnapshotLimits(
                     max_files=MAX_FILES + 1,
@@ -2577,6 +2609,9 @@ def _verified_kit_snapshot(
                     max_total_size=8 * 1024 * 1024 * 1024,
                     max_depth=33,
                 ),
+                allow_windows_hardlinks=False,
+                reject_empty_directories=True,
+                closed_source_root=True,
             )
         except SecureArtifactSnapshotError as error:
             raise NsisRepackContractError(
@@ -2717,6 +2752,7 @@ def verify_receipt(
                     max_total_size=MAX_JSON_BYTES,
                     max_depth=1,
                 ),
+                allow_windows_hardlinks=False,
             )
             output_snapshot = snapshot_artifacts(
                 output.parent.absolute(),
@@ -2728,6 +2764,7 @@ def verify_receipt(
                     max_total_size=MAX_FILE_BYTES,
                     max_depth=1,
                 ),
+                allow_windows_hardlinks=False,
             )
         except SecureArtifactSnapshotError as error:
             raise NsisRepackContractError(
@@ -2783,10 +2820,13 @@ def verify_receipt(
             )
         output_record = normalized["output"]
         assert isinstance(output_record, Mapping)
+        if dict(output_record) != dict(expected_output):
+            raise NsisRepackContractError(
+                "receipt output does not match the verified kit output"
+            )
         captured = output_snapshot.files[0]
         if (
-            output_record["path"] != expected_output["path"]
-            or output_record["size"] != captured.size
+            output_record["size"] != captured.size
             or output_record["sha256"] != captured.sha256
         ):
             raise NsisRepackContractError(
@@ -2849,33 +2889,6 @@ def verify_provenance_set(
         raise NsisRepackContractError(
             "candidate root is missing NSIS provenance evidence"
         )
-    for selected in expected_entries:
-        selected_path = candidate_root / selected
-        selected_metadata = os.lstat(selected_path)
-        if stat.S_ISLNK(selected_metadata.st_mode) or _is_reparse(selected_metadata):
-            raise NsisRepackContractError(
-                "NSIS provenance evidence contains a link or reparse point"
-            )
-        if stat.S_ISREG(selected_metadata.st_mode) and selected_metadata.st_nlink != 1:
-            raise NsisRepackContractError(
-                "NSIS provenance evidence contains a hardlinked file"
-            )
-        for root, directories, filenames in os.walk(selected_path, followlinks=False):
-            root_path = Path(root)
-            _assert_case_unique(
-                [*directories, *filenames], f"NSIS provenance entries under {selected}"
-            )
-            for name in [*directories, *filenames]:
-                path = root_path / name
-                metadata = os.lstat(path)
-                if stat.S_ISLNK(metadata.st_mode) or _is_reparse(metadata):
-                    raise NsisRepackContractError(
-                        "NSIS provenance evidence contains a link or reparse point"
-                    )
-                if stat.S_ISREG(metadata.st_mode) and metadata.st_nlink != 1:
-                    raise NsisRepackContractError(
-                        "NSIS provenance evidence contains a hardlinked file"
-                    )
     with tempfile.TemporaryDirectory(
         prefix="stock-desk-verify-nsis-provenance-"
     ) as temporary:
@@ -2883,7 +2896,7 @@ def verify_provenance_set(
         try:
             snapshot_artifacts(
                 candidate_root,
-                expected_entries,
+                source_entries,
                 snapshot_root,
                 limits=SnapshotLimits(
                     max_files=MAX_FILES + 4,
@@ -2891,19 +2904,14 @@ def verify_provenance_set(
                     max_total_size=10 * 1024 * 1024 * 1024,
                     max_depth=35,
                 ),
+                allow_windows_hardlinks=False,
+                reject_empty_directories=True,
+                closed_source_root=True,
             )
         except SecureArtifactSnapshotError as error:
             raise NsisRepackContractError(
-                "could not secure the NSIS provenance set"
+                "could not secure the unsafe NSIS provenance set"
             ) from error
-        final_source_entries = sorted(
-            entry.name for entry in os.scandir(candidate_root)
-        )
-        _assert_case_unique(final_source_entries, "candidate root final entries")
-        if final_source_entries != source_entries:
-            raise NsisRepackContractError(
-                "candidate root inventory changed during provenance snapshot"
-            )
         verification_root = snapshot_root / "nsis-repack-verification"
         if verification_root.is_symlink() or not verification_root.is_dir():
             raise NsisRepackContractError(
@@ -2983,7 +2991,7 @@ def verify_provenance_set(
             kit / KIT_MANIFEST, "kit manifest"
         )
         transformation = dict(_object(manifest["transformation"], "transformation"))
-        return {
+        summary = {
             "schema_version": SCHEMA_VERSION,
             "artifact": PROVENANCE_SET_ARTIFACT,
             "source_ref": manifest["source_ref"],
@@ -3000,6 +3008,9 @@ def verify_provenance_set(
             "receipts": receipt_summaries,
             "installer": {"size": installer_size, "sha256": installer_sha256},
         }
+        if set(summary) != PROVENANCE_SUMMARY_FIELDS:
+            raise NsisRepackContractError("provenance summary field set is invalid")
+        return summary
 
 
 def repack(
@@ -3232,6 +3243,7 @@ def _repack_verified_snapshot(
                     max_total_size=MAX_FILE_BYTES,
                     max_depth=1,
                 ),
+                allow_windows_hardlinks=False,
             )
             captured = output_snapshot.files[0]
             if captured.size != size or captured.sha256 != digest:

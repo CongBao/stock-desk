@@ -18,6 +18,7 @@ from collections.abc import Iterator, Mapping
 import pytest
 
 from scripts import nsis_repack_contract as contract
+from scripts import secure_artifact_snapshot as secure_snapshot
 
 
 SHA = "a" * 40
@@ -387,7 +388,8 @@ _NSS_MARKER = b"__TAURI_BUNDLE_TYPE_VAR_NSS"
 def _private_payload(tmp_path: Path, payload: bytes) -> tuple[Path, Path]:
     root = tmp_path / "private"
     root.mkdir(mode=0o700, parents=True)
-    path = root / "stock-desk-desktop.exe"
+    path = root / contract.TAURI_TRANSFORMED_PAYLOAD_PATH
+    path.parent.mkdir(parents=True)
     path.write_bytes(payload)
     return root, path
 
@@ -412,7 +414,7 @@ def test_tauri_payload_patch_streams_one_exact_marker_and_preserves_original(
             "commit": "8909f221d1515955fc843808032bdc5d62209c96",
             "path": "crates/tauri-bundler/src/bundle.rs",
         },
-        "payload_path": "stock-desk-desktop.exe",
+        "payload_path": contract.TAURI_TRANSFORMED_PAYLOAD_PATH,
         "before_token": _UNK_MARKER.decode(),
         "after_token": _NSS_MARKER.decode(),
         "marker_offset": 6,
@@ -450,6 +452,21 @@ def test_tauri_payload_patch_finds_marker_across_stream_boundary(
 
     assert result["marker_offset"] == len(prefix)
     assert private_payload.read_bytes() == prefix + _NSS_MARKER + b"suffix"
+
+
+def test_tauri_payload_patch_rejects_noncanonical_payload_path(tmp_path: Path) -> None:
+    private_root = tmp_path / "private"
+    private_root.mkdir(mode=0o700)
+    payload = private_root / "caller-chosen.exe"
+    original = b"prefix" + _UNK_MARKER + b"suffix"
+    payload.write_bytes(original)
+
+    with pytest.raises(contract.NsisRepackContractError, match="payload path"):
+        contract.patch_tauri_bundle_payload(
+            private_root=private_root,
+            payload=payload,
+        )
+    assert payload.read_bytes() == original
 
 
 @pytest.mark.parametrize(
@@ -1013,6 +1030,28 @@ def _rewrite_kit_manifest(kit: Path, manifest: dict[str, object]) -> None:
     path = kit / contract.KIT_MANIFEST
     path.chmod(0o600)
     path.write_bytes(contract._canonical_json(manifest))
+
+
+@pytest.mark.parametrize("encoding", ["pretty", "reordered"])
+def test_verify_kit_rejects_noncanonical_stored_manifest_encoding(
+    tmp_path: Path, encoding: str
+) -> None:
+    kit, _created = _create(tmp_path)
+    path = kit / contract.KIT_MANIFEST
+    manifest = json.loads(path.read_bytes())
+    path.chmod(0o600)
+    if encoding == "pretty":
+        path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
+    else:
+        reordered = dict(reversed(list(manifest.items())))
+        path.write_bytes(
+            (
+                json.dumps(reordered, ensure_ascii=False, separators=(",", ":")) + "\n"
+            ).encode()
+        )
+
+    with pytest.raises(contract.NsisRepackContractError, match="canonical JSON"):
+        _verify_kit(kit=kit)
 
 
 @pytest.mark.parametrize("mutation", ["offset", "before-hash", "outside-byte"])
@@ -1690,6 +1729,21 @@ def test_verify_rejects_tampering_extra_files_and_wrong_source(tmp_path: Path) -
         _verify_kit(kit=kit, expected_source_sha="c" * 40)
 
 
+@pytest.mark.parametrize(
+    "relative",
+    ["extra-empty", "toolchain/extra-empty", "payload/extra-empty"],
+)
+def test_verify_kit_rejects_unbound_empty_directories(
+    tmp_path: Path, relative: str
+) -> None:
+    kit, _created = _create(tmp_path)
+    directory = kit / "content" / relative
+    directory.parent.chmod(0o700)
+    directory.mkdir()
+    with pytest.raises(contract.NsisRepackContractError, match="empty|unbound|secure"):
+        _verify_kit(kit=kit)
+
+
 def test_repack_uses_only_fixed_argv_and_environment_and_writes_receipt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1761,10 +1815,13 @@ def test_repack_removes_its_installer_when_final_output_snapshot_fails(
         destination: Path,
         *,
         limits: contract.SnapshotLimits,
+        **kwargs: object,
     ) -> contract.SnapshotResult:
         if entries == ["out.exe"]:
             raise contract.SecureArtifactSnapshotError("forced final-output failure")
-        return original_snapshot(source_root, entries, destination, limits=limits)
+        return original_snapshot(
+            source_root, entries, destination, limits=limits, **kwargs
+        )
 
     monkeypatch.setattr(contract, "snapshot_artifacts", reject_final_output_snapshot)
     output = tmp_path / "out.exe"
@@ -2634,6 +2691,30 @@ def test_receipt_transformation_digest_mutation_is_rejected_after_redigest(
         _verify_receipt(receipt=receipt_path, kit=kit, output=output)
 
 
+def test_receipt_redigested_malicious_output_must_still_equal_kit_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    kit, _manifest = _create(tmp_path)
+    monkeypatch.setattr(
+        "scripts.nsis_repack_contract.subprocess.run", _fake_successful_makensis
+    )
+    output = tmp_path / "out.exe"
+    receipt_path = tmp_path / "receipt.json"
+    _repack(kit, output, receipt_path)
+    malicious = b"malicious-installer\n"
+    output.write_bytes(malicious)
+    receipt = json.loads(receipt_path.read_bytes())
+    receipt["output"]["size"] = len(malicious)
+    receipt["output"]["sha256"] = _digest(malicious)
+    receipt.pop("receipt_sha256")
+    receipt["receipt_sha256"] = contract._receipt_digest(receipt)
+    receipt_path.chmod(0o600)
+    receipt_path.write_bytes(contract._canonical_json(receipt))
+
+    with pytest.raises(contract.NsisRepackContractError, match="kit output"):
+        _verify_receipt(receipt=receipt_path, kit=kit, output=output)
+
+
 def test_verify_repack_and_receipt_reject_each_external_source_mismatch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2794,6 +2875,157 @@ def test_provenance_set_rejects_case_link_and_external_installer_evidence(
         (candidate / "nsis-repack-kit" / "extra.txt").write_text("extra")
     with pytest.raises(contract.NsisRepackContractError):
         _verify_provenance(candidate, installer, kit_sha256)
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["installer-sibling", "kit-sibling", "receipt-sibling", "nested-unselected"],
+)
+def test_provenance_set_rejects_unselected_symlink_aliases_anywhere(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    case: str,
+) -> None:
+    candidate, installer, kit_sha256 = _provenance_fixture(tmp_path, monkeypatch)
+    try:
+        if case == "installer-sibling":
+            (candidate / "installer-alias.exe").symlink_to(installer.name)
+        elif case == "kit-sibling":
+            (candidate / "kit-alias").symlink_to(
+                "nsis-repack-kit", target_is_directory=True
+            )
+        elif case == "receipt-sibling":
+            (candidate / "receipt-alias.json").symlink_to(
+                "nsis-repack-verification/repack-a-receipt.json"
+            )
+        else:
+            unrelated = candidate / "ordinary-artifacts"
+            unrelated.mkdir()
+            (unrelated / "nested-installer-alias.exe").symlink_to(installer)
+    except OSError:
+        pytest.skip("symlink creation is unavailable")
+
+    with pytest.raises(contract.NsisRepackContractError, match="link|closed|unsafe"):
+        _verify_provenance(candidate, installer, kit_sha256)
+
+
+def test_provenance_set_allows_other_closed_regular_candidate_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate, installer, kit_sha256 = _provenance_fixture(tmp_path, monkeypatch)
+    (candidate / "ordinary-evidence.json").write_text("{}\n")
+    ordinary = candidate / "ordinary-artifacts"
+    ordinary.mkdir()
+    (ordinary / "payload.bin").write_bytes(b"ordinary")
+
+    assert _verify_provenance(candidate, installer, kit_sha256)["source_ref"] == REF
+
+
+def test_nsis_contract_sets_strict_windows_hardlink_policy_on_every_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_snapshot = contract.snapshot_artifacts
+    observed: list[bool] = []
+
+    def strict_snapshot(
+        source_root: Path,
+        entries: list[str] | tuple[str, ...],
+        destination: Path,
+        *,
+        limits: contract.SnapshotLimits,
+        allow_windows_hardlinks: bool | None = None,
+        **kwargs: object,
+    ) -> contract.SnapshotResult:
+        assert allow_windows_hardlinks is False
+        observed.append(allow_windows_hardlinks)
+        return original_snapshot(
+            source_root,
+            entries,
+            destination,
+            limits=limits,
+            allow_windows_hardlinks=allow_windows_hardlinks,
+            **kwargs,
+        )
+
+    monkeypatch.setattr(contract, "snapshot_artifacts", strict_snapshot)
+    candidate, installer, kit_sha256 = _provenance_fixture(tmp_path, monkeypatch)
+    _verify_provenance(candidate, installer, kit_sha256)
+    assert len(observed) >= 10
+    assert all(policy is False for policy in observed)
+
+
+def test_simulated_windows_strict_inventory_rejects_hardlinked_kit_and_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate, _installer, _kit_sha256 = _provenance_fixture(tmp_path, monkeypatch)
+    payload = candidate / "nsis-repack-kit/content" / HOST_PATH
+    payload_alias = tmp_path / "payload-alias.exe"
+    os.link(payload, payload_alias)
+    with pytest.raises(contract.SecureArtifactSnapshotError, match="hard links"):
+        secure_snapshot._inventory_windows(
+            candidate / "nsis-repack-kit",
+            [contract.KIT_MANIFEST, "content"],
+            contract.SnapshotLimits(),
+            allow_hardlinks=False,
+        )
+    payload_alias.unlink()
+
+    receipt = candidate / "nsis-repack-verification/repack-a-receipt.json"
+    receipt_alias = tmp_path / "receipt-alias.json"
+    os.link(receipt, receipt_alias)
+    with pytest.raises(contract.SecureArtifactSnapshotError, match="hard links"):
+        secure_snapshot._inventory_windows(
+            candidate / "nsis-repack-verification",
+            ["repack-a-receipt.json", "repack-b-receipt.json"],
+            contract.SnapshotLimits(),
+            allow_hardlinks=False,
+        )
+
+
+def test_provenance_strict_snapshot_rejects_hardlink_inserted_after_preinventory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate, installer, kit_sha256 = _provenance_fixture(tmp_path, monkeypatch)
+    original_snapshot = contract.snapshot_artifacts
+    raced = False
+
+    def racing_snapshot(
+        source_root: Path,
+        entries: list[str] | tuple[str, ...],
+        destination: Path,
+        *,
+        limits: contract.SnapshotLimits,
+        allow_windows_hardlinks: bool | None = None,
+        **kwargs: object,
+    ) -> contract.SnapshotResult:
+        nonlocal raced
+        alias = candidate / "raced-installer-hardlink.exe"
+        if source_root.absolute() == candidate.absolute() and not raced:
+            raced = True
+            os.link(installer, alias)
+            if allow_windows_hardlinks is not False:
+                alias.unlink()
+        if allow_windows_hardlinks is None:
+            return original_snapshot(
+                source_root, entries, destination, limits=limits, **kwargs
+            )
+        return original_snapshot(
+            source_root,
+            entries,
+            destination,
+            limits=limits,
+            allow_windows_hardlinks=allow_windows_hardlinks,
+            **kwargs,
+        )
+
+    monkeypatch.setattr(contract, "snapshot_artifacts", racing_snapshot)
+    with pytest.raises(contract.NsisRepackContractError, match="secure|hard|closed"):
+        _verify_provenance(candidate, installer, kit_sha256)
+    assert raced
 
 
 def test_provenance_set_consumes_one_private_snapshot_under_source_race(
