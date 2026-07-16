@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 import struct
+import subprocess
+import sys
 
 import pytest
 
@@ -125,3 +127,21 @@ def test_windows_repack_integration_captures_mismatch_before_failing() -> None:
     assert integration.index(diagnostic_repack) < integration.index(diagnostic)
     assert integration.index(diagnostic) < integration.index(mismatch)
     assert "-DiagnosticsRoot (Join-Path $root 'diagnostics')" in workflow
+
+
+def test_direct_script_entrypoint_bootstraps_repository_imports(tmp_path: Path) -> None:
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts/nsis_mismatch_diagnostics.py"),
+            "--help",
+        ],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "Create bounded diagnostics" in completed.stdout

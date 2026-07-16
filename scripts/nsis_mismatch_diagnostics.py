@@ -10,6 +10,9 @@ import stat
 import sys
 from typing import BinaryIO, cast, Final
 
+if __package__ in {None, ""}:
+    sys.path.insert(0, os.fspath(Path(__file__).resolve().parent.parent))
+
 from scripts.verify_windows_desktop_bundle import (
     BundleVerificationError,
     canonical_json,
