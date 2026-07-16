@@ -379,7 +379,7 @@ def test_shutdown_helper_reuses_protected_runtime_without_acl_subprocess(
     def reject_acl(*_args: object, **_kwargs: object) -> None:
         pytest.fail("shutdown helper must reuse the protected runtime ACL")
 
-    monkeypatch.setattr(desktop_runtime, "_run_windows_acl", reject_acl)
+    monkeypatch.setattr(desktop_runtime, "_apply_windows_private_dacl", reject_acl)
 
     def acknowledge_shutdown() -> None:
         deadline = time.monotonic() + 2
@@ -564,63 +564,36 @@ def test_worker_child_first_heartbeat_failure_never_signals_ready(
     assert calls == ["run", "close"]
 
 
-def test_windows_acl_command_replaces_and_validates_the_complete_dacl(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    desktop = _desktop()
-    monkeypatch.setenv("SystemRoot", r"C:\Windows")
-    monkeypatch.setenv("USERDOMAIN", "DESKTOP")
-    monkeypatch.setenv("USERNAME", "owner")
-
-    target = tmp_path / "runtime user's 数据"
-    command = desktop._windows_acl_command(target, directory=True)
-
-    assert command[0].endswith("System32/WindowsPowerShell/v1.0/powershell.exe")
-    assert command[-2] == "-Command"
-    script = command[-1]
-    assert str(target) not in script
-    assert "STOCK_DESK_ACL_TARGET" in script
-    assert "Import-Module $securityModule -ErrorAction Stop" in script
-    assert "Microsoft.PowerShell.Security\\Set-Acl" in script
-    assert "Microsoft.PowerShell.Security\\Get-Acl" in script
-    assert "SetAccessRuleProtection($true, $false)" in script
-    assert "S-1-5-18" in script
-    assert "S-1-5-32-544" in script
-    assert "WindowsIdentity]::GetCurrent().User" in script
-    assert "GetAccessRules($true, $true" in script
-    assert "Unexpected ACL principal" in script
-    assert "Required ACL principal is missing" in script
-
-
-def test_windows_acl_target_is_passed_only_in_the_child_environment(
+def test_windows_acl_uses_the_dacl_only_native_boundary(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     desktop_runtime = _desktop_runtime()
-    monkeypatch.setattr(
-        desktop_runtime.subprocess,
-        "CREATE_NO_WINDOW",
-        0x08000000,
-        raising=False,
-    )
     target = tmp_path / "runtime user's 数据"
     target.mkdir()
-    calls: list[dict[str, object]] = []
+    calls: list[tuple[Path, bool]] = []
 
     monkeypatch.setattr(
-        desktop_runtime.subprocess,
-        "run",
-        lambda *_args, **kwargs: (
-            calls.append(kwargs) or type("Completed", (), {"returncode": 0})()
-        ),
+        desktop_runtime,
+        "_apply_windows_private_dacl",
+        lambda path, *, directory: calls.append((path, directory)),
     )
+    monkeypatch.setattr(desktop_runtime.os, "name", "nt")
 
-    desktop_runtime._run_windows_acl(target, directory=True)
+    desktop_runtime._restrict_owner_access(target, directory=True)
 
-    assert calls[0]["env"]["STOCK_DESK_ACL_TARGET"] == str(target)
-    assert calls[0]["timeout"] == 30
-    assert calls[0]["creationflags"] == desktop_runtime.subprocess.CREATE_NO_WINDOW
+    assert calls == [(target, True)]
+
+
+def test_windows_private_sddl_contains_only_expected_full_control_aces() -> None:
+    from stock_desk.windows_acl import _windows_private_sddl
+
+    assert _windows_private_sddl(
+        frozenset({"S-1-5-21-42", "S-1-5-18", "S-1-5-32-544"}),
+        directory=True,
+    ) == (
+        "D:P(A;OICI;FA;;;S-1-5-18)(A;OICI;FA;;;S-1-5-21-42)(A;OICI;FA;;;S-1-5-32-544)"
+    )
 
 
 def test_internal_akshare_mode_rejects_an_unknown_operation(tmp_path: Path) -> None:

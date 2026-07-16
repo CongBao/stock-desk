@@ -23,7 +23,11 @@ from stock_desk.market.provenance import (
     RoutedInstrumentFailure,
     RoutedInstrumentSuccess,
 )
-from stock_desk.market.providers.base import MarketDataProvider, ProviderClientError
+from stock_desk.market.providers.base import (
+    MarketDataProvider,
+    ProviderClientError,
+    ProviderNoData,
+)
 from stock_desk.market.routing import SourcePriorities, SourceRouter
 from stock_desk.market.runtime import DefaultRuntimeProviderFactory
 from stock_desk.market.types import (
@@ -327,8 +331,8 @@ class OnboardingService:
             )
             if instrument is None:
                 raise OnboardingConflict("instrument_not_found")
-            query = self._daily_query(instrument)
             try:
+                query = self._daily_query(instrument)
                 routed, provider = self._fetch_bars(source_id, query)
             except Exception as error:
                 return self._recover_stock_with_baostock_or_save_failure(
@@ -584,9 +588,18 @@ class OnboardingService:
 
     def _daily_query(self, instrument: Instrument) -> BarQuery:
         now_local = self._clock().astimezone(_SHANGHAI)
-        start_local = datetime(2015, 1, 1, tzinfo=_SHANGHAI)
+        window_start = now_local.date() - timedelta(days=365)
+        end_day = now_local.date() + timedelta(days=1)
+        start_day = max(window_start, instrument.listed_on or window_start)
+        if start_day >= end_day:
+            raise ProviderNoData()
+        start_local = datetime.combine(
+            start_day,
+            datetime.min.time(),
+            tzinfo=_SHANGHAI,
+        )
         end_local = datetime.combine(
-            now_local.date() + timedelta(days=1),
+            end_day,
             datetime.min.time(),
             tzinfo=_SHANGHAI,
         )
@@ -678,10 +691,14 @@ class OnboardingService:
         symbol: CanonicalSymbol,
         code: str,
     ) -> OnboardingState:
-        if (
-            source_id is not ProviderId.AKSHARE
-            or instrument.instrument_kind is not InstrumentKind.STOCK
-        ):
+        supports_baostock_fallback = (
+            instrument.instrument_kind is InstrumentKind.STOCK
+            or (
+                instrument.instrument_kind is InstrumentKind.INDEX
+                and instrument.symbol == DEFAULT_SYMBOL
+            )
+        )
+        if source_id is not ProviderId.AKSHARE or not supports_baostock_fallback:
             return self._save_failure(
                 state,
                 step=OnboardingStep.SYNCHRONIZATION,
@@ -700,7 +717,7 @@ class OnboardingService:
             self.select(symbol)
         except OnboardingConflict:
             return self._save_failure(
-                prepared,
+                state,
                 step=OnboardingStep.SYNCHRONIZATION,
                 code=code,
                 failed_sync=True,

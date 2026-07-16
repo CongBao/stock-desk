@@ -493,7 +493,11 @@ function OnboardingWizard({
                   <dl>
                     <div>
                       <dt>来源</dt>
-                      <dd>{state.source?.label ?? state.sync.providerId}</dd>
+                      <dd>
+                        {state.source?.label ??
+                          state.sync.providerId ??
+                          '免费数据源'}
+                      </dd>
                     </div>
                     <div>
                       <dt>更新到</dt>

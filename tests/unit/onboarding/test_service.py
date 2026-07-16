@@ -219,10 +219,7 @@ class _FallbackFactory:
 
 class _AkShareStockFailureProvider(_Provider):
     def fetch_bars(self, query: BarQuery) -> BarFetchOutcome:
-        if (
-            self.name is ProviderId.AKSHARE
-            and query.instrument_kind is InstrumentKind.STOCK
-        ):
+        if self.name is ProviderId.AKSHARE:
             raise ProviderUnavailable()
         return super().fetch_bars(query)
 
@@ -249,6 +246,84 @@ class _AkShareStockFallbackFactory:
 
         provider.fetch_bars = fetch_bars  # type: ignore[method-assign]
         return provider
+
+
+class _BaoStockCatalogMissingSelectedProvider(_AkShareStockFailureProvider):
+    def fetch_instruments(self) -> InstrumentFetchOutcome:
+        original = super().fetch_instruments()
+        if self.name is not ProviderId.BAOSTOCK:
+            return original
+        return cast(
+            InstrumentFetchOutcome,
+            make_batch(
+                source=self.name,
+                operation=ProviderOperation.INSTRUMENTS,
+                request={},
+                items=tuple(
+                    item for item in original.items if item.symbol != "600000.SH"
+                ),
+                data_cutoff=NOW,
+                observed_at=NOW,
+            ),
+        )
+
+
+class _BaoStockCatalogMissingSelectedFactory(_AkShareStockFallbackFactory):
+    def create(
+        self,
+        source: ProviderId,
+        *,
+        token: str | None,
+        tdx_path: Path | None,
+    ) -> MarketDataProvider:
+        assert token is None
+        assert tdx_path is None
+        provider = _BaoStockCatalogMissingSelectedProvider(source)
+        original_fetch_bars = provider.fetch_bars
+
+        def fetch_bars(query: BarQuery) -> BarFetchOutcome:
+            self.bar_attempts.append((source, query.symbol))
+            return original_fetch_bars(query)
+
+        provider.fetch_bars = fetch_bars  # type: ignore[method-assign]
+        return provider
+
+
+class _FutureListingProvider(_Provider):
+    def fetch_instruments(self) -> InstrumentFetchOutcome:
+        original = super().fetch_instruments()
+        return cast(
+            InstrumentFetchOutcome,
+            make_batch(
+                source=self.name,
+                operation=ProviderOperation.INSTRUMENTS,
+                request={},
+                items=tuple(
+                    item
+                    if item.symbol != "600000.SH"
+                    else item.model_copy(update={"listed_on": date(2026, 7, 14)})
+                    for item in original.items
+                ),
+                data_cutoff=NOW,
+                observed_at=NOW,
+            ),
+        )
+
+    def fetch_bars(self, query: BarQuery) -> BarFetchOutcome:
+        raise AssertionError(f"future listing must not be requested: {query.symbol}")
+
+
+class _FutureListingFactory:
+    def create(
+        self,
+        source: ProviderId,
+        *,
+        token: str | None,
+        tdx_path: Path | None,
+    ) -> MarketDataProvider:
+        assert token is None
+        assert tdx_path is None
+        return _FutureListingProvider(source)
 
 
 class _TimeoutProvider(_Provider):
@@ -396,6 +471,41 @@ def test_real_catalog_and_single_provider_daily_pin_are_required_for_completion(
         assert completed.status is OnboardingStatus.COMPLETED
         assert completed.current_step is OnboardingStep.COMPLETED
         assert completed.demo_mode is False
+    finally:
+        market.close()
+
+
+@pytest.mark.parametrize(
+    ("listed_on", "expected_start"),
+    [
+        (None, date(2025, 7, 12)),
+        (date(2026, 3, 2), date(2026, 3, 2)),
+    ],
+)
+def test_initial_daily_query_is_one_year_and_never_precedes_listing(
+    tmp_path: Path,
+    listed_on: date | None,
+    expected_start: date,
+) -> None:
+    service, market = _service(tmp_path)
+    instrument = Instrument(
+        symbol="600000.SH",
+        exchange=Exchange.SH,
+        name="浦发银行",
+        instrument_kind=InstrumentKind.STOCK,
+        listing_status=ListingStatus.LISTED,
+        listed_on=listed_on,
+    )
+    try:
+        query = service._daily_query(instrument)
+
+        assert (
+            query.start.astimezone(timezone(timedelta(hours=8))).date()
+            == expected_start
+        )
+        assert query.end.astimezone(timezone(timedelta(hours=8))).date() == date(
+            2026, 7, 13
+        )
     finally:
         market.close()
 
@@ -595,6 +705,121 @@ def test_akshare_stock_bar_failure_retries_the_complete_flow_with_baostock(
         market.close()
 
 
+def test_akshare_default_index_failure_retries_with_baostock(
+    tmp_path: Path,
+) -> None:
+    _unused_service, market = _service(tmp_path)
+    factory = _AkShareStockFallbackFactory()
+    service = OnboardingService(
+        store=OnboardingStateStore(
+            tmp_path / "index-fallback-state-v1.json", clock=lambda: NOW
+        ),
+        market=market,
+        provider_factory=factory,
+        clock=lambda: NOW,
+    )
+    try:
+        prepared = service.prepare(ProviderId.AKSHARE)
+        service.select(prepared.instrument.symbol)
+
+        synchronized = service.synchronize(
+            source_id=ProviderId.AKSHARE,
+            symbol="000001.SS",
+        )
+
+        assert factory.bar_attempts == [
+            (ProviderId.AKSHARE, "000001.SS"),
+            (ProviderId.BAOSTOCK, "000001.SS"),
+        ]
+        assert synchronized.source is not None
+        assert synchronized.source.id is ProviderId.BAOSTOCK
+        assert synchronized.sync is not None
+        assert synchronized.sync.status is SynchronizationStatus.VERIFIED
+        assert synchronized.sync.provider_id is ProviderId.BAOSTOCK
+        assert synchronized.error is None
+    finally:
+        market.close()
+
+
+def test_baostock_fallback_catalog_miss_preserves_the_selected_stock(
+    tmp_path: Path,
+) -> None:
+    _unused_service, market = _service(tmp_path)
+    factory = _BaoStockCatalogMissingSelectedFactory()
+    service = OnboardingService(
+        store=OnboardingStateStore(
+            tmp_path / "fallback-catalog-miss-state-v1.json", clock=lambda: NOW
+        ),
+        market=market,
+        provider_factory=factory,
+        clock=lambda: NOW,
+    )
+    try:
+        prepared = service.prepare(ProviderId.AKSHARE)
+        service.select("600000.SH")
+
+        failed = service.synchronize(
+            source_id=ProviderId.AKSHARE,
+            symbol="600000.SH",
+        )
+
+        assert failed.source is not None
+        assert failed.source.id is ProviderId.AKSHARE
+        assert failed.instrument.symbol == "600000.SH"
+        assert failed.sync is not None
+        assert failed.sync.status is SynchronizationStatus.FAILED
+        assert failed.error is not None
+        assert failed.error.code == "provider_unavailable"
+
+        retried = service.retry()
+        assert retried.source is not None
+        assert retried.source.id is ProviderId.AKSHARE
+        assert retried.instrument.symbol == "600000.SH"
+        assert factory.bar_attempts == [
+            (ProviderId.AKSHARE, "600000.SH"),
+            (ProviderId.AKSHARE, "600000.SH"),
+        ]
+        assert prepared.instrument.symbol == "000001.SS"
+    finally:
+        market.close()
+
+
+def test_future_listing_becomes_recoverable_no_data_instead_of_api_error(
+    tmp_path: Path,
+) -> None:
+    _unused_service, market = _service(tmp_path)
+    service = OnboardingService(
+        store=OnboardingStateStore(
+            tmp_path / "future-listing-state-v1.json", clock=lambda: NOW
+        ),
+        market=market,
+        provider_factory=_FutureListingFactory(),
+        clock=lambda: NOW,
+    )
+    try:
+        service.prepare(ProviderId.AKSHARE)
+        service.select("600000.SH")
+
+        failed = service.synchronize(
+            source_id=ProviderId.AKSHARE,
+            symbol="600000.SH",
+        )
+
+        assert failed.instrument.symbol == "600000.SH"
+        assert failed.sync is not None
+        assert failed.sync.status is SynchronizationStatus.FAILED
+        assert failed.error is not None
+        assert failed.error.code == "provider_no_data"
+        assert failed.error.actions == (
+            "retry",
+            "switch_provider",
+            "advanced",
+            "demo",
+        )
+    finally:
+        market.close()
+
+
 def test_demo_mode_never_marks_onboarding_completed(tmp_path: Path) -> None:
     service, market = _service(tmp_path)
     try:
@@ -707,7 +932,9 @@ def test_provider_timeouts_remain_primary_when_sdk_cleanup_also_fails(
         assert bars_failed.error.code == "provider_timeout"
         assert bars_failed.sync is not None
         assert bars_failed.sync.status is SynchronizationStatus.FAILED
-        assert len(bars_factory.providers) == 2
+        # Preparation opens both catalog providers; synchronization then opens
+        # AKShare and its BaoStock fallback for the default index.
+        assert len(bars_factory.providers) == 4
         assert all(item.close_count == 1 for item in bars_factory.providers)
     finally:
         market.close()
