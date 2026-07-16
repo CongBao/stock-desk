@@ -164,11 +164,15 @@ if (-not [bool]$diagnostic.matches_expected) {
   if ($LASTEXITCODE -ne 0) { throw 'original NSIS mismatch extraction failed' }
   & 7z x -bd -y "-o$actualTree" $diagnosticInstaller | Out-Null
   if ($LASTEXITCODE -ne 0) { throw 'repacked NSIS mismatch extraction failed' }
+  $diagnosticReportPath = Join-Path $DiagnosticsRoot 'nsis-mismatch-diagnostic.json'
   & $python scripts\nsis_mismatch_diagnostics.py `
     --expected $original --actual $diagnosticInstaller `
     --expected-tree $expectedTree --actual-tree $actualTree `
-    --output (Join-Path $DiagnosticsRoot 'nsis-mismatch-diagnostic.json')
+    --output $diagnosticReportPath
   if ($LASTEXITCODE -ne 0) { throw 'bounded NSIS mismatch diagnostic failed' }
+  Write-Host 'BEGIN_NSIS_MISMATCH_DIAGNOSTIC'
+  Get-Content -LiteralPath $diagnosticReportPath -Raw | Write-Host
+  Write-Host 'END_NSIS_MISMATCH_DIAGNOSTIC'
   throw 'fixed NSIS repack does not reproduce the original unsigned candidate'
 }
 Remove-Item -LiteralPath $diagnosticRoot -Recurse -Force

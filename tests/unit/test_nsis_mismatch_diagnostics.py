@@ -126,6 +126,16 @@ def test_windows_repack_integration_captures_mismatch_before_failing() -> None:
     assert diagnostic in integration
     assert integration.index(diagnostic_repack) < integration.index(diagnostic)
     assert integration.index(diagnostic) < integration.index(mismatch)
+    assert (
+        "$diagnosticReportPath = Join-Path $DiagnosticsRoot "
+        "'nsis-mismatch-diagnostic.json'"
+    ) in integration
+    assert "Write-Host 'BEGIN_NSIS_MISMATCH_DIAGNOSTIC'" in integration
+    assert (
+        "Get-Content -LiteralPath $diagnosticReportPath -Raw | Write-Host"
+        in integration
+    )
+    assert "Write-Host 'END_NSIS_MISMATCH_DIAGNOSTIC'" in integration
     assert "-DiagnosticsRoot (Join-Path $root 'diagnostics')" in workflow
 
 
