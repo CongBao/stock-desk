@@ -8,6 +8,62 @@ Var StockDeskWebView2Length
 Var StockDeskWebView2Character
 Var StockDeskWebView2Dots
 Var StockDeskWebView2SegmentDigits
+Var StockDeskAttributeScratch
+
+; beta.3 inherited read-only attributes from the private repack snapshot. Clear
+; only that bit from the existing program tree before an upgrade or uninstall.
+; Reparse points are normalized but never traversed, so recursion cannot escape
+; the caller-provided $INSTDIR. System.dll is already part of the locked NSIS
+; toolchain and does not create a console window.
+!macro StockDeskDefineClearLegacyReadOnlyAttributes FunctionName
+Function ${FunctionName}
+  Exch $0
+  Push $1
+  Push $2
+  Push $3
+  Push $4
+  Push $5
+
+  System::Call 'kernel32::GetFileAttributesW(w r0)i.r4'
+  ${If} $4 <> -1
+    IntOp $5 $4 & 0x400
+    IntOp $4 $4 & 0xFFFFFFFE
+    System::Call 'kernel32::SetFileAttributesW(w r0, i r4)i'
+
+    ${If} $5 = 0
+      ClearErrors
+      FindFirst $1 $2 "$0\*"
+      ${IfNot} ${Errors}
+        stock_desk_clear_legacy_readonly_loop:
+          StrCmp $2 "" stock_desk_clear_legacy_readonly_done
+          StrCmp $2 "." stock_desk_clear_legacy_readonly_next
+          StrCmp $2 ".." stock_desk_clear_legacy_readonly_next
+          StrCpy $3 "$0\$2"
+          Push $3
+          Call ${FunctionName}
+          Pop $3
+
+        stock_desk_clear_legacy_readonly_next:
+          FindNext $1 $2
+          Goto stock_desk_clear_legacy_readonly_loop
+
+        stock_desk_clear_legacy_readonly_done:
+          FindClose $1
+      ${EndIf}
+    ${EndIf}
+  ${EndIf}
+
+  Pop $5
+  Pop $4
+  Pop $3
+  Pop $2
+  Pop $1
+  Exch $0
+FunctionEnd
+!macroend
+
+!insertmacro StockDeskDefineClearLegacyReadOnlyAttributes StockDeskClearLegacyReadOnlyAttributes
+!insertmacro StockDeskDefineClearLegacyReadOnlyAttributes un.StockDeskClearLegacyReadOnlyAttributes
 
 ; Keep this check in the supported pre-install hook. Tauri's vendored minimum-
 ; version branch invokes EdgeUpdate with needsadmin=true and offers Ignore, so
@@ -17,7 +73,20 @@ Var StockDeskWebView2SegmentDigits
 !define STOCK_DESK_MINIMUM_WEBVIEW2_VERSION "120.0.2210.91"
 !define STOCK_DESK_WEBVIEW2_VERIFY_EXIT_CODE 71
 
+; The vendored reinstall page can invoke the previous uninstaller before the
+; normal preinstall hook. Repair beta.3 payload attributes first so that old
+; uninstaller can delete its own files.
+!macro NSIS_HOOK_PREVIOUS_INSTALL_UNINSTALL InstallRoot
+  Push "${InstallRoot}"
+  Call StockDeskClearLegacyReadOnlyAttributes
+  Pop $StockDeskAttributeScratch
+!macroend
+
 !macro NSIS_HOOK_PREINSTALL
+  Push "$INSTDIR"
+  Call StockDeskClearLegacyReadOnlyAttributes
+  Pop $StockDeskAttributeScratch
+
   stock_desk_verify_webview2:
     StrCpy $StockDeskWebView2Version ""
     ${If} ${RunningX64}
@@ -108,6 +177,10 @@ Var StockDeskWebView2SegmentDigits
 !macroend
 
 !macro NSIS_HOOK_PREUNINSTALL
+  Push "$INSTDIR"
+  Call un.StockDeskClearLegacyReadOnlyAttributes
+  Pop $StockDeskAttributeScratch
+
   StrCpy $StockDeskCleanupReady 0
 
   ; Updates must never delete user data. The normal silent uninstaller also keeps

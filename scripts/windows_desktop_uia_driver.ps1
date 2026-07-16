@@ -714,11 +714,11 @@ if ($windowDpi -ne $expectedDpi -or $systemDpi -ne $expectedDpi -or $monitorX -n
 # remain within the same four primary invocations.
 $startButton = Find-Element -Names @('开始设置') -ControlType ([System.Windows.Automation.ControlType]::Button) -TimeoutSeconds 45
 Invoke-ElementByKeyboard -Element $startButton
-$sourceButton = Find-Element -Names @('使用此来源并继续') -ControlType ([System.Windows.Automation.ControlType]::Button) -TimeoutSeconds 60
+$sourceButton = Find-Element -Names @('继续') -ControlType ([System.Windows.Automation.ControlType]::Button) -TimeoutSeconds 60
 Invoke-ElementByKeyboard -Element $sourceButton
-$syncButton = Find-Element -Names @('同步并继续') -ControlType ([System.Windows.Automation.ControlType]::Button) -TimeoutSeconds 30
+$syncButton = Find-Element -Names @('准备并继续') -ControlType ([System.Windows.Automation.ControlType]::Button) -TimeoutSeconds 30
 Invoke-ElementByKeyboard -Element $syncButton
-$enterButton = Find-Element -Names @('进入行情工作区') -ControlType ([System.Windows.Automation.ControlType]::Button) -TimeoutSeconds 120
+$enterButton = Find-Element -Names @('打开行情') -ControlType ([System.Windows.Automation.ControlType]::Button) -TimeoutSeconds 120
 $synchronizationText = @((Get-RootElement).FindAll(
     [System.Windows.Automation.TreeScope]::Descendants,
     [System.Windows.Automation.Condition]::TrueCondition

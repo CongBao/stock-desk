@@ -98,6 +98,7 @@ def _run_windows_acl(path: Path, *, directory: bool) -> None:
         _windows_acl_command(path, directory=directory),
         check=False,
         capture_output=True,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         env=environment,
         text=True,
         timeout=30,

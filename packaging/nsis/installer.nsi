@@ -357,6 +357,9 @@ Function PageLeaveReinstall
       ExecWait '$R1' $0
     ${Else}
       ReadRegStr $4 SHCTX "${MANUPRODUCTKEY}" ""
+      !ifmacrodef NSIS_HOOK_PREVIOUS_INSTALL_UNINSTALL
+        !insertmacro NSIS_HOOK_PREVIOUS_INSTALL_UNINSTALL "$4"
+      !endif
       ReadRegStr $R1 SHCTX "${UNINSTKEY}" "UninstallString"
       ${IfThen} $UpdateMode = 1 ${|} StrCpy $R1 "$R1 /UPDATE" ${|} ; append /UPDATE
       ${IfThen} $PassiveMode = 1 ${|} StrCpy $R1 "$R1 /P" ${|} ; append /P

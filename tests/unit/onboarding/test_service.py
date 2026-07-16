@@ -217,6 +217,40 @@ class _FallbackFactory:
         return _Provider(source)
 
 
+class _AkShareStockFailureProvider(_Provider):
+    def fetch_bars(self, query: BarQuery) -> BarFetchOutcome:
+        if (
+            self.name is ProviderId.AKSHARE
+            and query.instrument_kind is InstrumentKind.STOCK
+        ):
+            raise ProviderUnavailable()
+        return super().fetch_bars(query)
+
+
+class _AkShareStockFallbackFactory:
+    def __init__(self) -> None:
+        self.bar_attempts: list[tuple[ProviderId, str]] = []
+
+    def create(
+        self,
+        source: ProviderId,
+        *,
+        token: str | None,
+        tdx_path: Path | None,
+    ) -> MarketDataProvider:
+        assert token is None
+        assert tdx_path is None
+        provider = _AkShareStockFailureProvider(source)
+        original_fetch_bars = provider.fetch_bars
+
+        def fetch_bars(query: BarQuery) -> BarFetchOutcome:
+            self.bar_attempts.append((source, query.symbol))
+            return original_fetch_bars(query)
+
+        provider.fetch_bars = fetch_bars  # type: ignore[method-assign]
+        return provider
+
+
 class _TimeoutProvider(_Provider):
     def __init__(
         self,
@@ -334,7 +368,7 @@ def test_real_catalog_and_single_provider_daily_pin_are_required_for_completion(
 ) -> None:
     service, market = _service(tmp_path)
     try:
-        prepared = service.begin_preparation()
+        prepared = service.prepare(ProviderId.AKSHARE)
         assert prepared.current_step is OnboardingStep.INSTRUMENT_SELECTION
         assert prepared.source is not None
         assert prepared.source.id is ProviderId.AKSHARE
@@ -371,7 +405,7 @@ def test_completed_onboarding_is_idempotent_and_cannot_change_selection(
 ) -> None:
     service, market = _service(tmp_path)
     try:
-        prepared = service.begin_preparation()
+        prepared = service.prepare(ProviderId.AKSHARE)
         service.select(prepared.instrument.symbol)
         service.synchronize(
             source_id=ProviderId.AKSHARE,
@@ -486,13 +520,77 @@ def test_preparation_falls_back_only_after_the_whole_provider_attempt_fails(
         clock=lambda: NOW,
     )
     try:
-        prepared = service.begin_preparation()
+        prepared = service.prepare(ProviderId.AKSHARE)
 
         assert factory.attempted == [ProviderId.AKSHARE, ProviderId.BAOSTOCK]
         assert prepared.current_step is OnboardingStep.INSTRUMENT_SELECTION
         assert prepared.source is not None
         assert prepared.source.id is ProviderId.BAOSTOCK
         assert prepared.instrument.symbol == "000001.SS"
+    finally:
+        market.close()
+
+
+def test_sources_are_unknown_until_a_real_provider_attempt_succeeds(
+    tmp_path: Path,
+) -> None:
+    service, market = _service(tmp_path)
+    try:
+        assert [item["status"] for item in service.sources()] == [
+            "unknown",
+            "unknown",
+        ]
+
+        prepared = service.prepare(ProviderId.AKSHARE)
+
+        assert prepared.source is not None
+        assert [item["status"] for item in service.sources()] == [
+            "ready",
+            "unknown",
+        ]
+    finally:
+        market.close()
+
+
+def test_akshare_stock_bar_failure_retries_the_complete_flow_with_baostock(
+    tmp_path: Path,
+) -> None:
+    _unused_service, market = _service(tmp_path)
+    factory = _AkShareStockFallbackFactory()
+    service = OnboardingService(
+        store=OnboardingStateStore(
+            tmp_path / "stock-fallback-state-v1.json", clock=lambda: NOW
+        ),
+        market=market,
+        provider_factory=factory,
+        clock=lambda: NOW,
+    )
+    try:
+        prepared = service.prepare(ProviderId.AKSHARE)
+        assert prepared.source is not None
+        assert prepared.source.id is ProviderId.AKSHARE
+
+        service.select("600000.SH")
+        synchronized = service.synchronize(
+            source_id=ProviderId.AKSHARE,
+            symbol="600000.SH",
+        )
+
+        assert factory.bar_attempts == [
+            (ProviderId.AKSHARE, "600000.SH"),
+            (ProviderId.BAOSTOCK, "600000.SH"),
+        ]
+        assert synchronized.source is not None
+        assert synchronized.source.id is ProviderId.BAOSTOCK
+        assert synchronized.instrument.symbol == "600000.SH"
+        assert synchronized.sync is not None
+        assert synchronized.sync.status is SynchronizationStatus.VERIFIED
+        assert synchronized.sync.provider_id is ProviderId.BAOSTOCK
+        assert synchronized.error is None
+
+        completed = service.complete("600000.SH")
+        assert completed.status is OnboardingStatus.COMPLETED
+        assert completed.instrument.symbol == "600000.SH"
     finally:
         market.close()
 

@@ -168,6 +168,14 @@ function Get-EvidenceSidecarProcesses([int[]]$BaselineProcessIds = @()) {
     Where-Object { $_.Id -notin $BaselineProcessIds })
 }
 
+function Get-NewVisibleAuxiliaryShellProcesses([int[]]$BaselineProcessIds = @()) {
+  return @(Get-Process -Name @('powershell','pwsh','cmd','conhost') -ErrorAction SilentlyContinue |
+    Where-Object {
+      $_.Id -notin $BaselineProcessIds -and
+      $_.MainWindowHandle -ne [IntPtr]::Zero
+    })
+}
+
 function Get-InstalledHostSidecarProcesses([int]$HostProcessId, [string]$InstalledSidecarPath) {
   $expectedPath = [IO.Path]::GetFullPath($InstalledSidecarPath)
   $hostChildren = @(Get-CimInstance Win32_Process -Filter "ParentProcessId=$HostProcessId" -ErrorAction SilentlyContinue |
@@ -284,6 +292,10 @@ $baselineSidecarProcessIds = @(
   Get-Process -Name 'stock-desk-sidecar' -ErrorAction SilentlyContinue |
     ForEach-Object { $_.Id }
 )
+$baselineAuxiliaryShellProcessIds = @(
+  Get-Process -Name @('powershell','pwsh','cmd','conhost') -ErrorAction SilentlyContinue |
+    ForEach-Object { $_.Id }
+)
 $desktopProcess = $null
 $nodeProcess = $null
 $nodeStdout = $null
@@ -396,7 +408,18 @@ try {
   $desktopStart.Environment['WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS'] = $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS
   $desktopProcess = [Diagnostics.Process]::Start($desktopStart)
   if ($null -eq $desktopProcess) { throw 'packaged Tauri host could not be started' }
-  Wait-Until { $desktopProcess.Refresh(); if ($desktopProcess.HasExited) { throw 'packaged Tauri host exited during startup' }; if ($desktopProcess.MainWindowHandle -ne [IntPtr]::Zero) { $desktopProcess.MainWindowHandle } } 90 'packaged Tauri main window did not appear' | Out-Null
+  Wait-Until {
+    $unexpectedShellWindows = @(
+      Get-NewVisibleAuxiliaryShellProcesses $baselineAuxiliaryShellProcessIds
+    )
+    if ($unexpectedShellWindows.Count -gt 0) {
+      $identities = @($unexpectedShellWindows | ForEach-Object { "$($_.ProcessName):$($_.Id)" })
+      throw "packaged app opened an auxiliary command window during startup: $($identities -join ',')"
+    }
+    $desktopProcess.Refresh()
+    if ($desktopProcess.HasExited) { throw 'packaged Tauri host exited during startup' }
+    if ($desktopProcess.MainWindowHandle -ne [IntPtr]::Zero) { $desktopProcess.MainWindowHandle }
+  } 90 'packaged Tauri main window did not appear' | Out-Null
   $isolatedWebViews = @(
     Wait-Until {
       $processes = @(Get-IsolatedWebViewProcesses $webviewUserData)

@@ -223,6 +223,21 @@ def test_native_harness_installs_candidate_checks_shell_icons_and_exits_cleanly(
     assert "$webviewEdgePolicyCreated" in source
 
 
+def test_native_harness_rejects_visible_auxiliary_shell_windows_during_startup() -> (
+    None
+):
+    source = (ROOT / "scripts" / "capture_windows_desktop_evidence.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    assert "$baselineAuxiliaryShellProcessIds" in source
+    assert "Get-NewVisibleAuxiliaryShellProcesses" in source
+    for process_name in ("powershell", "pwsh", "cmd", "conhost"):
+        assert f"'{process_name}'" in source
+    assert "MainWindowHandle -ne [IntPtr]::Zero" in source
+    assert "packaged app opened an auxiliary command window during startup" in source
+
+
 def test_webview_cdp_uses_runtime_assigned_owned_loopback_listener() -> None:
     source = (ROOT / "scripts" / "capture_windows_desktop_evidence.ps1").read_text(
         encoding="utf-8"

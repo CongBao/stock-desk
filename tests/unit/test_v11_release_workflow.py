@@ -178,7 +178,10 @@ def test_v11_exact_stable_tag_publishes_the_proved_candidate_as_unsigned() -> No
     assert "UNSIGNED-WINDOWS-INSTALLER.txt" in verify
     assert "UNSIGNED-WINDOWS-SHA256SUMS" in publish
     assert 'if test "$GITHUB_REF_NAME" = v1.1.0; then' in publish
-    assert 'release_flags=(--latest --title "Stock Desk $GITHUB_REF_NAME' in publish
+    assert 'release_flags=(--latest --title "Stock Desk $GITHUB_REF_NAME")' in publish
+    stable_branch = publish.split('if test "$GITHUB_REF_NAME" = v1.1.0; then', 1)[1].split("else", 1)[0]
+    assert "UNSIGNED" not in stable_branch
+    assert "未签名" not in stable_branch
     assert "--prerelease" in publish
     assert "--latest=false" in publish
     assert publish.count("mapfile -t installers") == 2

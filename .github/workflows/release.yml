@@ -362,7 +362,7 @@ jobs:
           mapfile -t installers < <(find "$asset_root" -maxdepth 1 -type f -name 'stock-desk-*-unsigned-x64-setup.exe' | sort)
           test "${#installers[@]}" -eq 1
           if test "$GITHUB_REF_NAME" = v1.1.0; then
-            release_flags=(--latest --title "Stock Desk $GITHUB_REF_NAME — UNSIGNED / 未签名")
+            release_flags=(--latest --title "Stock Desk $GITHUB_REF_NAME")
           else
             release_flags=(--prerelease --latest=false --title "Stock Desk $GITHUB_REF_NAME — UNSIGNED PRERELEASE / 未签名预发布")
           fi

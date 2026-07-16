@@ -24,7 +24,7 @@ export type OnboardingSource = {
   readonly description: string;
   readonly recommended: boolean;
   readonly requiresToken: boolean;
-  readonly status: 'ready' | 'unavailable';
+  readonly status: 'unknown' | 'ready' | 'unavailable';
   readonly dataCutoff: string | null;
 };
 
@@ -235,7 +235,7 @@ function decodeSource(value: JsonValue): OnboardingSource {
     description: text(item['description']),
     recommended,
     requiresToken,
-    status: oneOf(item['status'], ['ready', 'unavailable']),
+    status: oneOf(item['status'], ['unknown', 'ready', 'unavailable']),
     dataCutoff: optionalText(item['data_cutoff']),
   };
 }

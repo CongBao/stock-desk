@@ -391,6 +391,30 @@ def test_gate_requires_sorted_roots_services_and_exact_aggregate_long_tasks() ->
             )
 
 
+def test_gate_allows_one_incidental_browser_long_task_for_v11_usability_release() -> None:
+    result = _valid_result()
+    pool = result["metrics"]["pool_ui"]
+    pool["samples"][0]["long_task_count"] = 1
+    pool["long_task_count"] = 1
+
+    validate_performance_result(
+        result, expected_fixture_digest="sha256:" + "a" * 64
+    )
+
+
+def test_gate_rejects_more_than_one_browser_long_task() -> None:
+    result = _valid_result()
+    pool = result["metrics"]["pool_ui"]
+    pool["samples"][0]["long_task_count"] = 1
+    pool["samples"][1]["long_task_count"] = 1
+    pool["long_task_count"] = 2
+
+    with pytest.raises(PerformanceGateError, match="at most one"):
+        validate_performance_result(
+            result, expected_fixture_digest="sha256:" + "a" * 64
+        )
+
+
 def test_gate_rejects_a_fake_or_unexpected_source_commit() -> None:
     result = _valid_result()
     with pytest.raises(PerformanceGateError, match="commit object"):
