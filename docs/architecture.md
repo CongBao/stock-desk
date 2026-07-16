@@ -87,8 +87,9 @@ or identity evidence fail closed without creating relative state.
 WebView code can request a check or native prompt but cannot supply metadata,
 bytes, consent, a path, a digest, a trust result, or an install decision. The
 runtime has no environment-variable activation and performs no background
-check. Its checked-in configuration remains disabled until the production key,
-configured SignPath service, and real Windows 10/11 update evidence pass. The
+check. The unsigned v1.1.0 release does not enable it. Its checked-in configuration
+remains disabled until the production key, an approved signing channel, and real
+Windows 10/11 update evidence pass. The
 checked-in formal release scaffold is unconditionally disabled before signing.
 Its literal gate can be removed only by a reviewed change that adds NSIS
 control-semantics equivalence and real SmartScreen/MOTW evidence.
@@ -123,9 +124,9 @@ Rust's Cargo and Tauri package versions must match and are injected into React a
 build time; an unavailable or mismatched identity is displayed as unavailable,
 never as a hard-coded stable version. The WebView has no direct updater
 capability, and a user must explicitly confirm any future download and install.
-No private signing key is stored in this repository. The formal SignPath and
+No private signing key is stored in this repository. The historical SignPath and
 release-control scaffold is present but its signing job is literally disabled;
-the production private key, approved SignPath integration, external VM broker,
+the production private key, an approved production signing channel, external VM broker,
 NSIS control proof, SmartScreen evidence, and real Windows update receipts are
 also absent, so the runtime remains disabled and verification fails closed.
 

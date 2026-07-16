@@ -234,7 +234,7 @@ it('shows the product identity and all primary navigation items', () => {
   renderApp();
 
   expect(screen.getByText('stock-desk')).toBeInTheDocument();
-  expect(screen.getByText('v1.1.0-beta.3 · Task Center')).toBeInTheDocument();
+  expect(screen.getByText('v1.1.0 · Task Center')).toBeInTheDocument();
   for (const label of [
     '行情',
     '自定义公式',
@@ -484,7 +484,7 @@ it('routes tasks to the real v1 task workspace without planned copy', async () =
     'data-workspace',
     'tasks',
   );
-  expect(screen.getByText('v1.1.0-beta.3 · Task Center')).toBeInTheDocument();
+  expect(screen.getByText('v1.1.0 · Task Center')).toBeInTheDocument();
   expect(screen.getByText('STOCK DESK · Task Center')).toBeInTheDocument();
 });
 

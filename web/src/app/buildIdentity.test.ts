@@ -1,8 +1,8 @@
 import { DESKTOP_BUILD_VERSION, displayDesktopVersion } from './buildIdentity';
 
 it('uses the exact Cargo/Tauri-injected prerelease identity', () => {
-  expect(DESKTOP_BUILD_VERSION).toBe('1.1.0-beta.3');
-  expect(displayDesktopVersion(DESKTOP_BUILD_VERSION)).toBe('v1.1.0-beta.3');
+  expect(DESKTOP_BUILD_VERSION).toBe('1.1.0');
+  expect(displayDesktopVersion(DESKTOP_BUILD_VERSION)).toBe('v1.1.0');
 });
 
 it('does not disguise a missing or invalid identity as a stable version', () => {

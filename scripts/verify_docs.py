@@ -2506,9 +2506,7 @@ FORBIDDEN_TRACKED_PREFIXES = (
     "work/",
 )
 
-SOURCE_FREE_WINDOWS_INSTALLER_PATTERNS = (
-    "stock-desk-1.1.0-beta.3-unsigned-x64-setup.exe",
-)
+SOURCE_FREE_WINDOWS_INSTALLER_PATTERNS = ("stock-desk-1.1.0-unsigned-x64-setup.exe",)
 
 REQUIRED_PUBLIC_SNIPPETS = {
     "README.md": ("https://github.com/CongBao/stock-desk/releases/latest",),
