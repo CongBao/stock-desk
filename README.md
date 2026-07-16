@@ -2,7 +2,7 @@
 
 # Stock Desk
 
-> 当前稳定版为 `v1.0.0`。当前开发候选 `v1.1.0-beta.3` 是 Windows x64 未签名预发布版；测试资产不替代稳定版，范围与限制见 [beta.3 说明](docs/releases/v1.1.0-beta.3.md)。
+> 当前稳定版为 `v1.0.0`。当前开发候选 `v1.1.0-beta.3` 是 Windows x64 未签名桌面体验预发布版；测试资产不替代稳定版，范围与限制见 [beta.3 说明](docs/releases/v1.1.0-beta.3.md)。
 
 ## 产品定位
 
@@ -53,7 +53,7 @@ MACD/参数化自定义公式、单股/股票池、日线/周线/60 分钟的 12
 
 `v1.1.0` 不发布 macOS、Linux、Android 或 ARM64 安装包，也不会迁移或删除 v1 的本地数据。正式版签名状态以发布页和[代码签名政策](docs/code-signing-policy.md)为准。
 
-当前候选卸载器可由用户明确选择是否删除 **仅 v1.1** 的本地数据；取消删除或删除失败都会继续保留数据，旧版 v1 数据不在该操作范围内。
+beta.3 卸载器可由用户明确选择是否删除 **仅 v1.1** 的本地数据；取消删除或删除失败都会继续保留数据，旧版 v1 数据不在该操作范围内。
 
 当前源码还提供真实 Windows 10/11 普通用户安装的[原始证据 schema、独立验证器与隔离控制器参考合约](docs/windows-installed-evidence.md)。仓库仍禁止持久化 self-hosted runner；workflow 已接入 fail-closed 的外部短生命周期 VM broker/JIT adapter 接口和十一项矩阵聚合，但外部 broker/HSM、受保护环境、生产凭据及真实 VM 运行证据尚未配置，因此不能生成通过回执。这不代表安装或完整旅程验收已通过，也不改变 beta.3 的测试版状态。
 

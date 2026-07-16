@@ -65,10 +65,12 @@ def test_native_harness_installs_candidate_checks_shell_icons_and_exits_cleanly(
         "32 -32512",
         "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
         "WEBVIEW2_USER_DATA_FOLDER",
-        "--remote-debugging-port=0",
+        "Get-AvailableLoopbackPort",
+        "Get-NetTCPConnection",
+        "OwningProcess",
+        "--remote-debugging-port=$devToolsPort",
         "--remote-debugging-address=127.0.0.1",
-        "DevToolsActivePort",
-        "packaged WebView2 published an invalid isolated DevTools port",
+        "packaged WebView2 CDP endpoint did not appear",
         "CDP endpoint does not match the isolated browser identity",
         "shortcuts_share_host_identity = $true",
         "packaged_entries_match_reviewed_identity = $true",
@@ -86,13 +88,27 @@ def test_native_harness_installs_candidate_checks_shell_icons_and_exits_cleanly(
     )
     assert first_run_cleanup < fixture_prepare < launch
     isolation = source.index("$env:WEBVIEW2_USER_DATA_FOLDER = $webviewUserData")
-    port_discovery = source.index("$devToolsPortFile = Wait-Until")
+    cdp_wait = source.index("$devToolsVersion = Wait-Until")
+    listener_ownership = source.index("$devToolsListeners = @(")
     cdp_export = source.index("$env:STOCK_DESK_DESKTOP_CDP = $desktopCdp")
-    assert isolation < launch < port_discovery < cdp_export
+    assert isolation < launch < cdp_wait < listener_ownership < cdp_export
     assert source.count("Remove-Item -Recurse -Force $webviewUserData") == 2
     assert "Remove-Item Env:WEBVIEW2_USER_DATA_FOLDER" in source
     assert "--remote-allow-origins=*" not in source
     assert "http://127.0.0.1:9222" not in source
+    assert "DevToolsActivePort" not in source
+    assert "[Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)" in source
+    assert "$listener.Stop()" in source
+    port_reservation = source.index("$devToolsPort = Get-AvailableLoopbackPort")
+    browser_arguments = source.index(
+        '$env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=$devToolsPort'
+    )
+    assert "[int]$devToolsPort = 0" in source
+    assert fixture_prepare < port_reservation < browser_arguments < launch
+    assert "selected loopback DevTools port is invalid" in source
+    assert "Test-RemoteDebuggingPortCommandLine" not in source
+    assert "LocalAddress -eq '127.0.0.1'" in source
+    assert "isolated WebView2 process does not own the selected CDP listener" in source
     process_cleanup = source.index("Stop-Process -Id $desktopProcess.Id")
     udf_cleanup = source.rindex("Remove-Item -Recurse -Force $webviewUserData")
     assert process_cleanup < udf_cleanup
@@ -112,9 +128,8 @@ def test_native_harness_installs_candidate_checks_shell_icons_and_exits_cleanly(
     assert node_stop < runtime_log_copy
     assert "$nodeProcess.WaitForExit(5000)" in source
     assert "diagnostic runtime log copy failed after bounded retries" not in source
-    assert "webview_remote_debug_argument_observed" in source
+    assert "devtools_listener_owned_by_isolated_webview" in source
     assert "webview_process_scope = 'isolated-user-data-folder'" in source
-    assert "CommandLine -like '*--remote-debugging-port=*'" in source
     assert "CommandLine =" not in source
     assert "Get-IsolatedWebViewProcesses $webviewUserData" in source
     assert "Join-Path $UserDataFolder 'EBWebView'" in source

@@ -2,7 +2,7 @@
 
 # Stock Desk
 
-> The current stable release is `v1.0.0`. The current `v1.1.0-beta.3` candidate is an unsigned Windows x64 prerelease; test assets do not replace the stable release. See the [beta.3 notes](docs/releases/v1.1.0-beta.3.md).
+> The current stable release is `v1.0.0`. The current `v1.1.0-beta.3` candidate is an unsigned Windows x64 desktop-experience prerelease; test assets do not replace the stable release. See the [beta.3 notes](docs/releases/v1.1.0-beta.3.md).
 
 ## Product positioning
 
@@ -56,7 +56,7 @@ The production updater remains disabled.
 
 `v1.1.0` does not ship macOS, Linux, Android, or ARM64 installers, and it does not migrate or delete v1 local data. Refer to the release page and [code-signing policy](docs/code-signing-policy.md) for the authoritative signing status.
 
-The current candidate lets the user explicitly choose whether to remove **v1.1-only** local data during uninstall. Cancelling that deletion or a deletion failure keeps the data, and legacy v1 data is outside this operation.
+The beta.3 uninstaller lets the user explicitly choose whether to remove **v1.1-only** local data. Cancelling that deletion or a deletion failure keeps the data, and legacy v1 data is outside this operation.
 
 The current source also provides [raw-evidence schemas, an independent verifier, and an isolated-controller reference contract](docs/windows-installed-evidence.md) for real Windows 10/11 standard-user installation. Persistent repository self-hosted runners remain forbidden. The workflow now integrates a fail-closed external short-lived VM broker/JIT-adapter interface and eleven-case matrix aggregation, but no external broker/HSM, protected environment, production credentials, or real-VM run evidence is configured yet, so it cannot issue a passing receipt. This is not proof of installation or full-journey acceptance and does not change beta.3's test-only status.
 
