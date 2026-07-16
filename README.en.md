@@ -40,7 +40,9 @@ To install `v1.1.0`:
 
 Ordinary users do not need GitHub CLI, a source checkout, Docker, or development tools. SignPath Foundation rejected the free-signing application because the project did not yet have enough exposure, so v1.1.0 is released unsigned by user decision; it is not self-signed. The production updater remains disabled. The planned v1.2 will move to Microsoft Store / MSIX. See the [download guide](docs/download.md) and [code-signing policy](docs/code-signing-policy.md).
 
-`v1.1.0` does not ship macOS, Linux, Android, or ARM64 installers and does not automatically migrate or delete legacy v1 data. Its uninstaller only lets the user explicitly remove **v1.1-only** local data; cancellation or failure preserves that data.
+`v1.1.0` uses zero telemetry and does not automatically upload crash reports, diagnostics, or usage data. A read-only demo remains visibly labelled and cannot complete onboarding.
+It does not ship macOS, Linux, Android, or ARM64 installers and does not read, import, migrate, modify, or delete legacy v1 data. Its uninstaller only lets the user explicitly remove **v1.1-only** local data; cancellation or failure preserves that data.
+The release reuses the exact-SHA Windows candidate proved on protected `main`, without rebuilding or rerunning source tests.
 
 ## Documentation
 

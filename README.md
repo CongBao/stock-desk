@@ -41,7 +41,9 @@ MACD/参数化自定义公式、单股/股票池、日线/周线/60 分钟的 12
 
 普通用户无需 GitHub CLI、源码检出、Docker 或开发工具。SignPath Foundation 因项目曝光率不足拒绝了免费签名申请，因此 v1.1.0 按用户决定以 unsigned release 发布，而不是自签名版本。production updater 继续关闭；计划中的 v1.2 将转向 Microsoft Store / MSIX。详见[下载说明](docs/download.md)和[代码签名政策](docs/code-signing-policy.md)。
 
-`v1.1.0` 不发布 macOS、Linux、Android 或 ARM64 安装包，也不会自动迁移或删除旧版 v1 数据。卸载器只允许用户明确选择是否删除 **仅 v1.1** 的本地数据；取消或删除失败都会保留数据。
+`v1.1.0` 零遥测，不自动上传崩溃报告、诊断包或使用数据。只读演示会持续显示演示标识，且不能完成首次向导。
+它不发布 macOS、Linux、Android 或 ARM64 安装包，也不读取、导入、迁移、修改或删除旧版 v1 数据。卸载器只允许用户明确选择是否删除 **仅 v1.1** 的本地数据；取消或删除失败都会保留数据。
+正式发布复用受保护 `main` 已证明的 exact-SHA Windows 候选，不在发布阶段重建或重复运行源码测试。
 
 ## 使用文档
 

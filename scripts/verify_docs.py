@@ -96,7 +96,6 @@ REQUIRED_WIKI_PAGE_STEMS = (
     "Home",
     "Feature-Index",
     "Windows-Installation",
-    "macOS-Installation",
     "First-Launch-and-Health",
     "Project-Governance-and-Release-Evidence",
     "Data-Sources-and-Tushare",
@@ -292,15 +291,8 @@ REQUIRED_WIKI_EXTERNAL_UI_LABELS = {
         ("github", "Releases", "发行版"),
         ("windows", "Start menu", "“开始”菜单"),
     ),
-    "macOS-Installation": (
-        ("github", "Releases", "发行版"),
-        ("macos", "About This Mac", "关于本机"),
-        ("macos", "Applications", "“应用程序”"),
-        ("macos", "Gatekeeper", "安全性检查"),
-    ),
     "Backup-Restore-Upgrade-and-Uninstall": (
         ("windows", "Installed apps", "已安装的应用"),
-        ("macos", "Applications", "“应用程序”"),
     ),
 }
 
@@ -316,13 +308,6 @@ WIKI_EXTERNAL_UI_LABEL_ALLOWLIST = {
         {
             ("Start menu", "“开始”菜单"),
             ("Installed apps", "已安装的应用"),
-        }
-    ),
-    "macos": frozenset(
-        {
-            ("About This Mac", "关于本机"),
-            ("Applications", "“应用程序”"),
-            ("Gatekeeper", "安全性检查"),
         }
     ),
 }
@@ -2286,7 +2271,7 @@ REQUIRED_WIKI_ANALYSIS_PLATFORM_GUIDE_SOURCE_CLAIMS = {
     ),
     "Backup-Restore-Upgrade-and-Uninstall.md": (
         (
-            "无源码 Windows 和 macOS 安装包都不内置备份/恢复命令行工具",
+            "v1.1 无源码 Windows 安装包不内置备份/恢复命令行工具；历史 v1.0 macOS 安装包同样不内置",
             "docs/backup-and-restore.md",
             "The source-free Windows and macOS installers do not bundle this operator CLI.",
         ),
@@ -2308,7 +2293,7 @@ REQUIRED_WIKI_ANALYSIS_PLATFORM_GUIDE_SOURCE_CLAIMS = {
     ),
     "Backup-Restore-Upgrade-and-Uninstall-en.md": (
         (
-            "Source-free Windows and macOS installers do not bundle the backup/restore operator CLI",
+            "The v1.1 source-free Windows installer does not bundle the backup/restore operator CLI; historical v1.0 macOS installers did not bundle it either",
             "docs/backup-and-restore.md",
             "The source-free Windows and macOS installers do not bundle this operator CLI.",
         ),
@@ -2477,6 +2462,8 @@ REQUIRED_WIKI_ENTRY_FILES = (
 REPLACED_WIKI_PAGE_FILENAMES = frozenset(
     {
         "Installation.md",
+        "macOS-Installation.md",
+        "macOS-Installation-en.md",
         "Market-Data-and-Charts.md",
         "Formula-Studio.md",
         "Backtesting.md",
@@ -2509,8 +2496,26 @@ FORBIDDEN_TRACKED_PREFIXES = (
 SOURCE_FREE_WINDOWS_INSTALLER_PATTERNS = ("stock-desk-1.1.0-unsigned-x64-setup.exe",)
 
 REQUIRED_PUBLIC_SNIPPETS = {
-    "README.md": ("https://github.com/CongBao/stock-desk/releases/latest",),
-    "README.en.md": ("https://github.com/CongBao/stock-desk/releases/latest",),
+    "README.md": (
+        "https://github.com/CongBao/stock-desk/releases/latest",
+        "`v1.1.0` 零遥测，不自动上传崩溃报告、诊断包或使用数据。",
+        "只读演示",
+        "不读取、导入、迁移、修改或删除旧版 v1 数据",
+        "exact-SHA",
+        "不在发布阶段重建或重复运行源码测试",
+        "production updater 继续关闭",
+        "macOS、Linux、Android 或 ARM64",
+    ),
+    "README.en.md": (
+        "https://github.com/CongBao/stock-desk/releases/latest",
+        "`v1.1.0` uses zero telemetry and does not automatically upload crash reports, diagnostics, or usage data.",
+        "read-only demo",
+        "does not read, import, migrate, modify, or delete legacy v1 data",
+        "exact-SHA",
+        "without rebuilding or rerunning source tests",
+        "production updater remains disabled",
+        "macOS, Linux, Android, or ARM64",
+    ),
     "docs/architecture.md": (
         "v1.1 Windows desktop topology",
         "Source development topology",
@@ -2536,6 +2541,47 @@ REQUIRED_PUBLIC_SNIPPETS = {
         "~/Library/Application Support/stock-desk",
         "external browser",
         "config/master.key",
+    ),
+}
+
+REQUIRED_V11_ENTRY_FACTS = {
+    "README.md": REQUIRED_PUBLIC_SNIPPETS["README.md"][1:],
+    "README.en.md": REQUIRED_PUBLIC_SNIPPETS["README.en.md"][1:],
+    "docs/releases/v1.1.0.md": (
+        "零遥测",
+        "只读演示",
+        "不读取、导入、迁移、修改或删除旧版 v1 数据",
+        "production updater 继续关闭",
+        "exact-SHA",
+        "不在发布阶段重建或重复运行源码测试",
+        "zero telemetry",
+        "read-only demo",
+        "does not read, import, migrate, modify, or delete legacy v1 data",
+        "production updater remains disabled",
+        "without rebuilding or rerunning source tests",
+    ),
+}
+
+_V11_CONTRADICTORY_ZH_PATTERNS = (
+    r"不使用零遥测|(?:启用|开启|发送|上传).{0,12}遥测|遥测.{0,12}(?:已启用|已开启)",
+    r"只读演示.{0,24}(?:可以|能够|会).{0,8}(?:完成|结束|跳过).{0,8}(?:首次)?向导",
+    r"(?:会|将|可以|自动)(?:读取|导入|迁移|修改|删除).{0,16}旧版?\s*v1\s*数据",
+    r"(?:production updater|生产更新器).{0,20}(?:已启用|已开启|会自动下载|将下载)",
+    r"发布阶段.{0,20}(?:会|将|需要).{0,8}(?:重建|重新构建|重跑|重复运行)",
+)
+_V11_CONTRADICTORY_EN_PATTERNS = (
+    r"does not use zero telemetry|telemetry\s+(?:is|remains)\s+enabled|(?:uses?|sends?|uploads?)\s+(?!zero\b)telemetry",
+    r"read-only demo.{0,32}\b(?:can|may|will)\b.{0,16}(?:complete|finish|skip).{0,16}onboarding",
+    r"\b(?:v1\.1|it|stock desk)\s+(?!does not\b)(?:(?:will|does)\s+)?(?:read|reads|import|imports|migrate|migrates|modify|modifies|delete|deletes)\s+legacy\s+v1\s+data",
+    r"(?:production\s+)?updater.{0,24}(?:(?:is|remains)\s+enabled|will.{0,12}(?:download|install))",
+    r"\bthe release\s+(?:will\s+)?(?:rebuild|rebuilds|rerun|reruns|retest|retests)\b",
+)
+FORBIDDEN_V11_ENTRY_CLAIM_PATTERNS = {
+    "README.md": _V11_CONTRADICTORY_ZH_PATTERNS,
+    "README.en.md": _V11_CONTRADICTORY_EN_PATTERNS,
+    "docs/releases/v1.1.0.md": (
+        *_V11_CONTRADICTORY_ZH_PATTERNS,
+        *_V11_CONTRADICTORY_EN_PATTERNS,
     ),
 }
 
@@ -4183,6 +4229,21 @@ def verify_repository(repo_root: Path) -> list[str]:
             if snippet not in document:
                 failures.append(
                     f"{relative_path}: missing required guidance: {snippet}"
+                )
+
+    for relative_path, facts in REQUIRED_V11_ENTRY_FACTS.items():
+        path = root / relative_path
+        if not path.is_file():
+            failures.append(f"Missing v1.1 entry document: {relative_path}")
+            continue
+        document = documents.setdefault(relative_path, _read(path))
+        for fact in facts:
+            if fact not in document:
+                failures.append(f"{relative_path}: missing required v1.1 fact: {fact}")
+        for pattern in FORBIDDEN_V11_ENTRY_CLAIM_PATTERNS[relative_path]:
+            if re.search(pattern, document, flags=re.IGNORECASE | re.DOTALL):
+                failures.append(
+                    f"{relative_path}: contradictory v1.1 guidance: {pattern}"
                 )
 
     public_paths = _public_markdown_paths(root)
