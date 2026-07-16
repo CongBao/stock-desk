@@ -60,6 +60,62 @@ async function activeElement(page) {
   });
 }
 
+async function physicalClickTarget(page, name) {
+  const target = page.getByRole("button", { name, exact: true });
+  await target.waitFor({ state: "visible" });
+  if ((await target.count()) !== 1) {
+    throw new Error(`physical click DOM target is not unique: ${name}`);
+  }
+  const evidence = await target.evaluate((element, expectedName) => {
+    if (!(element instanceof HTMLElement)) return null;
+    const box = element.getBoundingClientRect();
+    const style = getComputedStyle(element);
+    const centerX = box.left + box.width / 2;
+    const centerY = box.top + box.height / 2;
+    const hit = document.elementFromPoint(centerX, centerY);
+    const isDisabled =
+      (element instanceof HTMLButtonElement && element.disabled) ||
+      element.getAttribute("aria-disabled") === "true";
+    return {
+      bounding_rectangle_css: {
+        height: box.height,
+        width: box.width,
+        x: box.left,
+        y: box.top,
+      },
+      device_pixel_ratio: window.devicePixelRatio,
+      dom_hit_test: hit === element || (hit !== null && element.contains(hit)),
+      enabled: !isDisabled,
+      name: expectedName,
+      role:
+        element.getAttribute("role") ??
+        (element instanceof HTMLButtonElement ? "button" : ""),
+      tag: element.tagName.toLowerCase(),
+      viewport_css: {
+        height: window.innerHeight,
+        width: window.innerWidth,
+      },
+      visible:
+        style.display !== "none" &&
+        style.visibility !== "hidden" &&
+        box.width >= 2 &&
+        box.height >= 2,
+    };
+  }, name);
+  if (
+    evidence === null ||
+    evidence.role !== "button" ||
+    evidence.enabled !== true ||
+    evidence.visible !== true ||
+    evidence.dom_hit_test !== true
+  ) {
+    throw new Error(
+      `physical click DOM target is not safely hittable: ${JSON.stringify(evidence)}`,
+    );
+  }
+  return evidence;
+}
+
 async function visibleDomState(page) {
   return page.evaluate(() => {
     const root = document.documentElement;
@@ -783,6 +839,21 @@ try {
   await captureHandshake("os-real-click-exit", {
     candidate_sha256: process.env.STOCK_DESK_CANDIDATE_SHA256,
     phase: "ready-for-native-titlebar-and-dialog-clicks",
+  });
+  await exitDialog.waitFor({ state: "visible" });
+  await captureHandshake("os-real-click-cancel-target", {
+    phase: "first-exit-dialog-visible",
+    target: await physicalClickTarget(page, "取消"),
+  });
+  await exitDialog.waitFor({ state: "hidden" });
+  await captureHandshake("os-real-click-cancel-observed", {
+    dialog_visible: false,
+    phase: "cancel-click-observed",
+  });
+  await exitDialog.waitFor({ state: "visible" });
+  await captureHandshake("os-real-click-confirm-target", {
+    phase: "second-exit-dialog-visible",
+    target: await physicalClickTarget(page, "退出应用"),
   });
   console.log(
     "STOCK_DESK_EXIT_OBSERVATION " +

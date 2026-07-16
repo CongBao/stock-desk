@@ -631,13 +631,17 @@ try {
     $realClickMarker.phase -ne 'ready-for-native-titlebar-and-dialog-clicks' -or
     $realClickMarker.candidate_sha256 -ne $candidateSha256
   ) { throw 'real OS click marker identity is invalid' }
+  Write-CaptureAck (Join-Path $restartSyncRoot 'os-real-click-exit.ack') $captureNonce
   $realClickEvidencePath = Join-Path $Output 'windows-real-click-evidence.json'
   & (Join-Path $PSScriptRoot 'windows_desktop_real_click.ps1') `
     -WindowHandle $hostMainWindowHandle `
     -ExpectedProcessId $desktopProcess.Id `
+    -EvidenceProcessId $nodeProcess.Id `
     -ExpectedExecutableSha256 $installedHostSha256 `
     -SourceSha $SourceSha -SourceTree $SourceTree `
     -CandidateSha256 $candidateSha256 `
+    -CaptureSyncRoot $restartSyncRoot `
+    -CaptureNonce $captureNonce `
     -OutputPath $realClickEvidencePath
   if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $realClickEvidencePath -PathType Leaf)) {
     throw 'installed Stock Desk real OS mouse click evidence failed'
@@ -657,7 +661,36 @@ try {
     $realClickEvidence.exit_click_host_exit_code -ne 0 -or
     @($realClickEvidence.actions).Count -ne 4
   ) { throw 'real OS mouse click evidence is incomplete or unbound' }
-  Write-CaptureAck (Join-Path $restartSyncRoot 'os-real-click-exit.ack') $captureNonce
+  $realClickActions = @($realClickEvidence.actions)
+  $expectedRealClickActions = @(
+    'titlebar-close-open-dialog',
+    'cancel-exit-dialog',
+    'titlebar-close-reopen-dialog',
+    'confirm-exit-dialog'
+  )
+  for ($index = 0; $index -lt $expectedRealClickActions.Count; $index++) {
+    $action = $realClickActions[$index]
+    if (
+      $action.action -cne $expectedRealClickActions[$index] -or
+      $action.send_input_returned -ne 3
+    ) { throw 'real OS mouse click action sequence is invalid' }
+  }
+  foreach ($index in @(0, 2)) {
+    $action = $realClickActions[$index]
+    if (
+      $action.target_source -cne 'windows-uia-exact-from-point' -or
+      [string]::IsNullOrWhiteSpace([string]$action.runtime_id) -or
+      $action.runtime_id -cne $action.from_point_runtime_id
+    ) { throw 'native titlebar click proof is incomplete' }
+  }
+  foreach ($index in @(1, 3)) {
+    $action = $realClickActions[$index]
+    if (
+      $action.target_source -cne 'cdp-dom-bounds-host-client-transform' -or
+      $action.dom_hit_test -ne $true -or
+      $action.point_host_root_hwnd -ne $hostMainWindowHandle
+    ) { throw 'WebView DOM physical click proof is incomplete' }
+  }
   Wait-Until { $nodeProcess.Refresh(); if ($nodeProcess.HasExited) { $true } else { $false } } 300 'packaged Tauri WebView evidence did not finish after restart observation' | Out-Null
   if ($nodeProcess.ExitCode -ne 0) {
     throw "packaged Tauri WebView evidence failed: $(Get-Content -LiteralPath $nodeStderr -Raw -ErrorAction SilentlyContinue)"

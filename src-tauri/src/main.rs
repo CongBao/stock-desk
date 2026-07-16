@@ -27,9 +27,6 @@ const WRY_DEFAULT_BROWSER_ARGUMENTS: &str =
     "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection";
 
 #[cfg(any(windows, test))]
-const WEBVIEW2_EVIDENCE_ACCESSIBILITY_ARGUMENT: &str = "--force-renderer-accessibility";
-
-#[cfg(any(windows, test))]
 fn validated_webview2_remote_debugging_arguments(value: &str) -> Option<String> {
     let port = value.strip_prefix("--remote-debugging-port=")?;
     if port.is_empty() || !port.bytes().all(|byte| byte.is_ascii_digit()) {
@@ -39,9 +36,7 @@ fn validated_webview2_remote_debugging_arguments(value: &str) -> Option<String> 
     if port == 0 {
         return None;
     }
-    Some(format!(
-        "{WRY_DEFAULT_BROWSER_ARGUMENTS} {WEBVIEW2_EVIDENCE_ACCESSIBILITY_ARGUMENT} {value}"
-    ))
+    Some(format!("{WRY_DEFAULT_BROWSER_ARGUMENTS} {value}"))
 }
 
 #[cfg(windows)]
@@ -134,7 +129,7 @@ mod tests {
             validated_webview2_remote_debugging_arguments("--remote-debugging-port=9222"),
             Some(
                 "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection \
-                 --force-renderer-accessibility --remote-debugging-port=9222"
+                 --remote-debugging-port=9222"
                     .to_owned()
             )
         );

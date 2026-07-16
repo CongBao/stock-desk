@@ -438,6 +438,10 @@ def test_installed_desktop_exit_uses_real_windows_mouse_input() -> None:
         "SM_CXVIRTUALSCREEN",
         "SM_CYVIRTUALSCREEN",
         "AutomationElement]::FromPoint",
+        "GetClientRect",
+        "ClientToScreen",
+        "WindowFromPoint",
+        "GetAncestor",
         "GetForegroundWindow",
         "SetForegroundWindow",
         "RequireTitleBarAncestor",
@@ -452,7 +456,21 @@ def test_installed_desktop_exit_uses_real_windows_mouse_input() -> None:
     assert ".Invoke()" not in driver
     assert "mouse_event" not in driver
     assert "SetCursorPos" not in driver
+    assert "Find-Button -Names @('取消')" not in driver
+    assert "Find-Button -Names @('退出应用')" not in driver
     assert driver.count("-RequireTitleBarAncestor") >= 2
+    for marker in (
+        "os-real-click-cancel-target",
+        "os-real-click-cancel-observed",
+        "os-real-click-confirm-target",
+    ):
+        assert marker in driver
+        assert f'captureHandshake("{marker}"' in webview
+    assert "bounding_rectangle_css" in webview
+    assert "viewport_css" in webview
+    assert "dom_hit_test" in webview
+    assert "target_source = 'cdp-dom-bounds-host-client-transform'" in driver
+    assert "point_host_root_hwnd" in driver
     assert "Windows Server 2025" in driver
     assert "runneradmin" in driver
     assert "not_equivalent_to_standard_user_windows_10_or_11" in driver
@@ -460,8 +478,13 @@ def test_installed_desktop_exit_uses_real_windows_mouse_input() -> None:
     marker = "os-real-click-exit"
     assert f'captureHandshake("{marker}"' in webview
     assert f"'{marker}.json'" in powershell
-    assert "windows_desktop_real_click.ps1" in powershell
     assert f"'{marker}.ack'" in powershell
+    assert "windows_desktop_real_click.ps1" in powershell
+    assert "-CaptureSyncRoot $restartSyncRoot" in powershell
+    assert "-CaptureNonce $captureNonce" in powershell
+    assert "real OS mouse click action sequence is invalid" in powershell
+    assert "native titlebar click proof is incomplete" in powershell
+    assert "WebView DOM physical click proof is incomplete" in powershell
     assert "windows-real-click-evidence.json" in powershell
     assert "real_os_mouse_click" in powershell
     assert "windows-real-click-evidence.json:provenance" in workflow
@@ -469,6 +492,9 @@ def test_installed_desktop_exit_uses_real_windows_mouse_input() -> None:
     assert (
         'page.getByRole("button", { name: "退出应用", exact: true }).click()'
         not in webview
+    )
+    assert (
+        'page.getByRole("button", { name: "取消", exact: true }).click()' not in webview
     )
 
 
@@ -478,7 +504,7 @@ def test_real_mouse_driver_does_not_require_foreground_lock_ownership() -> None:
     )
     focus_helper = driver[
         driver.index("function Focus-Window") : driver.index(
-            "function Invoke-PhysicalClick"
+            "function Invoke-PhysicalPointClick"
         )
     ]
 
@@ -755,11 +781,19 @@ def test_exit_deadlines_are_ordered_and_native_pid_is_authoritative() -> None:
     )
     assert 'name: "退出应用", exact: true }).click()' not in webview
     marker_wait = powershell.index("'os-real-click-exit.json'")
+    initial_ack = powershell.index(
+        "Write-CaptureAck (Join-Path $restartSyncRoot 'os-real-click-exit.ack')",
+        marker_wait,
+    )
     driver_launch = powershell.index("windows_desktop_real_click.ps1", marker_wait)
     host_exit_wait = powershell.index(
         "packaged app did not complete the tested graceful exit", driver_launch
     )
-    assert marker_wait < driver_launch < host_exit_wait
+    assert marker_wait < initial_ack < driver_launch < host_exit_wait
+    cancel_target = webview.index('captureHandshake("os-real-click-cancel-target"')
+    cancel_observed = webview.index('captureHandshake("os-real-click-cancel-observed"')
+    confirm_target = webview.index('captureHandshake("os-real-click-confirm-target"')
+    assert native_click_handshake < cancel_target < cancel_observed < confirm_target
     assert "host_alive=" in powershell
     assert "sidecar_alive=" in powershell
 
