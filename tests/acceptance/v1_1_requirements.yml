@@ -53,7 +53,7 @@ requirements:
         runner: playwright
         kind: acceptance
         path: web/e2e/onboarding.spec.ts
-        selector: first run wizard configures data and opens a usable default market
+        selector: first run wizard searches and opens a non-default stock
         assertion: The desktop browser flow completes the minimum setup without code entry and immediately reaches an interactive market chart for the Shanghai Composite.
       - state: existing
         runner: pytest
