@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { chromium } from "@playwright/test";
@@ -60,60 +60,49 @@ async function activeElement(page) {
   });
 }
 
-async function physicalClickTarget(page, name) {
-  const target = page.getByRole("button", { name, exact: true });
-  await target.waitFor({ state: "visible" });
+async function exactHostedButton(target, name) {
+  await target.waitFor({ state: "visible", timeout: 15_000 });
   if ((await target.count()) !== 1) {
-    throw new Error(`physical click DOM target is not unique: ${name}`);
+    throw new Error(`hosted WebView target is not unique: ${name}`);
   }
-  const evidence = await target.evaluate((element, expectedName) => {
-    if (!(element instanceof HTMLElement)) return null;
-    const box = element.getBoundingClientRect();
-    const style = getComputedStyle(element);
-    const centerX = box.left + box.width / 2;
-    const centerY = box.top + box.height / 2;
-    const hit = document.elementFromPoint(centerX, centerY);
-    const isDisabled =
-      (element instanceof HTMLButtonElement && element.disabled) ||
-      element.getAttribute("aria-disabled") === "true";
-    return {
-      bounding_rectangle_css: {
-        height: box.height,
-        width: box.width,
-        x: box.left,
-        y: box.top,
-      },
-      device_pixel_ratio: window.devicePixelRatio,
-      dom_hit_test: hit === element || (hit !== null && element.contains(hit)),
-      enabled: !isDisabled,
-      name: expectedName,
-      role:
-        element.getAttribute("role") ??
-        (element instanceof HTMLButtonElement ? "button" : ""),
-      tag: element.tagName.toLowerCase(),
-      viewport_css: {
-        height: window.innerHeight,
-        width: window.innerWidth,
-      },
-      visible:
-        style.display !== "none" &&
-        style.visibility !== "hidden" &&
-        box.width >= 2 &&
-        box.height >= 2,
-    };
-  }, name);
-  if (
-    evidence === null ||
-    evidence.role !== "button" ||
-    evidence.enabled !== true ||
-    evidence.visible !== true ||
-    evidence.dom_hit_test !== true
-  ) {
-    throw new Error(
-      `physical click DOM target is not safely hittable: ${JSON.stringify(evidence)}`,
-    );
+  if (!(await target.isEnabled())) {
+    throw new Error(`hosted WebView target is disabled: ${name}`);
   }
-  return evidence;
+  return target;
+}
+
+async function waitForCaptureAuthorization(name) {
+  const syncDir = process.env.STOCK_DESK_RESTART_SYNC_DIR;
+  const nonce = process.env.STOCK_DESK_CAPTURE_NONCE;
+  if (syncDir === undefined || nonce === undefined) {
+    throw new Error("hosted capture authorization identity is unavailable");
+  }
+  const acknowledgment = path.join(syncDir, `${name}.ack`);
+  const deadline = Date.now() + 90_000;
+  while (Date.now() < deadline) {
+    try {
+      if ((await readFile(acknowledgment, "utf8")).trim() === nonce) return;
+    } catch (error) {
+      if (!["ENOENT", "EACCES", "EPERM", "EBUSY"].includes(error?.code)) {
+        throw error;
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`hosted capture authorization timed out: ${name}`);
+}
+
+async function clickHostedButton(target, sequence, action, name, observedState) {
+  await exactHostedButton(target, name);
+  await target.click({ timeout: 15_000 });
+  return {
+    sequence,
+    action,
+    target: { role: "button", name, exact: true },
+    invocation: "playwright-cdp-click",
+    physical_mouse_click: false,
+    observed_state: observedState,
+  };
 }
 
 async function visibleDomState(page) {
@@ -836,29 +825,54 @@ try {
   });
   console.log(`STOCK_DESK_EXIT_ACTIVITY ${JSON.stringify(exitActivity)}`);
 
-  await captureHandshake("os-real-click-exit", {
+  await captureHandshake("hosted-automation-ready", {
     candidate_sha256: process.env.STOCK_DESK_CANDIDATE_SHA256,
-    phase: "ready-for-native-titlebar-and-dialog-clicks",
+    phase: "ready-for-uia-and-cdp-automation",
   });
   await exitDialog.waitFor({ state: "visible" });
-  await captureHandshake("os-real-click-cancel-target", {
-    phase: "first-exit-dialog-visible",
-    target: await physicalClickTarget(page, "取消"),
+  await captureHandshake("hosted-dialog-visible-1", {
+    observed_state: "exit-dialog-visible",
   });
+  await waitForCaptureAuthorization("hosted-cancel-authorized");
+  const hostedCancelButton = page.getByRole("button", {
+    name: "取消",
+    exact: true,
+  });
+  const cancelAction = await clickHostedButton(
+    hostedCancelButton,
+    2,
+    "webview-cancel-dialog",
+    "取消",
+    "dialog-hidden-host-alive",
+  );
   await exitDialog.waitFor({ state: "hidden" });
-  await captureHandshake("os-real-click-cancel-observed", {
-    dialog_visible: false,
-    phase: "cancel-click-observed",
+  await captureHandshake("hosted-cancel-complete", {
+    action: cancelAction,
   });
   await exitDialog.waitFor({ state: "visible" });
-  await captureHandshake("os-real-click-confirm-target", {
-    phase: "second-exit-dialog-visible",
-    target: await physicalClickTarget(page, "退出应用"),
+  await captureHandshake("hosted-dialog-visible-2", {
+    observed_state: "exit-dialog-visible",
+  });
+  await waitForCaptureAuthorization("hosted-confirm-authorized");
+  const hostedConfirmButton = page.getByRole("button", {
+    name: "退出应用",
+    exact: true,
+  });
+  const confirmAction = await clickHostedButton(
+    hostedConfirmButton,
+    4,
+    "webview-confirm-exit",
+    "退出应用",
+    "click-dispatched",
+  );
+  await captureHandshake("hosted-confirm-complete", {
+    action: confirmAction,
   });
   console.log(
     "STOCK_DESK_EXIT_OBSERVATION " +
       JSON.stringify({
-        input_method: "win32-sendinput-physical-mouse",
+        input_method: "windows-uia-and-cdp-automation",
+        physical_mouse_click: false,
         page_closed: page.isClosed(),
       }),
   );

@@ -448,9 +448,9 @@ def test_installed_desktop_exit_uses_honest_hosted_uia_automation() -> None:
 
 
 def test_hosted_uia_driver_rejects_ambiguous_or_cross_process_targets() -> None:
-    driver = (
-        ROOT / "scripts" / "windows_desktop_hosted_automation.ps1"
-    ).read_text(encoding="utf-8")
+    driver = (ROOT / "scripts" / "windows_desktop_hosted_automation.ps1").read_text(
+        encoding="utf-8"
+    )
 
     assert "$candidate.Current.ProcessId -ne $ExpectedProcessId" in driver
     assert "$candidate.Current.IsEnabled" in driver
@@ -464,9 +464,9 @@ def test_hosted_uia_driver_rejects_ambiguous_or_cross_process_targets() -> None:
 
 
 def test_hosted_uia_driver_uses_nonce_bound_cross_observation() -> None:
-    driver = (
-        ROOT / "scripts" / "windows_desktop_hosted_automation.ps1"
-    ).read_text(encoding="utf-8")
+    driver = (ROOT / "scripts" / "windows_desktop_hosted_automation.ps1").read_text(
+        encoding="utf-8"
+    )
 
     markers = (
         "hosted-dialog-visible-1",
@@ -483,6 +483,36 @@ def test_hosted_uia_driver_uses_nonce_bound_cross_observation() -> None:
     assert "Move-Item -LiteralPath $temporary -Destination $path -Force" in driver
     assert "host exited after cancel automation" in driver
     assert "host did not exit successfully after confirmation automation" in driver
+
+
+def test_webview_hosted_clicks_publish_exact_role_name_and_state() -> None:
+    source = (ROOT / "scripts" / "windows_desktop_webview_evidence.mjs").read_text(
+        encoding="utf-8"
+    )
+
+    for name in ("取消", "退出应用"):
+        assert re.search(
+            rf'getByRole\("button",\s*\{{\s*name: "{name}",\s*exact: true',
+            source,
+        )
+    assert "async function clickHostedButton" in source
+    assert "await target.click({ timeout: 15_000 })" in source
+    assert 'invocation: "playwright-cdp-click"' in source
+    assert "physical_mouse_click: false" in source
+    markers = (
+        "hosted-automation-ready",
+        "hosted-dialog-visible-1",
+        "hosted-cancel-authorized",
+        "hosted-cancel-complete",
+        "hosted-dialog-visible-2",
+        "hosted-confirm-authorized",
+        "hosted-confirm-complete",
+    )
+    positions = [source.index(marker) for marker in markers]
+    assert positions == sorted(positions)
+    assert "observed_state: observedState" in source
+    assert '"dialog-hidden-host-alive"' in source
+    assert '"click-dispatched"' in source
 
 
 def test_packaged_backtest_matrix_uses_webview_host_ipc_and_new_worker_resume() -> None:
@@ -710,7 +740,7 @@ def test_nsis_installer_and_uninstaller_use_the_reviewed_windows_icon() -> None:
 
 def test_exit_deadlines_are_ordered_and_native_pid_is_authoritative() -> None:
     rust = (ROOT / "src-tauri" / "src" / "exit.rs").read_text(encoding="utf-8")
-    powershell = (ROOT / "scripts" / "capture_windows_desktop_evidence.ps1").read_text(
+    driver = (ROOT / "scripts" / "windows_desktop_hosted_automation.ps1").read_text(
         encoding="utf-8"
     )
     webview = (ROOT / "scripts" / "windows_desktop_webview_evidence.mjs").read_text(
@@ -720,45 +750,51 @@ def test_exit_deadlines_are_ordered_and_native_pid_is_authoritative() -> None:
     host_match = re.search(
         r"SIDECAR_EXIT_TIMEOUT: Duration = Duration::from_secs\((\d+)\)", rust
     )
-    evidence_match = re.search(
-        r"\}\s+(\d+)\s+'packaged app did not complete the tested graceful exit'",
-        powershell,
-    )
+    evidence_match = re.search(r"\$process\.WaitForExit\((\d+)\)", driver)
     assert host_match is not None
     assert evidence_match is not None
     host_timeout = int(host_match.group(1))
-    evidence_timeout = int(evidence_match.group(1))
+    evidence_timeout = int(evidence_match.group(1)) / 1000
     assert _SHUTDOWN_TIMEOUT_SECONDS + 5 <= host_timeout < evidence_timeout
 
-    native_click_handshake = webview.index('captureHandshake("os-real-click-exit"')
-    finally_block = webview.index("} finally", native_click_handshake)
+    hosted_ready = webview.index('captureHandshake("hosted-automation-ready"')
+    finally_block = webview.index("} finally", hosted_ready)
     assert "STOCK_DESK_EXIT_ACTIVITY" in webview
     assert "STOCK_DESK_EXIT_OBSERVATION" in webview
     assert "unavailable_while_not_ready" in webview
     activity_probe = webview.index('path: "/api/desktop/activity"')
     runtime_probe = webview.rindex("desktop_runtime_state", 0, activity_probe)
-    assert runtime_probe < activity_probe < native_click_handshake
-    assert (
-        "win32-sendinput-physical-mouse"
-        in webview[native_click_handshake:finally_block]
+    assert runtime_probe < activity_probe < hosted_ready
+    hosted_flow = webview[hosted_ready:finally_block]
+    assert 'input_method: "windows-uia-and-cdp-automation"' in hosted_flow
+    assert "physical_mouse_click: false" in hosted_flow
+
+    webview_markers = (
+        'captureHandshake("hosted-automation-ready"',
+        'captureHandshake("hosted-dialog-visible-1"',
+        'waitForCaptureAuthorization("hosted-cancel-authorized"',
+        'captureHandshake("hosted-cancel-complete"',
+        'captureHandshake("hosted-dialog-visible-2"',
+        'waitForCaptureAuthorization("hosted-confirm-authorized"',
+        'captureHandshake("hosted-confirm-complete"',
     )
-    assert 'name: "退出应用", exact: true }).click()' not in webview
-    marker_wait = powershell.index("'os-real-click-exit.json'")
-    initial_ack = powershell.index(
-        "Write-CaptureAck (Join-Path $restartSyncRoot 'os-real-click-exit.ack')",
-        marker_wait,
+    webview_positions = [webview.index(marker) for marker in webview_markers]
+    assert webview_positions == sorted(webview_positions)
+
+    driver_markers = (
+        "'hosted-dialog-visible-1'",
+        "'hosted-cancel-authorized'",
+        "'hosted-cancel-complete'",
+        "'hosted-dialog-visible-2'",
+        "'hosted-confirm-authorized'",
+        "'hosted-confirm-complete'",
     )
-    driver_launch = powershell.index("windows_desktop_real_click.ps1", marker_wait)
-    host_exit_wait = powershell.index(
-        "packaged app did not complete the tested graceful exit", driver_launch
-    )
-    assert marker_wait < initial_ack < driver_launch < host_exit_wait
-    cancel_target = webview.index('captureHandshake("os-real-click-cancel-target"')
-    cancel_observed = webview.index('captureHandshake("os-real-click-cancel-observed"')
-    confirm_target = webview.index('captureHandshake("os-real-click-confirm-target"')
-    assert native_click_handshake < cancel_target < cancel_observed < confirm_target
-    assert "host_alive=" in powershell
-    assert "sidecar_alive=" in powershell
+    driver_positions = [driver.index(marker) for marker in driver_markers]
+    assert driver_positions == sorted(driver_positions)
+    assert "$button.Current.ProcessId -ne $ExpectedProcessId" not in driver
+    assert "$candidate.Current.ProcessId -ne $ExpectedProcessId" in driver
+    assert "process_id = [int]$button.Current.ProcessId" in driver
+    assert "window_handle = $WindowHandle" in driver
 
 
 def test_packaged_evidence_waits_longer_than_the_bounded_cold_start_budget() -> None:
