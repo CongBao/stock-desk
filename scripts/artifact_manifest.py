@@ -5,12 +5,16 @@ import hashlib
 import json
 import re
 import sys
+import unicodedata
 from collections.abc import Mapping, Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 
 SCHEMA_VERSION = 2
+PAYLOAD_LIST_SCHEMA_VERSION = 1
+MAX_PAYLOAD_LIST_BYTES = 2 * 1024 * 1024
+MAX_PAYLOAD_LIST_ENTRIES = 8192
 PAYLOAD_KINDS = frozenset(
     {"web", "python", "sidecar", "oci", "sbom", "provenance", "tauri-unsigned"}
 )
@@ -18,6 +22,7 @@ _HEX_40 = re.compile(r"^[0-9a-f]{40}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _OCI_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _PRODUCER_FIELDS = ("workflow", "run_id", "run_attempt", "job_id", "job_name")
+_WINDOWS_ABSOLUTE_PATH = re.compile(r"^[A-Za-z]:/")
 
 
 class ManifestError(ValueError):
@@ -34,7 +39,7 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _canonical_bytes(value: Mapping[str, Any]) -> bytes:
+def _canonical_bytes(value: object) -> bytes:
     return (
         json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         + "\n"
@@ -51,9 +56,119 @@ def _relative_path(raw: object, *, field: str) -> str:
     if not isinstance(raw, str) or not raw or "\\" in raw or "\x00" in raw:
         raise ManifestError(f"{field} must be a non-empty POSIX relative path")
     path = PurePosixPath(raw)
-    if path.is_absolute() or ".." in path.parts or path.as_posix() != raw:
+    if (
+        path.is_absolute()
+        or _WINDOWS_ABSOLUTE_PATH.match(raw)
+        or ".." in path.parts
+        or path.as_posix() != raw
+    ):
         raise ManifestError(f"{field} must be a normalized POSIX relative path")
     return raw
+
+
+def _payload_path_key(path: str) -> str:
+    """Approximate Windows path identity for cross-platform collision checks."""
+    return unicodedata.normalize("NFKC", path).casefold()
+
+
+def _validate_payload_specs(
+    payloads: Sequence[tuple[str, str]], *, field: str
+) -> list[tuple[str, str]]:
+    normalized: list[tuple[str, str]] = []
+    seen: dict[str, str] = {}
+    for index, (raw_path, kind) in enumerate(payloads):
+        path = _relative_path(raw_path, field=f"{field}[{index}].path")
+        collision_key = _payload_path_key(path)
+        if collision_key in seen:
+            raise ManifestError(
+                f"colliding payload path: {path} conflicts with {seen[collision_key]}"
+            )
+        seen[collision_key] = path
+        if kind not in PAYLOAD_KINDS:
+            raise ManifestError(f"unsupported payload kind: {kind}")
+        normalized.append((path, kind))
+    return normalized
+
+
+def _strict_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    value: dict[str, object] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ManifestError(f"duplicate JSON key: {key}")
+        value[key] = item
+    return value
+
+
+def read_payload_list(path: Path) -> list[tuple[str, str]]:
+    """Read a canonical response file whose expanded entries bind the manifest."""
+    if path.is_symlink() or not path.is_file():
+        raise ManifestError(f"payload list must be a regular non-symlink file: {path}")
+    try:
+        size = path.stat().st_size
+        if size > MAX_PAYLOAD_LIST_BYTES:
+            raise ManifestError(f"payload list exceeds {MAX_PAYLOAD_LIST_BYTES} bytes")
+        encoded = path.read_bytes()
+    except OSError as error:
+        raise ManifestError(f"cannot read payload list: {error}") from error
+    if len(encoded) > MAX_PAYLOAD_LIST_BYTES:
+        raise ManifestError(f"payload list exceeds {MAX_PAYLOAD_LIST_BYTES} bytes")
+    if encoded.startswith(b"\xef\xbb\xbf"):
+        raise ManifestError("payload list must be UTF-8 without BOM")
+    try:
+        text = encoded.decode("utf-8")
+        raw = json.loads(
+            text,
+            object_pairs_hook=_strict_json_object,
+            parse_constant=lambda value: (_ for _ in ()).throw(
+                ManifestError(f"invalid JSON constant: {value}")
+            ),
+        )
+    except UnicodeDecodeError as error:
+        raise ManifestError("payload list must be UTF-8") from error
+    except json.JSONDecodeError as error:
+        raise ManifestError(f"payload list must be valid JSON: {error}") from error
+    if not isinstance(raw, dict) or set(raw) != {"schema_version", "payloads"}:
+        raise ManifestError(
+            "payload list must contain exactly schema_version and payloads"
+        )
+    if (
+        isinstance(raw["schema_version"], bool)
+        or raw["schema_version"] != PAYLOAD_LIST_SCHEMA_VERSION
+    ):
+        raise ManifestError(
+            f"payload list schema_version must be {PAYLOAD_LIST_SCHEMA_VERSION}"
+        )
+    payload_values = raw["payloads"]
+    if not isinstance(payload_values, list) or not payload_values:
+        raise ManifestError("payload list payloads must be a non-empty array")
+    if len(payload_values) > MAX_PAYLOAD_LIST_ENTRIES:
+        raise ManifestError(f"payload list exceeds {MAX_PAYLOAD_LIST_ENTRIES} entries")
+    payloads: list[tuple[str, str]] = []
+    for index, item in enumerate(payload_values):
+        if not isinstance(item, dict) or set(item) != {"path", "kind"}:
+            raise ManifestError(
+                f"payload list payloads[{index}] must contain exactly path and kind"
+            )
+        raw_path = item["path"]
+        kind = item["kind"]
+        if not isinstance(raw_path, str) or not isinstance(kind, str):
+            raise ManifestError(
+                f"payload list payloads[{index}] path and kind must be strings"
+            )
+        payloads.append((raw_path, kind))
+    normalized = _validate_payload_specs(payloads, field="payload list payloads")
+    canonical = _canonical_bytes(
+        {
+            "schema_version": PAYLOAD_LIST_SCHEMA_VERSION,
+            "payloads": [
+                {"path": payload_path, "kind": kind}
+                for payload_path, kind in normalized
+            ],
+        }
+    )
+    if encoded != canonical:
+        raise ManifestError("payload list must use canonical UTF-8 JSON")
+    return normalized
 
 
 def _string_map(
@@ -126,7 +241,7 @@ def validate_manifest(raw: object) -> dict[str, Any]:
     if not isinstance(payloads, list) or not payloads:
         raise ManifestError("payloads must be a non-empty array")
     normalized_payloads: list[dict[str, object]] = []
-    seen_paths: set[str] = set()
+    seen_paths: dict[str, str] = {}
     for index, payload in enumerate(payloads):
         if not isinstance(payload, dict) or set(payload) != {
             "path",
@@ -138,9 +253,12 @@ def validate_manifest(raw: object) -> dict[str, Any]:
                 f"payloads[{index}] must contain exactly path, kind, size, sha256"
             )
         path = _relative_path(payload["path"], field=f"payloads[{index}].path")
-        if path in seen_paths:
-            raise ManifestError(f"duplicate payload path: {path}")
-        seen_paths.add(path)
+        collision_key = _payload_path_key(path)
+        if collision_key in seen_paths:
+            raise ManifestError(
+                f"colliding payload path: {path} conflicts with {seen_paths[collision_key]}"
+            )
+        seen_paths[collision_key] = path
         kind = payload["kind"]
         if kind not in PAYLOAD_KINDS:
             raise ManifestError(f"unsupported payload kind: {kind}")
@@ -227,8 +345,7 @@ def build_manifest(
 ) -> dict[str, Any]:
     payload_records: list[dict[str, object]] = []
     resolved_root = root.resolve(strict=True)
-    for relative, kind in payloads:
-        normalized = _relative_path(relative, field="payload path")
+    for normalized, kind in _validate_payload_specs(payloads, field="payloads"):
         absolute = root / normalized
         try:
             resolved = absolute.resolve(strict=True)
@@ -406,7 +523,8 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     create.add_argument("--run-attempt", type=int, required=True)
     create.add_argument("--job-id", required=True)
     create.add_argument("--job-name", required=True)
-    create.add_argument("--payload", action="append", required=True)
+    create.add_argument("--payload", action="append", default=[])
+    create.add_argument("--payload-list", type=Path)
     create.add_argument("--critical-input", action="append", default=[])
     create.add_argument("--toolchain", action="append", default=[])
     create.add_argument("--lockfile", action="append", default=[])
@@ -432,6 +550,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 if not separator:
                     raise ManifestError("payload values must use PATH:KIND")
                 payloads.append((path, kind))
+            if args.payload_list is not None:
+                payloads.extend(read_payload_list(args.payload_list))
+            if not payloads:
+                raise ManifestError(
+                    "at least one --payload or --payload-list is required"
+                )
             manifest = build_manifest(
                 root=args.root,
                 source_sha=args.source_sha,

@@ -2,7 +2,7 @@
 
 # Stock Desk
 
-> The current stable release is `v1.0.0`. The current `v1.1.0-beta.3` candidate is a Windows x64 desktop-experience prerelease; test assets do not replace the stable release. See the [beta.3 notes](docs/releases/v1.1.0-beta.3.md).
+> The current stable release is `v1.0.0`. The current `v1.1.0-beta.3` candidate is an unsigned Windows x64 desktop-experience prerelease; test assets do not replace the stable release. See the [beta.3 notes](docs/releases/v1.1.0-beta.3.md).
 
 ## Product positioning
 

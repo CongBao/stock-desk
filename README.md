@@ -2,7 +2,7 @@
 
 # Stock Desk
 
-> 当前稳定版为 `v1.0.0`。当前开发候选 `v1.1.0-beta.3` 是 Windows x64 桌面体验预发布版；测试资产不替代稳定版，范围与限制见 [beta.3 说明](docs/releases/v1.1.0-beta.3.md)。
+> 当前稳定版为 `v1.0.0`。当前开发候选 `v1.1.0-beta.3` 是 Windows x64 未签名桌面体验预发布版；测试资产不替代稳定版，范围与限制见 [beta.3 说明](docs/releases/v1.1.0-beta.3.md)。
 
 ## 产品定位
 

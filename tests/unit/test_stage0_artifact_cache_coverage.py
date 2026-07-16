@@ -82,7 +82,7 @@ def _manifest(root: Path, *, kind: str = "web") -> dict[str, object]:
         ),
         (
             lambda value: value["payloads"].append(deepcopy(value["payloads"][0])),
-            "duplicate payload path",
+            "colliding payload path",
         ),
         (
             lambda value: value["payloads"][0].update(kind="installer"),

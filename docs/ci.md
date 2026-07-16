@@ -18,6 +18,8 @@ PR 变更按 backend、web、Tauri、installer、dependency、documentation 和 
 
 Web、Python、OCI、SBOM/provenance 等产物都有内容 manifest，记录 source commit/tree、锁文件、工具链和 SHA-256。OCI 构建一次，Compose、SBOM 和 Trivy 必须验证并消费同一 image digest。最终 proof 只有在 CI、Security 和 CodeQL 的全部必需 job 对同一 SHA 成功时才会生成并接受 GitHub attestation。
 
+Windows candidate A 在 Tauri 单次构建后、清理前，从固定的 `target/x86_64-pc-windows-msvc/release/nsis/x64` 捕获实际渲染的 NSIS 输入，并绑定 Tauri CLI 2.11.4、NSIS 3.11、`nsis_tauri_utils` 0.5.3、WebView2、应用 payload 和 `config/nsis-toolchain-lock.json`，生成 owner-only 的内容寻址 repack kit。CI 在两个独立私有目录以精确参数 `makensis.exe -INPUTCHARSET UTF8 -OUTPUTCHARSET UTF8 -V3 installer.nsi` 重打包；两份输出必须互同，并与 `release/bundle/nsis` 中的原始 unsigned candidate 逐字节相同。kit manifest、两份 receipt 和所有 kit 文件作为现有 Windows candidate artifact 的子树进入同一个 manifest 与 main proof，不新增第十三种 evidence artifact。为避免 Windows 32K 命令行上限，所有 kit 文件通过严格 canonical UTF-8 `--payload-list` 输入；响应文件只负责传输，展开后的每个路径、类型、大小和 SHA-256 仍由最终 manifest 逐项绑定。任一链接/reparse、路径穿越、大小写或 Unicode 碰撞、额外或缺失文件、绝对 `File` 来源、工具/参数/环境/epoch 漂移都会 fail closed。
+
 ### 缓存边界
 
 允许缓存的只有按 OS、架构、工具链和 lockfile 键控的依赖下载、编译和浏览器中间物。JUnit、coverage、数据库、需求证据、签名、release proof 和最终 artifact identity 永不从缓存接受。warm cache 与 clean miss 必须执行相同门禁。
@@ -64,6 +66,8 @@ Every `main` SHA uniquely assigns the complete Python inventory to isolated unit
 Requirement mapping validates the YAML schema, authority digest, and selector collection before exact matching against successful JUnit nodeids from the same SHA; it does not execute the selectors again. Browser acceptance uses one content-bound deterministic snapshot, one service startup, and one Playwright scheduling pass. A retry cannot erase an authoritative first-run failure.
 
 Web, Python, OCI, and SBOM/provenance outputs carry content manifests with source commit/tree, lockfiles, toolchains, and SHA-256. The OCI image is built once; Compose, SBOM, and Trivy must verify and consume the same image digest. The final proof is generated and attested only when every required CI, Security, and CodeQL job succeeds for the same SHA.
+
+After candidate A's single Tauri build and before cleanup, CI captures the actually rendered NSIS inputs from fixed `target/x86_64-pc-windows-msvc/release/nsis/x64` and binds pinned Tauri CLI 2.11.4, NSIS 3.11, `nsis_tauri_utils` 0.5.3, WebView2, application payload, and `config/nsis-toolchain-lock.json` into an owner-only content-addressed repack kit. Two independent private directories run the exact command `makensis.exe -INPUTCHARSET UTF8 -OUTPUTCHARSET UTF8 -V3 installer.nsi`; both outputs must be identical to each other and byte-for-byte reproduce the original unsigned candidate under `release/bundle/nsis`. The kit manifest, both receipts, and every kit file are bound as a subtree of the existing Windows candidate artifact and its main proof, without creating a thirteenth evidence artifact family. To stay below the Windows 32K command-line limit, kit files enter through a strict canonical UTF-8 `--payload-list`; the response file is transport-only, while the final manifest still binds every expanded path, kind, size, and SHA-256. Links/reparse points, traversal, case or Unicode collisions, extra or missing files, absolute `File` sources, or tool/argument/environment/epoch drift fail closed.
 
 ### Cache boundary
 

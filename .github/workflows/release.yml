@@ -497,6 +497,10 @@ jobs:
             --manifest "$CANDIDATE_ROOT/windows-desktop-alpha-candidate-manifest.json" \
             --root "$CANDIDATE_ROOT" --source-sha "$SOURCE_SHA" \
             --source-tree "$tree" --attestation "$CANDIDATE_ROOT/manifest-binding.json"
+          python scripts/main_validation_proof.py verify-candidate-nsis \
+            --proof "$PROOF_ROOT/proof.json" \
+            --candidate-root "$CANDIDATE_ROOT" \
+            --attestation "$CANDIDATE_ROOT/manifest-binding.json"
       - name: Close canonical SignPath input without rebuilding payload
         id: identity
         shell: bash

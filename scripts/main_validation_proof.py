@@ -25,11 +25,18 @@ from scripts.artifact_manifest import (
     validate_manifest,
     verify_artifact_root_closure,
     verify_for_consumption,
+    verify_payloads,
+)
+from scripts.nsis_repack_contract import (
+    normalize_provenance_summary,
+    NsisRepackContractError,
+    PROVENANCE_SUMMARY_FIELDS,  # noqa: F401 - public proof/test contract re-export
+    verify_provenance_set as verify_nsis_provenance_set,
 )
 
 
 LEGACY_SCHEMA: Final = "stock-desk-main-validation-proof-v1"
-SCHEMA: Final = "stock-desk-main-validation-proof-v4"
+SCHEMA: Final = "stock-desk-main-validation-proof-v5"
 POST_GH_VERIFY_BINDING_SCHEMA: Final = "stock-desk-main-proof-post-gh-verify-binding-v1"
 SHA256_PATTERN: Final = re.compile(r"^[0-9a-f]{64}$")
 GIT_SHA_PATTERN: Final = re.compile(r"^[0-9a-f]{40}$")
@@ -37,7 +44,8 @@ REPOSITORY_PATTERN: Final = re.compile(
     r"^[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,99})/"
     r"[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,99})$"
 )
-REF_PATTERN: Final = re.compile(r"^refs/heads/[A-Za-z0-9][A-Za-z0-9._/-]*$")
+MAIN_REF: Final = "refs/heads/main"
+MAX_SOURCE_EPOCH: Final = 2**63 - 1
 
 LEGACY_CRITICAL_INPUTS: Final = (
     ".github/workflows/ci.yml",
@@ -61,6 +69,7 @@ CRITICAL_INPUTS: Final = LEGACY_CRITICAL_INPUTS + (
     ".github/workflows/signpath.yml",
     ".github/workflows/windows-installed.yml",
     "config/desktop-network-privacy.json",
+    "config/nsis-toolchain-lock.json",
     "config/release-tag-allowed-signers",
     "config/windows-vm-broker-public-key.pem",
     "packaging/nsis/installer-hooks.nsh",
@@ -74,6 +83,8 @@ CRITICAL_INPUTS: Final = LEGACY_CRITICAL_INPUTS + (
     "schemas/deployment-latency-report-v1.schema.json",
     "schemas/deployment-latency-sample-v1.schema.json",
     "schemas/deployment-latency-seal-v1.schema.json",
+    "schemas/nsis-repack-kit-v1.schema.json",
+    "schemas/nsis-repack-receipt-v1.schema.json",
     "schemas/stable-release-readiness-v1.schema.json",
     "schemas/packaged-backtest-evidence-v1.schema.json",
     "schemas/packaged-backtest-host-observation-v1.schema.json",
@@ -97,6 +108,9 @@ CRITICAL_INPUTS: Final = LEGACY_CRITICAL_INPUTS + (
     "scripts/compare_windows_payloads.py",
     "scripts/deployment_latency.py",
     "scripts/e2e_snapshot.py",
+    "scripts/nsis_repack_contract.py",
+    "scripts/nsis_repack_producer.py",
+    "scripts/secure_artifact_snapshot.py",
     "scripts/signpath_contract.py",
     "scripts/stable_release_readiness.py",
     "scripts/prepare_windows_packaged_backtest_evidence.py",
@@ -118,6 +132,7 @@ CRITICAL_INPUTS: Final = LEGACY_CRITICAL_INPUTS + (
     "scripts/windows_packaged_backtest_evidence.mjs",
     "tests/windows/windows_browser_observer_integration.ps1",
     "tests/windows/windows_desktop_uia_driver_integration.ps1",
+    "tests/windows/nsis_repack_contract_integration.ps1",
     "src-tauri/Cargo.lock",
     "src-tauri/Cargo.toml",
     "src-tauri/tauri.conf.json",
@@ -567,20 +582,35 @@ def _git(repo_root: Path, *arguments: str) -> str:
     return result.stdout.strip()
 
 
+def local_git_identity(repo_root: Path) -> tuple[str, str, int]:
+    """Read commit, tree, and commit epoch from one immutable Git object query."""
+
+    raw = _git(repo_root, "show", "-s", "--format=%H%x00%T%x00%ct", "HEAD")
+    parts = raw.split("\0")
+    if len(parts) != 3:
+        raise MainValidationProofError("local Git identity is incomplete")
+    commit_sha = _sha(parts[0], "local commit", git=True)
+    tree_sha = _sha(parts[1], "local tree", git=True)
+    try:
+        source_epoch = int(parts[2])
+    except ValueError as error:
+        raise MainValidationProofError("local source epoch is invalid") from error
+    if source_epoch <= 0 or source_epoch > MAX_SOURCE_EPOCH:
+        raise MainValidationProofError("local source epoch is outside the signed range")
+    return commit_sha, tree_sha, source_epoch
+
+
 def local_git_state(repo_root: Path) -> tuple[str, str]:
-    commit_sha = _git(repo_root, "rev-parse", "--verify", "HEAD^{commit}")
-    tree_sha = _git(repo_root, "rev-parse", "--verify", "HEAD^{tree}")
-    return _sha(commit_sha, "local commit", git=True), _sha(
-        tree_sha, "local tree", git=True
-    )
+    commit_sha, tree_sha, _source_epoch = local_git_identity(repo_root)
+    return commit_sha, tree_sha
 
 
 def _validate_repository_and_ref(repository: str, ref: str) -> tuple[str, str]:
     if REPOSITORY_PATTERN.fullmatch(repository) is None:
         raise MainValidationProofError("repository must use owner/name form")
-    if REF_PATTERN.fullmatch(ref) is None or ".." in ref or "//" in ref:
-        raise MainValidationProofError("ref must be a canonical branch ref")
-    return repository, ref.removeprefix("refs/heads/")
+    if ref != MAIN_REF:
+        raise MainValidationProofError("main validation proof requires refs/heads/main")
+    return repository, "main"
 
 
 def _validate_job(
@@ -951,6 +981,15 @@ def _validation_evidence(
                 raise MainValidationProofError(
                     "Windows alpha candidate is missing packaged backtest provenance"
                 )
+            required_nsis_repack = {
+                "nsis-repack-kit/nsis-repack-kit.json",
+                "nsis-repack-verification/repack-a-receipt.json",
+                "nsis-repack-verification/repack-b-receipt.json",
+            }
+            if not required_nsis_repack.issubset(payload_paths):
+                raise MainValidationProofError(
+                    "Windows alpha candidate is missing NSIS repack provenance"
+                )
         for payload_value in manifest["payloads"]:
             payload = _object(payload_value, f"{artifact_name} payload")
             identity = (artifact_name, _string(payload.get("path"), "payload path"))
@@ -963,6 +1002,199 @@ def _validation_evidence(
     return normalized
 
 
+def _candidate_nsis_payloads(
+    manifest: Mapping[str, object],
+) -> tuple[
+    dict[str, object], tuple[dict[str, object], dict[str, object]], dict[str, object]
+]:
+    payload_values = manifest.get("payloads")
+    if not isinstance(payload_values, list):
+        raise MainValidationProofError("Windows candidate payloads are invalid")
+    payloads = [
+        _object(value, f"Windows candidate payloads[{index}]")
+        for index, value in enumerate(payload_values)
+    ]
+
+    def exact_path(path: str, *, kind: str = "provenance") -> dict[str, object]:
+        matches = [
+            payload
+            for payload in payloads
+            if payload.get("path") == path and payload.get("kind") == kind
+        ]
+        if len(matches) != 1:
+            raise MainValidationProofError(
+                f"Windows candidate must bind exactly one {path} payload"
+            )
+        return matches[0]
+
+    kit = exact_path("nsis-repack-kit/nsis-repack-kit.json")
+    receipts = (
+        exact_path("nsis-repack-verification/repack-a-receipt.json"),
+        exact_path("nsis-repack-verification/repack-b-receipt.json"),
+    )
+    installers = [
+        payload
+        for payload in payloads
+        if payload.get("kind") == "tauri-unsigned"
+        and isinstance(payload.get("path"), str)
+        and str(payload["path"]).endswith(".exe")
+        and "/" not in str(payload["path"])
+    ]
+    all_tauri = [
+        payload for payload in payloads if payload.get("kind") == "tauri-unsigned"
+    ]
+    if len(installers) != 1 or len(all_tauri) != 1:
+        raise MainValidationProofError(
+            "Windows candidate must bind exactly one direct Tauri unsigned installer"
+        )
+    return kit, receipts, installers[0]
+
+
+def _manifest_bound_kit_sha256(
+    *, candidate_root: Path, kit_payload: Mapping[str, object]
+) -> str:
+    relative = _string(kit_payload.get("path"), "NSIS kit manifest payload path")
+    path = candidate_root / relative
+    try:
+        payload = path.read_bytes()
+        value = json.loads(payload)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise MainValidationProofError(
+            "manifest-bound NSIS kit manifest is unreadable"
+        ) from error
+    document = _object(value, "manifest-bound NSIS kit manifest")
+    return _sha(document.get("kit_sha256"), "manifest-bound kit_sha256")
+
+
+def _bind_nsis_summary_to_candidate(
+    summary_value: object,
+    *,
+    candidate_manifest: Mapping[str, object],
+    source_sha: str,
+    source_tree: str,
+    source_epoch: int,
+) -> dict[str, object]:
+    try:
+        summary = normalize_provenance_summary(summary_value)
+    except NsisRepackContractError as error:
+        raise MainValidationProofError("NSIS provenance summary is invalid") from error
+    if (
+        summary["source_ref"] != MAIN_REF
+        or summary["source_sha"] != source_sha
+        or summary["source_tree"] != source_tree
+        or summary["source_epoch"] != source_epoch
+    ):
+        raise MainValidationProofError(
+            "NSIS provenance summary belongs to another main source identity"
+        )
+    kit_payload, receipt_payloads, installer_payload = _candidate_nsis_payloads(
+        candidate_manifest
+    )
+    kit = _object(summary["kit"], "NSIS provenance summary kit")
+    if kit["path"] != kit_payload.get("path") or kit["sha256"] != kit_payload.get(
+        "sha256"
+    ):
+        raise MainValidationProofError(
+            "NSIS provenance kit does not match the candidate manifest"
+        )
+    receipts = summary["receipts"]
+    assert isinstance(receipts, list)
+    for index, (receipt_value, payload) in enumerate(
+        zip(receipts, receipt_payloads, strict=True)
+    ):
+        receipt = _object(receipt_value, f"NSIS provenance receipt {index}")
+        if receipt["path"] != payload.get("path") or receipt["sha256"] != payload.get(
+            "sha256"
+        ):
+            raise MainValidationProofError(
+                "NSIS provenance receipt does not match the candidate manifest"
+            )
+    installer = _object(summary["installer"], "NSIS provenance installer")
+    if installer["size"] != installer_payload.get("size") or installer[
+        "sha256"
+    ] != installer_payload.get("sha256"):
+        raise MainValidationProofError(
+            "NSIS provenance installer does not match the candidate manifest"
+        )
+    return summary
+
+
+def _verify_candidate_nsis_provenance(
+    *,
+    candidate_manifest: Mapping[str, object],
+    candidate_root: Path,
+    source_sha: str,
+    source_tree: str,
+    source_epoch: int,
+) -> dict[str, object]:
+    kit_payload, _receipt_payloads, installer_payload = _candidate_nsis_payloads(
+        candidate_manifest
+    )
+    expected_kit_sha256 = _manifest_bound_kit_sha256(
+        candidate_root=candidate_root, kit_payload=kit_payload
+    )
+    installer = candidate_root / _string(
+        installer_payload.get("path"), "Windows candidate installer path"
+    )
+    try:
+        summary = verify_nsis_provenance_set(
+            candidate_root=candidate_root,
+            installer=installer,
+            expected_source_ref=MAIN_REF,
+            expected_source_sha=source_sha,
+            expected_source_tree=source_tree,
+            expected_source_epoch=source_epoch,
+            expected_kit_sha256=expected_kit_sha256,
+        )
+    except (NsisRepackContractError, OSError) as error:
+        raise MainValidationProofError(
+            "Windows candidate NSIS provenance verification failed"
+        ) from error
+    return _bind_nsis_summary_to_candidate(
+        summary,
+        candidate_manifest=candidate_manifest,
+        source_sha=source_sha,
+        source_tree=source_tree,
+        source_epoch=source_epoch,
+    )
+
+
+def _verify_generation_artifact_roots(
+    evidence: Mapping[str, object],
+    *,
+    validation_evidence_paths: Mapping[str, Path],
+) -> dict[str, Path]:
+    if set(validation_evidence_paths) != set(evidence):
+        raise MainValidationProofError(
+            "validation evidence paths must exactly match the evidence set"
+        )
+    roots: dict[str, Path] = {}
+    for artifact_name in sorted(evidence):
+        manifest = _object(evidence[artifact_name], f"{artifact_name} manifest")
+        path = validation_evidence_paths[artifact_name]
+        if path.name != f"{artifact_name}.json":
+            raise MainValidationProofError(
+                f"{artifact_name} manifest path has an unexpected basename"
+            )
+        root = path.parent
+        try:
+            loaded = validate_manifest(_load_json(path, f"{artifact_name} manifest"))
+            if loaded != manifest:
+                raise MainValidationProofError(
+                    f"{artifact_name} path differs from supplied evidence"
+                )
+            verify_payloads(manifest, root)
+            verify_artifact_root_closure(
+                manifest, root=root, artifact_name=artifact_name
+            )
+        except (ManifestError, OSError) as error:
+            raise MainValidationProofError(
+                f"{artifact_name} generation artifact verification failed"
+            ) from error
+        roots[artifact_name] = root
+    return roots
+
+
 def generate_proof(
     *,
     repo_root: Path,
@@ -970,10 +1202,11 @@ def generate_proof(
     ref: str,
     api_evidence: Mapping[str, object],
     validation_evidence: Mapping[str, object],
+    validation_evidence_paths: Mapping[str, Path],
 ) -> dict[str, object]:
     repository, branch = _validate_repository_and_ref(repository, ref)
     root = repo_root.resolve(strict=True)
-    commit_sha, tree_sha = local_git_state(root)
+    commit_sha, tree_sha, source_epoch = local_git_identity(root)
     if set(api_evidence) != set(WORKFLOW_POLICIES):
         raise MainValidationProofError(
             "API evidence must contain exactly CI, CodeQL, and Security"
@@ -999,6 +1232,27 @@ def generate_proof(
         )
         for workflow in sorted(WORKFLOW_POLICIES)
     }
+    normalized_evidence = _validation_evidence(
+        validation_evidence,
+        workflows=workflows,
+        commit_sha=commit_sha,
+        tree_sha=tree_sha,
+    )
+    artifact_roots = _verify_generation_artifact_roots(
+        normalized_evidence,
+        validation_evidence_paths=validation_evidence_paths,
+    )
+    candidate_name = "windows-desktop-alpha-candidate-manifest"
+    candidate_manifest = _object(
+        normalized_evidence[candidate_name], "Windows candidate manifest"
+    )
+    nsis_repack = _verify_candidate_nsis_provenance(
+        candidate_manifest=candidate_manifest,
+        candidate_root=artifact_roots[candidate_name],
+        source_sha=commit_sha,
+        source_tree=tree_sha,
+        source_epoch=source_epoch,
+    )
     proof: dict[str, object] = {
         "schema": SCHEMA,
         "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
@@ -1006,16 +1260,13 @@ def generate_proof(
         "ref": ref,
         "commit_sha": commit_sha,
         "tree_sha": tree_sha,
+        "source_epoch": source_epoch,
         "source_fingerprint": _sha(source_fingerprint, "source_fingerprint"),
         "critical_inputs": critical_input_hashes(root),
         "fixture_hashes": fixture_hashes(root),
         "workflows": workflows,
-        "validation_evidence": _validation_evidence(
-            validation_evidence,
-            workflows=workflows,
-            commit_sha=commit_sha,
-            tree_sha=tree_sha,
-        ),
+        "validation_evidence": normalized_evidence,
+        "nsis_repack": nsis_repack,
     }
     proof["proof_sha256"] = _proof_digest(proof)
     return proof
@@ -1204,11 +1455,13 @@ def verify_proof(
             "ref",
             "commit_sha",
             "tree_sha",
+            "source_epoch",
             "source_fingerprint",
             "critical_inputs",
             "fixture_hashes",
             "workflows",
             "validation_evidence",
+            "nsis_repack",
             "proof_sha256",
         }
     else:
@@ -1224,6 +1477,11 @@ def verify_proof(
         raise MainValidationProofError("proof repository or ref does not match")
     commit_sha = _sha(proof["commit_sha"], "commit_sha", git=True)
     tree_sha = _sha(proof["tree_sha"], "tree_sha", git=True)
+    source_epoch: int | None = None
+    if schema == SCHEMA:
+        source_epoch = _integer(proof["source_epoch"], "source_epoch")
+        if source_epoch > MAX_SOURCE_EPOCH:
+            raise MainValidationProofError("source_epoch exceeds the signed range")
     _sha(proof["source_fingerprint"], "source_fingerprint")
     proof_sha256 = _sha(proof["proof_sha256"], "proof_sha256")
     unsigned = dict(proof)
@@ -1271,11 +1529,33 @@ def verify_proof(
             raise MainValidationProofError(
                 "validation evidence is not in canonical strict form"
             )
+        assert source_epoch is not None
+        candidate_manifest = _object(
+            normalized_evidence["windows-desktop-alpha-candidate-manifest"],
+            "Windows candidate manifest",
+        )
+        normalized_summary = _bind_nsis_summary_to_candidate(
+            proof["nsis_repack"],
+            candidate_manifest=candidate_manifest,
+            source_sha=commit_sha,
+            source_tree=tree_sha,
+            source_epoch=source_epoch,
+        )
+        if normalized_summary != proof["nsis_repack"]:
+            raise MainValidationProofError(
+                "NSIS provenance summary is not in canonical strict form"
+            )
 
     root = repo_root.resolve(strict=True)
-    local_commit, local_tree = local_git_state(root)
-    if local_commit != commit_sha or local_tree != tree_sha:
-        raise MainValidationProofError("local commit or tree does not match proof")
+    local_commit, local_tree, local_epoch = local_git_identity(root)
+    if (
+        local_commit != commit_sha
+        or local_tree != tree_sha
+        or (source_epoch is not None and local_epoch != source_epoch)
+    ):
+        raise MainValidationProofError(
+            "local commit, tree, or epoch does not match proof"
+        )
     if critical_input_hashes(root, critical_input_policy) != critical_inputs:
         raise MainValidationProofError("local critical inputs do not match proof")
     if (
@@ -1383,6 +1663,19 @@ def verify_proved_artifacts(
         )
     commit_sha = _sha(proof.get("commit_sha"), "commit_sha", git=True)
     tree_sha = _sha(proof.get("tree_sha"), "tree_sha", git=True)
+    source_epoch = _integer(proof.get("source_epoch"), "source_epoch")
+    if source_epoch > MAX_SOURCE_EPOCH:
+        raise MainValidationProofError("source_epoch exceeds the signed range")
+    stored_nsis = _bind_nsis_summary_to_candidate(
+        proof.get("nsis_repack"),
+        candidate_manifest=_object(
+            evidence["windows-desktop-alpha-candidate-manifest"],
+            "Windows candidate manifest",
+        ),
+        source_sha=commit_sha,
+        source_tree=tree_sha,
+        source_epoch=source_epoch,
+    )
     for artifact_name in sorted(expected):
         manifest = _object(evidence[artifact_name], f"{artifact_name} manifest")
         try:
@@ -1418,6 +1711,82 @@ def verify_proved_artifacts(
                 raise MainValidationProofError(
                     "Windows alpha candidate packaged backtest verification failed"
                 ) from error
+            recomputed_nsis = _verify_candidate_nsis_provenance(
+                candidate_manifest=manifest,
+                candidate_root=root,
+                source_sha=commit_sha,
+                source_tree=tree_sha,
+                source_epoch=source_epoch,
+            )
+            if recomputed_nsis != stored_nsis:
+                raise MainValidationProofError(
+                    "Windows candidate NSIS provenance summary changed after proof"
+                )
+
+
+def verify_proved_candidate_nsis(
+    proof_value: object,
+    *,
+    candidate_root: Path,
+    candidate_attestation: object,
+) -> None:
+    """Reverify the exact proved Windows candidate and its NSIS semantics."""
+
+    proof = _object(proof_value, "proof")
+    if proof.get("schema") != SCHEMA:
+        raise MainValidationProofError(
+            "formal candidate NSIS verification requires the current proof schema"
+        )
+    proof_sha256 = _sha(proof.get("proof_sha256"), "proof_sha256")
+    unsigned = dict(proof)
+    del unsigned["proof_sha256"]
+    if _proof_digest(unsigned) != proof_sha256:
+        raise MainValidationProofError("proof digest does not match its contents")
+    commit_sha = _sha(proof.get("commit_sha"), "commit_sha", git=True)
+    tree_sha = _sha(proof.get("tree_sha"), "tree_sha", git=True)
+    source_epoch = _integer(proof.get("source_epoch"), "source_epoch")
+    if source_epoch > MAX_SOURCE_EPOCH:
+        raise MainValidationProofError("source_epoch exceeds the signed range")
+    evidence = _object(proof.get("validation_evidence"), "validation_evidence")
+    candidate_name = "windows-desktop-alpha-candidate-manifest"
+    candidate_manifest = _object(
+        evidence.get(candidate_name), "Windows candidate manifest"
+    )
+    stored_nsis = _bind_nsis_summary_to_candidate(
+        proof.get("nsis_repack"),
+        candidate_manifest=candidate_manifest,
+        source_sha=commit_sha,
+        source_tree=tree_sha,
+        source_epoch=source_epoch,
+    )
+    try:
+        verify_for_consumption(
+            candidate_manifest,
+            root=candidate_root,
+            expected_source_sha=commit_sha,
+            expected_source_tree=tree_sha,
+            attestation=_object(candidate_attestation, "candidate attestation"),
+        )
+        verify_artifact_root_closure(
+            candidate_manifest,
+            root=candidate_root,
+            artifact_name=candidate_name,
+        )
+    except (ManifestError, OSError) as error:
+        raise MainValidationProofError(
+            f"formal Windows candidate artifact verification failed: {error}"
+        ) from error
+    recomputed_nsis = _verify_candidate_nsis_provenance(
+        candidate_manifest=candidate_manifest,
+        candidate_root=candidate_root,
+        source_sha=commit_sha,
+        source_tree=tree_sha,
+        source_epoch=source_epoch,
+    )
+    if recomputed_nsis != stored_nsis:
+        raise MainValidationProofError(
+            "Windows candidate NSIS provenance summary changed after proof"
+        )
 
 
 def _load_json(path: Path, label: str) -> object:
@@ -1525,6 +1894,10 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Explicit rollback-only acceptance of the v1 proof schema.",
     )
+    candidate_nsis = subparsers.add_parser("verify-candidate-nsis")
+    candidate_nsis.add_argument("--proof", type=Path, required=True)
+    candidate_nsis.add_argument("--candidate-root", type=Path, required=True)
+    candidate_nsis.add_argument("--attestation", type=Path, required=True)
     return parser
 
 
@@ -1549,6 +1922,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
                     )
                     for workflow, run_id in runs.items()
                 }
+            evidence_paths = _parse_evidence_paths(options.evidence)
             proof = generate_proof(
                 repo_root=options.repo_root,
                 repository=options.repository,
@@ -1556,11 +1930,12 @@ def main(arguments: Sequence[str] | None = None) -> int:
                 api_evidence=api_evidence,
                 validation_evidence={
                     name: _load_json(path, f"{name} evidence")
-                    for name, path in _parse_evidence_paths(options.evidence).items()
+                    for name, path in evidence_paths.items()
                 },
+                validation_evidence_paths=evidence_paths,
             )
             _write_proof(options.output, proof)
-        else:
+        elif options.command == "verify":
             loaded_proof = _load_json(options.proof, "proof")
             verify_proof(
                 loaded_proof,
@@ -1568,6 +1943,14 @@ def main(arguments: Sequence[str] | None = None) -> int:
                 expected_repository=options.repository,
                 expected_ref=options.ref,
                 allow_legacy_v1=options.allow_legacy_v1,
+            )
+        else:
+            verify_proved_candidate_nsis(
+                _load_json(options.proof, "proof"),
+                candidate_root=options.candidate_root,
+                candidate_attestation=_load_json(
+                    options.attestation, "candidate attestation"
+                ),
             )
     except MainValidationProofError as error:
         print(f"main validation proof rejected: {error}", file=sys.stderr)

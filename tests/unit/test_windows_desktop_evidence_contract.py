@@ -65,13 +65,10 @@ def test_native_harness_installs_candidate_checks_shell_icons_and_exits_cleanly(
         "32 -32512",
         "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
         "WEBVIEW2_USER_DATA_FOLDER",
-        "Get-AvailableLoopbackPort",
         "Get-NetTCPConnection",
         "OwningProcess",
-        "--remote-debugging-port=$devToolsPort",
-        "--remote-debugging-address=127.0.0.1",
-        "packaged WebView2 CDP endpoint did not appear",
-        "CDP endpoint does not match the isolated browser identity",
+        "--remote-debugging-port=0",
+        "runtime-assigned WebView2 CDP endpoint did not appear",
         "shortcuts_share_host_identity = $true",
         "packaged_entries_match_reviewed_identity = $true",
         "graceful_exit = $true",
@@ -88,7 +85,7 @@ def test_native_harness_installs_candidate_checks_shell_icons_and_exits_cleanly(
     )
     assert first_run_cleanup < fixture_prepare < launch
     isolation = source.index("$env:WEBVIEW2_USER_DATA_FOLDER = $webviewUserData")
-    cdp_wait = source.index("$devToolsVersion = Wait-Until")
+    cdp_wait = source.index("$devToolsObservation = Wait-Until")
     listener_ownership = source.index("$devToolsListeners = @(")
     cdp_export = source.index("$env:STOCK_DESK_DESKTOP_CDP = $desktopCdp")
     assert isolation < launch < cdp_wait < listener_ownership < cdp_export
@@ -97,18 +94,19 @@ def test_native_harness_installs_candidate_checks_shell_icons_and_exits_cleanly(
     assert "--remote-allow-origins=*" not in source
     assert "http://127.0.0.1:9222" not in source
     assert "DevToolsActivePort" not in source
-    assert "[Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)" in source
-    assert "$listener.Stop()" in source
-    port_reservation = source.index("$devToolsPort = Get-AvailableLoopbackPort")
     browser_arguments = source.index(
-        '$env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=$devToolsPort'
+        '$env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=0"'
     )
     assert "[int]$devToolsPort = 0" in source
-    assert fixture_prepare < port_reservation < browser_arguments < launch
-    assert "selected loopback DevTools port is invalid" in source
+    assert fixture_prepare < browser_arguments < launch
+    assert "Get-AvailableLoopbackPort" not in source
+    assert "--remote-debugging-address" not in source
     assert "Test-RemoteDebuggingPortCommandLine" not in source
     assert "LocalAddress -eq '127.0.0.1'" in source
-    assert "isolated WebView2 process does not own the selected CDP listener" in source
+    assert (
+        "isolated WebView2 process does not own exactly one runtime-assigned CDP listener"
+        in source
+    )
     process_cleanup = source.index("Stop-Process -Id $desktopProcess.Id")
     udf_cleanup = source.rindex("Remove-Item -Recurse -Force $webviewUserData")
     assert process_cleanup < udf_cleanup
@@ -223,6 +221,34 @@ def test_native_harness_installs_candidate_checks_shell_icons_and_exits_cleanly(
     )
     assert "$webviewPolicyRootCreated" in source
     assert "$webviewEdgePolicyCreated" in source
+
+
+def test_webview_cdp_uses_runtime_assigned_owned_loopback_listener() -> None:
+    source = (ROOT / "scripts" / "capture_windows_desktop_evidence.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        'WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=0"' in source
+    )
+    assert "Get-AvailableLoopbackPort" not in source
+    assert "--remote-debugging-address" not in source
+    assert "Get-IsolatedWebViewProcesses $webviewUserData" in source
+    assert "Get-NetTCPConnection -State Listen" in source
+    assert "$_.OwningProcess" in source
+    assert 'Invoke-RestMethod -Uri "$candidateCdp/json/version"' in source
+    assert "runtime-assigned WebView2 CDP endpoint did not appear" in source
+
+    launch = source.index(
+        "$desktopProcess = [Diagnostics.Process]::Start($desktopStart)"
+    )
+    isolated_processes = source.index("$isolatedWebViews = @(", launch)
+    owned_listeners = source.index(
+        "Get-NetTCPConnection -State Listen", isolated_processes
+    )
+    endpoint_probe = source.index("$candidateCdp/json/version", owned_listeners)
+    cdp_export = source.index("$env:STOCK_DESK_DESKTOP_CDP = $desktopCdp")
+    assert launch < isolated_processes < owned_listeners < endpoint_probe < cdp_export
 
 
 def test_packaged_webview_matrix_is_explicitly_equivalent_not_real_os_dpi() -> None:

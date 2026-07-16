@@ -1,0 +1,247 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/CongBao/stock-desk/schemas/nsis-repack-kit-v1.schema.json",
+  "title": "Stock Desk content-addressed NSIS repack kit",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "artifact",
+    "kit_sha256",
+    "source_ref",
+    "source_sha",
+    "source_tree",
+    "source_epoch",
+    "transformation",
+    "toolchain",
+    "argv",
+    "environment",
+    "cleared_environment",
+    "files",
+    "expected_unsigned_installer",
+    "normalization"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "artifact": { "const": "stock-desk-nsis-repack-kit" },
+    "kit_sha256": { "$ref": "#/$defs/sha256" },
+    "source_ref": { "$ref": "#/$defs/sourceRef" },
+    "source_sha": { "$ref": "#/$defs/gitObject" },
+    "source_tree": { "$ref": "#/$defs/gitObject" },
+    "source_epoch": { "type": "integer", "minimum": 1, "maximum": 9223372036854775807 },
+    "transformation": { "$ref": "#/$defs/transformation" },
+    "toolchain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256",
+        "tauri_cli_version",
+        "nsis_version",
+        "nsis_tauri_utils_version",
+        "plugins",
+        "trust"
+      ],
+      "properties": {
+        "path": { "const": "toolchain/makensis.exe" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "tauri_cli_version": { "const": "2.11.4" },
+        "nsis_version": { "const": "3.11" },
+        "nsis_tauri_utils_version": { "const": "0.5.3" },
+        "plugins": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 128,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "path", "sha256"],
+            "properties": {
+              "name": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_.-]{0,63}$" },
+              "path": { "$ref": "#/$defs/path" },
+              "sha256": { "$ref": "#/$defs/sha256" }
+            }
+          }
+        },
+        "trust": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["lock_sha256", "tree"],
+          "properties": {
+            "lock_sha256": { "$ref": "#/$defs/sha256" },
+            "tree": { "$ref": "#/$defs/toolchainTree" }
+          }
+        }
+      }
+    },
+    "argv": {
+      "const": [
+        "-INPUTCHARSET",
+        "UTF8",
+        "-OUTPUTCHARSET",
+        "UTF8",
+        "-V3",
+        "installer.nsi"
+      ]
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["SOURCE_DATE_EPOCH", "TEMP", "TMP"],
+      "properties": {
+        "SOURCE_DATE_EPOCH": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[1-9][0-9]*$" },
+        "LANG": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "LC_ALL": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "TZ": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "TEMP": { "const": "@STOCK_DESK_PRIVATE_WORK@" },
+        "TMP": { "const": "@STOCK_DESK_PRIVATE_WORK@" }
+      }
+    },
+    "cleared_environment": { "const": ["NSISCONFDIR", "NSISDIR"] },
+    "files": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4096,
+      "items": { "$ref": "#/$defs/file" }
+    },
+    "expected_unsigned_installer": { "$ref": "#/$defs/output" },
+    "normalization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "raw_source_sha256", "structural_sha256", "normalized_sha256", "mapped_targets"],
+      "properties": {
+        "algorithm": { "const": "tauri-rendered-nsis-exact-path-map-v1" },
+        "raw_source_sha256": {
+          "description": "SHA-256 of the exact original Tauri-rendered installer.nsi before path normalization.",
+          "$ref": "#/$defs/sha256"
+        },
+        "structural_sha256": {
+          "description": "SHA-256 after replacing each declared absolute source with its deterministic target marker.",
+          "$ref": "#/$defs/sha256"
+        },
+        "normalized_sha256": { "$ref": "#/$defs/sha256" },
+        "mapped_targets": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 128,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["target", "occurrence_count"],
+            "properties": {
+              "target": { "$ref": "#/$defs/path" },
+              "occurrence_count": { "type": "integer", "minimum": 1 }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "gitObject": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "sourceRef": {
+      "type": "string",
+      "pattern": "^(?:refs/heads/main|refs/pull/[1-9][0-9]*/merge)(?![\\s\\S])"
+    },
+    "transformationIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["size", "sha256", "before_token_count", "after_token_count"],
+      "properties": {
+        "size": { "type": "integer", "minimum": 1, "maximum": 2147483648 },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "before_token_count": { "type": "integer", "minimum": 0, "maximum": 1 },
+        "after_token_count": { "type": "integer", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "transformation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "algorithm",
+        "transformation_sha256",
+        "source",
+        "payload_path",
+        "before_token",
+        "after_token",
+        "marker_offset",
+        "before",
+        "after"
+      ],
+      "properties": {
+        "algorithm": { "const": "tauri-bundle-type-unk-to-nss-v1" },
+        "transformation_sha256": { "$ref": "#/$defs/sha256" },
+        "source": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["tag", "commit", "path"],
+          "properties": {
+            "tag": { "const": "tauri-cli-v2.11.4" },
+            "commit": { "const": "8909f221d1515955fc843808032bdc5d62209c96" },
+            "path": { "const": "crates/tauri-bundler/src/bundle.rs" }
+          }
+        },
+        "payload_path": { "const": "payload/stock-desk-desktop.exe" },
+        "before_token": { "const": "__TAURI_BUNDLE_TYPE_VAR_UNK" },
+        "after_token": { "const": "__TAURI_BUNDLE_TYPE_VAR_NSS" },
+        "marker_offset": { "type": "integer", "minimum": 0, "maximum": 2147483621 },
+        "before": { "$ref": "#/$defs/transformationIdentity" },
+        "after": { "$ref": "#/$defs/transformationIdentity" }
+      }
+    },
+    "toolchainTree": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "file_count", "total_size", "sha256"],
+      "properties": {
+        "algorithm": { "const": "stock-desk-nsis-toolchain-tree-v1" },
+        "file_count": { "type": "integer", "minimum": 1, "maximum": 4096 },
+        "total_size": { "type": "integer", "minimum": 1, "maximum": 8589934592 },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.?(/|$))(?!.*\\\\)(?!.*:)(?!.*[. ](?:/|$))(?!.*(?:^|/)(?:[Cc][Oo][Nn]|[Pp][Rr][Nn]|[Aa][Uu][Xx]|[Nn][Uu][Ll]|[Cc][Oo][Mm][1-9]|[Ll][Pp][Tt][1-9])(?:\\.[^/]*)?(?:/|$))[^\\u0000-\\u001f]+$"
+    },
+    "file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "role", "size", "sha256", "executable"],
+      "properties": {
+        "path": { "$ref": "#/$defs/path" },
+        "role": {
+          "enum": [
+            "tauri-config",
+            "nsis-toolchain",
+            "nsis-plugin",
+            "nsis-template",
+            "nsis-rendered-script",
+            "nsis-include",
+            "nsis-hook",
+            "nsis-language",
+            "icon",
+            "webview2",
+            "payload"
+          ]
+        },
+        "size": { "type": "integer", "minimum": 0, "maximum": 2147483648 },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "executable": { "type": "boolean" }
+      }
+    },
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "size", "sha256"],
+      "properties": {
+        "path": { "$ref": "#/$defs/path" },
+        "size": { "type": "integer", "minimum": 1, "maximum": 2147483648 },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    }
+  }
+}

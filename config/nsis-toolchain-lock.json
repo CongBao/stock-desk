@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "tauri_cli": {
+    "version": "2.11.4",
+    "source_tag": "tauri-cli-v2.11.4",
+    "source_path": "crates/tauri-bundler/src/bundle/windows/nsis/mod.rs"
+  },
+  "nsis": {
+    "version": "3.11",
+    "url": "https://github.com/tauri-apps/binary-releases/releases/download/nsis-3.11/nsis-3.11.zip",
+    "sha1": "ef7ff767e5cbd9edd22add3a32c9b8f4500bb10d",
+    "sha256": "c7d27f780ddb6cffb4730138cd1591e841f4b7edb155856901cdf5f214394fa1"
+  },
+  "nsis_tauri_utils": {
+    "version": "0.5.3",
+    "url": "https://github.com/tauri-apps/nsis-tauri-utils/releases/download/nsis_tauri_utils-v0.5.3/nsis_tauri_utils.dll",
+    "sha1": "75197fee3c6a814fe035788d1c34ead39349b860",
+    "sha256": "5ba143b5db4a87d32d6e7802e033330aae56cbceabe0d1e3ba41948385ad4709"
+  },
+  "extracted_tree": {
+    "algorithm": "stock-desk-nsis-toolchain-tree-v1",
+    "file_count": 442,
+    "total_size": 7168591,
+    "sha256": "1baa63462557de9a7bdd3ef13534faf3ff38671f960de6ce30a87c5df5ec7866"
+  }
+}

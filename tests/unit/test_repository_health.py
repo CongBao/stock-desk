@@ -534,6 +534,130 @@ def test_stage_zero_ci_has_unique_shards_frontend_reports_and_one_oci_build() ->
     assert "attestation.json" not in _read(".github/workflows/ci.yml")
 
 
+def test_windows_candidate_binds_reproducible_nsis_repack_kit_without_new_family() -> (
+    None
+):
+    workflow = _load_github_actions_yaml(_read(".github/workflows/ci.yml"))
+    jobs = workflow["jobs"]
+    builder = jobs["windows-desktop-builder-a"]
+    names = [step.get("name") for step in builder["steps"]]
+    build_index = names.index("Build exact-SHA Windows desktop once")
+    repack_index = names.index("Capture and reproduce fixed NSIS repack kit")
+    cleanup_index = names.index("Clean candidate A build and test state")
+    assert build_index < repack_index < cleanup_index
+    repack = builder["steps"][repack_index]["run"]
+    for required in (
+        "nsis_repack_contract_integration.ps1",
+        "nsis-repack-kit",
+        "nsis-repack-verification",
+        "SourceEvent",
+        "SourceRef",
+        "SourceEpoch",
+        "GitHubSha",
+    ):
+        assert required in repack
+    assert (
+        "Get-ChildItem -LiteralPath (Join-Path $env:LOCALAPPDATA 'tauri') -Recurse"
+        not in repack
+    )
+
+    uploads = [
+        str(step.get("with", {}).get("name", ""))
+        for job in jobs.values()
+        for step in job.get("steps", [])
+        if isinstance(step, dict)
+        and str(step.get("uses", "")).startswith("actions/upload-artifact@")
+    ]
+    assert not any(name.startswith("nsis-repack-") for name in uploads)
+    assert any(name.startswith("windows-desktop-candidate-a-") for name in uploads)
+
+    compare = "\n".join(
+        str(step.get("run", ""))
+        for step in jobs["windows-desktop-compare"]["steps"]
+        if isinstance(step, dict)
+    )
+    for required in (
+        "scripts\\nsis_repack_contract.py verify-kit",
+        "nsis-repack-kit",
+        "repack-a-receipt.json",
+        "repack-b-receipt.json",
+        "verify-receipt",
+        "actualReceiptInventory",
+        "expectedReceiptInventory",
+        "--expected-kit-sha256 $leftKitSha",
+        "--expected-source-ref $env:GITHUB_REF",
+        "--expected-source-epoch $sourceEpoch",
+        "--expected-repack-slot $receiptSlot",
+        "$repackPayloadList",
+        "--payload-list $repackPayloadList",
+        "config/nsis-toolchain-lock.json=$toolchainLockHash",
+        "scripts/nsis_repack_contract.py=$repackContractHash",
+        "scripts/nsis_repack_producer.py=$repackProducerHash",
+        "scripts/secure_artifact_snapshot.py=$snapshotHash",
+        "schemas/nsis-repack-kit-v1.schema.json=$repackKitSchemaHash",
+        "schemas/nsis-repack-receipt-v1.schema.json=$repackReceiptSchemaHash",
+        "tests/windows/nsis_repack_contract_integration.ps1=$repackIntegrationHash",
+    ):
+        assert required in compare
+    assert "$repackPayloads" not in compare
+    assert "@repackPayloads" not in compare
+    assert "payload-list.json" not in _read(".github/workflows/ci.yml")
+    assert "windows-nsis-repack-payloads.json" in compare
+    assert "sort_keys=True" in compare
+    assert 'separators=(",", ":")' in compare
+    provenance_index = compare.index("verify-provenance-set")
+    manifest_index = compare.index("windows-desktop-alpha-candidate-manifest.json")
+    assert provenance_index < manifest_index
+    assert "Windows promotion requires the exact protected main push" in compare
+    assert "--expected-source-ref refs/heads/main" in compare
+
+    integration = _read("tests/windows/nsis_repack_contract_integration.ps1")
+    assert "nsis_repack_producer.py prepare-stage" in integration
+    assert "nsis_repack_producer.py verify-live-inputs" in integration
+    assert "Get-ChildItem -LiteralPath $snapshot -Recurse" not in integration
+    assert "$quotedAbsolute" not in integration
+    assert "$absoluteValues" not in integration
+    assert "$mappingIndex" not in integration
+    assert "captured/" not in integration
+    assert "$mappedRoles" not in integration
+    assert "function Copy-PrivateSnapshot" not in integration
+    assert "function Test-RelativeChild" not in integration
+    assert "verify-extracted-toolchain" not in integration
+    assert "patch-tauri-bundle-payload" not in integration
+    assert integration.count("nsis_repack_contract.py repack") == 2
+    assert integration.count("nsis_repack_contract.py verify-receipt") == 1
+    assert "$receiptPairs = @(" in integration
+    assert integration.count("[PSCustomObject]@{ Receipt =") == 2
+    assert "--receipt $pair.Receipt --kit $Kit --output $pair.Output" in integration
+    assert "$pair[0]" not in integration
+    assert "$pair[1]" not in integration
+    assert "$createKitJson = @(& $python" in integration
+    assert '($createKitJson -join "`n") | ConvertFrom-Json' in integration
+    assert "$expectedKitSha = [string]$createKitResult.kit_sha256" in integration
+    assert integration.count("--expected-kit-sha256 $expectedKitSha") == 5
+    assert integration.count("diagnose-repack-mismatch") == 1
+    assert integration.count("--repack-slot a") == 1
+    assert integration.count("--repack-slot b") == 1
+    assert "--expected-repack-slot $pair.Slot" in integration
+    assert "New-PrivateDirectory $EvidenceRoot" in integration
+    assert "New-PrivateDirectory $privateRepack" in integration
+    assert "independent fixed NSIS repacks are not byte-identical" in integration
+    assert "does not reproduce the original unsigned candidate" in integration
+    assert (
+        integration.count("native Windows $($case.Name) ADS fixture was not created")
+        == 1
+    )
+    assert "producer accepted a real named $($case.Name) ADS" in integration
+    assert "producer emitted state after ADS rejection" in integration
+    assert "Get-Item -LiteralPath $case.Selected -Stream $adsName" in integration
+    assert "[IO.File]::Delete($adsPath)" in integration
+    assert "SourceEvent is not GITHUB_EVENT_NAME" in integration
+    assert "SourceRef is not GITHUB_REF" in integration
+    assert "GitHubSha is not GITHUB_SHA" in integration
+    assert "Remove-Item -LiteralPath $captureRoot" in integration
+    assert "Remove-Item -LiteralPath $EvidenceRoot" not in integration
+
+
 def test_legacy_v100_builder_metadata_remains_auditable_but_unreachable() -> None:
     legacy_builder = _read("scripts/build_installer.py")
     release = _read(".github/workflows/release.yml")
@@ -1233,6 +1357,29 @@ def test_release_has_no_native_installer_build_entrypoint() -> None:
     } == set(workflow["jobs"])
     assert "scripts.build_installer" not in workflow_text
     assert "scripts.build_windows_desktop" not in workflow_text
+
+
+def test_formal_release_recomputes_proved_nsis_semantics_before_copying() -> None:
+    workflow = _load_github_actions_yaml(_read(".github/workflows/release.yml"))
+    steps = workflow["jobs"]["formal-inputs"]["steps"]
+    names = [step.get("name") for step in steps]
+    verify_name = "Verify exact proof, candidate attestation, and candidate bytes"
+    close_name = "Close canonical SignPath input without rebuilding payload"
+    assert names.index(verify_name) < names.index(close_name)
+    verify_command = str(
+        next(step for step in steps if step.get("name") == verify_name)["run"]
+    )
+    for required in (
+        "scripts/main_validation_proof.py verify-candidate-nsis",
+        '--proof "$PROOF_ROOT/proof.json"',
+        '--candidate-root "$CANDIDATE_ROOT"',
+        '--attestation "$CANDIDATE_ROOT/manifest-binding.json"',
+    ):
+        assert required in verify_command
+    close_command = str(
+        next(step for step in steps if step.get("name") == close_name)["run"]
+    )
+    assert 'cp "$CANDIDATE_ROOT/${installers[0]}"' in close_command
 
 
 def test_release_cannot_invoke_inno_or_legacy_platform_builds() -> None:

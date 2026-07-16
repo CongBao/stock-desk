@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/CongBao/stock-desk/schemas/nsis-repack-receipt-v1.schema.json",
+  "title": "Stock Desk deterministic NSIS repack receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "artifact",
+    "receipt_sha256",
+    "kit_sha256",
+    "transformation_sha256",
+    "repack_slot",
+    "source_ref",
+    "source_sha",
+    "source_tree",
+    "source_epoch",
+    "argv",
+    "environment",
+    "cleared_environment",
+    "output"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "artifact": { "const": "stock-desk-nsis-repack-receipt-v1" },
+    "receipt_sha256": { "$ref": "#/$defs/sha256" },
+    "kit_sha256": { "$ref": "#/$defs/sha256" },
+    "transformation_sha256": { "$ref": "#/$defs/sha256" },
+    "repack_slot": { "enum": ["a", "b"] },
+    "source_ref": { "$ref": "#/$defs/sourceRef" },
+    "source_sha": { "$ref": "#/$defs/gitObject" },
+    "source_tree": { "$ref": "#/$defs/gitObject" },
+    "source_epoch": { "type": "integer", "minimum": 1, "maximum": 9223372036854775807 },
+    "argv": {
+      "const": [
+        "-INPUTCHARSET",
+        "UTF8",
+        "-OUTPUTCHARSET",
+        "UTF8",
+        "-V3",
+        "installer.nsi"
+      ]
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["SOURCE_DATE_EPOCH", "TEMP", "TMP"],
+      "properties": {
+        "SOURCE_DATE_EPOCH": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[1-9][0-9]*$" },
+        "LANG": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "LC_ALL": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "TZ": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "TEMP": { "const": "@STOCK_DESK_PRIVATE_WORK@" },
+        "TMP": { "const": "@STOCK_DESK_PRIVATE_WORK@" }
+      }
+    },
+    "cleared_environment": { "const": ["NSISCONFDIR", "NSISDIR"] },
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "size", "sha256"],
+      "properties": {
+        "path": { "$ref": "#/$defs/path" },
+        "size": { "type": "integer", "minimum": 1, "maximum": 2147483648 },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "gitObject": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "sourceRef": {
+      "type": "string",
+      "pattern": "^(?:refs/heads/main|refs/pull/[1-9][0-9]*/merge)(?![\\s\\S])"
+    },
+    "path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.?(/|$))(?!.*\\\\)(?!.*:)(?!.*[. ](?:/|$))(?!.*(?:^|/)(?:[Cc][Oo][Nn]|[Pp][Rr][Nn]|[Aa][Uu][Xx]|[Nn][Uu][Ll]|[Cc][Oo][Mm][1-9]|[Ll][Pp][Tt][1-9])(?:\\.[^/]*)?(?:/|$))[^\\u0000-\\u001f]+$"
+    }
+  }
+}

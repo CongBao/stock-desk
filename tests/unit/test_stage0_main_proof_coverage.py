@@ -233,13 +233,13 @@ def test_workflow_evidence_rejects_inconsistent_pages(
         ),
         (
             lambda: proof._validate_repository_and_ref("owner/repo", "refs/heads/a//b"),
-            "canonical branch ref",
+            "refs/heads/main",
         ),
         (
             lambda: proof._validate_repository_and_ref(
                 "owner/repo", "refs/heads/a/../b"
             ),
-            "canonical branch ref",
+            "refs/heads/main",
         ),
     ],
 )

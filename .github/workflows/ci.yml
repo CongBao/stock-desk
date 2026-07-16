@@ -296,6 +296,7 @@ jobs:
       - name: Execute Windows standard-user data contracts
         run: |
           uv run --frozen pytest -W error tests/integration/test_windows_runtime_acl.py
+          uv run --frozen pytest -W error tests/unit/test_nsis_repack_contract.py::test_create_and_verify_content_addressed_kit
           uv run --frozen pytest -W error tests/unit/storage/test_backup.py -k restore_journal
           uv run --frozen pytest -W error tests/unit/test_trusted_updater_release.py -k windows_production
       - name: Build exact-SHA Windows desktop once
@@ -310,6 +311,27 @@ jobs:
           if ((git rev-parse HEAD) -ne $env:SOURCE_SHA) { throw 'checkout is not SOURCE_SHA' }
           uv run --frozen python scripts/build_windows_desktop.py 2>&1 | Tee-Object (Join-Path $diagnostics 'build.log')
           if ($LASTEXITCODE -ne 0) { throw 'Windows desktop build failed' }
+      - name: Capture and reproduce fixed NSIS repack kit
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          if ((git rev-parse HEAD) -cne $env:SOURCE_SHA) { throw 'checkout is not SOURCE_SHA' }
+          $tauriVersion = (& pnpm exec tauri --version).Trim()
+          if ($LASTEXITCODE -ne 0 -or $tauriVersion -cnotmatch '(^|\s)2\.11\.4$') { throw "unexpected Tauri CLI version: $tauriVersion" }
+          $root = Join-Path $env:RUNNER_TEMP 'windows-desktop-a'
+          $artifact = Join-Path $root 'artifact'
+          New-Item -ItemType Directory -Force $artifact | Out-Null
+          & tests\windows\nsis_repack_contract_integration.ps1 `
+            -Kit (Join-Path $artifact 'nsis-repack-kit') `
+            -EvidenceRoot (Join-Path $artifact 'nsis-repack-verification') `
+            -DiagnosticsRoot (Join-Path $root 'diagnostics') `
+            -SourceEvent $env:GITHUB_EVENT_NAME `
+            -SourceRef $env:GITHUB_REF `
+            -SourceSha $env:SOURCE_SHA -SourceTree (git rev-parse 'HEAD^{tree}') `
+            -SourceEpoch ([long](git show -s --format=%ct HEAD)) `
+            -GitHubSha $env:GITHUB_SHA
+          if ($LASTEXITCODE -ne 0) { throw 'fixed NSIS repack integration failed' }
       - name: Safely unpack and verify candidate A
         shell: pwsh
         run: |
@@ -624,7 +646,7 @@ jobs:
     needs: [impact, windows-desktop-builder-a, windows-desktop-builder-b]
     if: github.event_name == 'push' && needs.windows-desktop-builder-a.result == 'success' && needs.windows-desktop-builder-b.result == 'success'
     runs-on: windows-2025
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - name: Initialize comparison diagnostics
         shell: pwsh
@@ -689,6 +711,33 @@ jobs:
           foreach ($name in $requiredBacktestEvidence) {
             if (-not (Test-Path -LiteralPath (Join-Path $leftEvidence $name) -PathType Leaf)) { throw "candidate A is missing packaged backtest evidence: $name" }
           }
+          $leftArtifact = Split-Path $left.Manifest -Parent
+          $leftRepackKit = Join-Path $leftArtifact 'nsis-repack-kit'
+          $leftRepackEvidence = Join-Path $leftArtifact 'nsis-repack-verification'
+          $leftKitManifest = Get-Content -LiteralPath (Join-Path $leftRepackKit 'nsis-repack-kit.json') -Raw | ConvertFrom-Json
+          $leftKitSha = [string]$leftKitManifest.kit_sha256
+          $sourceEpoch = [long](git show -s --format=%ct HEAD)
+          if ($leftKitSha -cnotmatch '^[0-9a-f]{64}$') { throw 'candidate A NSIS repack kit SHA-256 is invalid' }
+          uv run --frozen python scripts\nsis_repack_contract.py verify-kit --kit $leftRepackKit --expected-source-ref $env:GITHUB_REF --expected-source-sha $env:SOURCE_SHA --expected-source-tree (git rev-parse 'HEAD^{tree}') --expected-source-epoch $sourceEpoch --expected-kit-sha256 $leftKitSha
+          if ($LASTEXITCODE -ne 0) { throw 'candidate A NSIS repack kit is invalid' }
+          $leftInstallerHash = (Get-FileHash -LiteralPath $left.Installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          $receiptRoot = Get-Item -LiteralPath $leftRepackEvidence -Force
+          if (-not $receiptRoot.PSIsContainer -or ($receiptRoot.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'candidate A NSIS repack evidence root is unsafe' }
+          $receiptEntries = @(Get-ChildItem -LiteralPath $leftRepackEvidence -Force)
+          $expectedReceiptNames = @('repack-a-receipt.json','repack-b-receipt.json')
+          $actualReceiptInventory = @($receiptEntries | Where-Object { -not $_.PSIsContainer -and ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0 } | ForEach-Object Name | Sort-Object) -join "`n"
+          $expectedReceiptInventory = @($expectedReceiptNames | Sort-Object) -join "`n"
+          if (
+            $receiptEntries.Count -ne 2 -or
+            $actualReceiptInventory -cne $expectedReceiptInventory
+          ) { throw 'candidate A NSIS repack evidence root is not exact and source-free' }
+          foreach ($receiptName in $expectedReceiptNames) {
+            $receiptPath = Join-Path $leftRepackEvidence $receiptName
+            if (-not (Test-Path -LiteralPath $receiptPath -PathType Leaf)) { throw "candidate A is missing NSIS repack receipt: $receiptName" }
+            $receiptSlot = if ($receiptName -ceq 'repack-a-receipt.json') { 'a' } else { 'b' }
+            uv run --frozen python scripts\nsis_repack_contract.py verify-receipt --receipt $receiptPath --kit $leftRepackKit --output $left.Installer --expected-repack-slot $receiptSlot --expected-source-ref $env:GITHUB_REF --expected-source-sha $env:SOURCE_SHA --expected-source-tree (git rev-parse 'HEAD^{tree}') --expected-source-epoch $sourceEpoch --expected-kit-sha256 $leftKitSha
+            if ($LASTEXITCODE -ne 0) { throw "candidate A NSIS repack receipt is invalid: $receiptName" }
+          }
           $tauriConfig = Get-Content -LiteralPath 'src-tauri\tauri.conf.json' -Raw | ConvertFrom-Json
           $releaseVersion = $tauriConfig.version
           if ($releaseVersion -match '^1\.1\.0-(alpha|beta)\.[1-9][0-9]*$') { $releaseChannel = 'prerelease' }
@@ -710,15 +759,55 @@ jobs:
           $packaged = Join-Path $promoted 'packaged-backtest'
           New-Item -ItemType Directory -Force $packaged | Out-Null
           foreach ($name in $requiredBacktestEvidence) { Copy-Item (Join-Path $leftEvidence $name) (Join-Path $packaged $name) }
+          Copy-Item -LiteralPath $leftRepackKit -Destination (Join-Path $promoted 'nsis-repack-kit') -Recurse
+          Copy-Item -LiteralPath $leftRepackEvidence -Destination (Join-Path $promoted 'nsis-repack-verification') -Recurse
+          if (
+            $env:GITHUB_EVENT_NAME -cne 'push' -or
+            $env:GITHUB_REF -cne 'refs/heads/main' -or
+            $env:GITHUB_SHA -cne $env:SOURCE_SHA
+          ) { throw 'Windows promotion requires the exact protected main push' }
+          uv run --frozen python scripts\nsis_repack_contract.py verify-provenance-set --candidate-root $promoted --installer (Join-Path $promoted $installerName) --expected-source-ref refs/heads/main --expected-source-sha $env:SOURCE_SHA --expected-source-tree (git rev-parse 'HEAD^{tree}') --expected-source-epoch $sourceEpoch --expected-kit-sha256 $leftKitSha > (Join-Path $diagnostics 'nsis-provenance-summary.json')
+          if ($LASTEXITCODE -ne 0) { throw 'promoted NSIS provenance set is invalid' }
           $candidateHash = (Get-FileHash (Join-Path $promoted $installerName) -Algorithm SHA256).Hash.ToLowerInvariant()
           uv run --frozen python scripts\verify_packaged_backtest_evidence.py (Join-Path $packaged 'packaged-backtest-evidence.json') --seed (Join-Path $packaged 'packaged-backtest-seed.json') --host-observation (Join-Path $packaged 'packaged-backtest-host-observation.json') --desktop-manifest (Join-Path $packaged 'windows-desktop-evidence.json') --installer (Join-Path $promoted $installerName) --bundle-manifest (Join-Path $promoted 'windows-desktop-bundle.json') --comparison (Join-Path $promoted 'windows-payload-comparison.json') --promotion-root $promoted --output-promotion (Join-Path $packaged 'windows-packaged-backtest-promotion.json') --source-sha $env:SOURCE_SHA --source-tree (git rev-parse 'HEAD^{tree}') --candidate-sha256 $candidateHash
           if ($LASTEXITCODE -ne 0) { throw 'promoted packaged backtest evidence verification failed' }
-          $tree = git rev-parse 'HEAD^{tree}'; $cargoLock=(Get-FileHash src-tauri\Cargo.lock -Algorithm SHA256).Hash.ToLowerInvariant(); $cargoToml=(Get-FileHash src-tauri\Cargo.toml -Algorithm SHA256).Hash.ToLowerInvariant(); $ciHash=(Get-FileHash .github\workflows\ci.yml -Algorithm SHA256).Hash.ToLowerInvariant(); $buildHash=(Get-FileHash scripts\build_windows_desktop.py -Algorithm SHA256).Hash.ToLowerInvariant(); $verifyHash=(Get-FileHash scripts\verify_windows_desktop_bundle.py -Algorithm SHA256).Hash.ToLowerInvariant(); $compareHash=(Get-FileHash scripts\compare_windows_payloads.py -Algorithm SHA256).Hash.ToLowerInvariant(); $tauriHash=(Get-FileHash src-tauri\tauri.conf.json -Algorithm SHA256).Hash.ToLowerInvariant(); $tauriWindowsHash=(Get-FileHash src-tauri\tauri.windows.conf.json -Algorithm SHA256).Hash.ToLowerInvariant(); $sidecarSpecHash=(Get-FileHash packaging\stock-desk-sidecar.spec -Algorithm SHA256).Hash.ToLowerInvariant(); $nsisHash=(Get-FileHash packaging\nsis\installer.nsi -Algorithm SHA256).Hash.ToLowerInvariant(); $installerHooksHash=(Get-FileHash packaging\nsis\installer-hooks.nsh -Algorithm SHA256).Hash.ToLowerInvariant(); $englishLanguageHash=(Get-FileHash packaging\nsis\languages\English.nsh -Algorithm SHA256).Hash.ToLowerInvariant(); $simplifiedChineseLanguageHash=(Get-FileHash packaging\nsis\languages\SimpChinese.nsh -Algorithm SHA256).Hash.ToLowerInvariant(); $mainRsHash=(Get-FileHash src-tauri\src\main.rs -Algorithm SHA256).Hash.ToLowerInvariant(); $uninstallRsHash=(Get-FileHash src-tauri\src\uninstall.rs -Algorithm SHA256).Hash.ToLowerInvariant(); $privacyVerifierHash=(Get-FileHash scripts\verify_zero_telemetry.py -Algorithm SHA256).Hash.ToLowerInvariant(); $privacyPolicyHash=(Get-FileHash config\desktop-network-privacy.json -Algorithm SHA256).Hash.ToLowerInvariant()
+          $tree = git rev-parse 'HEAD^{tree}'; $cargoLock=(Get-FileHash src-tauri\Cargo.lock -Algorithm SHA256).Hash.ToLowerInvariant(); $cargoToml=(Get-FileHash src-tauri\Cargo.toml -Algorithm SHA256).Hash.ToLowerInvariant(); $ciHash=(Get-FileHash .github\workflows\ci.yml -Algorithm SHA256).Hash.ToLowerInvariant(); $buildHash=(Get-FileHash scripts\build_windows_desktop.py -Algorithm SHA256).Hash.ToLowerInvariant(); $verifyHash=(Get-FileHash scripts\verify_windows_desktop_bundle.py -Algorithm SHA256).Hash.ToLowerInvariant(); $compareHash=(Get-FileHash scripts\compare_windows_payloads.py -Algorithm SHA256).Hash.ToLowerInvariant(); $tauriHash=(Get-FileHash src-tauri\tauri.conf.json -Algorithm SHA256).Hash.ToLowerInvariant(); $tauriWindowsHash=(Get-FileHash src-tauri\tauri.windows.conf.json -Algorithm SHA256).Hash.ToLowerInvariant(); $sidecarSpecHash=(Get-FileHash packaging\stock-desk-sidecar.spec -Algorithm SHA256).Hash.ToLowerInvariant(); $nsisHash=(Get-FileHash packaging\nsis\installer.nsi -Algorithm SHA256).Hash.ToLowerInvariant(); $installerHooksHash=(Get-FileHash packaging\nsis\installer-hooks.nsh -Algorithm SHA256).Hash.ToLowerInvariant(); $englishLanguageHash=(Get-FileHash packaging\nsis\languages\English.nsh -Algorithm SHA256).Hash.ToLowerInvariant(); $simplifiedChineseLanguageHash=(Get-FileHash packaging\nsis\languages\SimpChinese.nsh -Algorithm SHA256).Hash.ToLowerInvariant(); $mainRsHash=(Get-FileHash src-tauri\src\main.rs -Algorithm SHA256).Hash.ToLowerInvariant(); $uninstallRsHash=(Get-FileHash src-tauri\src\uninstall.rs -Algorithm SHA256).Hash.ToLowerInvariant(); $privacyVerifierHash=(Get-FileHash scripts\verify_zero_telemetry.py -Algorithm SHA256).Hash.ToLowerInvariant(); $privacyPolicyHash=(Get-FileHash config\desktop-network-privacy.json -Algorithm SHA256).Hash.ToLowerInvariant(); $repackContractHash=(Get-FileHash scripts\nsis_repack_contract.py -Algorithm SHA256).Hash.ToLowerInvariant(); $repackProducerHash=(Get-FileHash scripts\nsis_repack_producer.py -Algorithm SHA256).Hash.ToLowerInvariant(); $snapshotHash=(Get-FileHash scripts\secure_artifact_snapshot.py -Algorithm SHA256).Hash.ToLowerInvariant(); $repackKitSchemaHash=(Get-FileHash schemas\nsis-repack-kit-v1.schema.json -Algorithm SHA256).Hash.ToLowerInvariant(); $repackReceiptSchemaHash=(Get-FileHash schemas\nsis-repack-receipt-v1.schema.json -Algorithm SHA256).Hash.ToLowerInvariant(); $repackIntegrationHash=(Get-FileHash tests\windows\nsis_repack_contract_integration.ps1 -Algorithm SHA256).Hash.ToLowerInvariant()
+          $toolchainLockHash=(Get-FileHash config\nsis-toolchain-lock.json -Algorithm SHA256).Hash.ToLowerInvariant()
           $updaterRsHash=(Get-FileHash src-tauri\src\updater.rs -Algorithm SHA256).Hash.ToLowerInvariant(); $updaterJournalHash=(Get-FileHash src-tauri\src\updater_journal.rs -Algorithm SHA256).Hash.ToLowerInvariant(); $updaterTransportHash=(Get-FileHash src-tauri\src\updater_transport.rs -Algorithm SHA256).Hash.ToLowerInvariant(); $updaterWindowsHash=(Get-FileHash src-tauri\src\updater_windows.rs -Algorithm SHA256).Hash.ToLowerInvariant(); $updaterRuntimeConfigHash=(Get-FileHash config\tauri-updater-runtime.json -Algorithm SHA256).Hash.ToLowerInvariant(); $updaterContractHash=(Get-FileHash scripts\trusted_updater_release.py -Algorithm SHA256).Hash.ToLowerInvariant(); $updaterSchemaHash=(Get-FileHash schemas\trusted-updater-release-v1.schema.json -Algorithm SHA256).Hash.ToLowerInvariant()
           $captureHash=(Get-FileHash scripts\capture_windows_desktop_evidence.ps1 -Algorithm SHA256).Hash.ToLowerInvariant(); $desktopWebviewHash=(Get-FileHash scripts\windows_desktop_webview_evidence.mjs -Algorithm SHA256).Hash.ToLowerInvariant(); $backtestWebviewHash=(Get-FileHash scripts\windows_packaged_backtest_evidence.mjs -Algorithm SHA256).Hash.ToLowerInvariant(); $backtestSeedHash=(Get-FileHash scripts\prepare_windows_packaged_backtest_evidence.py -Algorithm SHA256).Hash.ToLowerInvariant(); $backtestSemanticsHash=(Get-FileHash scripts\capture_packaged_backtest_semantics.py -Algorithm SHA256).Hash.ToLowerInvariant(); $backtestVerifierHash=(Get-FileHash scripts\verify_packaged_backtest_evidence.py -Algorithm SHA256).Hash.ToLowerInvariant(); $backtestSchemaHash=(Get-FileHash schemas\packaged-backtest-evidence-v1.schema.json -Algorithm SHA256).Hash.ToLowerInvariant(); $backtestHostSchemaHash=(Get-FileHash schemas\packaged-backtest-host-observation-v1.schema.json -Algorithm SHA256).Hash.ToLowerInvariant(); $backtestPromotionSchemaHash=(Get-FileHash schemas\windows-packaged-backtest-promotion-v1.schema.json -Algorithm SHA256).Hash.ToLowerInvariant(); $oracleHash=(Get-FileHash tests\fixtures\backtest\v1_0_oracle.json -Algorithm SHA256).Hash.ToLowerInvariant(); $oracleInputsHash=(Get-FileHash tests\fixtures\backtest\v1_0_oracle_inputs.json -Algorithm SHA256).Hash.ToLowerInvariant(); $oracleGeneratorHash=(Get-FileHash scripts\v1_backtest_oracle.py -Algorithm SHA256).Hash.ToLowerInvariant(); $mainProofHash=(Get-FileHash scripts\main_validation_proof.py -Algorithm SHA256).Hash.ToLowerInvariant()
-          $critical = @('--critical-input', ".github/workflows/ci.yml=$ciHash", '--critical-input', "scripts/build_windows_desktop.py=$buildHash", '--critical-input', "scripts/verify_windows_desktop_bundle.py=$verifyHash", '--critical-input', "scripts/compare_windows_payloads.py=$compareHash", '--critical-input', "src-tauri/tauri.conf.json=$tauriHash", '--critical-input', "src-tauri/tauri.windows.conf.json=$tauriWindowsHash", '--critical-input', "src-tauri/Cargo.toml=$cargoToml", '--critical-input', "src-tauri/src/main.rs=$mainRsHash", '--critical-input', "src-tauri/src/updater.rs=$updaterRsHash", '--critical-input', "src-tauri/src/updater_journal.rs=$updaterJournalHash", '--critical-input', "src-tauri/src/updater_transport.rs=$updaterTransportHash", '--critical-input', "src-tauri/src/updater_windows.rs=$updaterWindowsHash", '--critical-input', "config/tauri-updater-runtime.json=$updaterRuntimeConfigHash", '--critical-input', "src-tauri/src/uninstall.rs=$uninstallRsHash", '--critical-input', "packaging/stock-desk-sidecar.spec=$sidecarSpecHash", '--critical-input', "packaging/nsis/installer.nsi=$nsisHash", '--critical-input', "packaging/nsis/installer-hooks.nsh=$installerHooksHash", '--critical-input', "packaging/nsis/languages/English.nsh=$englishLanguageHash", '--critical-input', "packaging/nsis/languages/SimpChinese.nsh=$simplifiedChineseLanguageHash", '--critical-input', "scripts/verify_zero_telemetry.py=$privacyVerifierHash", '--critical-input', "scripts/trusted_updater_release.py=$updaterContractHash", '--critical-input', "schemas/trusted-updater-release-v1.schema.json=$updaterSchemaHash", '--critical-input', "config/desktop-network-privacy.json=$privacyPolicyHash", '--critical-input', "scripts/capture_windows_desktop_evidence.ps1=$captureHash", '--critical-input', "scripts/windows_desktop_webview_evidence.mjs=$desktopWebviewHash", '--critical-input', "scripts/windows_packaged_backtest_evidence.mjs=$backtestWebviewHash", '--critical-input', "scripts/prepare_windows_packaged_backtest_evidence.py=$backtestSeedHash", '--critical-input', "scripts/capture_packaged_backtest_semantics.py=$backtestSemanticsHash", '--critical-input', "scripts/verify_packaged_backtest_evidence.py=$backtestVerifierHash", '--critical-input', "schemas/packaged-backtest-evidence-v1.schema.json=$backtestSchemaHash", '--critical-input', "schemas/packaged-backtest-host-observation-v1.schema.json=$backtestHostSchemaHash", '--critical-input', "schemas/windows-packaged-backtest-promotion-v1.schema.json=$backtestPromotionSchemaHash", '--critical-input', "tests/fixtures/backtest/v1_0_oracle.json=$oracleHash", '--critical-input', "tests/fixtures/backtest/v1_0_oracle_inputs.json=$oracleInputsHash", '--critical-input', "scripts/v1_backtest_oracle.py=$oracleGeneratorHash", '--critical-input', "scripts/main_validation_proof.py=$mainProofHash")
+          $critical = @('--critical-input', ".github/workflows/ci.yml=$ciHash", '--critical-input', "scripts/build_windows_desktop.py=$buildHash", '--critical-input', "scripts/verify_windows_desktop_bundle.py=$verifyHash", '--critical-input', "scripts/compare_windows_payloads.py=$compareHash", '--critical-input', "src-tauri/tauri.conf.json=$tauriHash", '--critical-input', "src-tauri/tauri.windows.conf.json=$tauriWindowsHash", '--critical-input', "src-tauri/Cargo.toml=$cargoToml", '--critical-input', "src-tauri/src/main.rs=$mainRsHash", '--critical-input', "src-tauri/src/updater.rs=$updaterRsHash", '--critical-input', "src-tauri/src/updater_journal.rs=$updaterJournalHash", '--critical-input', "src-tauri/src/updater_transport.rs=$updaterTransportHash", '--critical-input', "src-tauri/src/updater_windows.rs=$updaterWindowsHash", '--critical-input', "config/tauri-updater-runtime.json=$updaterRuntimeConfigHash", '--critical-input', "src-tauri/src/uninstall.rs=$uninstallRsHash", '--critical-input', "packaging/stock-desk-sidecar.spec=$sidecarSpecHash", '--critical-input', "packaging/nsis/installer.nsi=$nsisHash", '--critical-input', "packaging/nsis/installer-hooks.nsh=$installerHooksHash", '--critical-input', "packaging/nsis/languages/English.nsh=$englishLanguageHash", '--critical-input', "packaging/nsis/languages/SimpChinese.nsh=$simplifiedChineseLanguageHash", '--critical-input', "scripts/verify_zero_telemetry.py=$privacyVerifierHash", '--critical-input', "scripts/trusted_updater_release.py=$updaterContractHash", '--critical-input', "schemas/trusted-updater-release-v1.schema.json=$updaterSchemaHash", '--critical-input', "config/desktop-network-privacy.json=$privacyPolicyHash", '--critical-input', "config/nsis-toolchain-lock.json=$toolchainLockHash", '--critical-input', "scripts/capture_windows_desktop_evidence.ps1=$captureHash", '--critical-input', "scripts/windows_desktop_webview_evidence.mjs=$desktopWebviewHash", '--critical-input', "scripts/windows_packaged_backtest_evidence.mjs=$backtestWebviewHash", '--critical-input', "scripts/prepare_windows_packaged_backtest_evidence.py=$backtestSeedHash", '--critical-input', "scripts/capture_packaged_backtest_semantics.py=$backtestSemanticsHash", '--critical-input', "scripts/verify_packaged_backtest_evidence.py=$backtestVerifierHash", '--critical-input', "schemas/packaged-backtest-evidence-v1.schema.json=$backtestSchemaHash", '--critical-input', "schemas/packaged-backtest-host-observation-v1.schema.json=$backtestHostSchemaHash", '--critical-input', "schemas/windows-packaged-backtest-promotion-v1.schema.json=$backtestPromotionSchemaHash", '--critical-input', "tests/fixtures/backtest/v1_0_oracle.json=$oracleHash", '--critical-input', "tests/fixtures/backtest/v1_0_oracle_inputs.json=$oracleInputsHash", '--critical-input', "scripts/v1_backtest_oracle.py=$oracleGeneratorHash", '--critical-input', "scripts/main_validation_proof.py=$mainProofHash", '--critical-input', "scripts/nsis_repack_contract.py=$repackContractHash", '--critical-input', "scripts/nsis_repack_producer.py=$repackProducerHash", '--critical-input', "scripts/secure_artifact_snapshot.py=$snapshotHash", '--critical-input', "schemas/nsis-repack-kit-v1.schema.json=$repackKitSchemaHash", '--critical-input', "schemas/nsis-repack-receipt-v1.schema.json=$repackReceiptSchemaHash", '--critical-input', "tests/windows/nsis_repack_contract_integration.ps1=$repackIntegrationHash")
           uv run --frozen python scripts/artifact_manifest.py create --root $evidence --output (Join-Path $evidence 'windows-payload-comparison-manifest.json') --source-sha $env:SOURCE_SHA --source-tree $tree --workflow CI --run-id $env:GITHUB_RUN_ID --run-attempt $env:GITHUB_RUN_ATTEMPT --job-id windows-desktop-compare --job-name 'Compare independent Windows desktop candidates' --payload 'windows-payload-comparison.json:provenance' @critical --toolchain "python=$env:PYTHON_VERSION" --lockfile "src-tauri/Cargo.lock=$cargoLock"
-          uv run --frozen python scripts/artifact_manifest.py create --root $promoted --output (Join-Path $promoted 'windows-desktop-alpha-candidate-manifest.json') --source-sha $env:SOURCE_SHA --source-tree $tree --workflow CI --run-id $env:GITHUB_RUN_ID --run-attempt $env:GITHUB_RUN_ATTEMPT --job-id windows-desktop-compare --job-name 'Compare independent Windows desktop candidates' --payload "${installerName}:tauri-unsigned" --payload 'windows-desktop-bundle.json:provenance' --payload 'builder-a-provenance.json:provenance' --payload 'windows-payload-comparison.json:provenance' --payload 'packaged-backtest/windows-desktop-evidence.json:provenance' --payload 'packaged-backtest/tauri-webview-evidence.json:provenance' --payload 'packaged-backtest/packaged-backtest-evidence.json:provenance' --payload 'packaged-backtest/packaged-backtest-seed.json:provenance' --payload 'packaged-backtest/packaged-backtest-host-observation.json:provenance' --payload 'packaged-backtest/windows-packaged-backtest-promotion.json:provenance' @critical --toolchain "python=$env:PYTHON_VERSION" --lockfile "src-tauri/Cargo.lock=$cargoLock" --cargo-lock-sha256 $cargoLock
+          $repackPayloadList = Join-Path $env:RUNNER_TEMP 'windows-nsis-repack-payloads.json'
+          $payloadListScript = @'
+          import json
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1]).resolve(strict=True)
+          output = Path(sys.argv[2])
+          kit = root / "nsis-repack-kit"
+          payloads = []
+          for path in kit.rglob("*"):
+              if path.is_symlink():
+                  raise SystemExit(f"NSIS repack payload list contains a link: {path}")
+              if path.is_file():
+                  payloads.append(
+                      {"path": path.relative_to(root).as_posix(), "kind": "provenance"}
+                  )
+          for receipt in ("repack-a-receipt.json", "repack-b-receipt.json"):
+              payloads.append(
+                  {"path": f"nsis-repack-verification/{receipt}", "kind": "provenance"}
+              )
+          document = {"schema_version": 1, "payloads": sorted(payloads, key=lambda item: item["path"])}
+          output.write_text(
+              json.dumps(document, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n",
+              encoding="utf-8",
+              newline="",
+          )
+          '@
+          $payloadListScript | uv run --frozen python - $promoted $repackPayloadList
+          if ($LASTEXITCODE -ne 0) { throw 'canonical NSIS repack payload list creation failed' }
+          uv run --frozen python scripts/artifact_manifest.py create --root $promoted --output (Join-Path $promoted 'windows-desktop-alpha-candidate-manifest.json') --source-sha $env:SOURCE_SHA --source-tree $tree --workflow CI --run-id $env:GITHUB_RUN_ID --run-attempt $env:GITHUB_RUN_ATTEMPT --job-id windows-desktop-compare --job-name 'Compare independent Windows desktop candidates' --payload "${installerName}:tauri-unsigned" --payload 'windows-desktop-bundle.json:provenance' --payload 'builder-a-provenance.json:provenance' --payload 'windows-payload-comparison.json:provenance' --payload 'packaged-backtest/windows-desktop-evidence.json:provenance' --payload 'packaged-backtest/tauri-webview-evidence.json:provenance' --payload 'packaged-backtest/packaged-backtest-evidence.json:provenance' --payload 'packaged-backtest/packaged-backtest-seed.json:provenance' --payload 'packaged-backtest/packaged-backtest-host-observation.json:provenance' --payload 'packaged-backtest/windows-packaged-backtest-promotion.json:provenance' --payload-list $repackPayloadList @critical --toolchain "python=$env:PYTHON_VERSION" --lockfile "src-tauri/Cargo.lock=$cargoLock" --cargo-lock-sha256 $cargoLock
           $bindingScript = @'
           import json
           from pathlib import Path

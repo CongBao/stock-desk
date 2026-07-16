@@ -22,6 +22,19 @@ LOCAL_REPRODUCIBLE_TIMESTAMP_PATCH = (
     b"; Do not serialize those host timestamps into the otherwise identical payload.\n"
     b"SetDateSave off\n\n"
 )
+UPSTREAM_RESOURCE_FILE_LINE = (
+    b'    File /a "/oname={{this.[1]}}" "{{no-escape @key}}"\n'
+)
+LOCAL_RESOURCE_FILE_LINE = b'    File "/oname={{this.[1]}}" "{{no-escape @key}}"\n'
+UPSTREAM_BINARY_FILE_LINE = b'    File /a "/oname={{this}}" "{{no-escape @key}}"\n'
+LOCAL_BINARY_FILE_LINE = b'    File "/oname={{this}}" "{{no-escape @key}}"\n'
+LOCAL_WEBVIEW_GUARD_OPEN = b"      {{#if webview2_bootstrapper_path}}\n"
+LOCAL_WEBVIEW_GUARD_CLOSE = (
+    b'      {{/if}}\n\n      !if "${INSTALLWEBVIEW2MODE}" == "offlineInstaller"\n'
+)
+UPSTREAM_WEBVIEW_GUARD_CLOSE = (
+    b'\n      !if "${INSTALLWEBVIEW2MODE}" == "offlineInstaller"\n'
+)
 USER_DATA_ROOT = r"$LOCALAPPDATA\Stock Desk\v1.1"
 LEGACY_DATA_ROOT = r"$LOCALAPPDATA\stock-desk"
 WEBVIEW2_PRODUCTION_GUID = "{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
@@ -32,14 +45,24 @@ def _config() -> dict[str, object]:
     return json.loads(TAURI_CONFIG.read_text(encoding="utf-8"))
 
 
-def test_custom_nsis_template_has_only_the_two_auditable_local_patches() -> None:
+def test_custom_nsis_template_has_only_the_four_auditable_local_patches() -> None:
     local = NSIS_TEMPLATE.read_bytes()
 
     assert local.count(LOCAL_INSTALL_LINE) == 1
     assert UPSTREAM_INSTALL_LINE not in local
     assert local.count(LOCAL_REPRODUCIBLE_TIMESTAMP_PATCH) == 1
-    reconstructed = local.replace(LOCAL_REPRODUCIBLE_TIMESTAMP_PATCH, b"").replace(
-        LOCAL_INSTALL_LINE, UPSTREAM_INSTALL_LINE
+    assert local.count(LOCAL_RESOURCE_FILE_LINE) == 1
+    assert local.count(LOCAL_BINARY_FILE_LINE) == 1
+    assert local.count(LOCAL_WEBVIEW_GUARD_OPEN) == 1
+    assert local.count(LOCAL_WEBVIEW_GUARD_CLOSE) == 1
+    assert b"File /a" not in local
+    reconstructed = (
+        local.replace(LOCAL_REPRODUCIBLE_TIMESTAMP_PATCH, b"")
+        .replace(LOCAL_INSTALL_LINE, UPSTREAM_INSTALL_LINE)
+        .replace(LOCAL_RESOURCE_FILE_LINE, UPSTREAM_RESOURCE_FILE_LINE)
+        .replace(LOCAL_BINARY_FILE_LINE, UPSTREAM_BINARY_FILE_LINE)
+        .replace(LOCAL_WEBVIEW_GUARD_OPEN, b"")
+        .replace(LOCAL_WEBVIEW_GUARD_CLOSE, UPSTREAM_WEBVIEW_GUARD_CLOSE)
     )
     assert hashlib.sha256(reconstructed).hexdigest() == UPSTREAM_SHA256
 
@@ -50,6 +73,12 @@ def test_custom_nsis_template_has_only_the_two_auditable_local_patches() -> None
     assert UPSTREAM_INSTALL_LINE.decode().strip() in notice
     assert LOCAL_INSTALL_LINE.decode().strip() in notice
     assert "SetDateSave off" in notice
+    assert UPSTREAM_RESOURCE_FILE_LINE.decode().strip() in notice
+    assert LOCAL_RESOURCE_FILE_LINE.decode().strip() in notice
+    assert UPSTREAM_BINARY_FILE_LINE.decode().strip() in notice
+    assert LOCAL_BINARY_FILE_LINE.decode().strip() in notice
+    assert LOCAL_WEBVIEW_GUARD_OPEN.decode().strip() in notice
+    assert LOCAL_WEBVIEW_GUARD_CLOSE.decode().splitlines()[0].strip() in notice
 
 
 def test_nsis_configuration_has_no_reachable_admin_install_mode() -> None:

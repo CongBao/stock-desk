@@ -395,10 +395,15 @@ class TaskWorker:
     def run_once(
         self, *, stop_event: threading.Event | None = None
     ) -> TaskSnapshot | None:
-        claimed = self._repository.claim_next(
-            self._worker_id,
-            stop_event=stop_event,
-        )
+        try:
+            claimed = self._repository.claim_next(
+                self._worker_id,
+                stop_event=stop_event,
+            )
+        except OperationalError as error:
+            if not _is_transient_sqlite_contention(error):
+                raise
+            return None
         if claimed is None:
             return None
         if isinstance(claimed, TaskClaim):
