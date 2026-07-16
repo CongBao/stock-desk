@@ -31,7 +31,6 @@ from stock_desk.desktop_runtime import (
     RuntimeRecord,
     _create_inherited_private_file,
     _restrict_owner_access,
-    _windows_acl_command as _runtime_windows_acl_command,
 )
 from stock_desk.runtime_identity import new_worker_id
 
@@ -43,11 +42,6 @@ _PROCESS_STOP_TIMEOUT_SECONDS: Final = 10.0
 _PROCESS_TERMINATE_TIMEOUT_SECONDS: Final = 5.0
 _PROCESS_KILL_TIMEOUT_SECONDS: Final = 5.0
 _LOGGER = logging.getLogger(__name__)
-
-
-def _windows_acl_command(path: Path, *, directory: bool) -> tuple[str, ...]:
-    """Compatibility boundary for the shared frozen-sidecar ACL implementation."""
-    return _runtime_windows_acl_command(path, directory=directory)
 
 
 class AlreadyRunningError(RuntimeError):

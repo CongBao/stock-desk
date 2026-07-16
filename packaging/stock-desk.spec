@@ -80,7 +80,7 @@ if sys.platform == "darwin":
         bundle,
         name="stock-desk.app",
         icon=None,
-        bundle_identifier="io.github.congbao.stock-desk",
+        bundle_identifier="com.baozijuan.stockdesk",
         version=VERSION,
         info_plist={
             "CFBundleDisplayName": "Stock Desk",

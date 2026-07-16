@@ -65,10 +65,11 @@ def test_native_harness_installs_candidate_checks_shell_icons_and_exits_cleanly(
         "32 -32512",
         "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
         "WEBVIEW2_USER_DATA_FOLDER",
+        "Get-AvailableLoopbackPort",
         "Get-NetTCPConnection",
         "OwningProcess",
-        "--remote-debugging-port=0",
-        "runtime-assigned WebView2 CDP endpoint did not appear",
+        "--remote-debugging-port=$devToolsPort",
+        "selected-port WebView2 CDP endpoint did not appear",
         "shortcuts_share_host_identity = $true",
         "packaged_entries_match_reviewed_identity = $true",
         "graceful_exit = $true",
@@ -94,17 +95,18 @@ def test_native_harness_installs_candidate_checks_shell_icons_and_exits_cleanly(
     assert "--remote-allow-origins=*" not in source
     assert "http://127.0.0.1:9222" not in source
     assert "DevToolsActivePort" not in source
+    port_selection = source.index("$devToolsPort = Get-AvailableLoopbackPort")
     browser_arguments = source.index(
-        '$env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=0"'
+        '$env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=$devToolsPort"'
     )
     assert "[int]$devToolsPort = 0" in source
-    assert fixture_prepare < browser_arguments < launch
-    assert "Get-AvailableLoopbackPort" not in source
+    assert fixture_prepare < port_selection < browser_arguments < launch
+    assert "--remote-debugging-port=0" not in source
     assert "--remote-debugging-address" not in source
     assert "Test-RemoteDebuggingPortCommandLine" not in source
     assert "$_.LocalAddress -in @('127.0.0.1', '::1')" in source
     assert (
-        "isolated WebView2 process does not own exactly one runtime-assigned CDP listener"
+        "isolated WebView2 process does not own exactly one selected-port CDP listener"
         in source
     )
     process_cleanup = source.index("Stop-Process -Id $desktopProcess.Id")
@@ -152,7 +154,7 @@ def test_native_harness_installs_candidate_checks_shell_icons_and_exits_cleanly(
     assert "$afterSidecars[0].Id -eq $sidecarBeforePid" in source
     assert "sidecar binary identity changed before restart" in source
     assert "old packaged sidecar OS process survived" in source
-    assert "com.congbao.stockdesk" in source
+    assert "com.baozijuan.stockdesk" in source
     assert "$tauriDefaultWebViewDataExisted" in source
     diagnostics = source.index(
         "$webviewProcesses = @(Get-IsolatedWebViewProcesses $webviewUserData)"
@@ -238,32 +240,78 @@ def test_native_harness_rejects_visible_auxiliary_shell_windows_during_startup()
     assert "packaged app opened an auxiliary command window during startup" in source
 
 
-def test_webview_cdp_uses_runtime_assigned_owned_loopback_listener() -> None:
+def test_webview_cdp_uses_selected_nonzero_owned_loopback_listener() -> None:
     source = (ROOT / "scripts" / "capture_windows_desktop_evidence.ps1").read_text(
         encoding="utf-8"
     )
 
     assert (
-        'WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=0"' in source
+        'WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=$devToolsPort"'
+        in source
     )
-    assert "Get-AvailableLoopbackPort" not in source
+    assert "Get-AvailableLoopbackPort" in source
+    assert "[Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)" in source
+    assert "$listener.Stop()" in source
+    assert "selected loopback DevTools port is invalid" in source
+    assert "--remote-debugging-port=0" not in source
     assert "--remote-debugging-address" not in source
     assert "Get-IsolatedWebViewProcesses $webviewUserData" in source
-    assert "Get-NetTCPConnection -State Listen" in source
+    assert "Get-NetTCPConnection -State Listen -LocalPort $devToolsPort" in source
     assert "$_.OwningProcess" in source
     assert 'Invoke-RestMethod -Uri "$candidateCdp/json/version"' in source
-    assert "runtime-assigned WebView2 CDP endpoint did not appear" in source
+    assert "selected-port WebView2 CDP endpoint did not appear" in source
 
     launch = source.index(
         "$desktopProcess = [Diagnostics.Process]::Start($desktopStart)"
     )
     isolated_processes = source.index("$isolatedWebViews = @(", launch)
     owned_listeners = source.index(
-        "Get-NetTCPConnection -State Listen", isolated_processes
+        "Get-NetTCPConnection -State Listen -LocalPort $devToolsPort",
+        isolated_processes,
     )
     endpoint_probe = source.index("$candidateCdp/json/version", owned_listeners)
     cdp_export = source.index("$env:STOCK_DESK_DESKTOP_CDP = $desktopCdp")
     assert launch < isolated_processes < owned_listeners < endpoint_probe < cdp_export
+
+
+def test_webview_policy_targets_aumid_before_executable_name() -> None:
+    source = (ROOT / "scripts" / "capture_windows_desktop_evidence.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    assert "$webviewApplicationUserModelId = 'com.baozijuan.stockdesk'" in source
+    assert (
+        "$webviewPolicyAppIds = @(\n"
+        "  $webviewApplicationUserModelId,\n"
+        "  $webviewAppName\n"
+        ")" in source
+    )
+    assert "foreach ($appId in $webviewPolicyAppIds)" in source
+    assert (
+        "New-ItemProperty -LiteralPath $webviewArgsPolicy -Name $appId "
+        "-PropertyType String" in source
+    )
+    assert (
+        "New-ItemProperty -LiteralPath $webviewDataPolicy -Name $appId "
+        "-PropertyType String" in source
+    )
+    assert "Remove-ItemProperty -LiteralPath $webviewArgsPolicy -Name $appId" in source
+    assert "Remove-ItemProperty -LiteralPath $webviewDataPolicy -Name $appId" in source
+    assert "additional_browser_argument_policy_app_ids" in source
+    assert (
+        "WebView2 processes did not receive the selected remote debugging switch"
+        in source
+    )
+    args_cleanup_armed = source.index("$webviewArgsPolicySet = $true")
+    args_first_write = source.index(
+        "New-ItemProperty -LiteralPath $webviewArgsPolicy -Name $appId"
+    )
+    data_cleanup_armed = source.index("$webviewDataPolicySet = $true")
+    data_first_write = source.index(
+        "New-ItemProperty -LiteralPath $webviewDataPolicy -Name $appId"
+    )
+    assert args_cleanup_armed < args_first_write
+    assert data_cleanup_armed < data_first_write
 
 
 def test_webview_cdp_accepts_only_ipv4_or_ipv6_loopback_and_keeps_diagnostics() -> None:
@@ -363,6 +411,149 @@ def test_packaged_webview_matrix_is_explicitly_equivalent_not_real_os_dpi() -> N
     assert "desktop_runtime: desktopRuntime" in source
     assert "workspace_entry_mode: workspaceEntryMode" in source
     assert "routeTransition" in source
+
+
+def test_installed_desktop_exit_uses_honest_hosted_uia_automation() -> None:
+    driver_path = ROOT / "scripts" / "windows_desktop_hosted_automation.ps1"
+    assert driver_path.is_file()
+    old_driver = "windows_desktop_" + "real_click.ps1"
+    assert not (ROOT / "scripts" / old_driver).exists()
+    driver = driver_path.read_text(encoding="utf-8")
+
+    for contract in (
+        "Add-Type -AssemblyName UIAutomationClient",
+        "NativeWindowHandleProperty",
+        "Find-NativeCloseButton",
+        "Test-HasTitleBarAncestor",
+        "ControlType]::TitleBar",
+        "InvokePattern]::Pattern",
+        "$pattern.Invoke()",
+        "native-close-open-dialog",
+        "webview-cancel-dialog",
+        "native-close-reopen-dialog",
+        "webview-confirm-exit",
+        "stock-desk-windows-hosted-automation-v1",
+        "windows-uia-and-cdp-automation",
+        "physical_mouse_click = $false",
+    ):
+        assert contract in driver
+    for forbidden in (
+        "SendInput",
+        "mouse_event",
+        "SetCursorPos",
+        "MOUSEEVENTF_",
+        "AutomationElement]::FromPoint",
+        "GetCursorPos",
+    ):
+        assert forbidden not in driver
+
+
+def test_hosted_uia_driver_rejects_ambiguous_or_cross_process_targets() -> None:
+    driver = (ROOT / "scripts" / "windows_desktop_hosted_automation.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    assert "$candidate.Current.ProcessId -ne $ExpectedProcessId" in driver
+    assert "$candidate.Current.IsEnabled" in driver
+    assert "$candidate.Current.IsOffscreen" in driver
+    assert "$matches.Count -eq 1" in driver
+    assert "$matches.Count -gt 1" in driver
+    assert "native close UIA target is ambiguous" in driver
+    assert "native close button does not expose InvokePattern" in driver
+    assert "titlebar_ancestor = $true" in driver
+    assert "runtime_id = $runtimeId" in driver
+
+
+def test_hosted_uia_driver_uses_nonce_bound_cross_observation() -> None:
+    driver = (ROOT / "scripts" / "windows_desktop_hosted_automation.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    markers = (
+        "hosted-dialog-visible-1",
+        "hosted-cancel-authorized",
+        "hosted-cancel-complete",
+        "hosted-dialog-visible-2",
+        "hosted-confirm-authorized",
+        "hosted-confirm-complete",
+    )
+    positions = [driver.index(marker) for marker in markers]
+    assert positions == sorted(positions)
+    assert "if ($candidate.capture_nonce -ceq $CaptureNonce)" in driver
+    assert "$CaptureNonce | Set-Content" in driver
+    assert "Move-Item -LiteralPath $temporary -Destination $path -Force" in driver
+    assert "host exited after cancel automation" in driver
+    assert "host did not exit successfully after confirmation automation" in driver
+
+
+def test_webview_hosted_clicks_publish_exact_role_name_and_state() -> None:
+    source = (ROOT / "scripts" / "windows_desktop_webview_evidence.mjs").read_text(
+        encoding="utf-8"
+    )
+
+    for name in ("取消", "退出应用"):
+        assert re.search(
+            rf'getByRole\("button",\s*\{{\s*name: "{name}",\s*exact: true',
+            source,
+        )
+    assert "async function clickHostedButton" in source
+    assert "await target.click({ timeout: 15_000 })" in source
+    assert 'invocation: "playwright-cdp-click"' in source
+    assert "physical_mouse_click: false" in source
+    markers = (
+        "hosted-automation-ready",
+        "hosted-dialog-visible-1",
+        "hosted-cancel-authorized",
+        "hosted-cancel-complete",
+        "hosted-dialog-visible-2",
+        "hosted-confirm-authorized",
+        "hosted-confirm-complete",
+    )
+    positions = [source.index(marker) for marker in markers]
+    assert positions == sorted(positions)
+    assert "observed_state: observedState" in source
+    assert '"dialog-hidden-host-alive"' in source
+    assert '"click-dispatched"' in source
+
+
+def test_hosted_automation_is_bound_to_capture_candidate_and_main_proof() -> None:
+    capture = (ROOT / "scripts" / "capture_windows_desktop_evidence.ps1").read_text(
+        encoding="utf-8"
+    )
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    proof = (ROOT / "scripts" / "main_validation_proof.py").read_text(encoding="utf-8")
+    impact = (ROOT / "scripts" / "ci_impact.py").read_text(encoding="utf-8")
+
+    assert "windows_desktop_hosted_automation.ps1" in capture
+    assert "windows-hosted-automation-evidence.json" in capture
+    assert "verify_windows_hosted_automation.py" in capture
+    for parameter in (
+        "-WebViewUserDataDir $webviewUserData",
+        "-CdpPort $devToolsPort",
+        "-WebViewBrowserProcessId $webviewBrowserProcessId",
+    ):
+        assert parameter in capture
+    assert "hosted_automation = [ordered]@{" in capture
+    assert "physical_mouse_click = $false" in capture
+    assert "windows-hosted-automation-evidence.json:provenance" in workflow
+    assert '"packaged-backtest/windows-hosted-automation-evidence.json"' in proof
+    for critical_input in (
+        "schemas/windows-hosted-automation-v1.schema.json",
+        "scripts/verify_windows_hosted_automation.py",
+        "scripts/windows_desktop_hosted_automation.ps1",
+    ):
+        assert critical_input in workflow
+        assert f'"{critical_input}"' in proof
+        assert f'"{critical_input}"' in impact
+
+    combined = "\n".join((capture, workflow, proof, impact))
+    for forbidden in (
+        "windows-" + "real-click",
+        "real_os_" + "mouse_click",
+        "win32-sendinput-" + "physical-mouse",
+        "windows_desktop_" + "real_click",
+    ):
+        assert forbidden not in combined
 
 
 def test_packaged_backtest_matrix_uses_webview_host_ipc_and_new_worker_resume() -> None:
@@ -590,7 +781,7 @@ def test_nsis_installer_and_uninstaller_use_the_reviewed_windows_icon() -> None:
 
 def test_exit_deadlines_are_ordered_and_native_pid_is_authoritative() -> None:
     rust = (ROOT / "src-tauri" / "src" / "exit.rs").read_text(encoding="utf-8")
-    powershell = (ROOT / "scripts" / "capture_windows_desktop_evidence.ps1").read_text(
+    driver = (ROOT / "scripts" / "windows_desktop_hosted_automation.ps1").read_text(
         encoding="utf-8"
     )
     webview = (ROOT / "scripts" / "windows_desktop_webview_evidence.mjs").read_text(
@@ -600,34 +791,51 @@ def test_exit_deadlines_are_ordered_and_native_pid_is_authoritative() -> None:
     host_match = re.search(
         r"SIDECAR_EXIT_TIMEOUT: Duration = Duration::from_secs\((\d+)\)", rust
     )
-    evidence_match = re.search(
-        r"\}\s+(\d+)\s+'packaged app did not complete the tested graceful exit'",
-        powershell,
-    )
+    evidence_match = re.search(r"\$process\.WaitForExit\((\d+)\)", driver)
     assert host_match is not None
     assert evidence_match is not None
     host_timeout = int(host_match.group(1))
-    evidence_timeout = int(evidence_match.group(1))
+    evidence_timeout = int(evidence_match.group(1)) / 1000
     assert _SHUTDOWN_TIMEOUT_SECONDS + 5 <= host_timeout < evidence_timeout
 
-    confirm_click = webview.index(
-        'page.getByRole("button", { name: "退出应用", exact: true }).click()'
-    )
-    finally_block = webview.index("} finally", confirm_click)
+    hosted_ready = webview.index('captureHandshake("hosted-automation-ready"')
+    finally_block = webview.index("} finally", hosted_ready)
     assert "STOCK_DESK_EXIT_ACTIVITY" in webview
     assert "STOCK_DESK_EXIT_OBSERVATION" in webview
     assert "unavailable_while_not_ready" in webview
     activity_probe = webview.index('path: "/api/desktop/activity"')
     runtime_probe = webview.rindex("desktop_runtime_state", 0, activity_probe)
-    assert runtime_probe < activity_probe < confirm_click
-    assert "page.waitForTimeout(3_000)" in webview[confirm_click:finally_block]
-    assert not re.search(
-        r"page\.waitForEvent\((?:'|\")close(?:'|\")",
-        webview[confirm_click:finally_block],
+    assert runtime_probe < activity_probe < hosted_ready
+    hosted_flow = webview[hosted_ready:finally_block]
+    assert 'input_method: "windows-uia-and-cdp-automation"' in hosted_flow
+    assert "physical_mouse_click: false" in hosted_flow
+
+    webview_markers = (
+        'captureHandshake("hosted-automation-ready"',
+        'captureHandshake("hosted-dialog-visible-1"',
+        'waitForCaptureAuthorization("hosted-cancel-authorized"',
+        'captureHandshake("hosted-cancel-complete"',
+        'captureHandshake("hosted-dialog-visible-2"',
+        'waitForCaptureAuthorization("hosted-confirm-authorized"',
+        'captureHandshake("hosted-confirm-complete"',
     )
-    assert "正在安全退出" not in webview[confirm_click:finally_block]
-    assert "host_alive=" in powershell
-    assert "sidecar_alive=" in powershell
+    webview_positions = [webview.index(marker) for marker in webview_markers]
+    assert webview_positions == sorted(webview_positions)
+
+    driver_markers = (
+        "'hosted-dialog-visible-1'",
+        "'hosted-cancel-authorized'",
+        "'hosted-cancel-complete'",
+        "'hosted-dialog-visible-2'",
+        "'hosted-confirm-authorized'",
+        "'hosted-confirm-complete'",
+    )
+    driver_positions = [driver.index(marker) for marker in driver_markers]
+    assert driver_positions == sorted(driver_positions)
+    assert "$button.Current.ProcessId -ne $ExpectedProcessId" not in driver
+    assert "$candidate.Current.ProcessId -ne $ExpectedProcessId" in driver
+    assert "process_id = [int]$button.Current.ProcessId" in driver
+    assert "window_handle = $WindowHandle" in driver
 
 
 def test_packaged_evidence_waits_longer_than_the_bounded_cold_start_budget() -> None:

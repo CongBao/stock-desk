@@ -200,32 +200,31 @@ FunctionEnd
   ${If} $DeleteAppDataCheckboxState = 1
   ${AndIf} $UpdateMode <> 1
     ${If} $StockDeskCleanupReady <> 1
-      ${If} ${Silent}
-      ${OrIf} $PassiveMode = 1
-        SetErrorLevel 70
-        Goto stock_desk_cleanup_done
+      ${IfNot} ${Silent}
+      ${AndIf} $PassiveMode <> 1
+        MessageBox MB_OK|MB_ICONINFORMATION "$(stockDeskCleanupUnavailable)"
       ${EndIf}
-      MessageBox MB_OK|MB_ICONEXCLAMATION "$(stockDeskCleanupUnavailable)"
       Goto stock_desk_cleanup_done
     ${EndIf}
 
-    stock_desk_cleanup_retry:
-      ClearErrors
-      ExecWait '"$PLUGINSDIR\stock-desk-cleanup.exe" --stock-desk-uninstall-v11-data' $StockDeskCleanupExitCode
-      ${IfNot} ${Errors}
-      ${AndIf} $StockDeskCleanupExitCode = 0
-        Goto stock_desk_cleanup_done
-      ${EndIf}
+    ; ExecWait can fail before assigning its output variable. Initialize a
+    ; stable, path-free sentinel so diagnostics never reuse an old value.
+    StrCpy $StockDeskCleanupExitCode 70
+    ClearErrors
+    ExecWait '"$PLUGINSDIR\stock-desk-cleanup.exe" --stock-desk-uninstall-v11-data' $StockDeskCleanupExitCode
+    ${IfNot} ${Errors}
+    ${AndIf} $StockDeskCleanupExitCode = 0
+      Goto stock_desk_cleanup_done
+    ${EndIf}
 
-      ; Never fall back to NSIS recursive deletion. The Rust cleanup mode owns
-      ; the fixed Known Folder path and rejects reparse points fail closed.
-      ${If} ${Silent}
-      ${OrIf} $PassiveMode = 1
-        SetErrorLevel 70
-        Goto stock_desk_cleanup_done
-      ${EndIf}
-
-      MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "$(stockDeskCleanupFailed)" IDRETRY stock_desk_cleanup_retry IDCANCEL stock_desk_cleanup_done
+    ; Optional data cleanup must never turn an otherwise successful uninstall
+    ; into an error loop. Keep all remaining data and record only the stable,
+    ; path-free helper exit code for diagnostics.
+    DetailPrint "Stock Desk data cleanup exit code: $StockDeskCleanupExitCode"
+    ${IfNot} ${Silent}
+    ${AndIf} $PassiveMode <> 1
+      MessageBox MB_OK|MB_ICONINFORMATION "$(stockDeskCleanupKeptData)"
+    ${EndIf}
 
     stock_desk_cleanup_done:
   ${EndIf}

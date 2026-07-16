@@ -1,0 +1,83 @@
+{
+  "schema_version": "stock-desk-windows-hosted-automation-v1",
+  "input_method": "windows-uia-and-cdp-automation",
+  "physical_mouse_click": false,
+  "source_sha": "1111111111111111111111111111111111111111",
+  "source_tree": "2222222222222222222222222222222222222222",
+  "candidate_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+  "installed_executable_sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+  "capture_nonce": "12345678-1234-4567-89ab-1234567890ab",
+  "process_id": 101,
+  "main_window_handle": 202,
+  "webview2": {
+    "user_data_dir": "C:\\hosted-automation\\webview2",
+    "cdp_port": 31337,
+    "browser_process_id": 303
+  },
+  "actions": [
+    {
+      "sequence": 1,
+      "action": "native-close-open-dialog",
+      "target": {
+        "process_id": 101,
+        "window_handle": 202,
+        "automation_id": "Close",
+        "name": "Close",
+        "runtime_id": "42.1.2",
+        "titlebar_ancestor": true,
+        "enabled": true,
+        "offscreen": false
+      },
+      "invocation": "uia-invoke-pattern",
+      "physical_mouse_click": false,
+      "observed_state": "exit-dialog-visible"
+    },
+    {
+      "sequence": 2,
+      "action": "webview-cancel-dialog",
+      "target": {
+        "role": "button",
+        "name": "取消",
+        "exact": true
+      },
+      "invocation": "playwright-cdp-click",
+      "physical_mouse_click": false,
+      "observed_state": "dialog-hidden-host-alive"
+    },
+    {
+      "sequence": 3,
+      "action": "native-close-reopen-dialog",
+      "target": {
+        "process_id": 101,
+        "window_handle": 202,
+        "automation_id": "Close",
+        "name": "Close",
+        "runtime_id": "42.1.2",
+        "titlebar_ancestor": true,
+        "enabled": true,
+        "offscreen": false
+      },
+      "invocation": "uia-invoke-pattern",
+      "physical_mouse_click": false,
+      "observed_state": "exit-dialog-visible"
+    },
+    {
+      "sequence": 4,
+      "action": "webview-confirm-exit",
+      "target": {
+        "role": "button",
+        "name": "退出应用",
+        "exact": true
+      },
+      "invocation": "playwright-cdp-click",
+      "physical_mouse_click": false,
+      "observed_state": "host-exited-zero"
+    }
+  ],
+  "host_exit_code": 0,
+  "hosted_runner_limitations": [
+    "github-hosted-windows-server-is-not-win10-or-win11-desktop",
+    "runner-account-is-not-real-standard-user-acceptance",
+    "automation-does-not-prove-uac-secure-desktop-or-physical-input"
+  ]
+}

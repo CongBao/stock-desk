@@ -58,6 +58,37 @@ it('decodes the canonical Shanghai Composite as an index', async () => {
   expect(transport.get).toHaveBeenCalledWith('/state', { signal: undefined });
 });
 
+it('decodes a persisted failed synchronization without provider evidence', async () => {
+  const transport = client({
+    ...state,
+    sync: {
+      status: 'failed',
+      provider_id: null,
+      manifest_record_id: null,
+      dataset_version: null,
+      data_cutoff: null,
+      row_count: 0,
+    },
+    error: {
+      code: 'provider_unavailable',
+      actions: ['retry', 'switch_provider'],
+    },
+  });
+
+  await expect(
+    createOnboardingApi(transport).getState(),
+  ).resolves.toMatchObject({
+    sync: {
+      status: 'failed',
+      providerId: null,
+      rowCount: 0,
+    },
+    error: {
+      code: 'provider_unavailable',
+    },
+  });
+});
+
 it('uses the versioned onboarding endpoints and explicit progress bodies', async () => {
   const transport = client();
   const api = createOnboardingApi(transport);

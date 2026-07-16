@@ -1,10 +1,13 @@
 import { createHash } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { chromium } from "@playwright/test";
 
-import { runPackagedBacktestEvidence } from "./windows_packaged_backtest_evidence.mjs";
+import {
+  captureHandshake,
+  runPackagedBacktestEvidence,
+} from "./windows_packaged_backtest_evidence.mjs";
 
 const sourceSha = process.env.SOURCE_SHA ?? "";
 const sourceTree = process.env.SOURCE_TREE ?? "";
@@ -55,6 +58,51 @@ async function activeElement(page) {
       text: element.textContent?.trim().slice(0, 120) ?? "",
     };
   });
+}
+
+async function exactHostedButton(target, name) {
+  await target.waitFor({ state: "visible", timeout: 15_000 });
+  if ((await target.count()) !== 1) {
+    throw new Error(`hosted WebView target is not unique: ${name}`);
+  }
+  if (!(await target.isEnabled())) {
+    throw new Error(`hosted WebView target is disabled: ${name}`);
+  }
+  return target;
+}
+
+async function waitForCaptureAuthorization(name) {
+  const syncDir = process.env.STOCK_DESK_RESTART_SYNC_DIR;
+  const nonce = process.env.STOCK_DESK_CAPTURE_NONCE;
+  if (syncDir === undefined || nonce === undefined) {
+    throw new Error("hosted capture authorization identity is unavailable");
+  }
+  const acknowledgment = path.join(syncDir, `${name}.ack`);
+  const deadline = Date.now() + 90_000;
+  while (Date.now() < deadline) {
+    try {
+      if ((await readFile(acknowledgment, "utf8")).trim() === nonce) return;
+    } catch (error) {
+      if (!["ENOENT", "EACCES", "EPERM", "EBUSY"].includes(error?.code)) {
+        throw error;
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`hosted capture authorization timed out: ${name}`);
+}
+
+async function clickHostedButton(target, sequence, action, name, observedState) {
+  await exactHostedButton(target, name);
+  await target.click({ timeout: 15_000 });
+  return {
+    sequence,
+    action,
+    target: { role: "button", name, exact: true },
+    invocation: "playwright-cdp-click",
+    physical_mouse_click: false,
+    observed_state: observedState,
+  };
 }
 
 async function visibleDomState(page) {
@@ -777,25 +825,57 @@ try {
   });
   console.log(`STOCK_DESK_EXIT_ACTIVITY ${JSON.stringify(exitActivity)}`);
 
-  await page.evaluate(async () => {
-    await globalThis.__TAURI_INTERNALS__.invoke("desktop_request_exit");
+  await captureHandshake("hosted-automation-ready", {
+    candidate_sha256: process.env.STOCK_DESK_CANDIDATE_SHA256,
+    phase: "ready-for-uia-and-cdp-automation",
   });
-  await page.getByRole("button", { name: "退出应用", exact: true }).click();
-  // Let the UI dispatch its async Tauri command before disconnecting CDP. The
-  // native PowerShell PID gate is authoritative for actual process exit.
-  await page.waitForTimeout(3_000).catch(() => undefined);
-  const exitObservation = await page
-    .evaluate(async () => ({
-      runtime: await globalThis.__TAURI_INTERNALS__.invoke(
-        "desktop_runtime_state",
-      ),
-      title:
-        document
-          .querySelector(".desktop-exit-dialog h2")
-          ?.textContent?.trim() ?? null,
-    }))
-    .catch(() => ({ page_closed: true }));
-  console.log(`STOCK_DESK_EXIT_OBSERVATION ${JSON.stringify(exitObservation)}`);
+  await exitDialog.waitFor({ state: "visible" });
+  await captureHandshake("hosted-dialog-visible-1", {
+    observed_state: "exit-dialog-visible",
+  });
+  await waitForCaptureAuthorization("hosted-cancel-authorized");
+  const hostedCancelButton = page.getByRole("button", {
+    name: "取消",
+    exact: true,
+  });
+  const cancelAction = await clickHostedButton(
+    hostedCancelButton,
+    2,
+    "webview-cancel-dialog",
+    "取消",
+    "dialog-hidden-host-alive",
+  );
+  await exitDialog.waitFor({ state: "hidden" });
+  await captureHandshake("hosted-cancel-complete", {
+    action: cancelAction,
+  });
+  await exitDialog.waitFor({ state: "visible" });
+  await captureHandshake("hosted-dialog-visible-2", {
+    observed_state: "exit-dialog-visible",
+  });
+  await waitForCaptureAuthorization("hosted-confirm-authorized");
+  const hostedConfirmButton = page.getByRole("button", {
+    name: "退出应用",
+    exact: true,
+  });
+  const confirmAction = await clickHostedButton(
+    hostedConfirmButton,
+    4,
+    "webview-confirm-exit",
+    "退出应用",
+    "click-dispatched",
+  );
+  await captureHandshake("hosted-confirm-complete", {
+    action: confirmAction,
+  });
+  console.log(
+    "STOCK_DESK_EXIT_OBSERVATION " +
+      JSON.stringify({
+        input_method: "windows-uia-and-cdp-automation",
+        physical_mouse_click: false,
+        page_closed: page.isClosed(),
+      }),
+  );
 } finally {
   await browser.close().catch(() => undefined);
 }

@@ -56,6 +56,20 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CAPTURE_COMMIT = "17912f5fa8cb43c1df7c41315b8cd60199b9d403"
 
 
+def test_desktop_interaction_documentation_is_honest() -> None:
+    ci = (PROJECT_ROOT / "docs/ci.md").read_text(encoding="utf-8")
+    acceptance = (PROJECT_ROOT / "docs/acceptance.md").read_text(encoding="utf-8")
+    combined = ci + acceptance
+
+    assert "windows-uia-and-cdp-automation" in combined
+    assert "physical_mouse_click = false" in combined
+    assert "macOS 本地真实 Tauri" in combined
+    assert "真实 Win10 普通用户" in combined
+    assert "Hosted Runner 不提供物理点击证明" in combined
+    assert "Hosted Runner does not provide physical-input evidence" in combined
+    assert "com.baozijuan.stockdesk" in combined
+
+
 def _initialize_fixture_git(root: Path) -> None:
     subprocess.run(("git", "init", "-q", str(root)), check=True)
     object_directory = subprocess.check_output(

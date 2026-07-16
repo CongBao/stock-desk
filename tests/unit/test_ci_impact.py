@@ -184,7 +184,10 @@ def test_windows_installed_controller_paths_are_high_risk_installer_inputs(
 @pytest.mark.parametrize(
     "path",
     [
+        "schemas/windows-hosted-automation-v1.schema.json",
         "scripts/capture_windows_desktop_evidence.ps1",
+        "scripts/verify_windows_hosted_automation.py",
+        "scripts/windows_desktop_hosted_automation.ps1",
         "scripts/windows_desktop_webview_evidence.mjs",
         "scripts/windows_packaged_backtest_evidence.mjs",
         "scripts/prepare_windows_packaged_backtest_evidence.py",

@@ -178,6 +178,7 @@ _PACKAGED_BACKTEST_PROOF_FILES = frozenset(
     {
         "schemas/packaged-backtest-evidence-v1.schema.json",
         "schemas/packaged-backtest-host-observation-v1.schema.json",
+        "schemas/windows-hosted-automation-v1.schema.json",
         "schemas/windows-packaged-backtest-promotion-v1.schema.json",
         "scripts/capture_packaged_backtest_semantics.py",
         "scripts/capture_windows_desktop_evidence.ps1",
@@ -185,6 +186,8 @@ _PACKAGED_BACKTEST_PROOF_FILES = frozenset(
         "scripts/prepare_windows_packaged_backtest_evidence.py",
         "scripts/v1_backtest_oracle.py",
         "scripts/verify_packaged_backtest_evidence.py",
+        "scripts/verify_windows_hosted_automation.py",
+        "scripts/windows_desktop_hosted_automation.ps1",
         "scripts/windows_desktop_webview_evidence.mjs",
         "scripts/windows_packaged_backtest_evidence.mjs",
         "tests/fixtures/backtest/v1_0_oracle.json",

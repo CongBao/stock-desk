@@ -2,7 +2,7 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Stock Desk",
   "version": "1.1.0",
-  "identifier": "com.congbao.stockdesk",
+  "identifier": "com.baozijuan.stockdesk",
   "build": {
     "beforeDevCommand": "pnpm --dir web dev",
     "devUrl": "http://localhost:5173",
@@ -23,7 +23,7 @@
       }
     ],
     "security": {
-      "capabilities": ["default"],
+      "capabilities": ["default", "macos-smoke"],
       "csp": "default-src 'self'; connect-src 'self' http://127.0.0.1:* ipc: http://ipc.localhost; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; object-src 'none'; frame-src 'none'; base-uri 'none'"
     }
   },

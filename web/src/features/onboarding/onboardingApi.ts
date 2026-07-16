@@ -43,7 +43,7 @@ export type OnboardingState = {
   readonly instrument: OnboardingInstrument | null;
   readonly sync: {
     readonly status: 'idle' | 'verified' | 'failed';
-    readonly providerId: string;
+    readonly providerId: string | null;
     readonly manifestRecordId: string | null;
     readonly datasetVersion: string | null;
     readonly dataCutoff: string | null;
@@ -197,7 +197,7 @@ function decodeState(value: JsonValue | undefined): OnboardingState {
         ? null
         : {
             status: oneOf(sync['status'], ['idle', 'verified', 'failed']),
-            providerId: text(sync['provider_id']),
+            providerId: optionalText(sync['provider_id']),
             manifestRecordId: optionalText(sync['manifest_record_id']),
             datasetVersion: optionalText(sync['dataset_version']),
             dataCutoff: optionalText(sync['data_cutoff']),

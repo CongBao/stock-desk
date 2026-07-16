@@ -56,6 +56,21 @@ function Wait-Until([scriptblock]$Condition, [int]$Seconds, [string]$Failure) {
   throw $Failure
 }
 
+function Get-AvailableLoopbackPort() {
+  $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
+  try {
+    $listener.Start()
+    $endpoint = [Net.IPEndPoint]$listener.LocalEndpoint
+    [int]$selectedPort = $endpoint.Port
+    if ($selectedPort -lt 1 -or $selectedPort -gt 65535) {
+      throw 'selected loopback DevTools port is invalid'
+    }
+    return $selectedPort
+  } finally {
+    $listener.Stop()
+  }
+}
+
 function Wait-CaptureMarker([string]$Path, [Diagnostics.Process]$NodeProcess, [string]$Nonce, [int]$Seconds, [string]$Failure) {
   return Wait-Until {
     $NodeProcess.Refresh()
@@ -279,13 +294,18 @@ $webviewPolicyRoot = 'HKCU:\Software\Policies\Microsoft\Edge\WebView2'
 $webviewArgsPolicy = Join-Path $webviewPolicyRoot 'AdditionalBrowserArguments'
 $webviewDataPolicy = Join-Path $webviewPolicyRoot 'UserDataFolder'
 $webviewAppName = [IO.Path]::GetFileName($hostPath)
+$webviewApplicationUserModelId = 'com.baozijuan.stockdesk'
+$webviewPolicyAppIds = @(
+  $webviewApplicationUserModelId,
+  $webviewAppName
+)
 $webviewEdgePolicyCreated = -not (Test-Path -LiteralPath $webviewEdgePolicy)
 $webviewPolicyRootCreated = -not (Test-Path -LiteralPath $webviewPolicyRoot)
 $webviewArgsPolicyCreated = -not (Test-Path -LiteralPath $webviewArgsPolicy)
 $webviewDataPolicyCreated = -not (Test-Path -LiteralPath $webviewDataPolicy)
 $webviewArgsPolicySet = $false
 $webviewDataPolicySet = $false
-$tauriDefaultWebViewData = Join-Path $env:LOCALAPPDATA 'com.congbao.stockdesk'
+$tauriDefaultWebViewData = Join-Path $env:LOCALAPPDATA 'com.baozijuan.stockdesk'
 $tauriDefaultWebViewDataExisted = Test-Path -LiteralPath $tauriDefaultWebViewData
 $packagedDataRoot = Join-Path $env:LOCALAPPDATA 'Stock Desk\v1.1'
 $baselineSidecarProcessIds = @(
@@ -314,6 +334,7 @@ try {
   if (-not (Test-Path -LiteralPath $hostPath -PathType Leaf)) {
     throw 'silent installer did not create the packaged desktop host'
   }
+  $installedHostSha256 = (Get-FileHash -LiteralPath $hostPath -Algorithm SHA256).Hash.ToLowerInvariant()
 
   $desktopShortcut = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Stock Desk.lnk'
   $startMenuRoot = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'
@@ -373,10 +394,14 @@ try {
   $env:WEBVIEW2_USER_DATA_FOLDER = $webviewUserData
   New-Item -Path $webviewEdgePolicy -Force | Out-Null
   New-Item -Path $webviewPolicyRoot -Force | Out-Null
-  foreach ($policy in @($webviewArgsPolicy, $webviewDataPolicy)) {
-    if ($null -ne (Get-ItemProperty -LiteralPath $policy -Name $webviewAppName -ErrorAction SilentlyContinue)) {
-      throw 'packaged WebView2 evidence refuses to replace an existing app policy'
+  foreach ($appId in $webviewPolicyAppIds) {
+    foreach ($policy in @($webviewArgsPolicy, $webviewDataPolicy)) {
+      if ($null -ne (Get-ItemProperty -LiteralPath $policy -Name $appId -ErrorAction SilentlyContinue)) {
+        throw 'packaged WebView2 evidence refuses to replace an existing app policy'
+      }
     }
+  }
+  foreach ($policy in @($webviewArgsPolicy, $webviewDataPolicy)) {
     New-Item -Path $policy -Force | Out-Null
   }
   # This candidate proof owns an isolated public fixture. Removing stale state
@@ -391,15 +416,22 @@ try {
   if (-not (Test-Path -LiteralPath $packagedBacktestSeed -PathType Leaf)) {
     throw 'packaged backtest evidence seed manifest is missing'
   }
-  # Let WebView2 atomically allocate the loopback debugging port. Fixed-port
-  # preselection has a TOCTOU gap and newer WebView2 guidance recommends port
-  # zero. Discovery below accepts only a listener owned by this isolated UDF's
-  # WebView2 processes and then validates the browser endpoint identity.
-  $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=0"
-  New-ItemProperty -LiteralPath $webviewArgsPolicy -Name $webviewAppName -PropertyType String -Value $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS | Out-Null
+  # Select a nonzero loopback port immediately before launch. Some hosted
+  # WebView2 runtimes ignore port zero. The short selection race fails closed:
+  # evidence below accepts only a listener owned by this isolated WebView2 and
+  # validates the published browser endpoint before exposing it to Node.
+  $devToolsPort = Get-AvailableLoopbackPort
+  $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=$devToolsPort"
+  # Arm cleanup before the multi-AppId writes so a partial registry failure
+  # cannot leave a debug policy behind in a pre-existing policy key.
   $webviewArgsPolicySet = $true
-  New-ItemProperty -LiteralPath $webviewDataPolicy -Name $webviewAppName -PropertyType String -Value $webviewUserData | Out-Null
+  foreach ($appId in $webviewPolicyAppIds) {
+    New-ItemProperty -LiteralPath $webviewArgsPolicy -Name $appId -PropertyType String -Value $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS | Out-Null
+  }
   $webviewDataPolicySet = $true
+  foreach ($appId in $webviewPolicyAppIds) {
+    New-ItemProperty -LiteralPath $webviewDataPolicy -Name $appId -PropertyType String -Value $webviewUserData | Out-Null
+  }
   $desktopStart = [Diagnostics.ProcessStartInfo]::new()
   $desktopStart.FileName = $hostPath
   $desktopStart.WorkingDirectory = $installRoot
@@ -427,10 +459,21 @@ try {
       return $false
     } 90 'isolated packaged WebView2 process is missing'
   )
+  $isolatedWebViews = @(
+    Wait-Until {
+      $processes = @(Get-IsolatedWebViewProcesses $webviewUserData)
+      $debugProcesses = @(
+        $processes |
+          Where-Object { [string]$_.CommandLine -match '(?:^|\s)--remote-debugging-port(?:=|\s)' }
+      )
+      if ($debugProcesses.Count -gt 0) { return $processes }
+      return $false
+    } 15 'WebView2 processes did not receive the selected remote debugging switch'
+  )
   $isolatedWebViewProcessIds = @($isolatedWebViews | ForEach-Object { [int]$_.ProcessId })
   $devToolsObservation = Wait-Until {
     $ownedLoopbackListeners = @(
-      Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
+      Get-NetTCPConnection -State Listen -LocalPort $devToolsPort -ErrorAction SilentlyContinue |
         Where-Object {
           $_.LocalAddress -in @('127.0.0.1', '::1') -and
           $isolatedWebViewProcessIds -contains [int]($_.OwningProcess)
@@ -438,7 +481,7 @@ try {
     )
     foreach ($candidateListener in $ownedLoopbackListeners) {
       [int]$candidatePort = $candidateListener.LocalPort
-      if ($candidatePort -lt 1 -or $candidatePort -gt 65535) { continue }
+      if ($candidatePort -ne $devToolsPort) { continue }
       $candidateAddress = [string]$candidateListener.LocalAddress
       $candidateCdp = if ($candidateAddress -eq '::1') {
         "http://[::1]:$candidatePort"
@@ -467,14 +510,18 @@ try {
       }
     }
     return $false
-  } 90 'runtime-assigned WebView2 CDP endpoint did not appear'
+  } 90 'selected-port WebView2 CDP endpoint did not appear'
   [int]$devToolsPort = $devToolsObservation.Port
   $desktopCdp = $devToolsObservation.Endpoint
   $devToolsVersion = $devToolsObservation.Version
   $devToolsWebSocket = $devToolsObservation.WebSocket
   $devToolsListeners = @($devToolsObservation.Listener)
   if ($devToolsListeners.Count -ne 1) {
-    throw 'isolated WebView2 process does not own exactly one runtime-assigned CDP listener'
+    throw 'isolated WebView2 process does not own exactly one selected-port CDP listener'
+  }
+  [int]$webviewBrowserProcessId = $devToolsListeners[0].OwningProcess
+  if ($isolatedWebViewProcessIds -notcontains $webviewBrowserProcessId) {
+    throw 'selected-port CDP listener does not belong to the isolated WebView2 process set'
   }
   $installedSidecarPath = Join-Path $installRoot 'stock-desk-sidecar.exe'
   $sidecar = Wait-Until { @(Get-InstalledHostSidecarProcesses $desktopProcess.Id $installedSidecarPath) | Select-Object -First 1 } 60 'packaged Python sidecar did not remain running'
@@ -582,6 +629,50 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "packaged fixture switch failed after restart: $fixtureId" }
     Write-CaptureAck (Join-Path $restartSyncRoot "fixture-$markerName.ack") $captureNonce
   }
+  $hostedReadyPath = Join-Path $restartSyncRoot 'hosted-automation-ready.json'
+  $hostedReady = Wait-CaptureMarker $hostedReadyPath $nodeProcess $captureNonce 300 'packaged WebView did not reach the Hosted automation boundary'
+  if (
+    $hostedReady.phase -ne 'ready-for-uia-and-cdp-automation' -or
+    $hostedReady.candidate_sha256 -ne $candidateSha256
+  ) { throw 'Hosted automation marker identity is invalid' }
+  Write-CaptureAck (Join-Path $restartSyncRoot 'hosted-automation-ready.ack') $captureNonce
+  $hostedEvidencePath = Join-Path $Output 'windows-hosted-automation-evidence.json'
+  & (Join-Path $PSScriptRoot 'windows_desktop_hosted_automation.ps1') `
+    -WindowHandle $hostMainWindowHandle `
+    -ExpectedProcessId $desktopProcess.Id `
+    -EvidenceProcessId $nodeProcess.Id `
+    -ExpectedExecutableSha256 $installedHostSha256 `
+    -SourceSha $SourceSha -SourceTree $SourceTree `
+    -CandidateSha256 $candidateSha256 `
+    -WebViewUserDataDir $webviewUserData `
+    -CdpPort $devToolsPort `
+    -WebViewBrowserProcessId $webviewBrowserProcessId `
+    -CaptureSyncRoot $restartSyncRoot `
+    -CaptureNonce $captureNonce `
+    -OutputPath $hostedEvidencePath
+  if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $hostedEvidencePath -PathType Leaf)) {
+    throw 'installed Stock Desk Hosted interaction automation failed'
+  }
+  & $python (Join-Path $PSScriptRoot 'verify_windows_hosted_automation.py') `
+    $hostedEvidencePath `
+    --source-sha $SourceSha `
+    --source-tree $SourceTree `
+    --candidate-sha256 $candidateSha256
+  if ($LASTEXITCODE -ne 0) { throw 'Windows Hosted interaction evidence is invalid' }
+  $hostedEvidence = Get-Content -LiteralPath $hostedEvidencePath -Raw | ConvertFrom-Json
+  if (
+    $hostedEvidence.source_sha -ne $SourceSha -or
+    $hostedEvidence.source_tree -ne $SourceTree -or
+    $hostedEvidence.candidate_sha256 -ne $candidateSha256 -or
+    $hostedEvidence.installed_executable_sha256 -ne $installedHostSha256 -or
+    $hostedEvidence.process_id -ne $desktopProcess.Id -or
+    $hostedEvidence.main_window_handle -ne $hostMainWindowHandle -or
+    $hostedEvidence.webview2.user_data_dir -ne $webviewUserData -or
+    $hostedEvidence.webview2.cdp_port -ne $devToolsPort -or
+    $hostedEvidence.webview2.browser_process_id -ne $webviewBrowserProcessId -or
+    $hostedEvidence.physical_mouse_click -ne $false -or
+    @($hostedEvidence.actions).Count -ne 4
+  ) { throw 'Windows Hosted interaction evidence is incomplete or unbound' }
   Wait-Until { $nodeProcess.Refresh(); if ($nodeProcess.HasExited) { $true } else { $false } } 300 'packaged Tauri WebView evidence did not finish after restart observation' | Out-Null
   if ($nodeProcess.ExitCode -ne 0) {
     throw "packaged Tauri WebView evidence failed: $(Get-Content -LiteralPath $nodeStderr -Raw -ErrorAction SilentlyContinue)"
@@ -683,6 +774,14 @@ try {
       host_observation = 'packaged-backtest-host-observation.json'
       host_observation_sha256 = (Get-FileHash -LiteralPath (Join-Path $Output 'packaged-backtest-host-observation.json') -Algorithm SHA256).Hash.ToLowerInvariant()
     }
+    hosted_automation = [ordered]@{
+      manifest = 'windows-hosted-automation-evidence.json'
+      sha256 = (Get-FileHash -LiteralPath $hostedEvidencePath -Algorithm SHA256).Hash.ToLowerInvariant()
+      schema_version = 'stock-desk-windows-hosted-automation-v1'
+      input_method = 'windows-uia-and-cdp-automation'
+      physical_mouse_click = $false
+      action_count = @($hostedEvidence.actions).Count
+    }
     graceful_exit = $true
     hosted_runner_limitations = @(
       'The native screenshot records the GitHub-hosted runner current Windows DPI only.',
@@ -732,6 +831,7 @@ try {
         $webviewProcesses |
           Where-Object { [string]$_.CommandLine -match '(?:^|\s)--remote-debugging-port(?:=|\s)' }
       ).Count
+      additional_browser_argument_policy_app_ids = @($webviewPolicyAppIds)
       devtools_listener_owned_by_isolated_webview = $diagnosticDevToolsListeners.Count -eq 1
       host_has_main_window = if ($null -ne $desktopProcess) { $desktopProcess.MainWindowHandle -ne [IntPtr]::Zero } else { $false }
     } | ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $diagnosticsRoot 'webview-startup-summary.json') -Encoding utf8NoBOM
@@ -743,8 +843,16 @@ try {
   Remove-Item Env:STOCK_DESK_CANDIDATE_SHA256 -ErrorAction SilentlyContinue
   Remove-Item Env:STOCK_DESK_RESTART_SYNC_DIR -ErrorAction SilentlyContinue
   Remove-Item Env:STOCK_DESK_CAPTURE_NONCE -ErrorAction SilentlyContinue
-  if ($webviewArgsPolicySet) { Remove-ItemProperty -LiteralPath $webviewArgsPolicy -Name $webviewAppName -ErrorAction SilentlyContinue }
-  if ($webviewDataPolicySet) { Remove-ItemProperty -LiteralPath $webviewDataPolicy -Name $webviewAppName -ErrorAction SilentlyContinue }
+  if ($webviewArgsPolicySet) {
+    foreach ($appId in $webviewPolicyAppIds) {
+      Remove-ItemProperty -LiteralPath $webviewArgsPolicy -Name $appId -ErrorAction SilentlyContinue
+    }
+  }
+  if ($webviewDataPolicySet) {
+    foreach ($appId in $webviewPolicyAppIds) {
+      Remove-ItemProperty -LiteralPath $webviewDataPolicy -Name $appId -ErrorAction SilentlyContinue
+    }
+  }
   if ($webviewArgsPolicyCreated) { Remove-Item -LiteralPath $webviewArgsPolicy -Force -ErrorAction SilentlyContinue }
   if ($webviewDataPolicyCreated) { Remove-Item -LiteralPath $webviewDataPolicy -Force -ErrorAction SilentlyContinue }
   if ($webviewPolicyRootCreated) { Remove-Item -LiteralPath $webviewPolicyRoot -Force -ErrorAction SilentlyContinue }

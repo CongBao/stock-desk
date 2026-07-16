@@ -6,6 +6,7 @@
     "build": "pnpm --dir web build",
     "desktop:build": "tauri build --config src-tauri/tauri.conf.json",
     "desktop:dev": "tauri dev --config src-tauri/tauri.conf.json",
+    "desktop:smoke:macos": "uv run --frozen python scripts/macos_tauri_smoke.py",
     "e2e": "playwright test",
     "format:check": "pnpm --dir web format:check",
     "lint": "pnpm --dir web lint",

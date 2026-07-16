@@ -183,7 +183,7 @@ def test_program_and_data_roots_are_physically_separate_and_uninstall_is_safe() 
     assert f'RmDir /r "{LEGACY_DATA_ROOT}"' not in source
     assert 'RmDir /r "$APPDATA\\${BUNDLEID}"' in source
     assert 'RmDir /r "$LOCALAPPDATA\\${BUNDLEID}"' in source
-    assert identifier == "com.congbao.stockdesk"
+    assert identifier == "com.baozijuan.stockdesk"
     for cleanup_root in bundle_cleanup_roots:
         assert cleanup_root not in {USER_DATA_ROOT, LEGACY_DATA_ROOT}
         assert USER_DATA_ROOT not in cleanup_root
@@ -251,6 +251,7 @@ def test_legacy_readonly_payload_is_repaired_only_inside_install_root() -> None:
 def test_v11_data_cleanup_is_explicit_default_off_and_never_uses_nsis_rmdir() -> None:
     source = NSIS_TEMPLATE.read_text(encoding="utf-8")
     hooks = NSIS_HOOKS.read_text(encoding="utf-8")
+    post = hooks.split("!macro NSIS_HOOK_POSTUNINSTALL", maxsplit=1)[1]
     languages = {
         path.name: path.read_text(encoding="utf-8")
         for path in sorted(NSIS_LANGUAGES.glob("*.nsh"))
@@ -264,31 +265,40 @@ def test_v11_data_cleanup_is_explicit_default_off_and_never_uses_nsis_rmdir() ->
     assert "$PLUGINSDIR\\stock-desk-cleanup.exe" in hooks
     assert "$DeleteAppDataCheckboxState = 1" in hooks
     assert "$UpdateMode <> 1" in hooks
-    assert "MB_RETRYCANCEL" in hooks
-    assert "SetErrorLevel 70" in hooks
+    assert "MB_RETRYCANCEL" not in post
+    assert "SetErrorLevel 70" not in post
+    assert "stockDeskCleanupKeptData" in hooks
 
     assert set(languages) == {"English.nsh", "SimpChinese.nsh"}
     for language in languages.values():
         assert "v1.1" in language
         assert "v1.0.0" in language
-        assert "stockDeskCleanupFailed" in language
+        assert "stockDeskCleanupKeptData" in language
         assert "stockDeskCleanupUnavailable" in language
 
 
-def test_cleanup_hook_failure_can_only_retry_or_keep_data() -> None:
+def test_cleanup_hook_failure_keeps_data_without_failing_uninstall() -> None:
     hooks = NSIS_HOOKS.read_text(encoding="utf-8")
     post = hooks.split("!macro NSIS_HOOK_POSTUNINSTALL", maxsplit=1)[1]
 
     assert "ExecWait" in post
-    assert "IDRETRY stock_desk_cleanup_retry" in post
-    assert "IDCANCEL stock_desk_cleanup_done" in post
+    assert "IDRETRY" not in post
+    assert "MB_RETRYCANCEL" not in post
+    assert "SetErrorLevel" not in post
+    assert "stockDeskCleanupKeptData" in post
+    assert "DetailPrint" in post
+    assert (
+        post.index("StrCpy $StockDeskCleanupExitCode 70")
+        < post.index("ExecWait '\"$PLUGINSDIR")
+        < post.index("DetailPrint")
+    )
     assert "Delete " not in post
     assert "RMDir" not in post
     assert "RmDir" not in post
     unavailable = post.split("$StockDeskCleanupReady <> 1", maxsplit=1)[1].split(
         "stock_desk_cleanup_retry:", maxsplit=1
     )[0]
-    assert "MB_OK|MB_ICONEXCLAMATION" in unavailable
+    assert "MB_OK|MB_ICONINFORMATION" in unavailable
     assert "IDRETRY" not in unavailable
 
 

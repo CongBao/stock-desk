@@ -405,7 +405,7 @@ it('uses concise user language and shared readable error colors', async () => {
       onboardingState('synchronization', {
         sync: {
           status: 'failed',
-          providerId: 'akshare',
+          providerId: null,
           manifestRecordId: null,
           datasetVersion: null,
           dataCutoff: null,

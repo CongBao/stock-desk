@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "macos-smoke",
+  "description": "Local macOS Tauri interaction smoke capability; not a macOS release target",
+  "windows": ["main"],
+  "platforms": ["macOS"],
+  "permissions": ["core:event:default"]
+}
