@@ -139,6 +139,40 @@ if ($LASTEXITCODE -ne 0) { throw 'NSIS repack kit verification failed' }
 
 $privateRepack = Join-Path $captureRoot 'repack'
 New-PrivateDirectory $privateRepack
+$diagnosticRoot = Join-Path $privateRepack 'diagnostic'
+New-PrivateDirectory $diagnosticRoot
+$diagnosticInstaller = Join-Path $diagnosticRoot 'stock-desk-unsigned-nsis.exe'
+$diagnosticJson = @(& $python scripts\nsis_repack_contract.py diagnose-repack-mismatch `
+  --kit $Kit --output $diagnosticInstaller `
+  --expected-source-ref $SourceRef --expected-source-sha $SourceSha `
+  --expected-source-tree $SourceTree --expected-source-epoch $SourceEpoch `
+  --expected-kit-sha256 $expectedKitSha)
+if ($LASTEXITCODE -ne 0) { throw 'private NSIS diagnostic repack failed' }
+try { $diagnostic = ($diagnosticJson -join "`n") | ConvertFrom-Json }
+catch { throw 'private NSIS diagnostic repack returned invalid JSON' }
+if ([string]$diagnostic.artifact -cne 'stock-desk-nsis-diagnostic-repack-v1') {
+  throw 'private NSIS diagnostic repack returned an unexpected artifact'
+}
+if (-not [bool]$diagnostic.matches_expected) {
+  $mismatchRoot = Join-Path $captureRoot 'mismatch-diagnostic'
+  $expectedTree = Join-Path $mismatchRoot 'expected'
+  $actualTree = Join-Path $mismatchRoot 'actual'
+  New-PrivateDirectory $mismatchRoot
+  New-PrivateDirectory $expectedTree
+  New-PrivateDirectory $actualTree
+  & 7z x -bd -y "-o$expectedTree" $original | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw 'original NSIS mismatch extraction failed' }
+  & 7z x -bd -y "-o$actualTree" $diagnosticInstaller | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw 'repacked NSIS mismatch extraction failed' }
+  & $python scripts\nsis_mismatch_diagnostics.py `
+    --expected $original --actual $diagnosticInstaller `
+    --expected-tree $expectedTree --actual-tree $actualTree `
+    --output (Join-Path $DiagnosticsRoot 'nsis-mismatch-diagnostic.json')
+  if ($LASTEXITCODE -ne 0) { throw 'bounded NSIS mismatch diagnostic failed' }
+  throw 'fixed NSIS repack does not reproduce the original unsigned candidate'
+}
+Remove-Item -LiteralPath $diagnosticRoot -Recurse -Force
+if (Test-Path -LiteralPath $diagnosticRoot) { throw 'private diagnostic repack was not removed' }
 New-PrivateDirectory (Join-Path $privateRepack 'a')
 New-PrivateDirectory (Join-Path $privateRepack 'b')
 $first = Join-Path $privateRepack 'a\stock-desk-unsigned-nsis.exe'
@@ -171,24 +205,7 @@ $expectedHash = Get-Sha256 $original
 $firstHash = Get-Sha256 $first
 $secondHash = Get-Sha256 $second
 if ($firstHash -cne $secondHash) { throw 'independent fixed NSIS repacks are not byte-identical' }
-if ($firstHash -cne $expectedHash) {
-  $mismatchRoot = Join-Path $captureRoot 'mismatch-diagnostic'
-  $expectedTree = Join-Path $mismatchRoot 'expected'
-  $actualTree = Join-Path $mismatchRoot 'actual'
-  New-PrivateDirectory $mismatchRoot
-  New-PrivateDirectory $expectedTree
-  New-PrivateDirectory $actualTree
-  & 7z x -bd -y "-o$expectedTree" $original | Out-Null
-  if ($LASTEXITCODE -ne 0) { throw 'original NSIS mismatch extraction failed' }
-  & 7z x -bd -y "-o$actualTree" $first | Out-Null
-  if ($LASTEXITCODE -ne 0) { throw 'repacked NSIS mismatch extraction failed' }
-  & $python scripts\nsis_mismatch_diagnostics.py `
-    --expected $original --actual $first `
-    --expected-tree $expectedTree --actual-tree $actualTree `
-    --output (Join-Path $DiagnosticsRoot 'nsis-mismatch-diagnostic.json')
-  if ($LASTEXITCODE -ne 0) { throw 'bounded NSIS mismatch diagnostic failed' }
-  throw 'fixed NSIS repack does not reproduce the original unsigned candidate'
-}
+if ($firstHash -cne $expectedHash) { throw 'fixed NSIS repack changed after matching diagnostic compile' }
 & $python scripts\nsis_repack_producer.py verify-live-inputs --work-root $captureRoot @sourceArguments | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'producer live-input recheck failed' }
 Confirm-PrivateDirectory $privateRepack

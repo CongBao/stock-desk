@@ -40,6 +40,7 @@ from scripts.secure_artifact_snapshot import (
 
 KIT_ARTIFACT: Final = "stock-desk-nsis-repack-kit"
 RECEIPT_ARTIFACT: Final = "stock-desk-nsis-repack-receipt-v1"
+DIAGNOSTIC_REPACK_ARTIFACT: Final = "stock-desk-nsis-diagnostic-repack-v1"
 PROVENANCE_SET_ARTIFACT: Final = "stock-desk-nsis-repack-provenance-set-v1"
 PROVENANCE_SUMMARY_FIELDS: Final = frozenset(
     {
@@ -3183,7 +3184,53 @@ def repack(
             output=output,
             receipt=receipt,
             repack_slot=_repack_slot(repack_slot, "repack_slot"),
+            diagnostic_mode=False,
         )
+
+
+def diagnose_repack_mismatch(
+    *,
+    kit: Path,
+    output: Path,
+    expected_source_ref: str,
+    expected_source_sha: str,
+    expected_source_tree: str,
+    expected_source_epoch: int,
+    expected_kit_sha256: str,
+) -> dict[str, object]:
+    """Compile one private, non-promotable output for mismatch diagnosis."""
+
+    if output.exists() or output.is_symlink():
+        raise NsisRepackContractError("diagnostic output must not already exist")
+    try:
+        verify_private_directory(output.parent.absolute())
+    except SecureArtifactSnapshotError as error:
+        raise NsisRepackContractError(
+            "diagnostic output parent must be a private directory"
+        ) from error
+    with _verified_kit_snapshot(
+        kit=kit,
+        expected_source_ref=expected_source_ref,
+        expected_source_sha=expected_source_sha,
+        expected_source_tree=expected_source_tree,
+        expected_source_epoch=expected_source_epoch,
+        expected_kit_sha256=expected_kit_sha256,
+    ) as (manifest, verified_snapshot):
+        result = _repack_verified_snapshot(
+            verified_snapshot=verified_snapshot,
+            manifest=manifest,
+            output=output,
+            receipt=None,
+            repack_slot=None,
+            diagnostic_mode=True,
+        )
+    try:
+        verify_private_directory(output.parent.absolute())
+    except SecureArtifactSnapshotError as error:
+        raise NsisRepackContractError(
+            "diagnostic output parent lost its private boundary"
+        ) from error
+    return result
 
 
 def _drain_bounded_output_tail(
@@ -3250,8 +3297,9 @@ def _repack_verified_snapshot(
     verified_snapshot: Path,
     manifest: Mapping[str, object],
     output: Path,
-    receipt: Path,
-    repack_slot: str,
+    receipt: Path | None,
+    repack_slot: str | None,
+    diagnostic_mode: bool,
 ) -> dict[str, object]:
     records = manifest["files"]
     assert isinstance(records, list)
@@ -3367,7 +3415,8 @@ def _repack_verified_snapshot(
             )
         generated = _safe_child(work, str(expected["path"]), "generated installer")
         size, digest = _hash_regular_file(generated, "generated installer")
-        if size != expected["size"] or digest != expected["sha256"]:
+        matches_expected = size == expected["size"] and digest == expected["sha256"]
+        if not matches_expected and not diagnostic_mode:
             diagnostic = _format_nsis_diagnostic(bytes(diagnostic_tail), work)
             suffix = f"\n{diagnostic}" if diagnostic else ""
             raise NsisRepackContractError(
@@ -3404,6 +3453,29 @@ def _repack_verified_snapshot(
             raise
         size = captured.size
         digest = captured.sha256
+
+    if diagnostic_mode:
+        expected = _object(
+            manifest["expected_unsigned_installer"], "expected_unsigned_installer"
+        )
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "artifact": DIAGNOSTIC_REPACK_ARTIFACT,
+            "kit_sha256": manifest["kit_sha256"],
+            "source_ref": manifest["source_ref"],
+            "source_sha": manifest["source_sha"],
+            "source_tree": manifest["source_tree"],
+            "source_epoch": manifest["source_epoch"],
+            "matches_expected": matches_expected,
+            "expected": {
+                "size": expected["size"],
+                "sha256": expected["sha256"],
+            },
+            "actual": {"size": size, "sha256": digest},
+        }
+
+    assert receipt is not None
+    assert repack_slot is not None
 
     result: dict[str, object] = {
         "schema_version": SCHEMA_VERSION,
@@ -3468,6 +3540,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     run.add_argument("--expected-source-tree", required=True)
     run.add_argument("--expected-source-epoch", type=int, required=True)
     run.add_argument("--expected-kit-sha256", required=True)
+    diagnose = commands.add_parser("diagnose-repack-mismatch")
+    diagnose.add_argument("--kit", type=Path, required=True)
+    diagnose.add_argument("--output", type=Path, required=True)
+    diagnose.add_argument("--expected-source-ref", required=True)
+    diagnose.add_argument("--expected-source-sha", required=True)
+    diagnose.add_argument("--expected-source-tree", required=True)
+    diagnose.add_argument("--expected-source-epoch", type=int, required=True)
+    diagnose.add_argument("--expected-kit-sha256", required=True)
     verify_receipt_command = commands.add_parser("verify-receipt")
     verify_receipt_command.add_argument("--receipt", type=Path, required=True)
     verify_receipt_command.add_argument("--kit", type=Path, required=True)
@@ -3525,6 +3605,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 output=arguments.output,
                 receipt=arguments.receipt,
                 repack_slot=arguments.repack_slot,
+                expected_source_ref=arguments.expected_source_ref,
+                expected_source_sha=arguments.expected_source_sha,
+                expected_source_tree=arguments.expected_source_tree,
+                expected_source_epoch=arguments.expected_source_epoch,
+                expected_kit_sha256=arguments.expected_kit_sha256,
+            )
+        elif arguments.command == "diagnose-repack-mismatch":
+            result = diagnose_repack_mismatch(
+                kit=arguments.kit,
+                output=arguments.output,
                 expected_source_ref=arguments.expected_source_ref,
                 expected_source_sha=arguments.expected_source_sha,
                 expected_source_tree=arguments.expected_source_tree,

@@ -634,7 +634,8 @@ def test_windows_candidate_binds_reproducible_nsis_repack_kit_without_new_family
     assert "$createKitJson = @(& $python" in integration
     assert '($createKitJson -join "`n") | ConvertFrom-Json' in integration
     assert "$expectedKitSha = [string]$createKitResult.kit_sha256" in integration
-    assert integration.count("--expected-kit-sha256 $expectedKitSha") == 4
+    assert integration.count("--expected-kit-sha256 $expectedKitSha") == 5
+    assert integration.count("diagnose-repack-mismatch") == 1
     assert integration.count("--repack-slot a") == 1
     assert integration.count("--repack-slot b") == 1
     assert "--expected-repack-slot $pair.Slot" in integration

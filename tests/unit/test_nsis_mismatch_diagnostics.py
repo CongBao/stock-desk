@@ -115,10 +115,13 @@ def test_windows_repack_integration_captures_mismatch_before_failing() -> None:
     workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
 
     diagnostic = "scripts\\nsis_mismatch_diagnostics.py"
+    diagnostic_repack = "diagnose-repack-mismatch"
     mismatch = (
         "throw 'fixed NSIS repack does not reproduce the original unsigned candidate'"
     )
     assert "[string]$DiagnosticsRoot" in integration
+    assert diagnostic_repack in integration
     assert diagnostic in integration
+    assert integration.index(diagnostic_repack) < integration.index(diagnostic)
     assert integration.index(diagnostic) < integration.index(mismatch)
     assert "-DiagnosticsRoot (Join-Path $root 'diagnostics')" in workflow

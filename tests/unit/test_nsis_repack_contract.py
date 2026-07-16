@@ -2299,6 +2299,60 @@ def test_repack_execution_failures_are_closed(
         assert f"actual size={len(b'wrong\n')} sha256={_digest(b'wrong\n')}" in message
 
 
+def test_diagnostic_repack_preserves_mismatch_only_in_private_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    kit, manifest = _create(tmp_path)
+    wrong = b"diagnostic mismatch\n"
+
+    def fake_run(
+        command: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[bytes]:
+        cwd = Path(str(kwargs["cwd"]))
+        generated = cwd / "unsigned/stock-desk.exe"
+        generated.parent.mkdir(parents=True, exist_ok=True)
+        generated.write_bytes(wrong)
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr("scripts.nsis_repack_contract.subprocess.run", fake_run)
+    private = tmp_path / "private-diagnostic"
+    secure_snapshot.prepare_private_directory(private)
+    output = private / "actual.exe"
+
+    result = contract.diagnose_repack_mismatch(
+        kit=kit,
+        output=output,
+        expected_source_ref=str(manifest["source_ref"]),
+        expected_source_sha=str(manifest["source_sha"]),
+        expected_source_tree=str(manifest["source_tree"]),
+        expected_source_epoch=int(manifest["source_epoch"]),
+        expected_kit_sha256=str(manifest["kit_sha256"]),
+    )
+
+    assert result["artifact"] == "stock-desk-nsis-diagnostic-repack-v1"
+    assert result["matches_expected"] is False
+    assert result["actual"] == {"size": len(wrong), "sha256": _digest(wrong)}
+    assert output.read_bytes() == wrong
+
+
+def test_diagnostic_repack_rejects_non_private_output_parent(
+    tmp_path: Path,
+) -> None:
+    kit, manifest = _create(tmp_path)
+    tmp_path.chmod(0o755)
+
+    with pytest.raises(contract.NsisRepackContractError, match="private"):
+        contract.diagnose_repack_mismatch(
+            kit=kit,
+            output=tmp_path / "actual.exe",
+            expected_source_ref=str(manifest["source_ref"]),
+            expected_source_sha=str(manifest["source_sha"]),
+            expected_source_tree=str(manifest["source_tree"]),
+            expected_source_epoch=int(manifest["source_epoch"]),
+            expected_kit_sha256=str(manifest["kit_sha256"]),
+        )
+
+
 def test_repack_nonzero_reports_only_a_bounded_redacted_tool_tail(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
