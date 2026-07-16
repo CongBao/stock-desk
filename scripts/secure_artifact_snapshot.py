@@ -12,7 +12,7 @@ from __future__ import annotations
 import argparse
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field
 import hashlib
 import json
 import os
@@ -103,9 +103,18 @@ class _Identity:
 
 
 @dataclass(frozen=True)
+class _WindowsDataStream:
+    name: str
+    size: int
+
+
+@dataclass(frozen=True)
 class _Inventory:
     files: dict[str, _Identity]
     directories: dict[str, _Identity]
+    streams: dict[str, tuple[_WindowsDataStream, ...]] = dataclass_field(
+        default_factory=dict
+    )
 
 
 @dataclass(frozen=True)
@@ -975,6 +984,168 @@ def _windows_error_code(error: OSError) -> int | None:
     return error.errno if isinstance(error.errno, int) else None
 
 
+def _windows_stream_inventory(
+    path: Path, *, is_directory: bool, expected_size: int
+) -> tuple[_WindowsDataStream, ...]:
+    """Enumerate native Windows streams and reject every named ADS."""
+
+    if not _running_on_windows():
+        return ()
+    import ctypes
+    from ctypes import wintypes
+
+    class Win32FindStreamData(ctypes.Structure):
+        _fields_ = [
+            ("stream_size", ctypes.c_longlong),
+            ("stream_name", wintypes.WCHAR * 296),
+        ]
+
+    win_dll: Any = getattr(ctypes, "WinDLL")
+    get_last_error: Any = getattr(ctypes, "get_last_error")
+    kernel32 = win_dll("kernel32", use_last_error=True)
+    find_first = kernel32.FindFirstStreamW
+    find_next = kernel32.FindNextStreamW
+    find_close = kernel32.FindClose
+    find_first.argtypes = [
+        wintypes.LPCWSTR,
+        ctypes.c_int,
+        ctypes.POINTER(Win32FindStreamData),
+        wintypes.DWORD,
+    ]
+    find_first.restype = wintypes.HANDLE
+    find_next.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(Win32FindStreamData),
+    ]
+    find_next.restype = wintypes.BOOL
+    find_close.argtypes = [wintypes.HANDLE]
+    find_close.restype = wintypes.BOOL
+    data = Win32FindStreamData()
+    handle = find_first(str(path), 0, ctypes.byref(data), 0)
+    invalid = wintypes.HANDLE(-1).value
+    if handle == invalid:
+        code = int(get_last_error())
+        if code == 38 and is_directory:  # directory may have no stream
+            return ()
+        raise SecureArtifactSnapshotError(
+            f"Windows alternate data streams could not be enumerated (Windows error {code})"
+        )
+    streams: list[_WindowsDataStream] = []
+    enumeration_error: SecureArtifactSnapshotError | None = None
+    try:
+        try:
+            while True:
+                name = str(data.stream_name)
+                size = int(data.stream_size)
+                if size < 0 or len(streams) >= 16:
+                    raise SecureArtifactSnapshotError(
+                        "Windows data stream inventory is invalid"
+                    )
+                streams.append(_WindowsDataStream(name, size))
+                if name != "::$DATA":
+                    raise SecureArtifactSnapshotError(
+                        "Windows named alternate data streams are forbidden"
+                    )
+                if not find_next(handle, ctypes.byref(data)):
+                    code = int(get_last_error())
+                    if code != 38:
+                        raise SecureArtifactSnapshotError(
+                            "Windows alternate data streams changed during "
+                            f"enumeration (Windows error {code})"
+                        )
+                    break
+        except SecureArtifactSnapshotError as error:
+            enumeration_error = error
+    finally:
+        close_failed = not find_close(handle)
+    if enumeration_error is not None:
+        raise enumeration_error
+    if close_failed:
+        raise SecureArtifactSnapshotError(
+            "Windows alternate data stream enumeration handle could not close"
+        )
+    result = tuple(streams)
+    if is_directory:
+        if result:
+            raise SecureArtifactSnapshotError(
+                "Windows directory stream inventory is not canonical"
+            )
+    elif result != (_WindowsDataStream("::$DATA", expected_size),):
+        raise SecureArtifactSnapshotError(
+            "Windows file default stream does not equal its secured size"
+        )
+    return result
+
+
+def _require_ntfs_named_stream_volume(handle: int) -> None:
+    """Require the held Windows source root to be stream-capable NTFS."""
+
+    import ctypes
+    from ctypes import wintypes
+
+    win_dll: Any = getattr(ctypes, "WinDLL")
+    get_last_error: Any = getattr(ctypes, "get_last_error")
+    kernel32 = win_dll("kernel32", use_last_error=True)
+    query = kernel32.GetVolumeInformationByHandleW
+    query.argtypes = [
+        wintypes.HANDLE,
+        wintypes.LPWSTR,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+        ctypes.POINTER(wintypes.DWORD),
+        ctypes.POINTER(wintypes.DWORD),
+        wintypes.LPWSTR,
+        wintypes.DWORD,
+    ]
+    query.restype = wintypes.BOOL
+    volume_name = ctypes.create_unicode_buffer(261)
+    filesystem_name = ctypes.create_unicode_buffer(261)
+    serial = wintypes.DWORD()
+    maximum_component = wintypes.DWORD()
+    flags = wintypes.DWORD()
+    if not query(
+        handle,
+        volume_name,
+        len(volume_name),
+        ctypes.byref(serial),
+        ctypes.byref(maximum_component),
+        ctypes.byref(flags),
+        filesystem_name,
+        len(filesystem_name),
+    ):
+        code = get_last_error()
+        raise SecureArtifactSnapshotError(
+            f"Windows source volume could not be verified (Windows error {code})"
+        )
+    if filesystem_name.value != "NTFS" or not flags.value & 0x00040000:
+        raise SecureArtifactSnapshotError(
+            "Windows strict snapshots require named-stream-capable NTFS"
+        )
+
+
+def _validate_windows_ordinal_relative(root: Path, relative: str) -> None:
+    """Require every selected Windows component to have its exact ordinal spelling."""
+
+    current = root
+    for component in PurePosixPath(relative).parts:
+        key = unicodedata.normalize("NFKC", component).casefold()
+        try:
+            matches = [
+                entry.name
+                for entry in os.scandir(current)
+                if unicodedata.normalize("NFKC", entry.name).casefold() == key
+            ]
+        except (OSError, UnicodeError) as error:
+            raise SecureArtifactSnapshotError(
+                "Windows ordinal path components could not be enumerated"
+            ) from error
+        if matches != [component]:
+            raise SecureArtifactSnapshotError(
+                "Windows selected path does not have one exact ordinal spelling"
+            )
+        current /= component
+
+
 def _open_windows_source_handles(path: Path) -> list[int]:
     for attempt in range(len(_WINDOWS_SHARING_RETRY_DELAYS) + 1):
         handles: list[int] = []
@@ -1007,7 +1178,7 @@ def _open_windows_source_handles(path: Path) -> list[int]:
 
 
 @contextmanager
-def _hold_windows_source_root(path: Path) -> Iterator[None]:
+def _hold_windows_source_root(path: Path) -> Iterator[tuple[int, ...]]:
     """Pin every directory without allowing replacement during source reads.
 
     Directory handles permit concurrent writes because build and antivirus processes can
@@ -1018,7 +1189,7 @@ def _hold_windows_source_root(path: Path) -> Iterator[None]:
 
     handles = _open_windows_source_handles(path)
     try:
-        yield
+        yield tuple(handles)
     except SecureArtifactSnapshotError:
         raise
     except OSError as error:
@@ -1040,6 +1211,8 @@ def _inventory_windows(
     allow_hardlinks: bool = True,
     reject_empty_directories: bool = False,
     closed_source_root: bool = False,
+    reject_named_streams: bool = False,
+    require_ordinal_paths: bool = False,
 ) -> _Inventory:
     # Native Windows build tools legitimately reuse files through hard links. The
     # enclosing snapshot holds every ancestor without delete sharing, opens each file
@@ -1048,6 +1221,59 @@ def _inventory_windows(
     # stricter one-link policy because it has no equivalent mandatory sharing lock.
     files: dict[str, _Identity] = {}
     directories: dict[str, _Identity] = {}
+    selected_ancestors: dict[str, _Identity] = {}
+    streams: dict[str, tuple[_WindowsDataStream, ...]] = {}
+
+    def inspect_stream(path: Path, relative: str, metadata: os.stat_result) -> None:
+        if not reject_named_streams:
+            return
+        value = _windows_stream_inventory(
+            path,
+            is_directory=stat.S_ISDIR(metadata.st_mode),
+            expected_size=metadata.st_size,
+        )
+        previous = streams.get(relative)
+        if previous is not None and previous != value:
+            raise SecureArtifactSnapshotError(
+                "Windows alternate data streams changed during inventory"
+            )
+        streams[relative] = value
+
+    def inspect_file(path: Path, relative: str) -> os.stat_result:
+        if not reject_named_streams:
+            return _stat_windows_source_file(path)
+        descriptor = _open_windows_non_reparse(path) if _running_on_windows() else -1
+        try:
+            before = (
+                os.fstat(descriptor)
+                if descriptor >= 0
+                else path.stat(follow_symlinks=False)
+            )
+            value = _windows_stream_inventory(
+                path, is_directory=False, expected_size=before.st_size
+            )
+            after = (
+                os.fstat(descriptor)
+                if descriptor >= 0
+                else path.stat(follow_symlinks=False)
+            )
+            if _identity(before) != _identity(after):
+                raise SecureArtifactSnapshotError(
+                    "Windows file changed during data stream enumeration"
+                )
+            previous = streams.get(relative)
+            if previous is not None and previous != value:
+                raise SecureArtifactSnapshotError(
+                    "Windows alternate data streams changed during inventory"
+                )
+            streams[relative] = value
+            return after
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+
+    root_metadata = root.stat(follow_symlinks=False)
+    inspect_stream(root, ".", root_metadata)
     if closed_source_root:
         try:
             root_names = [entry.name for entry in os.scandir(root)]
@@ -1092,7 +1318,7 @@ def _inventory_windows(
                 )
             if stat.S_ISREG(metadata.st_mode):
                 try:
-                    opened = _stat_windows_source_file(child_path)
+                    opened = inspect_file(child_path, child_relative)
                 except OSError as error:
                     raise SecureArtifactSnapshotError(
                         "artifact entry changed or is unsafe"
@@ -1105,6 +1331,7 @@ def _inventory_windows(
                     allow_hardlinks=allow_hardlinks,
                 )
             elif stat.S_ISDIR(metadata.st_mode):
+                inspect_stream(child_path, child_relative, metadata)
                 if child_relative in directories:
                     raise SecureArtifactSnapshotError(
                         "snapshot entries overlap or are duplicated"
@@ -1117,7 +1344,50 @@ def _inventory_windows(
                 )
 
     for relative in entries:
+        if require_ordinal_paths:
+            _validate_windows_ordinal_relative(root, relative)
         path = root.joinpath(*PurePosixPath(relative).parts)
+        if reject_named_streams:
+            ancestor = root
+            components = PurePosixPath(relative).parts
+            for index, component in enumerate(components):
+                ancestor /= component
+                ancestor_relative = PurePosixPath(*components[: index + 1]).as_posix()
+                try:
+                    ancestor_metadata = ancestor.stat(follow_symlinks=False)
+                except OSError as error:
+                    raise SecureArtifactSnapshotError(
+                        "Windows selected ancestor is missing or unsafe"
+                    ) from error
+                if stat.S_ISDIR(ancestor_metadata.st_mode):
+                    inspect_stream(ancestor, ancestor_relative, ancestor_metadata)
+        if require_ordinal_paths:
+            ancestor = root
+            components = PurePosixPath(relative).parts
+            for index, component in enumerate(components[:-1]):
+                ancestor /= component
+                ancestor_relative = PurePosixPath(*components[: index + 1]).as_posix()
+                try:
+                    ancestor_metadata = ancestor.stat(follow_symlinks=False)
+                except OSError as error:
+                    raise SecureArtifactSnapshotError(
+                        "Windows selected ancestor is missing or unsafe"
+                    ) from error
+                if (
+                    not stat.S_ISDIR(ancestor_metadata.st_mode)
+                    or stat.S_ISLNK(ancestor_metadata.st_mode)
+                    or _is_reparse(ancestor_metadata)
+                ):
+                    raise SecureArtifactSnapshotError(
+                        "Windows selected ancestor is not an ordinary directory"
+                    )
+                identity = _identity(ancestor_metadata)
+                previous = selected_ancestors.get(ancestor_relative)
+                if previous is not None and previous != identity:
+                    raise SecureArtifactSnapshotError(
+                        "Windows selected ancestor changed during inventory"
+                    )
+                selected_ancestors[ancestor_relative] = identity
         try:
             metadata = path.stat(follow_symlinks=False)
         except OSError as error:
@@ -1130,7 +1400,7 @@ def _inventory_windows(
             )
         if stat.S_ISREG(metadata.st_mode):
             try:
-                opened = _stat_windows_source_file(path)
+                opened = inspect_file(path, relative)
             except OSError as error:
                 raise SecureArtifactSnapshotError(
                     "snapshot entry is missing or unsafe"
@@ -1139,6 +1409,7 @@ def _inventory_windows(
                 files, relative, opened, limits, allow_hardlinks=allow_hardlinks
             )
         elif stat.S_ISDIR(metadata.st_mode):
+            inspect_stream(path, relative, metadata)
             if relative in directories:
                 raise SecureArtifactSnapshotError(
                     "snapshot entries overlap or are duplicated"
@@ -1151,7 +1422,14 @@ def _inventory_windows(
             )
     if not files:
         raise SecureArtifactSnapshotError("snapshot selection contains no files")
-    inventory = _Inventory(files=files, directories=directories)
+    for relative, identity in selected_ancestors.items():
+        previous = directories.get(relative)
+        if previous is not None and previous != identity:
+            raise SecureArtifactSnapshotError(
+                "Windows selected ancestor changed during inventory"
+            )
+        directories.setdefault(relative, identity)
+    inventory = _Inventory(files=files, directories=directories, streams=streams)
     _validate_global_collisions(inventory)
     if reject_empty_directories:
         _reject_inventory_empty_directories(inventory)
@@ -1835,6 +2113,48 @@ def _snapshot_digest(files: Sequence[SnapshotFile]) -> str:
     return hashlib.sha256(canonical).hexdigest()
 
 
+def verify_no_windows_named_streams(root: Path) -> None:
+    """Enumerate a complete private tree and reject named Windows streams."""
+
+    if not _running_on_windows():
+        return
+    root_handle = _open_windows_directory_handle(
+        root, share_mode=_WINDOWS_DIRECTORY_SHARE
+    )
+    try:
+        _require_ntfs_named_stream_volume(root_handle)
+    finally:
+        _close_windows_handle(root_handle)
+    pending = [root]
+    while pending:
+        path = pending.pop()
+        try:
+            metadata = path.stat(follow_symlinks=False)
+        except OSError as error:
+            raise SecureArtifactSnapshotError(
+                "private stream-policy tree is missing or unsafe"
+            ) from error
+        if stat.S_ISLNK(metadata.st_mode) or _is_reparse(metadata):
+            raise SecureArtifactSnapshotError(
+                "private stream-policy tree contains a link or reparse point"
+            )
+        is_directory = stat.S_ISDIR(metadata.st_mode)
+        if not is_directory and not stat.S_ISREG(metadata.st_mode):
+            raise SecureArtifactSnapshotError(
+                "private stream-policy tree contains a nonordinary entry"
+            )
+        _windows_stream_inventory(
+            path, is_directory=is_directory, expected_size=metadata.st_size
+        )
+        if is_directory:
+            try:
+                pending.extend(Path(entry.path) for entry in os.scandir(path))
+            except OSError as error:
+                raise SecureArtifactSnapshotError(
+                    "private stream-policy directory cannot be enumerated"
+                ) from error
+
+
 def _finalize_posix_snapshot(descriptor: int) -> None:
     for name in sorted(os.listdir(descriptor), key=lambda value: value.encode()):
         metadata = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
@@ -1861,6 +2181,8 @@ def snapshot_artifacts(
     allow_windows_hardlinks: bool = True,
     reject_empty_directories: bool = False,
     closed_source_root: bool = False,
+    reject_windows_named_streams: bool = False,
+    require_ordinal_paths: bool = False,
 ) -> SnapshotResult:
     """Copy selected artifacts once into a verified owner-only snapshot.
 
@@ -1876,6 +2198,8 @@ def snapshot_artifacts(
         ("allow_windows_hardlinks", allow_windows_hardlinks),
         ("reject_empty_directories", reject_empty_directories),
         ("closed_source_root", closed_source_root),
+        ("reject_windows_named_streams", reject_windows_named_streams),
+        ("require_ordinal_paths", require_ordinal_paths),
     ):
         if not isinstance(option, bool):
             raise SecureArtifactSnapshotError(f"{option_name} must be a boolean")
@@ -1897,7 +2221,9 @@ def snapshot_artifacts(
 
     with _create_private_directory(destination) as lease:
         if _running_on_windows():
-            with _hold_windows_source_root(source):
+            with _hold_windows_source_root(source) as source_handles:
+                if reject_windows_named_streams:
+                    _require_ntfs_named_stream_volume(source_handles[-1])
                 windows_inventory_options: dict[str, bool] = {}
                 if not allow_windows_hardlinks:
                     windows_inventory_options["allow_hardlinks"] = False
@@ -1905,6 +2231,10 @@ def snapshot_artifacts(
                     windows_inventory_options["reject_empty_directories"] = True
                 if closed_source_root:
                     windows_inventory_options["closed_source_root"] = True
+                if reject_windows_named_streams:
+                    windows_inventory_options["reject_named_streams"] = True
+                if require_ordinal_paths:
+                    windows_inventory_options["require_ordinal_paths"] = True
                 first = _inventory_windows(
                     source, normalized_entries, limits, **windows_inventory_options
                 )
@@ -1970,6 +2300,8 @@ def snapshot_artifacts(
         if total_size > limits.max_total_size:
             raise SecureArtifactSnapshotError("artifacts exceed the total size limit")
         _verify_private_snapshot(destination, records, lease)
+        if reject_windows_named_streams:
+            verify_no_windows_named_streams(destination)
         if lease.root_fd is not None:
             _finalize_posix_snapshot(lease.root_fd)
         else:

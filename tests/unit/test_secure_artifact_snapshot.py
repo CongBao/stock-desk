@@ -439,6 +439,94 @@ def test_reject_empty_directories_is_explicit_and_default_compatible(
         )
 
 
+def test_strict_windows_source_policy_requires_boolean_options(tmp_path: Path) -> None:
+    source = _source(tmp_path).resolve()
+
+    with pytest.raises(
+        SecureArtifactSnapshotError, match="reject_windows_named_streams"
+    ):
+        snapshot_artifacts(
+            source,
+            ["stock-desk.nsi"],
+            (tmp_path / "bad-ads-option").resolve(),
+            reject_windows_named_streams=cast(Any, "yes"),
+        )
+    with pytest.raises(SecureArtifactSnapshotError, match="require_ordinal_paths"):
+        snapshot_artifacts(
+            source,
+            ["stock-desk.nsi"],
+            (tmp_path / "bad-ordinal-option").resolve(),
+            require_ordinal_paths=cast(Any, 1),
+        )
+
+
+def test_windows_inventory_rejects_named_stream_before_accepting_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _source(tmp_path).resolve()
+    inspected: list[Path] = []
+
+    def reject_stream(
+        path: Path, *, is_directory: bool, expected_size: int
+    ) -> tuple[tuple[str, int], ...]:
+        del is_directory, expected_size
+        inspected.append(path)
+        if path.name == "stock-desk.nsi":
+            raise SecureArtifactSnapshotError("Windows named alternate data stream")
+
+    monkeypatch.setattr(secure_snapshot, "_windows_stream_inventory", reject_stream)
+
+    with pytest.raises(SecureArtifactSnapshotError, match="alternate data stream"):
+        secure_snapshot._inventory_windows(
+            source,
+            ("stock-desk.nsi",),
+            SnapshotLimits(),
+            reject_named_streams=True,
+        )
+    assert source / "stock-desk.nsi" in inspected
+
+
+def test_windows_inventory_checks_exact_ordinal_components(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _source(tmp_path).resolve()
+    inspected: list[tuple[Path, str]] = []
+
+    def inspect(root: Path, relative: str) -> None:
+        inspected.append((root, relative))
+
+    monkeypatch.setattr(secure_snapshot, "_validate_windows_ordinal_relative", inspect)
+    inventory = secure_snapshot._inventory_windows(
+        source,
+        ("app/stock-desk-desktop.exe",),
+        SnapshotLimits(),
+        require_ordinal_paths=True,
+    )
+
+    assert tuple(inventory.files) == ("app/stock-desk-desktop.exe",)
+    assert inspected == [(source, "app/stock-desk-desktop.exe")]
+
+
+def test_strict_windows_inventory_binds_selected_ancestor_identities(
+    tmp_path: Path,
+) -> None:
+    source = _source(tmp_path).resolve()
+
+    inventory = secure_snapshot._inventory_windows(
+        source,
+        ("app/resources/sidecar.exe",),
+        SnapshotLimits(),
+        require_ordinal_paths=True,
+    )
+
+    assert inventory.directories["app"] == secure_snapshot._identity(
+        (source / "app").stat(follow_symlinks=False)
+    )
+    assert inventory.directories["app/resources"] == secure_snapshot._identity(
+        (source / "app/resources").stat(follow_symlinks=False)
+    )
+
+
 @pytest.mark.skipif(os.name == "nt", reason="case-distinct names require POSIX")
 def test_case_insensitive_collisions_are_rejected(tmp_path: Path) -> None:
     source = _source(tmp_path).resolve()
@@ -1111,6 +1199,164 @@ def test_windows_native_inspection_failures_close_handles(
     with pytest.raises(OSError, match="inspected"):
         secure_snapshot._open_windows_non_reparse(tmp_path / "payload")
     assert kernel.closed == [91]
+
+
+class _FakeStreamKernel:
+    def __init__(
+        self,
+        records: list[tuple[str, int]],
+        *,
+        first_error: int = 0,
+        next_error: int = 38,
+        close_success: bool = True,
+    ) -> None:
+        self.records = records
+        self.first_error = first_error
+        self.next_error = next_error
+        self.close_success = close_success
+        self.last_error = 0
+        self.index = 0
+        self.closed = 0
+        self.FindFirstStreamW = _FakeFunction(self._first)
+        self.FindNextStreamW = _FakeFunction(self._next)
+        self.FindClose = _FakeFunction(self._close)
+
+    def _set_record(self, pointer: Any, record: tuple[str, int]) -> None:
+        pointer._obj.stream_name = record[0]
+        pointer._obj.stream_size = record[1]
+
+    def _first(self, *_args: object) -> int | None:
+        if self.first_error:
+            self.last_error = self.first_error
+            return ctypes.c_void_p(-1).value
+        self._set_record(_args[2], self.records[0])
+        self.index = 1
+        return 77
+
+    def _next(self, *_args: object) -> int:
+        if self.index < len(self.records):
+            self._set_record(_args[1], self.records[self.index])
+            self.index += 1
+            return 1
+        self.last_error = self.next_error
+        return 0
+
+    def _close(self, _handle: object) -> int:
+        self.closed += 1
+        return int(self.close_success)
+
+
+def _fake_stream_runtime(
+    monkeypatch: pytest.MonkeyPatch, kernel: _FakeStreamKernel
+) -> None:
+    monkeypatch.setattr(secure_snapshot, "_running_on_windows", lambda: True)
+    monkeypatch.setattr(
+        ctypes, "WinDLL", lambda *_args, **_kwargs: kernel, raising=False
+    )
+    monkeypatch.setattr(
+        ctypes, "get_last_error", lambda: kernel.last_error, raising=False
+    )
+
+
+def test_windows_stream_enumerator_accepts_exact_file_and_empty_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    file_kernel = _FakeStreamKernel([("::$DATA", 7)])
+    _fake_stream_runtime(monkeypatch, file_kernel)
+    assert secure_snapshot._windows_stream_inventory(
+        tmp_path / "file", is_directory=False, expected_size=7
+    ) == (secure_snapshot._WindowsDataStream("::$DATA", 7),)
+    assert file_kernel.closed == 1
+
+    directory_kernel = _FakeStreamKernel([], first_error=38)
+    _fake_stream_runtime(monkeypatch, directory_kernel)
+    assert (
+        secure_snapshot._windows_stream_inventory(
+            tmp_path / "directory", is_directory=True, expected_size=0
+        )
+        == ()
+    )
+    assert directory_kernel.closed == 0
+
+
+@pytest.mark.parametrize("kind", ["file", "directory"])
+def test_windows_stream_enumerator_rejects_named_streams(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    records = (
+        [("::$DATA", 7), (":stock-desk-stage11a2a:$DATA", 0)]
+        if kind == "file"
+        else [(":stock-desk-stage11a2a:$DATA", 0)]
+    )
+    kernel = _FakeStreamKernel(records)
+    _fake_stream_runtime(monkeypatch, kernel)
+    with pytest.raises(SecureArtifactSnapshotError, match="named alternate"):
+        secure_snapshot._windows_stream_inventory(
+            tmp_path / kind, is_directory=kind == "directory", expected_size=7
+        )
+    assert kernel.closed == 1
+
+
+@pytest.mark.parametrize("error", [38, 87, 5])
+def test_windows_stream_enumerator_rejects_file_first_call_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: int
+) -> None:
+    kernel = _FakeStreamKernel([], first_error=error)
+    _fake_stream_runtime(monkeypatch, kernel)
+    with pytest.raises(SecureArtifactSnapshotError, match="could not be enumerated"):
+        secure_snapshot._windows_stream_inventory(
+            tmp_path / "file", is_directory=False, expected_size=0
+        )
+
+
+def test_windows_stream_enumerator_rejects_size_next_and_close_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mismatch = _FakeStreamKernel([("::$DATA", 8)])
+    _fake_stream_runtime(monkeypatch, mismatch)
+    with pytest.raises(SecureArtifactSnapshotError, match="secured size"):
+        secure_snapshot._windows_stream_inventory(
+            tmp_path / "file", is_directory=False, expected_size=7
+        )
+
+    next_failure = _FakeStreamKernel([("::$DATA", 7)], next_error=5)
+    _fake_stream_runtime(monkeypatch, next_failure)
+    with pytest.raises(SecureArtifactSnapshotError, match="changed"):
+        secure_snapshot._windows_stream_inventory(
+            tmp_path / "file", is_directory=False, expected_size=7
+        )
+    assert next_failure.closed == 1
+
+    close_failure = _FakeStreamKernel([("::$DATA", 7)], close_success=False)
+    _fake_stream_runtime(monkeypatch, close_failure)
+    with pytest.raises(SecureArtifactSnapshotError, match="could not close"):
+        secure_snapshot._windows_stream_inventory(
+            tmp_path / "file", is_directory=False, expected_size=7
+        )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="native Windows ADS contract")
+@pytest.mark.parametrize("selected_kind", ["file", "directory"])
+def test_strict_windows_snapshot_rejects_real_named_data_stream(
+    tmp_path: Path, selected_kind: str
+) -> None:
+    source = _source(tmp_path).resolve()
+    selected = source / ("stock-desk.nsi" if selected_kind == "file" else "app")
+    ads = Path(f"{selected}:stock-desk-stage11a2a")
+    try:
+        ads.write_bytes(b"native-ads-marker")
+        assert ads.read_bytes() == b"native-ads-marker"
+        destination = (tmp_path / f"ads-{selected_kind}-snapshot").resolve()
+        with pytest.raises(SecureArtifactSnapshotError, match="named alternate"):
+            snapshot_artifacts(
+                source,
+                [selected.relative_to(source).as_posix()],
+                destination,
+                reject_windows_named_streams=True,
+            )
+        assert not destination.exists()
+    finally:
+        ads.unlink(missing_ok=True)
 
 
 def test_every_windows_handle_api_has_explicit_64_bit_signature(

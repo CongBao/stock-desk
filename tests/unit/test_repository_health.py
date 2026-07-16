@@ -547,21 +547,19 @@ def test_windows_candidate_binds_reproducible_nsis_repack_kit_without_new_family
     assert build_index < repack_index < cleanup_index
     repack = builder["steps"][repack_index]["run"]
     for required in (
-        "src-tauri\\target\\x86_64-pc-windows-msvc\\release",
-        "bundle\\nsis",
-        "nsis\\x64",
-        "installer.nsi",
-        "FileAssociation.nsh",
-        "utils.nsh",
-        "2\\.11\\.4",
-        "v3.11",
         "nsis_repack_contract_integration.ps1",
         "nsis-repack-kit",
         "nsis-repack-verification",
+        "SourceEvent",
         "SourceRef",
         "SourceEpoch",
+        "GitHubSha",
     ):
         assert required in repack
+    assert (
+        "Get-ChildItem -LiteralPath (Join-Path $env:LOCALAPPDATA 'tauri') -Recurse"
+        not in repack
+    )
 
     uploads = [
         str(step.get("with", {}).get("name", ""))
@@ -594,6 +592,7 @@ def test_windows_candidate_binds_reproducible_nsis_repack_kit_without_new_family
         "--payload-list $repackPayloadList",
         "config/nsis-toolchain-lock.json=$toolchainLockHash",
         "scripts/nsis_repack_contract.py=$repackContractHash",
+        "scripts/nsis_repack_producer.py=$repackProducerHash",
         "scripts/secure_artifact_snapshot.py=$snapshotHash",
         "schemas/nsis-repack-kit-v1.schema.json=$repackKitSchemaHash",
         "schemas/nsis-repack-receipt-v1.schema.json=$repackReceiptSchemaHash",
@@ -606,14 +605,25 @@ def test_windows_candidate_binds_reproducible_nsis_repack_kit_without_new_family
     assert "windows-nsis-repack-payloads.json" in compare
     assert "sort_keys=True" in compare
     assert 'separators=(",", ":")' in compare
+    provenance_index = compare.index("verify-provenance-set")
+    manifest_index = compare.index("windows-desktop-alpha-candidate-manifest.json")
+    assert provenance_index < manifest_index
+    assert "Windows promotion requires the exact protected main push" in compare
+    assert "--expected-source-ref refs/heads/main" in compare
 
     integration = _read("tests/windows/nsis_repack_contract_integration.ps1")
-    assert "-replace '\\', '/'" not in integration
-    assert integration.count(".Replace('\\', '/')") == 6
-    assert "function Test-RelativeChild([string]$Relative)" in integration
-    assert "[IO.Path]::IsPathRooted($Relative)" in integration
-    assert integration.count("Test-RelativeChild $relativeToToolchain") == 2
-    assert integration.count("Test-RelativeChild $relativeToRender") == 1
+    assert "nsis_repack_producer.py prepare-stage" in integration
+    assert "nsis_repack_producer.py verify-live-inputs" in integration
+    assert "Get-ChildItem -LiteralPath $snapshot -Recurse" not in integration
+    assert "$quotedAbsolute" not in integration
+    assert "$absoluteValues" not in integration
+    assert "$mappingIndex" not in integration
+    assert "captured/" not in integration
+    assert "$mappedRoles" not in integration
+    assert "function Copy-PrivateSnapshot" not in integration
+    assert "function Test-RelativeChild" not in integration
+    assert "verify-extracted-toolchain" not in integration
+    assert "patch-tauri-bundle-payload" not in integration
     assert integration.count("nsis_repack_contract.py repack") == 2
     assert integration.count("nsis_repack_contract.py verify-receipt") == 1
     assert "$receiptPairs = @(" in integration
@@ -625,89 +635,24 @@ def test_windows_candidate_binds_reproducible_nsis_repack_kit_without_new_family
     assert '($createKitJson -join "`n") | ConvertFrom-Json' in integration
     assert "$expectedKitSha = [string]$createKitResult.kit_sha256" in integration
     assert integration.count("--expected-kit-sha256 $expectedKitSha") == 4
-    assert integration.count("--expected-source-sha $SourceSha") == 5
-    assert integration.count("--expected-source-tree $SourceTree") == 5
-    assert integration.count("--expected-source-ref $SourceRef") == 5
-    assert integration.count("--expected-source-epoch $SourceEpoch") == 5
     assert integration.count("--repack-slot a") == 1
     assert integration.count("--repack-slot b") == 1
     assert "--expected-repack-slot $pair.Slot" in integration
-    assert "--prepare-private-directory" in integration
-    assert "--verify-private-directory" in integration
-    assert (
-        "Get-Content -LiteralPath (Join-Path $stage 'installer.nsi') -Raw"
-        in integration
-    )
-    assert "original unsigned installer snapshot failed" in integration
-    assert (
-        "expected_unsigned_installer=[ordered]@{path='nsis-output.exe'" in integration
-    )
-    assert (
-        "rendered installer.nsi unexpectedly references the final bundle path"
-        in integration
-    )
-    for private_root in (
-        "New-PrivateDirectory $EvidenceRoot",
-        "New-PrivateDirectory $captureRoot",
-        "New-PrivateDirectory $stage",
-        "New-PrivateDirectory $snapshots",
-        "New-PrivateDirectory $privateRepack",
-    ):
-        assert private_root in integration
+    assert "New-PrivateDirectory $EvidenceRoot" in integration
+    assert "New-PrivateDirectory $privateRepack" in integration
     assert "independent fixed NSIS repacks are not byte-identical" in integration
     assert "does not reproduce the original unsigned candidate" in integration
-    assert "function Invoke-RawNsisProbe(" not in integration
-    assert "MAINBINARYSRCPATH exactly once" in integration
-    assert "rendered MAINBINARYSRCPATH must be absolute" in integration
-    assert "Find-ByteTokenOffsets" not in integration
-    assert "ReadAllBytes" not in integration
-    assert "verify-extracted-toolchain" in integration
-    assert "ADDITIONALPLUGINSPATH exactly once" in integration
-    assert "rendered ADDITIONALPLUGINSPATH must be absolute" in integration
-    assert "does not belong to the exact NSIS tree" in integration
-    assert '!addplugindir\\s+"\\$\\{ADDITIONALPLUGINSPATH\\}"' in integration
-    assert "--nsis-root $stagedToolchain" in integration
-    assert "--additional-plugins-root $stagedAdditionalPlugins" in integration
-    assert "$compiler = $verifiedCompiler" in integration
-    assert "patch-tauri-bundle-payload" in integration
-    assert "--private-root $stage" in integration
-    assert "--payload $patchedPayload" in integration
-    assert "tauri-bundle-type-unk-to-nss-v1" in integration
-    assert "$patchedPayloadRelative = 'payload/main-binary-nss.exe'" in integration
-    assert "transformation=$payloadPatch" in integration
-    assert "$payloadPatch.marker_offset" in integration
-    assert "workspace host binary changed" in integration
-    assert "original unsigned candidate changed" in integration
-    candidate_pre = integration.index("$originalSourceIdentityBefore =")
-    candidate_snapshot = integration.index("$originalSnapshot =")
-    candidate_snapshot_identity = integration.index("$originalSnapshotIdentity =")
-    candidate_snapshot_gate = integration.index(
-        "original unsigned candidate snapshot does not match pre-capture identity"
-    )
     assert (
-        candidate_pre
-        < candidate_snapshot
-        < candidate_snapshot_identity
-        < candidate_snapshot_gate
+        integration.count("native Windows $($case.Name) ADS fixture was not created")
+        == 1
     )
-    host_pre = integration.index("$mainBinarySourceIdentityBefore =")
-    host_snapshot = integration.index("Copy-PrivateSnapshot `", host_pre)
-    host_snapshot_gate = integration.index(
-        "private host snapshot does not match pre-capture identity"
-    )
-    host_final = integration.index("$mainBinarySourceIdentityAfter =")
-    host_final_gate = integration.index(
-        "workspace host binary changed during NSIS kit and repack work"
-    )
-    assert host_pre < host_snapshot < host_snapshot_gate < host_final < host_final_gate
-    assert (
-        "Copy-Item -LiteralPath $unpatchedPayload -Destination $patchedPayload"
-        in integration
-    )
-    assert "Remove-Item -LiteralPath $unpatchedPayload -Force" in integration
-    assert "Remove-Item -LiteralPath $originalSource" not in integration
-    assert "Set-Content -LiteralPath $originalSource" not in integration
-    assert "WriteAllBytes($mainBinarySource" not in integration
+    assert "producer accepted a real named $($case.Name) ADS" in integration
+    assert "producer emitted state after ADS rejection" in integration
+    assert "Get-Item -LiteralPath $case.Selected -Stream $adsName" in integration
+    assert "[IO.File]::Delete($adsPath)" in integration
+    assert "SourceEvent is not GITHUB_EVENT_NAME" in integration
+    assert "SourceRef is not GITHUB_REF" in integration
+    assert "GitHubSha is not GITHUB_SHA" in integration
     assert "Remove-Item -LiteralPath $captureRoot" in integration
     assert "Remove-Item -LiteralPath $EvidenceRoot" not in integration
 

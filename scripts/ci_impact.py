@@ -197,8 +197,10 @@ _NSIS_REPACK_PROOF_FILES = frozenset(
         "schemas/nsis-repack-kit-v1.schema.json",
         "schemas/nsis-repack-receipt-v1.schema.json",
         "scripts/nsis_repack_contract.py",
+        "scripts/nsis_repack_producer.py",
         "scripts/secure_artifact_snapshot.py",
         "tests/unit/test_nsis_repack_contract.py",
+        "tests/unit/test_nsis_repack_producer.py",
         "tests/unit/test_secure_artifact_snapshot.py",
         "tests/windows/nsis_repack_contract_integration.ps1",
     }
