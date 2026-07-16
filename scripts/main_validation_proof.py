@@ -129,6 +129,7 @@ CRITICAL_INPUTS: Final = LEGACY_CRITICAL_INPUTS + (
     "scripts/windows_installed_vm_harness.ps1",
     "scripts/windows_installed_environment_policy.py",
     "scripts/windows_desktop_webview_evidence.mjs",
+    "scripts/windows_desktop_real_click.ps1",
     "scripts/windows_packaged_backtest_evidence.mjs",
     "tests/windows/windows_browser_observer_integration.ps1",
     "tests/windows/windows_desktop_uia_driver_integration.ps1",
@@ -975,6 +976,7 @@ def _validation_evidence(
                 "packaged-backtest/packaged-backtest-evidence.json",
                 "packaged-backtest/packaged-backtest-seed.json",
                 "packaged-backtest/packaged-backtest-host-observation.json",
+                "packaged-backtest/windows-real-click-evidence.json",
                 "packaged-backtest/windows-packaged-backtest-promotion.json",
             }
             if not required_packaged_backtest.issubset(payload_paths):

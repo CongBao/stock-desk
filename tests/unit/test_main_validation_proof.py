@@ -287,6 +287,7 @@ def _validation_evidence(
                     "packaged-backtest-evidence.json",
                     "packaged-backtest-seed.json",
                     "packaged-backtest-host-observation.json",
+                    "windows-real-click-evidence.json",
                     "windows-packaged-backtest-promotion.json",
                 )
             )
@@ -546,6 +547,7 @@ def test_generate_and_verify_complete_main_validation_proof(tmp_path: Path) -> N
     assert set(proof["critical_inputs"]) == set(proof_module.CRITICAL_INPUTS)  # type: ignore[arg-type]
     assert "tests/acceptance/v1_1_requirements.yml" in proof["critical_inputs"]  # type: ignore[operator]
     assert "scripts/verify_zero_telemetry.py" in proof["critical_inputs"]  # type: ignore[operator]
+    assert "scripts/windows_desktop_real_click.ps1" in proof["critical_inputs"]  # type: ignore[operator]
     assert "config/desktop-network-privacy.json" in proof["critical_inputs"]  # type: ignore[operator]
     for repack_control in (
         "config/nsis-toolchain-lock.json",
@@ -1094,8 +1096,15 @@ def test_generation_requires_publishable_windows_candidate_installer(
         )
 
 
-def test_generation_requires_packaged_backtest_promotion_payloads(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    "missing_path",
+    [
+        "packaged-backtest/windows-packaged-backtest-promotion.json",
+        "packaged-backtest/windows-real-click-evidence.json",
+    ],
+)
+def test_generation_requires_packaged_backtest_provenance_payloads(
+    tmp_path: Path, missing_path: str
 ) -> None:
     repo = _repository(tmp_path)
     api_evidence = _api_evidence(repo)
@@ -1105,10 +1114,7 @@ def test_generation_requires_packaged_backtest_promotion_payloads(
     payloads = candidate["payloads"]
     assert isinstance(payloads, list)
     candidate["payloads"] = [
-        payload
-        for payload in payloads
-        if payload["path"]
-        != "packaged-backtest/windows-packaged-backtest-promotion.json"
+        payload for payload in payloads if payload["path"] != missing_path
     ]
 
     with pytest.raises(MainValidationProofError, match="backtest provenance"):

@@ -314,6 +314,7 @@ try {
   if (-not (Test-Path -LiteralPath $hostPath -PathType Leaf)) {
     throw 'silent installer did not create the packaged desktop host'
   }
+  $installedHostSha256 = (Get-FileHash -LiteralPath $hostPath -Algorithm SHA256).Hash.ToLowerInvariant()
 
   $desktopShortcut = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Stock Desk.lnk'
   $startMenuRoot = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'
@@ -582,6 +583,39 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "packaged fixture switch failed after restart: $fixtureId" }
     Write-CaptureAck (Join-Path $restartSyncRoot "fixture-$markerName.ack") $captureNonce
   }
+  $realClickMarkerPath = Join-Path $restartSyncRoot 'os-real-click-exit.json'
+  $realClickMarker = Wait-CaptureMarker $realClickMarkerPath $nodeProcess $captureNonce 300 'packaged WebView did not reach the real OS click boundary'
+  if (
+    $realClickMarker.phase -ne 'ready-for-native-titlebar-and-dialog-clicks' -or
+    $realClickMarker.candidate_sha256 -ne $candidateSha256
+  ) { throw 'real OS click marker identity is invalid' }
+  $realClickEvidencePath = Join-Path $Output 'windows-real-click-evidence.json'
+  & (Join-Path $PSScriptRoot 'windows_desktop_real_click.ps1') `
+    -WindowHandle $hostMainWindowHandle `
+    -ExpectedProcessId $desktopProcess.Id `
+    -ExpectedExecutableSha256 $installedHostSha256 `
+    -SourceSha $SourceSha -SourceTree $SourceTree `
+    -CandidateSha256 $candidateSha256 `
+    -OutputPath $realClickEvidencePath
+  if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $realClickEvidencePath -PathType Leaf)) {
+    throw 'installed Stock Desk real OS mouse click evidence failed'
+  }
+  $realClickEvidence = Get-Content -LiteralPath $realClickEvidencePath -Raw | ConvertFrom-Json
+  if (
+    $realClickEvidence.source_sha -ne $SourceSha -or
+    $realClickEvidence.source_tree -ne $SourceTree -or
+    $realClickEvidence.candidate_sha256 -ne $candidateSha256 -or
+    $realClickEvidence.installed_executable_sha256 -ne $installedHostSha256 -or
+    $realClickEvidence.process_id -ne $desktopProcess.Id -or
+    $realClickEvidence.main_window_handle -ne $hostMainWindowHandle -or
+    $realClickEvidence.real_os_mouse_click -ne $true -or
+    $realClickEvidence.native_close_click_opened_dialog -ne $true -or
+    $realClickEvidence.cancel_click_kept_process_alive -ne $true -or
+    $realClickEvidence.second_close_reopened_dialog -ne $true -or
+    $realClickEvidence.exit_click_host_exit_code -ne 0 -or
+    @($realClickEvidence.actions).Count -ne 4
+  ) { throw 'real OS mouse click evidence is incomplete or unbound' }
+  Write-CaptureAck (Join-Path $restartSyncRoot 'os-real-click-exit.ack') $captureNonce
   Wait-Until { $nodeProcess.Refresh(); if ($nodeProcess.HasExited) { $true } else { $false } } 300 'packaged Tauri WebView evidence did not finish after restart observation' | Out-Null
   if ($nodeProcess.ExitCode -ne 0) {
     throw "packaged Tauri WebView evidence failed: $(Get-Content -LiteralPath $nodeStderr -Raw -ErrorAction SilentlyContinue)"
@@ -682,6 +716,12 @@ try {
       seed_sha256 = (Get-FileHash -LiteralPath $packagedBacktestSeed -Algorithm SHA256).Hash.ToLowerInvariant()
       host_observation = 'packaged-backtest-host-observation.json'
       host_observation_sha256 = (Get-FileHash -LiteralPath (Join-Path $Output 'packaged-backtest-host-observation.json') -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
+    real_os_mouse_click = [ordered]@{
+      manifest = 'windows-real-click-evidence.json'
+      sha256 = (Get-FileHash -LiteralPath $realClickEvidencePath -Algorithm SHA256).Hash.ToLowerInvariant()
+      input_method = 'win32-sendinput-physical-mouse'
+      action_count = @($realClickEvidence.actions).Count
     }
     graceful_exit = $true
     hosted_runner_limitations = @(

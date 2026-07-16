@@ -4,7 +4,10 @@ import path from "node:path";
 
 import { chromium } from "@playwright/test";
 
-import { runPackagedBacktestEvidence } from "./windows_packaged_backtest_evidence.mjs";
+import {
+  captureHandshake,
+  runPackagedBacktestEvidence,
+} from "./windows_packaged_backtest_evidence.mjs";
 
 const sourceSha = process.env.SOURCE_SHA ?? "";
 const sourceTree = process.env.SOURCE_TREE ?? "";
@@ -777,25 +780,17 @@ try {
   });
   console.log(`STOCK_DESK_EXIT_ACTIVITY ${JSON.stringify(exitActivity)}`);
 
-  await page.evaluate(async () => {
-    await globalThis.__TAURI_INTERNALS__.invoke("desktop_request_exit");
+  await captureHandshake("os-real-click-exit", {
+    candidate_sha256: process.env.STOCK_DESK_CANDIDATE_SHA256,
+    phase: "ready-for-native-titlebar-and-dialog-clicks",
   });
-  await page.getByRole("button", { name: "退出应用", exact: true }).click();
-  // Let the UI dispatch its async Tauri command before disconnecting CDP. The
-  // native PowerShell PID gate is authoritative for actual process exit.
-  await page.waitForTimeout(3_000).catch(() => undefined);
-  const exitObservation = await page
-    .evaluate(async () => ({
-      runtime: await globalThis.__TAURI_INTERNALS__.invoke(
-        "desktop_runtime_state",
-      ),
-      title:
-        document
-          .querySelector(".desktop-exit-dialog h2")
-          ?.textContent?.trim() ?? null,
-    }))
-    .catch(() => ({ page_closed: true }));
-  console.log(`STOCK_DESK_EXIT_OBSERVATION ${JSON.stringify(exitObservation)}`);
+  console.log(
+    "STOCK_DESK_EXIT_OBSERVATION " +
+      JSON.stringify({
+        input_method: "win32-sendinput-physical-mouse",
+        page_closed: page.isClosed(),
+      }),
+  );
 } finally {
   await browser.close().catch(() => undefined);
 }

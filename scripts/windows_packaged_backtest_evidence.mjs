@@ -27,7 +27,7 @@ const RETRYABLE_FILE_ERROR_CODES = new Set([
   "EBUSY",
 ]);
 
-async function captureHandshake(name, payload) {
+export async function captureHandshake(name, payload) {
   const syncDir = process.env.STOCK_DESK_RESTART_SYNC_DIR;
   const nonce = process.env.STOCK_DESK_CAPTURE_NONCE;
   if (

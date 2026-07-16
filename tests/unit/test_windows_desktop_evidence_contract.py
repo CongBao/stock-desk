@@ -365,6 +365,65 @@ def test_packaged_webview_matrix_is_explicitly_equivalent_not_real_os_dpi() -> N
     assert "routeTransition" in source
 
 
+def test_installed_desktop_exit_uses_real_windows_mouse_input() -> None:
+    driver_path = ROOT / "scripts" / "windows_desktop_real_click.ps1"
+    assert driver_path.is_file()
+    driver = driver_path.read_text(encoding="utf-8")
+    powershell = (ROOT / "scripts" / "capture_windows_desktop_evidence.ps1").read_text(
+        encoding="utf-8"
+    )
+    webview = (ROOT / "scripts" / "windows_desktop_webview_evidence.mjs").read_text(
+        encoding="utf-8"
+    )
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+
+    for contract in (
+        "SendInput",
+        "MOUSEEVENTF_MOVE",
+        "MOUSEEVENTF_LEFTDOWN",
+        "MOUSEEVENTF_LEFTUP",
+        "MOUSEEVENTF_ABSOLUTE",
+        "MOUSEEVENTF_VIRTUALDESK",
+        "GetSystemMetrics",
+        "SM_XVIRTUALSCREEN",
+        "SM_YVIRTUALSCREEN",
+        "SM_CXVIRTUALSCREEN",
+        "SM_CYVIRTUALSCREEN",
+        "AutomationElement]::FromPoint",
+        "GetForegroundWindow",
+        "SetForegroundWindow",
+        "RequireTitleBarAncestor",
+        "ControlType]::TitleBar",
+        "native_close_click_opened_dialog",
+        "cancel_click_kept_process_alive",
+        "second_close_reopened_dialog",
+        "exit_click_host_exit_code",
+    ):
+        assert contract in driver
+    assert "InvokePattern" not in driver
+    assert ".Invoke()" not in driver
+    assert "mouse_event" not in driver
+    assert "SetCursorPos" not in driver
+    assert driver.count("-RequireTitleBarAncestor") >= 2
+    assert "Windows Server 2025" in driver
+    assert "runneradmin" in driver
+    assert "not_equivalent_to_standard_user_windows_10_or_11" in driver
+
+    marker = "os-real-click-exit"
+    assert f'captureHandshake("{marker}"' in webview
+    assert f"'{marker}.json'" in powershell
+    assert "windows_desktop_real_click.ps1" in powershell
+    assert f"'{marker}.ack'" in powershell
+    assert "windows-real-click-evidence.json" in powershell
+    assert "real_os_mouse_click" in powershell
+    assert "windows-real-click-evidence.json:provenance" in workflow
+
+    assert (
+        'page.getByRole("button", { name: "退出应用", exact: true }).click()'
+        not in webview
+    )
+
+
 def test_packaged_backtest_matrix_uses_webview_host_ipc_and_new_worker_resume() -> None:
     source = (ROOT / "scripts" / "windows_packaged_backtest_evidence.mjs").read_text(
         encoding="utf-8"
@@ -610,22 +669,25 @@ def test_exit_deadlines_are_ordered_and_native_pid_is_authoritative() -> None:
     evidence_timeout = int(evidence_match.group(1))
     assert _SHUTDOWN_TIMEOUT_SECONDS + 5 <= host_timeout < evidence_timeout
 
-    confirm_click = webview.index(
-        'page.getByRole("button", { name: "退出应用", exact: true }).click()'
-    )
-    finally_block = webview.index("} finally", confirm_click)
+    native_click_handshake = webview.index('captureHandshake("os-real-click-exit"')
+    finally_block = webview.index("} finally", native_click_handshake)
     assert "STOCK_DESK_EXIT_ACTIVITY" in webview
     assert "STOCK_DESK_EXIT_OBSERVATION" in webview
     assert "unavailable_while_not_ready" in webview
     activity_probe = webview.index('path: "/api/desktop/activity"')
     runtime_probe = webview.rindex("desktop_runtime_state", 0, activity_probe)
-    assert runtime_probe < activity_probe < confirm_click
-    assert "page.waitForTimeout(3_000)" in webview[confirm_click:finally_block]
-    assert not re.search(
-        r"page\.waitForEvent\((?:'|\")close(?:'|\")",
-        webview[confirm_click:finally_block],
+    assert runtime_probe < activity_probe < native_click_handshake
+    assert (
+        "win32-sendinput-physical-mouse"
+        in webview[native_click_handshake:finally_block]
     )
-    assert "正在安全退出" not in webview[confirm_click:finally_block]
+    assert 'name: "退出应用", exact: true }).click()' not in webview
+    marker_wait = powershell.index("'os-real-click-exit.json'")
+    driver_launch = powershell.index("windows_desktop_real_click.ps1", marker_wait)
+    host_exit_wait = powershell.index(
+        "packaged app did not complete the tested graceful exit", driver_launch
+    )
+    assert marker_wait < driver_launch < host_exit_wait
     assert "host_alive=" in powershell
     assert "sidecar_alive=" in powershell
 

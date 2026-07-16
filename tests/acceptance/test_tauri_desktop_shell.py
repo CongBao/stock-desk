@@ -27,7 +27,10 @@ def test_tauri_shell_is_windows_only_single_window_and_uses_bundled_assets() -> 
             "visible": False,
         }
     ]
-    assert config["app"]["security"]["capabilities"] == ["default"]
+    assert config["app"]["security"]["capabilities"] == [
+        "default",
+        "macos-smoke",
+    ]
     assert "http://127.0.0.1:*" in config["app"]["security"]["csp"]
     assert config["plugins"]["updater"] == {"endpoints": [], "pubkey": ""}
 

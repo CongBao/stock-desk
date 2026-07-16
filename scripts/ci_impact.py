@@ -181,6 +181,7 @@ _PACKAGED_BACKTEST_PROOF_FILES = frozenset(
         "schemas/windows-packaged-backtest-promotion-v1.schema.json",
         "scripts/capture_packaged_backtest_semantics.py",
         "scripts/capture_windows_desktop_evidence.ps1",
+        "scripts/windows_desktop_real_click.ps1",
         "scripts/main_validation_proof.py",
         "scripts/prepare_windows_packaged_backtest_evidence.py",
         "scripts/v1_backtest_oracle.py",
