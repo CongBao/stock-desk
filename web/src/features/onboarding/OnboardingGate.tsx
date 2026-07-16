@@ -34,10 +34,10 @@ const stepOrder = [
   'synchronization',
 ] as const;
 
-const stepLabels = ['欢迎', '准备数据', '选择证券', '同步完成'] as const;
+const stepLabels = ['开始', '数据', '股票', '完成'] as const;
 
 function safeDate(value: string | null): string {
-  if (value === null) return '由首次同步确定';
+  if (value === null) return '首次加载后显示';
   const time = Date.parse(value);
   return Number.isNaN(time)
     ? '已记录'
@@ -52,9 +52,8 @@ function LoadingCard() {
   return (
     <main className="onboarding-shell">
       <section className="onboarding-card onboarding-status-card" role="status">
-        <span className="panel-kicker">STOCK DESK / FIRST RUN</span>
-        <h1>正在读取首次设置</h1>
-        <p>马上就好，正在恢复上次的设置进度…</p>
+        <h1>正在打开 Stock Desk</h1>
+        <p>正在加载设置…</p>
       </section>
     </main>
   );
@@ -72,15 +71,14 @@ function LoadError({
   return (
     <main className="onboarding-shell">
       <section className="onboarding-card onboarding-status-card" role="alert">
-        <span className="panel-kicker">STOCK DESK / SETUP RECOVERY</span>
-        <h1>首次设置暂时无法读取</h1>
-        <p>本地服务没有返回可用的设置状态。你的配置和密钥不会显示在这里。</p>
+        <h1>暂时无法打开</h1>
+        <p>请重试。如果问题仍然存在，可以查看帮助。</p>
         <div className="onboarding-actions">
           <button type="button" disabled={busy} onClick={onRetry}>
-            {busy ? '正在重试…' : '重试读取'}
+            {busy ? '正在重试…' : '重试'}
           </button>
           <button className="secondary" type="button" onClick={onDiagnostics}>
-            查看安全诊断
+            查看帮助
           </button>
         </div>
       </section>
@@ -197,9 +195,9 @@ function InstrumentSearch({
         onChange={(event) => setQuery(event.currentTarget.value)}
         onKeyDown={onKeyDown}
       />
-      {status === 'loading' ? <p role="status">正在搜索本地证券目录…</p> : null}
+      {status === 'loading' ? <p role="status">正在搜索…</p> : null}
       {status === 'error' ? (
-        <p role="alert">证券目录暂时不可用，请重试或保留默认上证指数。</p>
+        <p role="alert">搜索失败，仍可直接使用上证指数。</p>
       ) : null}
       {results.length > 0 ? (
         <ul id={listboxId} role="listbox" aria-label="首次设置证券搜索结果">
@@ -274,9 +272,10 @@ function OnboardingWizard({
         setSelectedSourceId((current) =>
           current.length > 0
             ? current
-            : (items.find((item) => item.recommended && item.status === 'ready')
-                ?.id ??
-              items.find((item) => item.status === 'ready')?.id ??
+            : (items.find(
+                (item) => item.recommended && item.status !== 'unavailable',
+              )?.id ??
+              items.find((item) => item.status !== 'unavailable')?.id ??
               ''),
         );
       })
@@ -324,10 +323,9 @@ function OnboardingWizard({
       <section className="onboarding-card" aria-labelledby="onboarding-title">
         <header className="onboarding-header">
           <div>
-            <span className="panel-kicker">STOCK DESK / FIRST RUN</span>
-            <p>约 1 分钟 · 无需编程</p>
+            <strong>Stock Desk</strong>
+            <p>首次使用设置</p>
           </div>
-          <span className="onboarding-local-badge">仅保存在本机</span>
         </header>
         <Stepper state={state} />
 
@@ -338,16 +336,9 @@ function OnboardingWizard({
                 ⌁
               </span>
               <h1 id="onboarding-title" ref={headingRef} tabIndex={-1}>
-                欢迎使用 stock-desk
+                欢迎使用 Stock Desk
               </h1>
-              <p className="onboarding-lead">
-                我们会准备最基本的 A 股数据，并打开一张马上可用的 K 线图。
-              </p>
-              <ul className="onboarding-benefits">
-                <li>自动选择无需密钥的数据源</li>
-                <li>默认打开上证指数 000001.SS</li>
-                <li>稍后可在设置中更换来源</li>
-              </ul>
+              <p className="onboarding-lead">选择一只股票后，就能查看行情。</p>
               <div className="onboarding-actions">
                 <button
                   type="button"
@@ -369,9 +360,6 @@ function OnboardingWizard({
                   先看只读演示
                 </button>
               </div>
-              <p className="onboarding-demo-note">
-                演示不会完成设置；下次启动仍会回到这里。
-              </p>
             </>
           ) : null}
 
@@ -380,13 +368,11 @@ function OnboardingWizard({
               <h1 id="onboarding-title" ref={headingRef} tabIndex={-1}>
                 准备行情数据
               </h1>
-              <p className="onboarding-lead">
-                推荐来源不需要 API 密钥。stock-desk 只会在你确认后同步。
-              </p>
+              <p className="onboarding-lead">默认选项适合大多数用户。</p>
               <fieldset className="onboarding-source-list">
                 <legend>选择数据来源</legend>
                 {sources.length === 0 && !actionError ? (
-                  <p role="status">正在检测可用来源…</p>
+                  <p role="status">正在加载…</p>
                 ) : null}
                 {sources.map((source) => (
                   <label
@@ -406,8 +392,11 @@ function OnboardingWizard({
                       {source.recommended ? <em>推荐</em> : null}
                       <small>{source.description}</small>
                       <small>
-                        {source.requiresToken ? '需要密钥' : '无需密钥'} ·
-                        数据截至 {safeDate(source.dataCutoff)}
+                        {source.status === 'unavailable'
+                          ? '暂时不可用'
+                          : source.status === 'ready'
+                            ? '可用'
+                            : '继续时自动检查'}
                       </small>
                     </span>
                   </label>
@@ -416,7 +405,11 @@ function OnboardingWizard({
               <div className="onboarding-actions">
                 <button
                   type="button"
-                  disabled={busy || selectedSource === null}
+                  disabled={
+                    busy ||
+                    selectedSource === null ||
+                    selectedSource.status === 'unavailable'
+                  }
                   onClick={() =>
                     void perform(() =>
                       api.saveProgress({
@@ -426,7 +419,7 @@ function OnboardingWizard({
                     )
                   }
                 >
-                  使用此来源并继续
+                  继续
                 </button>
                 <button
                   className="secondary"
@@ -443,10 +436,10 @@ function OnboardingWizard({
           {state.currentStep === 'instrument_selection' ? (
             <>
               <h1 id="onboarding-title" ref={headingRef} tabIndex={-1}>
-                选择打开后的第一只证券
+                选择一只股票
               </h1>
               <p className="onboarding-lead">
-                不确定选什么时，保留默认的上证指数即可。
+                不知道选什么？直接使用上证指数。
               </p>
               <div className="onboarding-selection" aria-live="polite">
                 <span>
@@ -475,7 +468,7 @@ function OnboardingWizard({
                     )
                   }
                 >
-                  同步并继续
+                  准备并继续
                 </button>
               </div>
             </>
@@ -488,8 +481,8 @@ function OnboardingWizard({
               </span>
               <h1 id="onboarding-title" ref={headingRef} tabIndex={-1}>
                 {state.sync?.status === 'verified'
-                  ? '数据已准备好'
-                  : '正在确认数据'}
+                  ? '可以开始使用了'
+                  : '正在准备行情'}
               </h1>
               {state.sync?.status === 'verified' ? (
                 <div className="onboarding-ready-summary">
@@ -499,21 +492,21 @@ function OnboardingWizard({
                   </p>
                   <dl>
                     <div>
-                      <dt>数据来源</dt>
+                      <dt>来源</dt>
                       <dd>{state.source?.label ?? state.sync.providerId}</dd>
                     </div>
                     <div>
-                      <dt>数据截至</dt>
+                      <dt>更新到</dt>
                       <dd>{safeDate(state.sync.dataCutoff)}</dd>
                     </div>
                     <div>
-                      <dt>已验证数据</dt>
+                      <dt>行情数量</dt>
                       <dd>{state.sync.rowCount.toLocaleString('zh-CN')} 条</dd>
                     </div>
                   </dl>
                 </div>
               ) : (
-                <p role="status">同步尚未通过验证，请使用下方恢复操作。</p>
+                <p role="status">行情还没有准备好，请重试。</p>
               )}
               <div className="onboarding-actions">
                 <button
@@ -534,7 +527,7 @@ function OnboardingWizard({
                       .finally(() => setBusy(false));
                   }}
                 >
-                  进入行情工作区
+                  打开行情
                 </button>
               </div>
             </>
@@ -542,10 +535,8 @@ function OnboardingWizard({
 
           {state.error !== null ? (
             <section className="onboarding-inline-error" role="alert">
-              <strong>数据准备没有完成</strong>
-              <p>
-                你可以安全重试、更换来源，或将不含隐私信息的诊断包保存到本机；诊断不会自动上传。
-              </p>
+              <strong>暂时无法加载行情</strong>
+              <p>请重试，或换一个数据来源。</p>
               <div>
                 {state.error.actions.includes('retry') ? (
                   <button
@@ -571,7 +562,7 @@ function OnboardingWizard({
                     disabled={busy}
                     onClick={() => void runAction('advanced')}
                   >
-                    高级设置
+                    其他设置
                   </button>
                 ) : null}
                 {state.error.actions.includes('demo') ? (
@@ -580,7 +571,7 @@ function OnboardingWizard({
                     disabled={busy}
                     onClick={() => void runAction('demo')}
                   >
-                    进入只读演示
+                    查看演示
                   </button>
                 ) : null}
               </div>
@@ -588,7 +579,7 @@ function OnboardingWizard({
           ) : null}
           {actionError ? (
             <p className="onboarding-action-error" role="alert">
-              操作没有完成。请检查本地服务后重试；详细技术信息不会显示在此页面。
+              操作失败，请重试。
             </p>
           ) : null}
         </div>

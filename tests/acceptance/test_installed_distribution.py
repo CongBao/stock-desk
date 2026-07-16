@@ -225,7 +225,7 @@ def test_release_rechecks_one_windows_installer_and_complete_asset_checksums() -
         "find \"$candidate_root\" -maxdepth 1 -type f -name '*.exe'" in verify_commands
     )
     assert ".dmg" not in verify_commands
-    assert "sha256sum -c UNSIGNED-TEST-ONLY-SHA256SUMS" in publish_commands
+    assert "sha256sum -c UNSIGNED-WINDOWS-SHA256SUMS" in publish_commands
     assert "--prerelease" in publish_commands
     assert "--latest=false" in publish_commands
 

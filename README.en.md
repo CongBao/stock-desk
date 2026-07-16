@@ -2,7 +2,7 @@
 
 # Stock Desk
 
-> The current stable release is `v1.0.0`. The current `v1.1.0-beta.3` candidate is an unsigned Windows x64 desktop-experience prerelease; test assets do not replace the stable release. See the [beta.3 notes](docs/releases/v1.1.0-beta.3.md).
+> The current stable release is Windows x64 `v1.1.0`. It is an explicitly labelled unsigned desktop release; see the [v1.1.0 notes](docs/releases/v1.1.0.md) for scope and risks.
 
 ## Product positioning
 
@@ -29,36 +29,18 @@ Backtest compatibility is protected by an offline immutable `v1.0.0` oracle boun
 
 ## Download and install
 
-For stable use, download `v1.0.0` from the
-[Latest Release](https://github.com/CongBao/stock-desk/releases/latest). To test the Windows x64 desktop candidate, use the separate
-[`v1.1.0-beta.3` prerelease](https://github.com/CongBao/stock-desk/releases/tag/v1.1.0-beta.3)
-and download `stock-desk-1.1.0-beta.3-unsigned-x64-setup.exe`. It is unsigned, so Windows may show an Unknown Publisher or SmartScreen warning.
+Download `stock-desk-1.1.0-unsigned-x64-setup.exe` from the
+[Latest Release](https://github.com/CongBao/stock-desk/releases/latest). It has no Authenticode signature, so Windows may show an Unknown Publisher or SmartScreen warning. Verify it against `UNSIGNED-WINDOWS-SHA256SUMS` on the release page first.
 
-To test `v1.1.0-beta.3`:
+To install `v1.1.0`:
 
 1. Run the installer as an ordinary Windows user; administrator rights are not required.
 2. Open Stock Desk from the Start menu; its bundled service starts with the desktop window.
 3. Complete the first-run data and stock setup. If no stock is chosen, the Shanghai Composite `000001.SS` opens by default.
 
-Ordinary users do not need GitHub CLI, a source checkout, Docker, or development tools. Use the bilingual
-[download and authenticity guide](docs/download.md) for the stable release; beta.3 checksums and immutable build proof are on its prerelease page.
+Ordinary users do not need GitHub CLI, a source checkout, Docker, or development tools. SignPath Foundation rejected the free-signing application because the project did not yet have enough exposure, so v1.1.0 is released unsigned by user decision; it is not self-signed. The production updater remains disabled. The planned v1.2 will move to Microsoft Store / MSIX. See the [download guide](docs/download.md) and [code-signing policy](docs/code-signing-policy.md).
 
-The current source includes a **default-off** trusted-update runtime and a **hard-disabled formal
-signing and release control-plane scaffold**. The scaffold describes the same protected-`main`
-proof/candidate, human-approved SignPath, Windows 10/11 standard-user evidence, and trusted-update
-dependencies, but both signing and the complete release-readiness evidence closure have literal gates
-that no variable, secret, or configuration can enable. The readiness contract requires an exact version
-and annotated tag, independent NSIS/Windows/docs/latency evidence, and private requirements and specification
-pre-release audits verified by a pinned offline auditor key that is not yet configured; the current
-workflows cannot produce that complete closure. A later reviewed change may remove those gates only with
-NSIS control-semantics equivalence and real SmartScreen/MOTW evidence. This stage cannot sign, publish stable, check, download, or install.
-The production updater remains disabled.
-
-`v1.1.0` does not ship macOS, Linux, Android, or ARM64 installers, and it does not migrate or delete v1 local data. Refer to the release page and [code-signing policy](docs/code-signing-policy.md) for the authoritative signing status.
-
-The beta.3 uninstaller lets the user explicitly choose whether to remove **v1.1-only** local data. Cancelling that deletion or a deletion failure keeps the data, and legacy v1 data is outside this operation.
-
-The current source also provides [raw-evidence schemas, an independent verifier, and an isolated-controller reference contract](docs/windows-installed-evidence.md) for real Windows 10/11 standard-user installation. Persistent repository self-hosted runners remain forbidden. The workflow now integrates a fail-closed external short-lived VM broker/JIT-adapter interface and eleven-case matrix aggregation, but no external broker/HSM, protected environment, production credentials, or real-VM run evidence is configured yet, so it cannot issue a passing receipt. This is not proof of installation or full-journey acceptance and does not change beta.3's test-only status.
+`v1.1.0` does not ship macOS, Linux, Android, or ARM64 installers and does not automatically migrate or delete legacy v1 data. Its uninstaller only lets the user explicitly remove **v1.1-only** local data; cancellation or failure preserves that data.
 
 ## Documentation
 

@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-07-16
+
 ### Changed
 
 - `v1.1.0-beta.3` adds checkpointed desktop recovery, explicit v1.1-only
@@ -70,8 +72,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Cache and artifact consumers fail closed on stale source identities,
   incomplete lock/toolchain keys, forbidden cached conclusions, substituted
   payloads, or missing attestations.
-- The SignPath Foundation application is submitted and pending. Prerelease assets
-  remain explicitly unsigned prereleases until trusted signing is integrated.
+- SignPath Foundation rejected the free-signing application because the project
+  did not yet have enough exposure. `v1.1.0` is therefore an explicitly unsigned
+  Windows x64 release; signing and the production updater remain disabled, while
+  v1.2 targets Microsoft Store / MSIX distribution.
 
 ## [1.0.0] - 2026-07-08
 

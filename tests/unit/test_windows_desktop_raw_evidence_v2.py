@@ -501,9 +501,9 @@ def _uia_matrix() -> dict[str, object]:
             "focus_observation_count": 30,
             "onboarding_tab_paths": [
                 _onboarding_path("开始设置"),
-                _onboarding_path("使用此来源并继续"),
-                _onboarding_path("同步并继续"),
-                _onboarding_path("进入行情工作区"),
+                _onboarding_path("继续"),
+                _onboarding_path("准备并继续"),
+                _onboarding_path("打开行情"),
             ],
             "auxiliary_tab_paths": [],
         },
@@ -560,7 +560,7 @@ def test_uia_summary_requires_four_real_tab_onboarding_paths() -> None:
 
     skipped_button = copy.deepcopy(_uia_matrix())
     skipped_button["keyboard"]["onboarding_tab_paths"][2]["target_name"] = (  # type: ignore[index]
-        "进入行情工作区"
+        "打开行情"
     )
     with pytest.raises(verifier.DesktopEvidenceError, match="incomplete"):
         verifier._validate_uia(skipped_button, expected_driver_sha256="5" * 64)

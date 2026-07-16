@@ -3,7 +3,7 @@
 - Upstream tag: `tauri-cli-v2.11.4`
 - Upstream file: <https://raw.githubusercontent.com/tauri-apps/tauri/tauri-cli-v2.11.4/crates/tauri-bundler/src/bundle/windows/nsis/installer.nsi>
 - Upstream SHA-256: `20f4ecc730defb71f1342eaeaec4021df13be3d843abba0effe88ea5835fa079`
-- Locally patched SHA-256: `5c243d83c9b39adf7dd07da2cb419c62fd8b63d093115aa57e8d7147e12eacbf`
+- Locally patched SHA-256: `38dcdb560d91bdb544f2788aec051dcf57e78d7c5f8f3b122564fbf7e0e45d81`
 
 The local changes keep current-user program files separate from Stock Desk user data
 and exclude checkout metadata from the independently reproduced installer payload:
@@ -45,10 +45,22 @@ locked `offlineInstaller` mode does not provide a bootstrapper path. This keeps
 the rendered script free of an unbound compile-time `File` source; embed mode
 still renders the unchanged upstream branch when that path is present.
 
-Stock Desk-specific uninstall behavior is intentionally kept out of the
-vendored template. `installer-hooks.nsh` uses Tauri's supported NSIS hook
-surface to copy the installed host to the NSIS plug-in directory and invoke
-its fixed v1.1 cleanup mode only after an explicit, default-off user choice.
+```diff
++      !ifmacrodef NSIS_HOOK_PREVIOUS_INSTALL_UNINSTALL
++        !insertmacro NSIS_HOOK_PREVIOUS_INSTALL_UNINSTALL "$4"
++      !endif
+       ReadRegStr $R1 SHCTX "${UNINSTKEY}" "UninstallString"
+```
+
+The previous beta.3 uninstaller runs before Tauri's normal preinstall hook.
+This additional hook point lets Stock Desk clear beta.3's inherited read-only
+payload attributes before that old uninstaller starts, so a normal interactive
+upgrade can complete instead of failing before the new files are copied.
+
+All Stock Desk-specific behavior remains implemented in `installer-hooks.nsh`;
+the vendored template only exposes the additional early hook point above.
+The hooks copy the installed host to the NSIS plug-in directory and invoke its
+fixed v1.1 cleanup mode only after an explicit, default-off user choice.
 The English and Simplified Chinese custom language files are derived from the
 same `tauri-cli-v2.11.4` language files and change only the data-removal
 description plus the fail-closed retry/keep-data explanation.

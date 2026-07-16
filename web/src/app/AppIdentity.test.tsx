@@ -47,7 +47,7 @@ it('shows stock-desk name version and repository in about information', async ()
   const about = screen.getByRole('dialog', { name: '关于 stock-desk' });
   expect(about.tagName).toBe('DIALOG');
   expect(about).toHaveTextContent('stock-desk');
-  expect(about).toHaveTextContent('v1.1.0-beta.3');
+  expect(about).toHaveTextContent('v1.1.0');
   expect(
     screen.getByRole('link', { name: 'github.com/CongBao/stock-desk' }),
   ).toHaveAttribute('href', 'https://github.com/CongBao/stock-desk');

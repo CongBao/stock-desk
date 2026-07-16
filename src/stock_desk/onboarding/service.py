@@ -144,15 +144,24 @@ class OnboardingService:
         return self._store.load()
 
     def sources(self) -> tuple[dict[str, object], ...]:
-        selected = self.state().source
+        state = self.state()
+        selected = state.source
         return tuple(
             {
                 "id": source,
                 "label": _SOURCE_LABELS[source],
-                "description": "免 Token 的 A 股公开数据源",
+                "description": "A 股公开行情",
                 "requires_token": False,
                 "recommended": source is ProviderId.AKSHARE,
-                "status": "ready",
+                "status": (
+                    "unavailable"
+                    if selected is not None
+                    and selected.id is source
+                    and state.error is not None
+                    else "ready"
+                    if selected is not None and selected.id is source
+                    else "unknown"
+                ),
                 "data_cutoff": (
                     selected.data_cutoff
                     if selected is not None and selected.id is source
@@ -168,9 +177,9 @@ class OnboardingService:
             if state.status is OnboardingStatus.COMPLETED:
                 return state
             candidates = (
-                (requested_source,)
-                if requested_source is not None
-                else FREE_PROVIDER_IDS
+                FREE_PROVIDER_IDS
+                if requested_source is None or requested_source is ProviderId.AKSHARE
+                else (requested_source,)
             )
             if any(source not in FREE_PROVIDER_IDS for source in candidates):
                 raise OnboardingConflict("unsupported_onboarding_source")
@@ -322,19 +331,21 @@ class OnboardingService:
             try:
                 routed, provider = self._fetch_bars(source_id, query)
             except Exception as error:
-                return self._save_failure(
+                return self._recover_stock_with_baostock_or_save_failure(
                     state,
-                    step=OnboardingStep.SYNCHRONIZATION,
+                    instrument=instrument,
+                    source_id=source_id,
+                    symbol=symbol,
                     code=self._exception_code(error),
-                    failed_sync=True,
                 )
             try:
                 if isinstance(routed, RoutedBarFailure):
-                    return self._save_failure(
+                    return self._recover_stock_with_baostock_or_save_failure(
                         state,
-                        step=OnboardingStep.SYNCHRONIZATION,
+                        instrument=instrument,
+                        source_id=source_id,
+                        symbol=symbol,
                         code=self._failure_code(routed),
-                        failed_sync=True,
                     )
                 self._validate_bar_result(routed, source_id, query)
                 stored = self._market().lake.write(routed)
@@ -363,11 +374,12 @@ class OnboardingService:
                     )
                 )
             except (ValueError, InstrumentCorruption, MarketLakeError):
-                return self._save_failure(
+                return self._recover_stock_with_baostock_or_save_failure(
                     state,
-                    step=OnboardingStep.SYNCHRONIZATION,
+                    instrument=instrument,
+                    source_id=source_id,
+                    symbol=symbol,
                     code="bar_verification_failed",
-                    failed_sync=True,
                 )
             finally:
                 self._close_provider(provider)
@@ -656,6 +668,44 @@ class OnboardingService:
                 error=OnboardingError(code=code, actions=_RECOVERY_ACTIONS),
             )
         )
+
+    def _recover_stock_with_baostock_or_save_failure(
+        self,
+        state: OnboardingState,
+        *,
+        instrument: Instrument,
+        source_id: ProviderId,
+        symbol: CanonicalSymbol,
+        code: str,
+    ) -> OnboardingState:
+        if (
+            source_id is not ProviderId.AKSHARE
+            or instrument.instrument_kind is not InstrumentKind.STOCK
+        ):
+            return self._save_failure(
+                state,
+                step=OnboardingStep.SYNCHRONIZATION,
+                code=code,
+                failed_sync=True,
+            )
+
+        prepared = self.prepare(ProviderId.BAOSTOCK)
+        if (
+            prepared.source is None
+            or prepared.source.id is not ProviderId.BAOSTOCK
+            or prepared.error is not None
+        ):
+            return prepared
+        try:
+            self.select(symbol)
+        except OnboardingConflict:
+            return self._save_failure(
+                prepared,
+                step=OnboardingStep.SYNCHRONIZATION,
+                code=code,
+                failed_sync=True,
+            )
+        return self.synchronize(source_id=ProviderId.BAOSTOCK, symbol=symbol)
 
     @staticmethod
     def _close_provider(provider: MarketDataProvider) -> None:

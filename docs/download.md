@@ -4,11 +4,11 @@
 
 请只从 [Stock Desk GitHub Releases](https://github.com/CongBao/stock-desk/releases) 下载公开版本。最新版本入口：[Latest Release](https://github.com/CongBao/stock-desk/releases/latest)。
 
-下载后使用同一发布页的 `SHA256SUMS` 和对应 `.sha256` 文件核对内容摘要。安装前还应检查发布清单中的平台、架构、版本、source revision 和 `signed` 状态。
+`v1.1.0` 的 Windows x64 文件名为 `stock-desk-1.1.0-unsigned-x64-setup.exe`。下载后使用同一发布页的 `UNSIGNED-WINDOWS-SHA256SUMS` 核对内容摘要，并检查候选清单中的平台、架构、版本、source revision 和 `signed: false` 状态。`UNSIGNED-WINDOWS-sbom-v1.1.0.spdx.json` 是从同一 exact-SHA Windows 候选目录生成并纳入校验和的 SPDX SBOM；builder provenance 文件记录候选来源。
 
 ## 代码签名状态
 
-**Free code signing provided by [SignPath.io](https://signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).** Stock Desk 的 SignPath Foundation 申请仍在审核；正式签名发布控制面目前只是硬禁用骨架，签名 job 无法由配置或密钥启用。NSIS 控制语义证明、真实 SmartScreen/MOTW 证据、生产配置与回执全部完成前，任何现有资产都应视为未签名。
+SignPath Foundation 因项目曝光率不足拒绝了 Stock Desk 的免费签名申请。`v1.1.0` 是明确标记的 unsigned release，没有 Authenticode 证书，也不是自签名版本；Windows 可能显示未知发布者或 SmartScreen 提示。production updater 和签名 job 继续硬禁用。计划中的 `v1.2` 将通过 Microsoft Store / MSIX 获取商店签名与分发信任。
 
 完整规则、维护者角色、人工批准和构建来源限制见[代码签名政策](code-signing-policy.md)。隐私与网络行为见[隐私政策](privacy.md)。
 
@@ -24,4 +24,4 @@
 
 ## English summary
 
-Download Stock Desk only from its [GitHub Releases](https://github.com/CongBao/stock-desk/releases). Verify the release SHA-256 files and manifest. The trusted-update gate hashes the actual installer bytes and requires a repository-pinned Tauri Minisign/Ed25519 signature, WinVerifyTrust, exact-SHA SignPath attestation, and exact-SHA Windows 10/11 x64 receipts. Claimed booleans or digests are not proof; any missing evidence fails closed. The formal signing and release control plane is a hard-disabled scaffold until NSIS control-semantics proof, real SmartScreen/MOTW evidence, the production key, approved SignPath integration, VM broker, and real receipts all exist; current artifacts remain unsigned unless independently proven otherwise.
+Download Stock Desk only from its [GitHub Releases](https://github.com/CongBao/stock-desk/releases). The `v1.1.0` Windows x64 installer is `stock-desk-1.1.0-unsigned-x64-setup.exe`; verify it with `UNSIGNED-WINDOWS-SHA256SUMS` and its exact-main candidate manifest. `UNSIGNED-WINDOWS-sbom-v1.1.0.spdx.json` is the checksummed SPDX SBOM generated from that exact candidate directory, while the builder provenance file records its origin. SignPath rejected the free-signing application because the project did not yet have enough exposure. v1.1.0 is unsigned, not self-signed, and may trigger Unknown Publisher or SmartScreen warnings. Its production updater and signing jobs remain hard-disabled. The planned v1.2 will target Microsoft Store / MSIX distribution for Store signing and trust.

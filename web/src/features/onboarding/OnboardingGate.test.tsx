@@ -5,6 +5,7 @@ import { MemoryRouter, useLocation } from 'react-router-dom';
 import { resetMarketStore, useMarketStore } from '../market/marketStore';
 import { OnboardingGate } from './OnboardingGate';
 import type { OnboardingApi, OnboardingState } from './onboardingApi';
+import theme from '../../app/theme.css?raw';
 
 const digest = `sha256:${'a'.repeat(64)}`;
 
@@ -151,15 +152,11 @@ it('completes first run in four primary clicks and opens the default market', as
   renderGate(client);
 
   await user.click(await screen.findByRole('button', { name: '开始设置' }));
-  await user.click(
-    await screen.findByRole('button', { name: '使用此来源并继续' }),
-  );
+  await user.click(await screen.findByRole('button', { name: '继续' }));
   expect(screen.getByText('上证指数')).toBeInTheDocument();
   expect(screen.getByText('000001.SS')).toBeInTheDocument();
-  await user.click(screen.getByRole('button', { name: '同步并继续' }));
-  await user.click(
-    await screen.findByRole('button', { name: '进入行情工作区' }),
-  );
+  await user.click(screen.getByRole('button', { name: '准备并继续' }));
+  await user.click(await screen.findByRole('button', { name: '打开行情' }));
 
   expect(await screen.findByText('workspace:上证指数:000001.SS')).toBeVisible();
   expect(client.synchronize).toHaveBeenCalledWith({
@@ -184,7 +181,7 @@ it('resumes from a persisted step without replaying welcome', async () => {
   );
 
   expect(
-    await screen.findByRole('heading', { name: '选择打开后的第一只证券' }),
+    await screen.findByRole('heading', { name: '选择一只股票' }),
   ).toBeVisible();
   expect(screen.queryByRole('button', { name: '开始设置' })).toBeNull();
 });
@@ -248,9 +245,7 @@ it('restores persisted demo mode and can exit into a usable real-data setup', as
   expect(
     await screen.findByRole('heading', { name: '准备行情数据' }),
   ).toBeVisible();
-  expect(
-    screen.getByRole('button', { name: '使用此来源并继续' }),
-  ).toBeEnabled();
+  expect(screen.getByRole('button', { name: '继续' })).toBeEnabled();
   expect(client.runAction).toHaveBeenCalledWith('exit_demo');
 });
 
@@ -282,9 +277,9 @@ it('shows a recoverable safe error without rendering exception details', async (
   renderGate(client);
 
   expect(
-    await screen.findByRole('heading', { name: '首次设置暂时无法读取' }),
+    await screen.findByRole('heading', { name: '暂时无法打开' }),
   ).toBeVisible();
-  expect(screen.getByRole('button', { name: '重试读取' })).toBeEnabled();
+  expect(screen.getByRole('button', { name: '重试' })).toBeEnabled();
   expect(screen.queryByText(/127\.0\.0\.1|secret|traceback/u)).toBeNull();
 });
 
@@ -319,4 +314,121 @@ it('supports code, Chinese, or pinyin search with keyboard selection', async () 
   await user.keyboard('{Enter}');
   expect(await screen.findByText('贵州茅台')).toBeVisible();
   expect(screen.getByText('600519.SH')).toBeVisible();
+});
+
+it('can prepare and open the searched non-default stock', async () => {
+  const client = api(
+    onboardingState('instrument_selection', {
+      source: {
+        id: 'akshare',
+        label: 'AKShare',
+        catalogManifestRecordId: digest,
+        catalogDatasetVersion: digest,
+        dataCutoff: null,
+      },
+    }),
+  );
+  vi.mocked(client.searchInstruments).mockResolvedValue([
+    {
+      symbol: '600000.SH',
+      name: '浦发银行',
+      exchange: 'SH',
+      instrumentKind: 'stock',
+    },
+  ]);
+  vi.mocked(client.synchronize).mockResolvedValue(
+    onboardingState('synchronization', {
+      source: {
+        id: 'baostock',
+        label: 'BaoStock',
+        catalogManifestRecordId: digest,
+        catalogDatasetVersion: digest,
+        dataCutoff: null,
+      },
+      instrument: {
+        symbol: '600000.SH',
+        name: '浦发银行',
+        exchange: 'SH',
+        instrumentKind: 'stock',
+      },
+      sync: {
+        status: 'verified',
+        providerId: 'baostock',
+        manifestRecordId: digest,
+        datasetVersion: digest,
+        dataCutoff: null,
+        rowCount: 240,
+      },
+    }),
+  );
+  vi.mocked(client.complete).mockResolvedValue(
+    onboardingState('completed', {
+      source: {
+        id: 'baostock',
+        label: 'BaoStock',
+        catalogManifestRecordId: digest,
+        catalogDatasetVersion: digest,
+        dataCutoff: null,
+      },
+      instrument: {
+        symbol: '600000.SH',
+        name: '浦发银行',
+        exchange: 'SH',
+        instrumentKind: 'stock',
+      },
+    }),
+  );
+  const user = userEvent.setup();
+  renderGate(client);
+
+  await user.type(
+    await screen.findByRole('combobox', {
+      name: '按代码、中文或拼音搜索证券',
+    }),
+    '600000',
+  );
+  await waitFor(() => expect(client.searchInstruments).toHaveBeenCalled());
+  await user.keyboard('{Enter}');
+  await user.click(screen.getByRole('button', { name: '准备并继续' }));
+  await user.click(await screen.findByRole('button', { name: '打开行情' }));
+
+  expect(client.synchronize).toHaveBeenCalledWith({
+    sourceId: 'akshare',
+    symbol: '600000.SH',
+  });
+  expect(await screen.findByText('workspace:浦发银行:600000.SH')).toBeVisible();
+});
+
+it('uses concise user language and shared readable error colors', async () => {
+  renderGate(
+    api(
+      onboardingState('synchronization', {
+        sync: {
+          status: 'failed',
+          providerId: 'akshare',
+          manifestRecordId: null,
+          datasetVersion: null,
+          dataCutoff: null,
+          rowCount: 0,
+        },
+        error: {
+          code: 'provider_invalid_response',
+          actions: ['retry', 'switch_provider'],
+        },
+      }),
+    ),
+  );
+
+  expect(await screen.findByRole('alert')).toHaveTextContent(
+    '暂时无法加载行情',
+  );
+  expect(document.body.textContent).not.toMatch(
+    /FIRST RUN|SETUP|目录|同步|验证|诊断|技术信息|invalid_response/u,
+  );
+  expect(theme).toContain('--status-error-text:');
+  expect(theme).toContain('--status-error-surface:');
+  expect(theme).toContain('color: var(--status-error-text);');
+  expect(theme).not.toMatch(
+    /\.onboarding-inline-error p,[\s\S]{0,100}#fde68a/u,
+  );
 });

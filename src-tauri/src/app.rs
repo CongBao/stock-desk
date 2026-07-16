@@ -654,7 +654,8 @@ fn ensure_user_data_root(path: &Path) -> io::Result<()> {
     let probe = path.join(format!(".write-probe-{}", std::process::id()));
     let mut file = OpenOptions::new()
         .write(true)
-        .create_new(true)
+        .create(true)
+        .truncate(true)
         .open(&probe)?;
     let write_result = file.write_all(b"stock-desk");
     drop(file);
@@ -1313,5 +1314,22 @@ mod tests {
                 can_restart: true,
             }
         );
+    }
+
+    #[test]
+    fn stale_write_probe_does_not_misclassify_a_writable_data_root() {
+        let root = std::env::temp_dir().join(format!(
+            "stock-desk-stale-probe-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let stale_probe = root.join(format!(".write-probe-{}", std::process::id()));
+        std::fs::write(&stale_probe, b"stale-after-crash").unwrap();
+
+        let result = ensure_user_data_root(&root);
+
+        let _ = std::fs::remove_file(&stale_probe);
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(result.is_ok());
     }
 }

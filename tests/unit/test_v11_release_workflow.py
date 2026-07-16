@@ -54,7 +54,7 @@ def test_v11_release_preserves_exact_proof_reuse_and_unsigned_publish_jobs() -> 
         "windows-desktop-alpha-candidate-$GITHUB_SHA",
         "gh attestation verify",
         "scripts/verify_release.py",
-        "UNSIGNED-TEST-ONLY",
+        "UNSIGNED-WINDOWS",
         "--prerelease",
         "--latest=false",
     ):
@@ -82,13 +82,16 @@ def test_v11_release_consumes_the_complete_main_proof_evidence_set() -> None:
     assert len(expected) == 12
     assert commands.count("windows-browser-observer-evidence") == 4
     assert commands.count("-eq 12") == 2
-    assert "-eq 11" not in commands
+    assert (
+        'find "$EVIDENCE_ROOT" -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 11'
+        not in commands
+    )
     assert source.count("windows-browser-observer-evidence") == 4
     assert (
         "windows-browser-observer-evidence"
-        in commands.split(
-            "UNSIGNED-TEST-ONLY-proved-artifacts-$GITHUB_REF_NAME.tar", 1
-        )[1]
+        in commands.split("UNSIGNED-WINDOWS-proved-artifacts-$GITHUB_REF_NAME.tar", 1)[
+            1
+        ]
     )
 
 
@@ -144,6 +147,92 @@ def test_v11_tag_policy_splits_unsigned_tag_push_from_formal_main_dispatch() -> 
     assert '      - "v1.1.0-beta.*"' in source
     assert "workflow_dispatch:" in source
     assert "release_tag:" in source
+
+
+def test_v11_exact_stable_tag_publishes_the_proved_candidate_as_unsigned() -> None:
+    workflow = _workflow()
+    jobs = workflow["jobs"]
+    assert isinstance(jobs, dict)
+    triggers = workflow.get("on", workflow.get(True))
+    assert isinstance(triggers, dict)
+    push_tags = triggers["push"]["tags"]
+
+    assert "v1.1.0" in push_tags
+    verify_if = " ".join(str(jobs["prerelease-verify"]["if"]).split())
+    publish_if = " ".join(str(jobs["prerelease"]["if"]).split())
+    assert verify_if == (
+        "${{ github.ref_name == 'v1.1.0' || "
+        "startsWith(github.ref_name, 'v1.1.0-alpha.') || "
+        "startsWith(github.ref_name, 'v1.1.0-beta.') }}"
+    )
+    assert publish_if == verify_if
+
+    policy = str(jobs["tag-policy"]["steps"][0]["run"])
+    verify = _job_commands(jobs["prerelease-verify"])
+    publish = _job_commands(jobs["prerelease"])
+    assert '"$GITHUB_REF_NAME" = v1.1.0' in policy
+    assert 'git cat-file -t "refs/tags/${GITHUB_REF_NAME}"' in verify
+    assert 'expected_version="${GITHUB_REF_NAME#v}"' in verify
+    assert "windows-desktop-alpha-candidate-$GITHUB_SHA" in verify
+    assert "scripts/verify_release.py" in verify
+    assert "UNSIGNED-WINDOWS-INSTALLER.txt" in verify
+    assert "UNSIGNED-WINDOWS-SHA256SUMS" in publish
+    assert 'if test "$GITHUB_REF_NAME" = v1.1.0; then' in publish
+    assert 'release_flags=(--latest --title "Stock Desk $GITHUB_REF_NAME")' in publish
+    stable_branch = publish.split('if test "$GITHUB_REF_NAME" = v1.1.0; then', 1)[
+        1
+    ].split("else", 1)[0]
+    assert "UNSIGNED" not in stable_branch
+    assert "未签名" not in stable_branch
+    assert "--prerelease" in publish
+    assert "--latest=false" in publish
+    assert publish.count("mapfile -t installers") == 2
+    assert "UNSIGNED-TEST-ONLY" not in verify
+    assert "UNSIGNED-TEST-ONLY" not in publish
+    for forbidden in (
+        "make test",
+        "pytest",
+        "pnpm test",
+        "cargo test",
+        "scripts.build_windows_desktop",
+    ):
+        assert forbidden not in verify
+        assert forbidden not in publish
+
+
+def test_v11_unsigned_release_includes_exact_candidate_sbom_and_provenance() -> None:
+    workflow = _workflow()
+    jobs = workflow["jobs"]
+    assert isinstance(jobs, dict)
+    verify = jobs["prerelease-verify"]
+    assert isinstance(verify, dict)
+    steps = verify["steps"]
+    sbom = next(
+        step
+        for step in steps
+        if step.get("name") == "Generate SPDX SBOM from exact unsigned candidate"
+    )
+    assert sbom["uses"] == (
+        "anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610"
+    )
+    assert sbom["with"] == {
+        "path": "${{ env.EVIDENCE_ROOT }}/windows-desktop-alpha-candidate-manifest",
+        "format": "spdx-json",
+        "output-file": "${{ runner.temp }}/unsigned-windows-candidate.spdx.json",
+        "upload-artifact": False,
+        "upload-release-assets": False,
+    }
+    prepare = next(
+        step
+        for step in steps
+        if step.get("name") == "Prepare explicitly unsigned Windows evidence assets"
+    )
+    commands = str(prepare["run"])
+    assert "UNSIGNED-WINDOWS-sbom-$GITHUB_REF_NAME.spdx.json" in commands
+    assert "UNSIGNED-WINDOWS-builder-provenance-$GITHUB_REF_NAME.json" in commands
+    publish = _job_commands(jobs["prerelease"])
+    assert "UNSIGNED-WINDOWS-SHA256SUMS" in publish
+    assert "-eq 11" in publish
 
 
 def test_v11_prerelease_asset_selection_is_version_agnostic_and_windows_only() -> None:

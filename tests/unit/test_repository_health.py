@@ -368,7 +368,9 @@ def test_workflows_declare_the_expected_github_triggers() -> None:
         assert set(triggers) == expected_triggers[workflow_path.name]
 
     release_triggers = loaded_triggers["release.yml"]
-    assert release_triggers["push"] == {"tags": ["v1.1.0-alpha.*", "v1.1.0-beta.*"]}
+    assert release_triggers["push"] == {
+        "tags": ["v1.1.0", "v1.1.0-alpha.*", "v1.1.0-beta.*"]
+    }
     assert release_triggers["workflow_dispatch"]["inputs"]["release_tag"] == {
         "description": "Existing annotated v1.1.0 or v1.1.0-rc.N tag on exact protected main",
         "required": True,
@@ -739,13 +741,15 @@ def test_release_job_dependency_graph_is_acyclic_and_preserves_trust_order() -> 
     assert visited == set(jobs)
 
 
-def test_prerelease_reuses_exact_main_evidence_without_running_stable_path() -> None:
+def test_unsigned_release_reuses_exact_main_evidence_without_running_trust_path() -> (
+    None
+):
     release = _load_github_actions_yaml(_read(".github/workflows/release.yml"))
     jobs = release["jobs"]
     tag_policy = jobs["tag-policy"]
     assert (
         tag_policy["name"]
-        == "Enforce split unsigned-prerelease and formal-release policy"
+        == "Enforce split unsigned-release and trusted-release policy"
     )
     tag_policy_command = tag_policy["steps"][0]["run"]
     assert "^v1\\.1\\.0-(alpha|beta)\\.[1-9][0-9]*$" in tag_policy_command
@@ -754,6 +758,7 @@ def test_prerelease_reuses_exact_main_evidence_without_running_stable_path() -> 
     verify = jobs["prerelease-verify"]
     assert "startsWith(github.ref_name, 'v1.1.0-alpha.')" in verify["if"]
     assert "startsWith(github.ref_name, 'v1.1.0-beta.')" in verify["if"]
+    assert "github.ref_name == 'v1.1.0'" in verify["if"]
     assert verify["needs"] == "tag-policy"
     assert verify["runs-on"] == "ubuntu-latest"
     assert verify["permissions"] == {
@@ -768,32 +773,34 @@ def test_prerelease_reuses_exact_main_evidence_without_running_stable_path() -> 
     names = [step.get("name") for step in steps]
     assert names == [
         "Configure isolated release evidence roots",
-        "Check out exact prerelease source",
+        "Check out exact unsigned release source",
         "Set up Python",
         "Set up uv",
-        "Verify exact prerelease tag is on main and remains unsigned",
+        "Verify exact release tag is on main and remains unsigned",
         "Locate successful exact-SHA main validation run",
         "Download exact proof and all proved artifacts",
         "Verify GitHub proof attestation",
         "Verify real GitHub attestations for every proved manifest",
         "Verify proved release inputs without rebuilding or rerunning tests",
+        "Generate SPDX SBOM from exact unsigned candidate",
         "Prepare explicitly unsigned Windows evidence assets",
-        "Upload verified unsigned prerelease assets",
+        "Upload verified unsigned release assets",
     ]
     root_configuration = steps[0]["run"]
-    assert "EVIDENCE_ROOT=$RUNNER_TEMP/prerelease-evidence" in root_configuration
-    assert "PROOF_ROOT=$RUNNER_TEMP/prerelease-proof" in root_configuration
+    assert "EVIDENCE_ROOT=$RUNNER_TEMP/unsigned-release-evidence" in root_configuration
+    assert "PROOF_ROOT=$RUNNER_TEMP/unsigned-release-proof" in root_configuration
     assert '>> "$GITHUB_ENV"' in root_configuration
 
     publish = jobs["prerelease"]
     assert "startsWith(github.ref_name, 'v1.1.0-alpha.')" in publish["if"]
     assert "startsWith(github.ref_name, 'v1.1.0-beta.')" in publish["if"]
+    assert "github.ref_name == 'v1.1.0'" in publish["if"]
     assert publish["needs"] == "prerelease-verify"
     assert publish["permissions"] == {"actions": "read", "contents": "write"}
     assert [step.get("name") for step in publish["steps"]] == [
-        "Download verified unsigned prerelease assets",
+        "Download verified unsigned release assets",
         "Recheck exact tag and Windows-only asset checksums",
-        "Create unsigned prerelease",
+        "Create unsigned release",
     ]
 
     commands = "\n".join(str(step.get("run", "")) for step in steps + publish["steps"])
@@ -830,7 +837,7 @@ def test_prerelease_reuses_exact_main_evidence_without_running_stable_path() -> 
         "windows-desktop-alpha-candidate-$GITHUB_SHA",
         "stock-desk-*-unsigned-x64-setup.exe",
         "docs/releases/$GITHUB_REF_NAME.md",
-        "UNSIGNED-TEST-ONLY",
+        "UNSIGNED-WINDOWS",
         "--prerelease",
         "--latest=false",
         '--notes-file "$asset_root/release-notes.md"',
@@ -857,17 +864,17 @@ def test_release_publishes_only_the_verified_unsigned_windows_asset_directory() 
     steps = publish["steps"]
 
     assert [step.get("name") for step in steps] == [
-        "Download verified unsigned prerelease assets",
+        "Download verified unsigned release assets",
         "Recheck exact tag and Windows-only asset checksums",
-        "Create unsigned prerelease",
+        "Create unsigned release",
     ]
     download = steps[0]
     assert download["with"] == {
-        "name": "unsigned-v11-prerelease-assets-${{ github.sha }}",
-        "path": "unsigned-prerelease-assets",
+        "name": "unsigned-v11-release-assets-${{ github.sha }}",
+        "path": "unsigned-release-assets",
     }
     verification = steps[1]["run"]
-    assert "sha256sum -c UNSIGNED-TEST-ONLY-SHA256SUMS" in verification
+    assert "sha256sum -c UNSIGNED-WINDOWS-SHA256SUMS" in verification
     assert "stock-desk-*-unsigned-x64-setup.exe" in verification
     create = steps[2]["run"]
     assert "gh release create" in create
@@ -1077,7 +1084,7 @@ def test_public_runtime_version_surfaces_match() -> None:
 
     cargo_version = tomllib.loads(_read("src-tauri/Cargo.toml"))["package"]["version"]
     tauri_version = json.loads(_read("src-tauri/tauri.conf.json"))["version"]
-    assert cargo_version == tauri_version == "1.1.0-beta.3"
+    assert cargo_version == tauri_version == "1.1.0"
     updater_source = _read("src-tauri/src/updater.rs")
     assert 'const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION")' in updater_source
     app_source = _read("web/src/app/App.tsx")
@@ -1278,7 +1285,7 @@ def test_ci_and_release_gate_the_chromium_end_to_end_slice() -> None:
     checkout = next(
         step
         for step in release_workflow["jobs"]["prerelease-verify"]["steps"]
-        if step.get("name") == "Check out exact prerelease source"
+        if step.get("name") == "Check out exact unsigned release source"
     )
     assert checkout["with"] == {"fetch-depth": 0}
     assert "git fetch --no-tags origin main:refs/remotes/origin/main" in release
@@ -1289,7 +1296,9 @@ def test_ci_and_release_gate_the_chromium_end_to_end_slice() -> None:
     assert "scripts/verify_release.py" in release
     assert "gh attestation verify" in release
     assert "contents: write" in release
-    assert 'tags:\n      - "v1.1.0-alpha.*"\n      - "v1.1.0-beta.*"' in release
+    assert (
+        'tags:\n      - "v1.1.0"\n      - "v1.1.0-alpha.*"\n      - "v1.1.0-beta.*"'
+    ) in release
     assert "workflow_dispatch:" in release
 
 
@@ -1765,9 +1774,10 @@ def test_changelog_roadmap_and_architecture_match_current_release_scope() -> Non
         re.DOTALL,
     )
     assert unreleased is not None
-    unreleased_body = unreleased.group("body")
-    assert "v1.1.0-alpha.1" in unreleased_body
-    assert "unsigned prereleases" in unreleased_body
+    v11_body = unreleased.group("body")
+    assert "## [1.1.0] - 2026-07-16" in v11_body
+    assert "v1.1.0-alpha.1" in v11_body
+    assert "explicitly unsigned" in v11_body
     final_release_section = re.search(
         r"## \[1\.0\.0\] - 2026-07-08(?P<body>.*?)## \[0\.5\.0\]",
         changelog,
@@ -1809,12 +1819,14 @@ def test_changelog_roadmap_and_architecture_match_current_release_scope() -> Non
     roadmap = _read("ROADMAP.md")
     for stage in range(6):
         assert f"| {stage} —" in roadmap
-    assert len(re.findall(r"\|\s+Complete\s+\|", roadmap)) == 6
+    assert len(re.findall(r"\|\s+Complete\s+\|", roadmap)) == 7
     assert len(re.findall(r"\|\s+In verification\s+\|", roadmap)) == 0
     assert len(re.findall(r"\|\s+Current\s+\|", roadmap)) == 0
-    assert len(re.findall(r"\|\s+In progress\s+\|", roadmap)) == 1
+    assert len(re.findall(r"\|\s+In progress\s+\|", roadmap)) == 0
     assert len(re.findall(r"\|\s+Planned\s+\|", roadmap)) == 1
-    assert "v1.1 Stage 0 — Delivery foundation" in roadmap
+    assert "v1.1 — Windows desktop experience" in roadmap
+    assert "v1.2 — Microsoft Store distribution" in roadmap
+    assert "fresh install" in roadmap.casefold()
     assert "Windows x64 only" in roadmap
 
     release_notes = _read("docs/releases/v1.0.0.md")
@@ -1844,6 +1856,7 @@ def test_release_workflow_splits_unsigned_tags_and_protected_formal_dispatch() -
     assert re.search(r"^\s+tags:\s*$", release, re.MULTILINE)
     assert re.search(r'^\s+- ["\']v1\.1\.0-alpha\.\*["\']\s*$', release, re.MULTILINE)
     assert re.search(r'^\s+- ["\']v1\.1\.0-beta\.\*["\']\s*$', release, re.MULTILINE)
+    assert re.search(r'^\s+- ["\']v1\.1\.0["\']\s*$', release, re.MULTILINE)
     assert "workflow_dispatch:" in release
     assert "pull_request:" not in release
     assert "branches:" not in release
@@ -1856,7 +1869,7 @@ def test_release_workflow_splits_unsigned_tags_and_protected_formal_dispatch() -
     )
     assert "gh release create" in release
     assert "GH_REPO: ${{ github.repository }}" in release
-    assert "UNSIGNED-TEST-ONLY-SHA256SUMS" in release
+    assert "UNSIGNED-WINDOWS-SHA256SUMS" in release
     jobs = _load_github_actions_yaml(release)["jobs"]
     assert {"tag-policy", "prerelease-verify", "prerelease"} <= set(jobs)
     assert jobs["prerelease"]["permissions"] == {
@@ -1887,7 +1900,7 @@ def test_tag_release_verifies_proved_artifacts_before_packaging_and_upload() -> 
     upload_step = next(
         step
         for step in verify_steps
-        if step.get("name") == "Upload verified unsigned prerelease assets"
+        if step.get("name") == "Upload verified unsigned release assets"
     )
     assert (
         verify_steps.index(proof_step)
@@ -1918,7 +1931,7 @@ def test_release_checksum_manifest_is_flat_and_verified_before_publish() -> None
 
     assert checksum_commands == []
     assert (
-        '(cd "$asset_root" && sha256sum -- * > UNSIGNED-TEST-ONLY-SHA256SUMS)'
+        '(cd "$asset_root" && sha256sum -- * > UNSIGNED-WINDOWS-SHA256SUMS)'
         in prepare_step["run"]
     )
 
@@ -1931,9 +1944,9 @@ def test_release_checksum_manifest_is_flat_and_verified_before_publish() -> None
     create_step_index = next(
         index
         for index, step in enumerate(release_steps)
-        if step.get("name") == "Create unsigned prerelease"
+        if step.get("name") == "Create unsigned release"
     )
-    assert "sha256sum -c UNSIGNED-TEST-ONLY-SHA256SUMS" in checksum_step["run"]
+    assert "sha256sum -c UNSIGNED-WINDOWS-SHA256SUMS" in checksum_step["run"]
     assert release_steps.index(checksum_step) < create_step_index
 
 
@@ -1959,7 +1972,7 @@ def test_release_publish_gate_rejects_a_moved_remote_tag() -> None:
         step
         for step in workflow["jobs"]["prerelease-verify"]["steps"]
         if step.get("name")
-        == "Verify exact prerelease tag is on main and remains unsigned"
+        == "Verify exact release tag is on main and remains unsigned"
     )
     assert (
         'git ls-remote "$remote_url" "refs/tags/${GITHUB_REF_NAME}^{}"'

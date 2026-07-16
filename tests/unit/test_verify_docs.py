@@ -2420,7 +2420,7 @@ REPOSITORY_DOCUMENTS = {
 ## 下载安装
 
 从 https://github.com/CongBao/stock-desk/releases/latest 选择无需源码的
-`stock-desk-1.1.0-beta.3-unsigned-x64-setup.exe` Windows 安装包。
+`stock-desk-1.1.0-unsigned-x64-setup.exe` Windows 安装包。
 
 ## 使用文档
 
@@ -2446,7 +2446,7 @@ Use the task center, market charts, Formula Studio, backtesting, and research.
 
 Choose a source-free installer from
 https://github.com/CongBao/stock-desk/releases/latest:
-`stock-desk-1.1.0-beta.3-unsigned-x64-setup.exe` for Windows.
+`stock-desk-1.1.0-unsigned-x64-setup.exe` for Windows.
 
 ## Documentation
 
@@ -4251,7 +4251,7 @@ def test_repository_contract_requires_source_free_installers_before_source_setup
     readme = tmp_path / "README.md"
     readme.write_text(
         readme.read_text(encoding="utf-8").replace(
-            "stock-desk-1.1.0-beta.3-unsigned-x64-setup.exe", "Windows installer"
+            "stock-desk-1.1.0-unsigned-x64-setup.exe", "Windows installer"
         ),
         encoding="utf-8",
     )

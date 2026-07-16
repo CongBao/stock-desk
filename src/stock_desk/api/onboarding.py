@@ -52,7 +52,7 @@ class SourceOptionResponse(BaseModel):
     description: str
     requires_token: Literal[False]
     recommended: bool
-    status: Literal["ready", "unavailable"]
+    status: Literal["unknown", "ready", "unavailable"]
     data_cutoff: datetime | None
 
 

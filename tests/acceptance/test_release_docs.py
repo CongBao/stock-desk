@@ -91,7 +91,7 @@ def _workflow() -> dict[str, Any]:
 
 
 def _native_artifact_patterns() -> tuple[str, ...]:
-    return ("stock-desk-1.1.0-beta.3-unsigned-x64-setup.exe",)
+    return ("stock-desk-1.1.0-unsigned-x64-setup.exe",)
 
 
 def _readmes() -> tuple[str, str]:
@@ -151,6 +151,32 @@ def test_bilingual_readme_baseline_contains_verified_installation_and_use() -> N
     assert "validation-proof" in ci["jobs"]
     assert (PROJECT_ROOT / "tests/acceptance/test_clean_install.py").is_file()
     assert (PROJECT_ROOT / "tests/acceptance/test_installed_distribution.py").is_file()
+
+
+def test_v11_stable_docs_disclose_the_unsigned_windows_boundary() -> None:
+    english, chinese = _readmes()
+    signing = (PROJECT_ROOT / "docs/code-signing-policy.md").read_text(encoding="utf-8")
+    download = (PROJECT_ROOT / "docs/download.md").read_text(encoding="utf-8")
+    release_note = (PROJECT_ROOT / "docs/releases/v1.1.0.md").read_text(
+        encoding="utf-8"
+    )
+
+    for document in (english, chinese):
+        assert "`v1.1.0`" in document
+        assert "`stock-desk-1.1.0-unsigned-x64-setup.exe`" in document
+        assert "unsigned" in document.casefold() or "未签名" in document
+        assert "v1.2" in document
+    for document in (signing, download, release_note):
+        assert "SignPath" in document
+        assert "rejected" in document.casefold() or "拒绝" in document
+        assert "v1.1.0" in document
+        assert "unsigned" in document.casefold() or "未签名" in document
+        assert "v1.2" in document
+        assert "Microsoft Store" in document
+    assert "SPDX" in download
+    assert "SPDX" in release_note
+    assert "not self-signed" in release_note.casefold()
+    assert "不是自签名" in release_note
 
 
 def test_readme_commands_map_to_executed_release_evidence() -> None:

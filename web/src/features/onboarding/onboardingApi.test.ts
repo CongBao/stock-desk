@@ -87,6 +87,26 @@ it('uses the versioned onboarding endpoints and explicit progress bodies', async
   expect(transport.post).toHaveBeenNthCalledWith(3, '/actions/retry');
 });
 
+it('keeps an untested source distinct from a verified ready source', async () => {
+  const transport = client({
+    items: [
+      {
+        id: 'akshare',
+        label: 'AKShare',
+        description: 'A 股行情',
+        recommended: true,
+        requires_token: false,
+        status: 'unknown',
+        data_cutoff: null,
+      },
+    ],
+  });
+
+  await expect(createOnboardingApi(transport).getSources()).resolves.toEqual([
+    expect.objectContaining({ id: 'akshare', status: 'unknown' }),
+  ]);
+});
+
 it('rejects an equity alias mislabeled as the canonical index identity', async () => {
   const transport = client({
     ...state,

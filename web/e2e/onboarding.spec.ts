@@ -17,7 +17,7 @@ function canonicalDigest(value: unknown): string {
     .digest('hex')}`;
 }
 
-test('first run wizard configures data and opens a usable default market', async ({
+test('first run wizard searches and opens a non-default stock', async ({
   page,
 }) => {
   let step = 'welcome';
@@ -60,6 +60,21 @@ test('first run wizard configures data and opens a usable default market', async
       });
       return;
     }
+    if (url.pathname.endsWith('/instruments')) {
+      await route.fulfill({
+        json: {
+          items: [
+            {
+              symbol: '600000.SH',
+              name: '浦发银行',
+              exchange: 'SH',
+              instrument_kind: 'stock',
+            },
+          ],
+        },
+      });
+      return;
+    }
     if (url.pathname.endsWith('/progress')) {
       const body = route.request().postDataJSON() as {
         current_step: string;
@@ -84,10 +99,10 @@ test('first run wizard configures data and opens a usable default market', async
       step = 'synchronization';
       revision += 1;
       instrument = {
-        symbol: '000001.SS',
-        name: '上证指数',
+        symbol: '600000.SH',
+        name: '浦发银行',
         exchange: 'SH',
-        instrument_kind: 'index',
+        instrument_kind: 'stock',
       };
       sync = {
         status: 'verified',
@@ -114,9 +129,10 @@ test('first run wizard configures data and opens a usable default market', async
     '../src/features/market/fixtures/backend-bars-response.json',
     import.meta.url,
   );
-  const bars = JSON.parse(
-    (await readFile(fixturePath, 'utf8')).replaceAll('600000.SH', '000001.SS'),
-  ) as Record<string, unknown>;
+  const bars = JSON.parse(await readFile(fixturePath, 'utf8')) as Record<
+    string,
+    unknown
+  >;
   const routing = bars['routing_manifest'] as Record<string, unknown>;
   const payload = { ...routing };
   delete payload['upstream_fetched_at'];
@@ -126,7 +142,7 @@ test('first run wizard configures data and opens a usable default market', async
   bars['manifest_record_id'] = canonicalDigest(routing);
   await page.route('**/api/market/bars?**', async (route) => {
     const url = new URL(route.request().url());
-    if (url.searchParams.get('symbol') === '000001.SS') {
+    if (url.searchParams.get('symbol') === '600000.SH') {
       await route.fulfill({
         json: bars,
       });
@@ -134,18 +150,48 @@ test('first run wizard configures data and opens a usable default market', async
     }
     await route.continue();
   });
+  await page.route('**/api/v1/workspace', async (route) => {
+    await route.fulfill({
+      json: {
+        schema_version: 1,
+        revision: 1,
+        updated_at: '2026-07-12T06:00:00Z',
+        expires_at: '2027-01-08T06:00:00Z',
+        restored: true,
+        notice: null,
+        workspace: {
+          current_page: '/market',
+          instrument: {
+            symbol: '600000.SH',
+            name: '浦发银行',
+            exchange: 'SH',
+            kind: 'stock',
+          },
+          period: '1d',
+          adjustment: 'qfq',
+          zoom: { start: 0, end: 100 },
+          main_chart: 'candlestick',
+          subchart: { kind: 'volume' },
+        },
+      },
+    });
+  });
 
   await page.goto('/market');
   await page.getByRole('button', { name: '开始设置' }).click();
-  await page.getByRole('button', { name: '使用此来源并继续' }).click();
-  await expect(page.getByText('上证指数', { exact: true })).toBeVisible();
-  await expect(page.getByText('000001.SS', { exact: true })).toBeVisible();
-  await page.getByRole('button', { name: '同步并继续' }).click();
-  await expect(page.getByText('数据已准备好')).toBeVisible();
-  await page.getByRole('button', { name: '进入行情工作区' }).click();
+  await page.getByRole('button', { name: '继续' }).click();
+  await page
+    .getByRole('combobox', { name: '按代码、中文或拼音搜索证券' })
+    .fill('600000');
+  await page.getByRole('option', { name: /浦发银行/u }).click();
+  await expect(page.getByText('浦发银行', { exact: true })).toBeVisible();
+  await expect(page.getByText('600000.SH', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '准备并继续' }).click();
+  await expect(page.getByText('可以开始使用了')).toBeVisible();
+  await page.getByRole('button', { name: '打开行情' }).click();
 
   await expect(page).toHaveURL(/\/market$/u);
-  await expect(page.getByText('上证指数 · 000001.SS')).toBeVisible();
+  await expect(page.getByText('浦发银行 · 600000.SH')).toBeVisible();
   await expect(page.locator('.market-chart-canvas canvas')).toHaveCount(1);
   await expect(
     page.getByRole('status', { name: '当前 K 线 OHLCV' }),

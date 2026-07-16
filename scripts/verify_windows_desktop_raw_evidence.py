@@ -1223,9 +1223,9 @@ def _validate_uia(value: object, *, expected_driver_sha256: str) -> dict[str, An
     )
     expected_targets = (
         "开始设置",
-        "使用此来源并继续",
-        "同步并继续",
-        "进入行情工作区",
+        "继续",
+        "准备并继续",
+        "打开行情",
     )
     if len(onboarding_paths) != len(expected_targets):
         raise DesktopEvidenceError("onboarding keyboard path count is not exactly four")

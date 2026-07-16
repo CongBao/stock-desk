@@ -250,10 +250,10 @@ def test_smartscreen_gate_requires_real_motw_external_observer_and_shell_execute
     assert '.smartscreen_status == "allowed-no-warning"' in attest
     assert ".smartscreen_case_receipts | length" in attest
     ci_docs = (ROOT / "docs" / "ci.md").read_text(encoding="utf-8")
-    assert "当前证据不代表 Authenticode、SmartScreen 或正式发布门禁已经通过" in ci_docs
+    assert "当前证据不代表受信发布者、SmartScreen 或生产 updater 已经通过" in ci_docs
     assert (
-        "current evidence does not claim that Authenticode, SmartScreen, or "
-        "formal-release gates have passed"
+        "Current evidence does not claim a trusted publisher, SmartScreen "
+        "reputation, or production updater"
     ) in ci_docs
 
 

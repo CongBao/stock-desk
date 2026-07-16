@@ -598,6 +598,12 @@ def test_windows_acl_target_is_passed_only_in_the_child_environment(
     tmp_path: Path,
 ) -> None:
     desktop_runtime = _desktop_runtime()
+    monkeypatch.setattr(
+        desktop_runtime.subprocess,
+        "CREATE_NO_WINDOW",
+        0x08000000,
+        raising=False,
+    )
     target = tmp_path / "runtime user's 数据"
     target.mkdir()
     calls: list[dict[str, object]] = []
@@ -614,6 +620,7 @@ def test_windows_acl_target_is_passed_only_in_the_child_environment(
 
     assert calls[0]["env"]["STOCK_DESK_ACL_TARGET"] == str(target)
     assert calls[0]["timeout"] == 30
+    assert calls[0]["creationflags"] == desktop_runtime.subprocess.CREATE_NO_WINDOW
 
 
 def test_internal_akshare_mode_rejects_an_unknown_operation(tmp_path: Path) -> None:

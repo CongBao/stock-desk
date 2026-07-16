@@ -43,18 +43,18 @@ def test_formal_release_and_latency_paths_always_select_full_pr_gates() -> None:
         assert impact.reason == f"high-risk-path:{path}"
 
 
-def test_bilingual_docs_disclose_hard_disabled_formal_scaffold() -> None:
+def test_bilingual_docs_disclose_unsigned_v11_and_disabled_trust_paths() -> None:
     chinese = (ROOT / "README.md").read_text(encoding="utf-8")
     english = (ROOT / "README.en.md").read_text(encoding="utf-8")
     signing = (ROOT / "docs" / "code-signing-policy.md").read_text(encoding="utf-8")
     ci = (ROOT / "docs" / "ci.md").read_text(encoding="utf-8")
 
-    assert "正式签名发布控制面" in chinese
-    assert "production updater 仍保持关闭" in chinese
-    assert "hard-disabled formal" in english
+    assert "unsigned release" in chinese
+    assert "production updater 继续关闭" in chinese
+    assert "released unsigned" in english
     assert "production updater remains disabled" in english
-    assert "application-submitted / pending-review" in signing
-    assert "硬禁用骨架" in signing
+    assert "application-rejected / insufficient-project-exposure" in signing
+    assert "字面关闭门禁" in signing
     assert "hard-disabled scaffold" in signing
     assert "连续五次" in ci
     assert "five consecutive" in ci

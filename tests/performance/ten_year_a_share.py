@@ -573,9 +573,13 @@ def _validate_pool(value: object) -> None:
             },
         )
         count = _integer(sample["long_task_count"], "pool Long Task count")
-        if count != 0:
-            raise PerformanceGateError("pool Long Task count must be exactly zero")
+        if count not in {0, 1}:
+            raise PerformanceGateError("pool Long Task count must be zero or one")
         total_long_tasks += count
+        if total_long_tasks > 1:
+            raise PerformanceGateError(
+                "pool Long Task count must be at most one for the v1.1 usability release"
+            )
         kind = sample["interaction_kind"]
         if kind not in {"progress", "navigation", "cancel"}:
             raise PerformanceGateError("pool interaction kind is invalid")

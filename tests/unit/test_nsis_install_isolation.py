@@ -32,6 +32,11 @@ LOCAL_WEBVIEW_GUARD_OPEN = b"      {{#if webview2_bootstrapper_path}}\n"
 LOCAL_WEBVIEW_GUARD_CLOSE = (
     b'      {{/if}}\n\n      !if "${INSTALLWEBVIEW2MODE}" == "offlineInstaller"\n'
 )
+LOCAL_PREVIOUS_UNINSTALL_HOOK = (
+    b"      !ifmacrodef NSIS_HOOK_PREVIOUS_INSTALL_UNINSTALL\n"
+    b'        !insertmacro NSIS_HOOK_PREVIOUS_INSTALL_UNINSTALL "$4"\n'
+    b"      !endif\n"
+)
 UPSTREAM_WEBVIEW_GUARD_CLOSE = (
     b'\n      !if "${INSTALLWEBVIEW2MODE}" == "offlineInstaller"\n'
 )
@@ -45,7 +50,7 @@ def _config() -> dict[str, object]:
     return json.loads(TAURI_CONFIG.read_text(encoding="utf-8"))
 
 
-def test_custom_nsis_template_has_only_the_four_auditable_local_patches() -> None:
+def test_custom_nsis_template_has_only_the_auditable_local_patches() -> None:
     local = NSIS_TEMPLATE.read_bytes()
 
     assert local.count(LOCAL_INSTALL_LINE) == 1
@@ -55,6 +60,7 @@ def test_custom_nsis_template_has_only_the_four_auditable_local_patches() -> Non
     assert local.count(LOCAL_BINARY_FILE_LINE) == 1
     assert local.count(LOCAL_WEBVIEW_GUARD_OPEN) == 1
     assert local.count(LOCAL_WEBVIEW_GUARD_CLOSE) == 1
+    assert local.count(LOCAL_PREVIOUS_UNINSTALL_HOOK) == 1
     assert b"File /a" not in local
     reconstructed = (
         local.replace(LOCAL_REPRODUCIBLE_TIMESTAMP_PATCH, b"")
@@ -63,6 +69,7 @@ def test_custom_nsis_template_has_only_the_four_auditable_local_patches() -> Non
         .replace(LOCAL_BINARY_FILE_LINE, UPSTREAM_BINARY_FILE_LINE)
         .replace(LOCAL_WEBVIEW_GUARD_OPEN, b"")
         .replace(LOCAL_WEBVIEW_GUARD_CLOSE, UPSTREAM_WEBVIEW_GUARD_CLOSE)
+        .replace(LOCAL_PREVIOUS_UNINSTALL_HOOK, b"")
     )
     assert hashlib.sha256(reconstructed).hexdigest() == UPSTREAM_SHA256
 
@@ -79,6 +86,7 @@ def test_custom_nsis_template_has_only_the_four_auditable_local_patches() -> Non
     assert LOCAL_BINARY_FILE_LINE.decode().strip() in notice
     assert LOCAL_WEBVIEW_GUARD_OPEN.decode().strip() in notice
     assert LOCAL_WEBVIEW_GUARD_CLOSE.decode().splitlines()[0].strip() in notice
+    assert "NSIS_HOOK_PREVIOUS_INSTALL_UNINSTALL" in notice
 
 
 def test_nsis_configuration_has_no_reachable_admin_install_mode() -> None:
@@ -180,6 +188,64 @@ def test_program_and_data_roots_are_physically_separate_and_uninstall_is_safe() 
         assert cleanup_root not in {USER_DATA_ROOT, LEGACY_DATA_ROOT}
         assert USER_DATA_ROOT not in cleanup_root
         assert LEGACY_DATA_ROOT not in cleanup_root
+
+
+def test_legacy_readonly_payload_is_repaired_only_inside_install_root() -> None:
+    source = NSIS_TEMPLATE.read_text(encoding="utf-8")
+    hooks = NSIS_HOOKS.read_text(encoding="utf-8")
+    preinstall = hooks.split("!macro NSIS_HOOK_PREINSTALL", maxsplit=1)[1].split(
+        "!macroend", maxsplit=1
+    )[0]
+    preuninstall = hooks.split("!macro NSIS_HOOK_PREUNINSTALL", maxsplit=1)[1].split(
+        "!macroend", maxsplit=1
+    )[0]
+    install_call = 'Push "$INSTDIR"\n  Call StockDeskClearLegacyReadOnlyAttributes'
+    uninstall_call = 'Push "$INSTDIR"\n  Call un.StockDeskClearLegacyReadOnlyAttributes'
+    upgrade_call = '!insertmacro NSIS_HOOK_PREVIOUS_INSTALL_UNINSTALL "$4"'
+
+    # beta.3 inherited read-only attributes from the private repack snapshot.
+    # Repair those legacy program files before either overwriting or deleting them.
+    assert install_call in preinstall
+    assert uninstall_call in preuninstall
+    assert upgrade_call in source
+    assert "Function ${FunctionName}" in hooks
+    assert (
+        "!insertmacro StockDeskDefineClearLegacyReadOnlyAttributes "
+        "StockDeskClearLegacyReadOnlyAttributes"
+    ) in hooks
+    assert (
+        "!insertmacro StockDeskDefineClearLegacyReadOnlyAttributes "
+        "un.StockDeskClearLegacyReadOnlyAttributes"
+    ) in hooks
+    assert "kernel32::GetFileAttributesW" in hooks
+    assert "kernel32::SetFileAttributesW" in hooks
+    assert "& 0xFFFFFFFE" in hooks
+    assert "& 0x400" in hooks
+    assert "PowerShell" not in hooks
+    assert "cmd.exe" not in hooks
+    assert "nsExec::" not in hooks
+    assert "ExecWait" not in preinstall
+    assert "ExecWait" not in preuninstall
+    assert "$LOCALAPPDATA" not in preinstall
+    assert "$LOCALAPPDATA" not in preuninstall
+    assert USER_DATA_ROOT not in hooks
+    assert LEGACY_DATA_ROOT not in hooks
+
+    assert source.index("!insertmacro NSIS_HOOK_PREINSTALL") < source.index(
+        '; Copy main executable\n  File "${MAINBINARYSRCPATH}"'
+    )
+    previous_uninstall = source.split("reinst_uninstall:", maxsplit=1)[1].split(
+        "reinst_done:", maxsplit=1
+    )[0]
+    assert previous_uninstall.index(upgrade_call) < previous_uninstall.rindex(
+        "ExecWait '$R1' $0"
+    )
+    assert source.index("!insertmacro NSIS_HOOK_PREUNINSTALL") < source.index(
+        'Delete "$INSTDIR\\${MAINBINARYNAME}.exe"'
+    )
+    assert source.index('Delete "$INSTDIR\\uninstall.exe"') < source.index(
+        'RMDir "$INSTDIR"'
+    )
 
 
 def test_v11_data_cleanup_is_explicit_default_off_and_never_uses_nsis_rmdir() -> None:

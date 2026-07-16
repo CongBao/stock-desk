@@ -86,19 +86,19 @@ def test_onboarding_api_uses_existing_desktop_origin_and_bearer_authority(
             {
                 "id": "akshare",
                 "label": "AKShare",
-                "description": "免 Token 的 A 股公开数据源",
+                "description": "A 股公开行情",
                 "requires_token": False,
                 "recommended": True,
-                "status": "ready",
+                "status": "unknown",
                 "data_cutoff": None,
             },
             {
                 "id": "baostock",
                 "label": "BaoStock",
-                "description": "免 Token 的 A 股公开数据源",
+                "description": "A 股公开行情",
                 "requires_token": False,
                 "recommended": False,
-                "status": "ready",
+                "status": "unknown",
                 "data_cutoff": None,
             },
         ]
