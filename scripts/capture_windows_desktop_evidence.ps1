@@ -409,14 +409,19 @@ try {
     $ownedLoopbackListeners = @(
       Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
         Where-Object {
-          $_.LocalAddress -eq '127.0.0.1' -and
+          $_.LocalAddress -in @('127.0.0.1', '::1') -and
           $isolatedWebViewProcessIds -contains [int]($_.OwningProcess)
         }
     )
     foreach ($candidateListener in $ownedLoopbackListeners) {
       [int]$candidatePort = $candidateListener.LocalPort
       if ($candidatePort -lt 1 -or $candidatePort -gt 65535) { continue }
-      $candidateCdp = "http://127.0.0.1:$candidatePort"
+      $candidateAddress = [string]$candidateListener.LocalAddress
+      $candidateCdp = if ($candidateAddress -eq '::1') {
+        "http://[::1]:$candidatePort"
+      } else {
+        "http://127.0.0.1:$candidatePort"
+      }
       try {
         $candidateVersion = Invoke-RestMethod -Uri "$candidateCdp/json/version" -TimeoutSec 2
         $candidateWebSocket = [Uri]$candidateVersion.webSocketDebuggerUrl
@@ -425,13 +430,14 @@ try {
       }
       if (
         $candidateWebSocket.Scheme -eq 'ws' -and
-        $candidateWebSocket.Host -eq '127.0.0.1' -and
+        $candidateWebSocket.Host.Trim('[', ']') -eq $candidateAddress -and
         $candidateWebSocket.Port -eq $candidatePort -and
         $candidateWebSocket.AbsolutePath -match '^/devtools/browser/[A-Za-z0-9-]+$'
       ) {
         return [pscustomobject]@{
           Port = $candidatePort
           Listener = $candidateListener
+          Endpoint = $candidateCdp
           Version = $candidateVersion
           WebSocket = $candidateWebSocket
         }
@@ -440,7 +446,7 @@ try {
     return $false
   } 90 'runtime-assigned WebView2 CDP endpoint did not appear'
   [int]$devToolsPort = $devToolsObservation.Port
-  $desktopCdp = "http://127.0.0.1:$devToolsPort"
+  $desktopCdp = $devToolsObservation.Endpoint
   $devToolsVersion = $devToolsObservation.Version
   $devToolsWebSocket = $devToolsObservation.WebSocket
   $devToolsListeners = @($devToolsObservation.Listener)
@@ -674,13 +680,17 @@ try {
       Copy-Item -Destination $diagnosticsRoot -Force
     $webviewProcesses = @(Get-IsolatedWebViewProcesses $webviewUserData)
     $diagnosticWebViewProcessIds = @($webviewProcesses | ForEach-Object { [int]$_.ProcessId })
+    $diagnosticOwnedLoopbackListeners = @(
+      Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
+        Where-Object {
+          $_.LocalAddress -in @('127.0.0.1', '::1') -and
+          $diagnosticWebViewProcessIds -contains [int]($_.OwningProcess)
+        }
+    )
     $diagnosticDevToolsListeners = @(
       if ($devToolsPort -gt 0) {
-        Get-NetTCPConnection -State Listen -LocalPort $devToolsPort -ErrorAction SilentlyContinue |
-          Where-Object {
-            $_.LocalAddress -eq '127.0.0.1' -and
-            $diagnosticWebViewProcessIds -contains [int]($_.OwningProcess)
-          }
+        $diagnosticOwnedLoopbackListeners |
+          Where-Object { [int]$_.LocalPort -eq $devToolsPort }
       }
     )
     [ordered]@{
@@ -689,6 +699,16 @@ try {
       selected_loopback_devtools_port = $devToolsPort
       webview_process_scope = 'isolated-user-data-folder'
       webview_process_count = $webviewProcesses.Count
+      owned_loopback_listener_count = $diagnosticOwnedLoopbackListeners.Count
+      owned_loopback_address_families = @(
+        $diagnosticOwnedLoopbackListeners |
+          ForEach-Object { if ($_.LocalAddress -eq '::1') { 'ipv6' } else { 'ipv4' } } |
+          Sort-Object -Unique
+      )
+      remote_debugging_switch_process_count = @(
+        $webviewProcesses |
+          Where-Object { [string]$_.CommandLine -match '(?:^|\s)--remote-debugging-port(?:=|\s)' }
+      ).Count
       devtools_listener_owned_by_isolated_webview = $diagnosticDevToolsListeners.Count -eq 1
       host_has_main_window = if ($null -ne $desktopProcess) { $desktopProcess.MainWindowHandle -ne [IntPtr]::Zero } else { $false }
     } | ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $diagnosticsRoot 'webview-startup-summary.json') -Encoding utf8NoBOM

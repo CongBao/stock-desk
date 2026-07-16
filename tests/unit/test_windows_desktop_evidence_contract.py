@@ -102,7 +102,7 @@ def test_native_harness_installs_candidate_checks_shell_icons_and_exits_cleanly(
     assert "Get-AvailableLoopbackPort" not in source
     assert "--remote-debugging-address" not in source
     assert "Test-RemoteDebuggingPortCommandLine" not in source
-    assert "LocalAddress -eq '127.0.0.1'" in source
+    assert "$_.LocalAddress -in @('127.0.0.1', '::1')" in source
     assert (
         "isolated WebView2 process does not own exactly one runtime-assigned CDP listener"
         in source
@@ -249,6 +249,19 @@ def test_webview_cdp_uses_runtime_assigned_owned_loopback_listener() -> None:
     endpoint_probe = source.index("$candidateCdp/json/version", owned_listeners)
     cdp_export = source.index("$env:STOCK_DESK_DESKTOP_CDP = $desktopCdp")
     assert launch < isolated_processes < owned_listeners < endpoint_probe < cdp_export
+
+
+def test_webview_cdp_accepts_only_ipv4_or_ipv6_loopback_and_keeps_diagnostics() -> None:
+    source = (ROOT / "scripts" / "capture_windows_desktop_evidence.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    assert "$_.LocalAddress -in @('127.0.0.1', '::1')" in source
+    assert '"http://[::1]:$candidatePort"' in source
+    assert "$candidateWebSocket.Host.Trim('[', ']')" in source
+    assert "$desktopCdp = $devToolsObservation.Endpoint" in source
+    assert "owned_loopback_listener_count" in source
+    assert "remote_debugging_switch_process_count" in source
 
 
 def test_packaged_webview_matrix_is_explicitly_equivalent_not_real_os_dpi() -> None:
