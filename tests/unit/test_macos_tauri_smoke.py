@@ -489,10 +489,42 @@ def test_macos_tauri_smoke_loads_bound_operator_evidence(tmp_path: Path) -> None
     )
 
 
+def test_macos_tauri_smoke_allows_operator_evidence_after_fifteen_seconds(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    path = tmp_path / "operator-evidence.json"
+    expected = {
+        "driver": "codex-computer-use",
+        "source_sha": "a" * 40,
+        "session_nonce": "nonce",
+        "app_identifier": macos_tauri_smoke.APP_IDENTIFIER,
+        "actions": [
+            {"action": action, "observed": True}
+            for action in macos_tauri_smoke.EXPECTED_ACTIONS
+        ],
+    }
+    ticks = iter((0.0, 15.0, 16.0))
+    monkeypatch.setattr(macos_tauri_smoke.time, "monotonic", lambda: next(ticks))
+
+    def write_delayed_evidence(_seconds: float) -> None:
+        path.write_text(json.dumps(expected), encoding="utf-8")
+
+    monkeypatch.setattr(macos_tauri_smoke.time, "sleep", write_delayed_evidence)
+
+    assert (
+        macos_tauri_smoke._load_operator_evidence(
+            path,
+            source_sha="a" * 40,
+            session_nonce="nonce",
+        )
+        == expected
+    )
+
+
 def test_macos_tauri_smoke_rejects_missing_operator_evidence(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    ticks = iter((0.0, 11.0))
+    ticks = iter((0.0, 61.0))
     monkeypatch.setattr(macos_tauri_smoke.time, "monotonic", lambda: next(ticks))
 
     with pytest.raises(

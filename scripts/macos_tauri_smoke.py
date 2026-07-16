@@ -37,6 +37,7 @@ EXPECTED_ACTIONS = (
     "titlebar-close-reopen-dialog",
     "confirm-exit-dialog",
 )
+OPERATOR_EVIDENCE_WAIT_SECONDS = 60
 
 
 class MacOSTauriSmokeError(RuntimeError):
@@ -416,7 +417,7 @@ def _finish_interaction_observer(
 def _load_operator_evidence(
     path: Path, *, source_sha: str, session_nonce: str
 ) -> dict[str, Any]:
-    deadline = time.monotonic() + 10
+    deadline = time.monotonic() + OPERATOR_EVIDENCE_WAIT_SECONDS
     while time.monotonic() < deadline and not path.is_file():
         time.sleep(0.1)
     if not path.is_file():
