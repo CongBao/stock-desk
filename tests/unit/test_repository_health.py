@@ -1358,6 +1358,29 @@ def test_release_has_no_native_installer_build_entrypoint() -> None:
     assert "scripts.build_windows_desktop" not in workflow_text
 
 
+def test_formal_release_recomputes_proved_nsis_semantics_before_copying() -> None:
+    workflow = _load_github_actions_yaml(_read(".github/workflows/release.yml"))
+    steps = workflow["jobs"]["formal-inputs"]["steps"]
+    names = [step.get("name") for step in steps]
+    verify_name = "Verify exact proof, candidate attestation, and candidate bytes"
+    close_name = "Close canonical SignPath input without rebuilding payload"
+    assert names.index(verify_name) < names.index(close_name)
+    verify_command = str(
+        next(step for step in steps if step.get("name") == verify_name)["run"]
+    )
+    for required in (
+        "scripts/main_validation_proof.py verify-candidate-nsis",
+        '--proof "$PROOF_ROOT/proof.json"',
+        '--candidate-root "$CANDIDATE_ROOT"',
+        '--attestation "$CANDIDATE_ROOT/manifest-binding.json"',
+    ):
+        assert required in verify_command
+    close_command = str(
+        next(step for step in steps if step.get("name") == close_name)["run"]
+    )
+    assert 'cp "$CANDIDATE_ROOT/${installers[0]}"' in close_command
+
+
 def test_release_cannot_invoke_inno_or_legacy_platform_builds() -> None:
     workflow_text = _read(".github/workflows/release.yml")
     for forbidden in ("Inno Setup", ".dmg", "macos-", "build-installers"):

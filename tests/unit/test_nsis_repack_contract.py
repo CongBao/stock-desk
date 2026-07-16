@@ -2801,6 +2801,53 @@ def test_provenance_summary_is_exact_canonical_and_cross_binds_every_identity(
             _verify_provenance(candidate, installer, kit_sha256, **{field: bad})
 
 
+def test_provenance_summary_public_normalizer_is_exact_and_canonical(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    candidate, installer, kit_sha256 = _provenance_fixture(tmp_path, monkeypatch)
+    summary = _verify_provenance(candidate, installer, kit_sha256)
+
+    assert contract.normalize_provenance_summary(summary) == summary
+
+    mutations: list[dict[str, object]] = []
+    extra = copy.deepcopy(summary)
+    extra["unexpected"] = True
+    mutations.append(extra)
+    extra_kit = copy.deepcopy(summary)
+    cast(dict[str, object], extra_kit["kit"])["unexpected"] = True
+    mutations.append(extra_kit)
+    extra_receipt = copy.deepcopy(summary)
+    cast(list[dict[str, object]], extra_receipt["receipts"])[0]["unexpected"] = True
+    mutations.append(extra_receipt)
+    extra_installer = copy.deepcopy(summary)
+    cast(dict[str, object], extra_installer["installer"])["unexpected"] = True
+    mutations.append(extra_installer)
+    reversed_receipts = copy.deepcopy(summary)
+    cast(list[object], reversed_receipts["receipts"]).reverse()
+    mutations.append(reversed_receipts)
+    wrong_slot = copy.deepcopy(summary)
+    cast(list[dict[str, object]], wrong_slot["receipts"])[0]["repack_slot"] = "b"
+    mutations.append(wrong_slot)
+    wrong_kit_path = copy.deepcopy(summary)
+    cast(dict[str, object], wrong_kit_path["kit"])["path"] = "other.json"
+    mutations.append(wrong_kit_path)
+    wrong_transformation = copy.deepcopy(summary)
+    cast(dict[str, object], wrong_transformation["transformation"])["after_token"] = (
+        "__TAURI_BUNDLE_TYPE_VAR_UNK"
+    )
+    mutations.append(wrong_transformation)
+    wrong_outer_digest = copy.deepcopy(summary)
+    wrong_outer_digest["transformation_sha256"] = "0" * 64
+    mutations.append(wrong_outer_digest)
+    boolean_epoch = copy.deepcopy(summary)
+    boolean_epoch["source_epoch"] = True
+    mutations.append(boolean_epoch)
+
+    for malformed in mutations:
+        with pytest.raises(contract.NsisRepackContractError):
+            contract.normalize_provenance_summary(malformed)
+
+
 @pytest.mark.parametrize("case", ["swapped", "duplicate", "missing", "extra"])
 def test_provenance_set_rejects_swapped_or_duplicate_receipt_slots(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str

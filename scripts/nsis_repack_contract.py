@@ -2835,6 +2835,146 @@ def verify_receipt(
         return normalized
 
 
+def normalize_provenance_summary(value: object) -> dict[str, object]:
+    """Strictly normalize the public eleven-field NSIS provenance summary."""
+
+    summary = _object(value, "NSIS provenance summary")
+    _exact_fields(summary, set(PROVENANCE_SUMMARY_FIELDS), "NSIS provenance summary")
+    schema_version = _positive_int(
+        summary["schema_version"], "NSIS provenance summary.schema_version"
+    )
+    if schema_version != SCHEMA_VERSION:
+        raise NsisRepackContractError("provenance summary schema_version must be 1")
+    if summary["artifact"] != PROVENANCE_SET_ARTIFACT:
+        raise NsisRepackContractError(
+            f"provenance summary artifact must be {PROVENANCE_SET_ARTIFACT}"
+        )
+
+    kit = _object(summary["kit"], "NSIS provenance summary.kit")
+    _exact_fields(kit, {"path", "sha256", "kit_sha256"}, "NSIS provenance summary.kit")
+    kit_path = _relative_path(kit["path"], "NSIS provenance summary.kit.path")
+    expected_kit_path = f"nsis-repack-kit/{KIT_MANIFEST}"
+    if kit_path != expected_kit_path:
+        raise NsisRepackContractError(
+            f"provenance summary kit path must be {expected_kit_path}"
+        )
+
+    transformation_raw = _object(
+        summary["transformation"], "NSIS provenance summary.transformation"
+    )
+    after_raw = _object(
+        transformation_raw.get("after"),
+        "NSIS provenance summary.transformation.after",
+    )
+    transformation = _normalize_transformation(
+        transformation_raw,
+        [
+            {
+                "path": TAURI_TRANSFORMED_PAYLOAD_PATH,
+                "role": "payload",
+                "size": after_raw.get("size"),
+                "sha256": after_raw.get("sha256"),
+            }
+        ],
+    )
+    transformation_sha256 = _digest(
+        summary["transformation_sha256"],
+        "NSIS provenance summary.transformation_sha256",
+    )
+    if transformation_sha256 != transformation["transformation_sha256"]:
+        raise NsisRepackContractError(
+            "provenance summary transformation digest is inconsistent"
+        )
+
+    receipt_values = _array(summary["receipts"], "NSIS provenance summary.receipts")
+    expected_receipts = (
+        ("a", "nsis-repack-verification/repack-a-receipt.json"),
+        ("b", "nsis-repack-verification/repack-b-receipt.json"),
+    )
+    if len(receipt_values) != len(expected_receipts):
+        raise NsisRepackContractError(
+            "provenance summary must contain exactly two receipts"
+        )
+    receipts: list[dict[str, object]] = []
+    for index, ((expected_slot, expected_path), raw) in enumerate(
+        zip(expected_receipts, receipt_values, strict=True)
+    ):
+        receipt = _object(raw, f"NSIS provenance summary.receipts[{index}]")
+        _exact_fields(
+            receipt,
+            {"path", "repack_slot", "sha256", "receipt_sha256"},
+            f"NSIS provenance summary.receipts[{index}]",
+        )
+        path = _relative_path(
+            receipt["path"], f"NSIS provenance summary.receipts[{index}].path"
+        )
+        slot = _repack_slot(
+            receipt["repack_slot"],
+            f"NSIS provenance summary.receipts[{index}].repack_slot",
+        )
+        if slot != expected_slot or path != expected_path:
+            raise NsisRepackContractError(
+                "provenance summary receipt order, slot, or path is invalid"
+            )
+        receipts.append(
+            {
+                "path": path,
+                "repack_slot": slot,
+                "sha256": _digest(
+                    receipt["sha256"],
+                    f"NSIS provenance summary.receipts[{index}].sha256",
+                ),
+                "receipt_sha256": _digest(
+                    receipt["receipt_sha256"],
+                    f"NSIS provenance summary.receipts[{index}].receipt_sha256",
+                ),
+            }
+        )
+
+    installer = _object(summary["installer"], "NSIS provenance summary.installer")
+    _exact_fields(installer, {"size", "sha256"}, "NSIS provenance summary.installer")
+    installer_size = _positive_int(
+        installer["size"], "NSIS provenance summary.installer.size"
+    )
+    if installer_size > MAX_FILE_BYTES:
+        raise NsisRepackContractError(
+            "provenance summary installer exceeds the file-size limit"
+        )
+
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "artifact": PROVENANCE_SET_ARTIFACT,
+        "source_ref": _source_ref(
+            summary["source_ref"], "NSIS provenance summary.source_ref"
+        ),
+        "source_sha": _git_id(
+            summary["source_sha"], "NSIS provenance summary.source_sha"
+        ),
+        "source_tree": _git_id(
+            summary["source_tree"], "NSIS provenance summary.source_tree"
+        ),
+        "source_epoch": _source_epoch(
+            summary["source_epoch"], "NSIS provenance summary.source_epoch"
+        ),
+        "kit": {
+            "path": kit_path,
+            "sha256": _digest(kit["sha256"], "NSIS provenance summary.kit.sha256"),
+            "kit_sha256": _digest(
+                kit["kit_sha256"], "NSIS provenance summary.kit.kit_sha256"
+            ),
+        },
+        "transformation": transformation,
+        "transformation_sha256": transformation_sha256,
+        "receipts": receipts,
+        "installer": {
+            "size": installer_size,
+            "sha256": _digest(
+                installer["sha256"], "NSIS provenance summary.installer.sha256"
+            ),
+        },
+    }
+
+
 def verify_provenance_set(
     *,
     candidate_root: Path,
