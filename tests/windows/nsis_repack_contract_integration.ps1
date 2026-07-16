@@ -1,6 +1,7 @@
 param(
   [Parameter(Mandatory = $true)] [string]$Kit,
   [Parameter(Mandatory = $true)] [string]$EvidenceRoot,
+  [Parameter(Mandatory = $true)] [string]$DiagnosticsRoot,
   [Parameter(Mandatory = $true)] [ValidateSet('push', 'pull_request')] [string]$SourceEvent,
   [Parameter(Mandatory = $true)] [ValidatePattern('^(refs/heads/main|refs/pull/[1-9][0-9]*/merge)$')] [string]$SourceRef,
   [Parameter(Mandatory = $true)] [ValidatePattern('^[0-9a-f]{40}$')] [string]$SourceSha,
@@ -33,6 +34,9 @@ if ($env:GITHUB_ACTIONS -ceq 'true') {
 }
 foreach ($output in @($Kit, $EvidenceRoot)) {
   if (Test-Path -LiteralPath $output) { throw "NSIS repack output must not already exist: $output" }
+}
+if (-not (Test-Path -LiteralPath $DiagnosticsRoot -PathType Container)) {
+  throw 'NSIS repack diagnostics root must already exist'
 }
 
 function New-PrivateDirectory([string]$Path) {
@@ -167,7 +171,24 @@ $expectedHash = Get-Sha256 $original
 $firstHash = Get-Sha256 $first
 $secondHash = Get-Sha256 $second
 if ($firstHash -cne $secondHash) { throw 'independent fixed NSIS repacks are not byte-identical' }
-if ($firstHash -cne $expectedHash) { throw 'fixed NSIS repack does not reproduce the original unsigned candidate' }
+if ($firstHash -cne $expectedHash) {
+  $mismatchRoot = Join-Path $captureRoot 'mismatch-diagnostic'
+  $expectedTree = Join-Path $mismatchRoot 'expected'
+  $actualTree = Join-Path $mismatchRoot 'actual'
+  New-PrivateDirectory $mismatchRoot
+  New-PrivateDirectory $expectedTree
+  New-PrivateDirectory $actualTree
+  & 7z x -bd -y "-o$expectedTree" $original | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw 'original NSIS mismatch extraction failed' }
+  & 7z x -bd -y "-o$actualTree" $first | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw 'repacked NSIS mismatch extraction failed' }
+  & $python scripts\nsis_mismatch_diagnostics.py `
+    --expected $original --actual $first `
+    --expected-tree $expectedTree --actual-tree $actualTree `
+    --output (Join-Path $DiagnosticsRoot 'nsis-mismatch-diagnostic.json')
+  if ($LASTEXITCODE -ne 0) { throw 'bounded NSIS mismatch diagnostic failed' }
+  throw 'fixed NSIS repack does not reproduce the original unsigned candidate'
+}
 & $python scripts\nsis_repack_producer.py verify-live-inputs --work-root $captureRoot @sourceArguments | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'producer live-input recheck failed' }
 Confirm-PrivateDirectory $privateRepack

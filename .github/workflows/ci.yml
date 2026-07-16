@@ -325,6 +325,7 @@ jobs:
           & tests\windows\nsis_repack_contract_integration.ps1 `
             -Kit (Join-Path $artifact 'nsis-repack-kit') `
             -EvidenceRoot (Join-Path $artifact 'nsis-repack-verification') `
+            -DiagnosticsRoot (Join-Path $root 'diagnostics') `
             -SourceEvent $env:GITHUB_EVENT_NAME `
             -SourceRef $env:GITHUB_REF `
             -SourceSha $env:SOURCE_SHA -SourceTree (git rev-parse 'HEAD^{tree}') `
