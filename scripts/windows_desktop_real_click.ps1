@@ -123,6 +123,7 @@ $process = [Diagnostics.Process]::GetProcessById($ExpectedProcessId)
 $evidenceProcess = [Diagnostics.Process]::GetProcessById($EvidenceProcessId)
 $actions = [Collections.Generic.List[object]]::new()
 $progressPath = Join-Path (Split-Path -Parent $OutputPath) 'packaged-real-click-progress.json'
+$script:lastMouseProbe = $null
 
 function Wait-Until([scriptblock]$Condition, [int]$Seconds, [string]$Failure) {
   $deadline = [DateTimeOffset]::UtcNow.AddSeconds($Seconds)
@@ -339,6 +340,7 @@ function Write-ProgressEvidence {
     process_id = $ExpectedProcessId
     main_window_handle = $WindowHandle
     capture_nonce = $CaptureNonce
+    last_mouse_probe = $script:lastMouseProbe
     actions = $actions
   }
   $temporaryProgress = "$progressPath.$([Guid]::NewGuid().ToString('N')).tmp"
@@ -387,18 +389,52 @@ function Invoke-PhysicalPointClick {
 
   $absoluteX = [int][Math]::Round((($centerX - $virtualX) * 65535.0) / ($virtualWidth - 1))
   $absoluteY = [int][Math]::Round((($centerY - $virtualY) * 65535.0) / ($virtualHeight - 1))
-  $moveSent = Send-MouseInput -Dx $absoluteX -Dy $absoluteY -Flags (
-    [StockDeskRealMouseInput]::MOUSEEVENTF_MOVE -bor
-    [StockDeskRealMouseInput]::MOUSEEVENTF_ABSOLUTE -bor
-    [StockDeskRealMouseInput]::MOUSEEVENTF_VIRTUALDESK
-  )
-  Start-Sleep -Milliseconds 150
+  $moveAttempts = 0
+  $moveEventsSent = 0
   $cursor = [StockDeskRealMouseInput+POINT]::new()
-  if (-not [StockDeskRealMouseInput]::GetCursorPos([ref]$cursor)) {
-    throw 'Windows could not verify the physical mouse position'
+  $cursorTargetConfirmed = $false
+  while ($moveAttempts -lt 4) {
+    $moveSent = Send-MouseInput -Dx $absoluteX -Dy $absoluteY -Flags (
+      [StockDeskRealMouseInput]::MOUSEEVENTF_MOVE -bor
+      [StockDeskRealMouseInput]::MOUSEEVENTF_ABSOLUTE -bor
+      [StockDeskRealMouseInput]::MOUSEEVENTF_VIRTUALDESK
+    )
+    $moveAttempts += 1
+    $moveEventsSent += $moveSent
+    Start-Sleep -Milliseconds 150
+    if (-not [StockDeskRealMouseInput]::GetCursorPos([ref]$cursor)) {
+      throw 'Windows could not verify the physical mouse position'
+    }
+    $cursorErrorX = $CenterX - $cursor.X
+    $cursorErrorY = $CenterY - $cursor.Y
+    $script:lastMouseProbe = [ordered]@{
+      action = $Action
+      attempt = $moveAttempts
+      expected = [ordered]@{ x=$CenterX; y=$CenterY }
+      actual = [ordered]@{ x=$cursor.X; y=$cursor.Y }
+      error = [ordered]@{ x=$cursorErrorX; y=$cursorErrorY }
+      normalized = [ordered]@{ x=$absoluteX; y=$absoluteY }
+    }
+    Write-ProgressEvidence
+    if ([Math]::Abs($cursorErrorX) -le 2 -and [Math]::Abs($cursorErrorY) -le 2) {
+      $cursorTargetConfirmed = $true
+      break
+    }
+    $absoluteX = [int][Math]::Round(
+      [Math]::Min(
+        65535,
+        [Math]::Max(0, $absoluteX + (($cursorErrorX * 65535.0) / ($virtualWidth - 1)))
+      )
+    )
+    $absoluteY = [int][Math]::Round(
+      [Math]::Min(
+        65535,
+        [Math]::Max(0, $absoluteY + (($cursorErrorY * 65535.0) / ($virtualHeight - 1)))
+      )
+    )
   }
-  if ([Math]::Abs($cursor.X - $CenterX) -gt 2 -or [Math]::Abs($cursor.Y - $CenterY) -gt 2) {
-    throw 'cursor did not reach the exact physical click target'
+  if (-not $cursorTargetConfirmed) {
+    throw "cursor did not reach the exact physical click target: expected=$CenterX,$CenterY actual=$($cursor.X),$($cursor.Y) attempts=$moveAttempts"
   }
   $targetWindowAfterMove = [StockDeskRealMouseInput]::WindowFromPoint($cursor)
   $targetRootAfterMove = if ($targetWindowAfterMove -eq [IntPtr]::Zero) {
@@ -425,9 +461,12 @@ function Invoke-PhysicalPointClick {
       foreground_hwnd_after_click = $foregroundAfterClick
       foreground_hwnd = $foregroundAfterClick
       cursor_after_move = [ordered]@{ x=$cursor.X; y=$cursor.Y }
+      cursor_target_confirmed = $true
+      mouse_move_attempts = $moveAttempts
+      mouse_button_events = 2
       point_window_hwnd_after_move = [long]$targetWindowAfterMove
       point_host_root_hwnd_after_move = [long]$targetRootAfterMove
-      send_input_returned = [int]($moveSent + $downSent + $upSent)
+      send_input_returned = [int]($moveEventsSent + $downSent + $upSent)
       captured_at_utc = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
   }
   foreach ($key in $TargetEvidence.Keys) {

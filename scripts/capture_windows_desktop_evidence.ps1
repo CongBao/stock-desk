@@ -672,7 +672,11 @@ try {
     $action = $realClickActions[$index]
     if (
       $action.action -cne $expectedRealClickActions[$index] -or
-      $action.send_input_returned -ne 3
+      $action.mouse_move_attempts -lt 1 -or
+      $action.mouse_move_attempts -gt 4 -or
+      $action.mouse_button_events -ne 2 -or
+      $action.cursor_target_confirmed -ne $true -or
+      $action.send_input_returned -ne ($action.mouse_move_attempts + 2)
     ) { throw 'real OS mouse click action sequence is invalid' }
   }
   foreach ($index in @(0, 2)) {

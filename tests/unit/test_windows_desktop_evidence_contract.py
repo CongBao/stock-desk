@@ -551,7 +551,9 @@ def test_real_mouse_driver_focuses_and_paces_each_physical_click() -> None:
         )
     ]
     assert "Send-MouseInput" in click_helper
-    assert "$moveSent" in click_helper
+    assert "$moveAttempts" in click_helper
+    assert "$moveAttempts -lt 4" in click_helper
+    assert "$moveEventsSent" in click_helper
     assert "$downSent" in click_helper
     assert "$upSent" in click_helper
     assert click_helper.count("Start-Sleep -Milliseconds") >= 2
@@ -560,7 +562,14 @@ def test_real_mouse_driver_focuses_and_paces_each_physical_click() -> None:
         "real click target became obscured after foreground preparation" in click_helper
     )
     assert (
-        "send_input_returned = [int]($moveSent + $downSent + $upSent)" in click_helper
+        "send_input_returned = [int]($moveEventsSent + $downSent + $upSent)"
+        in click_helper
+    )
+    assert "mouse_move_attempts = $moveAttempts" in click_helper
+    assert "mouse_button_events = 2" in click_helper
+    assert "cursor_target_confirmed = $true" in click_helper
+    assert click_helper.index("Write-ProgressEvidence") < click_helper.index(
+        "cursor did not reach the exact physical click target"
     )
 
     native_helper = driver[
@@ -587,6 +596,14 @@ def test_real_mouse_driver_preserves_partial_failure_evidence() -> None:
     assert action_record < driver.index("Write-ProgressEvidence", action_record)
     assert "Remove-Item -LiteralPath $progressPath" in driver
     assert "-Filter 'packaged-*'" in capture
+    for contract in (
+        "$action.mouse_move_attempts -lt 1",
+        "$action.mouse_move_attempts -gt 4",
+        "$action.mouse_button_events -ne 2",
+        "$action.cursor_target_confirmed -ne $true",
+        "$action.send_input_returned -ne ($action.mouse_move_attempts + 2)",
+    ):
+        assert contract in capture
 
 
 def test_packaged_backtest_matrix_uses_webview_host_ipc_and_new_worker_resume() -> None:
