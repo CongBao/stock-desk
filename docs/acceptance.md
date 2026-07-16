@@ -32,3 +32,13 @@ planned assertion and every incomplete manual artifact, including
 not claim the post-publication audit is complete.
 
 Non-goals are enforced by an inventory over public OpenAPI names, API and worker identifiers, Web UI claims, and public documentation claims. The inventory covers the absence of broker/live ordering, shared-capital portfolios, realtime/tick/Level-2 feeds, target prices or specific allocations, a second native product UI, accounts/RBAC/subscriptions/billing, dynamic screening, condition-selection/color-K formulas, drawing/multi-stock/multi-period linkage, and AI formula generation/explanation/repair. A minimal installed launcher that opens the browser workstation is permitted.
+
+## 桌面交互验收 / Desktop interaction acceptance
+
+| 环境 / Environment | 必须证明 / Required proof | 不得替代 / Must not replace |
+| --- | --- | --- |
+| macOS 本地真实 Tauri `.app` | PR 合并前完成四次系统级鼠标点击，独立观察退出框状态和宿主退出 / Four system-level clicks and independently observed dialog/exit state before merge | Windows 安装与权限验收 / Windows installation and permission acceptance |
+| GitHub Hosted Windows | UIA `InvokePattern` + CDP/Playwright 四步自动化；`input_method = windows-uia-and-cdp-automation`；`physical_mouse_click = false` | 物理点击、真实 Win10 普通用户或 UAC 安全桌面 / Physical input, a real Win10 standard user, or UAC secure desktop |
+| 真实 Win10 普通用户 / Real Win10 standard user | 安装、首次向导、默认指数、普通 A 股、退出、卸载 / Install, onboarding, default index, ordinary A-share, exit, and uninstall | 不可由 Hosted 或 macOS 自动化替代 / Cannot be replaced by Hosted or macOS automation |
+
+所有需要域名命名空间的桌面身份使用用户持有域名对应的 `com.baozijuan.stockdesk`。All domain-namespaced desktop identities use the user-owned domain as `com.baozijuan.stockdesk`.

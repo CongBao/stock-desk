@@ -47,6 +47,14 @@ runner inventory、environment 和分支策略查询使用 protected environment
 
 PR 与 main 还运行 GitHub-hosted Windows browser/UIA observer integrations：它验证同 PID 多 HWND、轮询间瞬态窗口和 unhook fail-closed；同时编译并启动受控 WinForms/UIA 窗口，真实执行 reviewed driver 的目标 HWND DPI、Tab→contact-sheet 原始焦点区域像素变化→Enter→实际 Esc 关闭对话框路径，并保留全部 raw runtime probe 文件。exact-SHA artifact 在 main 上进入 validation proof。快速集成只验证观察器/driver 本身，不替代真实安装旅程；完整 VM 仍负责真实应用的全尺寸/全 DPI Tab/Esc 矩阵。
 
+### 桌面交互测试职责
+
+PR 合并前，开发机必须启动当前精确提交构建出的真实 Tauri `.app`，由 macOS 本地真实 Tauri 交互门禁完成原生标题栏关闭、取消、再次关闭和确认退出四次系统级鼠标点击，并由独立 Accessibility 观察器确认状态序列与进程退出。
+
+GitHub Hosted Windows 验证只负责 Windows 专属自动化：原生窗口使用 UI Automation `InvokePattern`，WebView 控件使用隔离 CDP 会话中的 Playwright locator。证据固定记录 `input_method = windows-uia-and-cdp-automation` 和 `physical_mouse_click = false`。Hosted Runner 不提供物理点击证明，也不是 Win10/Win11 桌面 SKU、真实普通用户或 UAC 安全桌面；它不能替代本地点击门禁。
+
+替换公开 Release 前，还必须由真实 Win10 普通用户完成安装、首次向导、默认上证指数、普通 A 股、退出和卸载验收。该实机结果不能由 macOS 或 Hosted 自动化代替。需要反向域名命名空间的应用身份统一使用用户持有域名对应的 `com.baozijuan.stockdesk`。
+
 ### 优化前基线
 
 已记录基线包括：Python 全量关键路径最高约 `41m32s`、Chromium E2E 约 `16m54s`、本地连续候选约 `85m`；2026-07-11 最终 main run 的完整 CI 为 `32m48s`。v1.1 目标是普通 PR 10–20 分钟、高风险 PR 20–30 分钟、main 25–35 分钟。部署耗时台账保存成功、失败、取消、超时、跳过和已废弃的原始样本，并以不可变哈希链与外部连续性 seal 防止删尾；ledger 与 seal 通过可恢复事务日志提交，半提交只能继续既定追加，不能改写既有历史。报告始终输出六个固定分类，零样本分类也明确标记为 `incomplete`。P50/P95 只能根据至少连续五次可比运行公布；可比身份由分类、workflow、完整 ref 和完整环境基线共同确定，任一字段漂移都会开始新的连续段并在报告中保留全部漂移段。重试 attempt 仍保留为原始证据，但同一 run id 只能计作一次连续运行；每个 run 的 queue/wall 代表值分别取该 run 所有 attempt 的最大值，再计算 nearest-rank，因此快速重试不能压低百分位。不足五次必须标为 `incomplete`，不能通过重试、跳过门禁或删除失败/已废弃样本美化。
@@ -96,6 +104,14 @@ For bootstrap, an administrator can save the current environment API response, r
 After the entry guard, a GitHub-hosted preflight revalidates the successful main proof, attestations, candidate manifest, and digests. Eleven parallel Linux jobs use fixed-audience OIDC to call an external short-lived Windows VM broker. The protected environment independently pins the endpoint, eleven-case snapshot policy, and adapter digests. Broker and guest outputs are signed lifecycle receipts plus raw bytes only; they cannot declare acceptance. A GitHub-hosted aggregate with no OIDC permission verifies controller, guest/UIA, workflow, key, policy, adapter, exact-SHA artifact, signature, and all eleven first-attempt identities before deriving `acceptance-receipt.json`. A separate attestation job has OIDC permission but no protected environment or broker secret. A missing broker, secret, environment approval, or case fails closed. See `docs/windows-installed-evidence.md` for the complete trust boundary and matrix.
 
 PR and `main` also run GitHub-hosted Windows browser/UIA observer integrations. They verify multiple HWNDs under one PID, between-poll transient windows, and unhook fail-closed behavior. The job also compiles and launches a controlled WinForms/UIA window and executes the reviewed driver's target-HWND DPI plus real Tab → raw contact-sheet focus-region pixel delta → Enter → real Esc dialog-close runtime path, preserving every raw probe file. Its exact-SHA artifact enters the main validation proof. This fast integration verifies the observer/driver only; it does not replace the real VM's full-size, full-DPI installed-application Tab/Esc matrix.
+
+### Desktop interaction responsibilities
+
+Before merge, the development Mac must launch the real Tauri `.app` built from the exact commit. The local gate performs four system-level mouse clicks—native title-bar close, Cancel, native close again, and Confirm Exit—while an independent Accessibility observer verifies the state sequence and process exit.
+
+GitHub Hosted Windows covers Windows-specific automation only. Native controls use UI Automation `InvokePattern`; WebView controls use Playwright locators through the isolated CDP session. Evidence records `input_method = windows-uia-and-cdp-automation` and `physical_mouse_click = false`. Hosted Runner does not provide physical-input evidence and is not a Win10/Win11 desktop SKU, a real standard-user machine, or UAC secure-desktop proof. It cannot replace the local click gate.
+
+Before replacing the public release, a real Windows 10 standard user must accept installation, onboarding, the default Shanghai Composite selection, an ordinary A-share selection, exit, and uninstall. Neither macOS nor Hosted automation can replace that result. Domain-namespaced application identities use the user-owned domain as `com.baozijuan.stockdesk`.
 
 ### Pre-optimization baseline
 
