@@ -15,6 +15,66 @@ from scripts import macos_tauri_smoke
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def _operator_action_records() -> list[dict[str, object]]:
+    return [
+        {
+            "action": action,
+            "observed": True,
+            "input_method": "sky.click",
+            "physical_mouse_click": True,
+            "surface": surface,
+            "role": role,
+            "label": label,
+            "element_index": element_index,
+        }
+        for action, surface, role, label, element_index in (
+            (
+                "titlebar-close-open-dialog",
+                "native-titlebar",
+                "close button",
+                "close",
+                15,
+            ),
+            (
+                "cancel-exit-dialog",
+                "embedded-webview",
+                "button",
+                "取消",
+                31,
+            ),
+            (
+                "titlebar-close-reopen-dialog",
+                "native-titlebar",
+                "close button",
+                "close",
+                15,
+            ),
+            (
+                "confirm-exit-dialog",
+                "embedded-webview",
+                "button",
+                "退出应用",
+                32,
+            ),
+        )
+    ]
+
+
+def _bound_operator_evidence() -> dict[str, object]:
+    return {
+        "schema_version": "stock-desk-macos-computer-use-v1",
+        "driver": "codex-computer-use",
+        "input_method": "codex-computer-use-sky-click",
+        "physical_mouse_click": True,
+        "source_sha": "a" * 40,
+        "source_tree": "b" * 40,
+        "session_nonce": "nonce",
+        "app_identifier": macos_tauri_smoke.APP_IDENTIFIER,
+        "host_pid": 42,
+        "actions": _operator_action_records(),
+    }
+
+
 def test_macos_tauri_smoke_runs_a_real_native_window_and_cleans_up() -> None:
     script_path = ROOT / "scripts" / "macos_tauri_smoke.py"
     capability_path = ROOT / "src-tauri" / "capabilities" / "macos-smoke.json"
@@ -68,13 +128,17 @@ def test_macos_tauri_smoke_runs_a_real_native_window_and_cleans_up() -> None:
         '"macos-tauri-host-recovery-smoke"',
         '"external_browser_opened": False',
         '"operator-evidence.json"',
-        '"driver": "codex-computer-use"',
+        'evidence.get("driver") != "codex-computer-use"',
         'evidence.get("source_sha") != source_sha',
+        'evidence.get("source_tree") != source_tree',
+        'evidence.get("host_pid") != host_pid',
+        'evidence.get("physical_mouse_click") is not True',
+        "_require_clean_source_identity(source_identity)",
         '"titlebar-close-open-dialog"',
         '"cancel-exit-dialog"',
         '"titlebar-close-reopen-dialog"',
         '"confirm-exit-dialog"',
-        '"native_click_sequence_confirmed": True',
+        '"native_click_sequence_confirmed": native_click_sequence_confirmed',
         '"independent_state_sequence_confirmed": True',
         '"process_exit_observed": True',
         '"LaunchServices.framework/Support/lsregister"',
@@ -129,6 +193,54 @@ def test_macos_tauri_smoke_rejects_a_locked_console_before_build(
             output=tmp_path / "test-results" / "macos-tauri-smoke",
             timeout_seconds=300,
         )
+
+
+def test_macos_tauri_smoke_requires_a_clean_bound_source_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = {
+        ("rev-parse", "HEAD"): "a" * 40,
+        ("rev-parse", "HEAD^{tree}"): "b" * 40,
+        ("status", "--porcelain=v1"): "",
+    }
+    monkeypatch.setattr(
+        macos_tauri_smoke,
+        "_git",
+        lambda *arguments: values[arguments],
+    )
+
+    identity = macos_tauri_smoke._require_clean_source_identity()
+
+    assert identity == ("a" * 40, "b" * 40)
+    assert macos_tauri_smoke._require_clean_source_identity(identity) == identity
+
+
+def test_macos_tauri_smoke_rejects_dirty_or_changed_source_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = {
+        ("rev-parse", "HEAD"): "a" * 40,
+        ("rev-parse", "HEAD^{tree}"): "b" * 40,
+        ("status", "--porcelain=v1"): " M web/src/app/App.tsx",
+    }
+    monkeypatch.setattr(
+        macos_tauri_smoke,
+        "_git",
+        lambda *arguments: values[arguments],
+    )
+
+    with pytest.raises(
+        macos_tauri_smoke.MacOSTauriSmokeError,
+        match="clean source tree",
+    ):
+        macos_tauri_smoke._require_clean_source_identity()
+
+    values[("status", "--porcelain=v1")] = ""
+    with pytest.raises(
+        macos_tauri_smoke.MacOSTauriSmokeError,
+        match="changed during",
+    ):
+        macos_tauri_smoke._require_clean_source_identity(("c" * 40, "b" * 40))
 
 
 def test_macos_tauri_smoke_cleanup_removes_target_after_other_cleanup_errors(
@@ -467,23 +579,16 @@ def test_macos_tauri_smoke_rejects_observer_finish_timeout() -> None:
 
 def test_macos_tauri_smoke_loads_bound_operator_evidence(tmp_path: Path) -> None:
     path = tmp_path / "operator-evidence.json"
-    expected = {
-        "driver": "codex-computer-use",
-        "source_sha": "a" * 40,
-        "session_nonce": "nonce",
-        "app_identifier": macos_tauri_smoke.APP_IDENTIFIER,
-        "actions": [
-            {"action": action, "observed": True}
-            for action in macos_tauri_smoke.EXPECTED_ACTIONS
-        ],
-    }
+    expected = _bound_operator_evidence()
     path.write_text(json.dumps(expected), encoding="utf-8")
 
     assert (
         macos_tauri_smoke._load_operator_evidence(
             path,
             source_sha="a" * 40,
+            source_tree="b" * 40,
             session_nonce="nonce",
+            host_pid=42,
         )
         == expected
     )
@@ -493,16 +598,7 @@ def test_macos_tauri_smoke_allows_operator_evidence_after_fifteen_seconds(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     path = tmp_path / "operator-evidence.json"
-    expected = {
-        "driver": "codex-computer-use",
-        "source_sha": "a" * 40,
-        "session_nonce": "nonce",
-        "app_identifier": macos_tauri_smoke.APP_IDENTIFIER,
-        "actions": [
-            {"action": action, "observed": True}
-            for action in macos_tauri_smoke.EXPECTED_ACTIONS
-        ],
-    }
+    expected = _bound_operator_evidence()
     ticks = iter((0.0, 15.0, 16.0))
     monkeypatch.setattr(macos_tauri_smoke.time, "monotonic", lambda: next(ticks))
 
@@ -515,7 +611,9 @@ def test_macos_tauri_smoke_allows_operator_evidence_after_fifteen_seconds(
         macos_tauri_smoke._load_operator_evidence(
             path,
             source_sha="a" * 40,
+            source_tree="b" * 40,
             session_nonce="nonce",
+            host_pid=42,
         )
         == expected
     )
@@ -534,7 +632,9 @@ def test_macos_tauri_smoke_rejects_missing_operator_evidence(
         macos_tauri_smoke._load_operator_evidence(
             tmp_path / "missing.json",
             source_sha="a" * 40,
+            source_tree="b" * 40,
             session_nonce="nonce",
+            host_pid=42,
         )
 
 
@@ -549,7 +649,9 @@ def test_macos_tauri_smoke_rejects_invalid_operator_json(tmp_path: Path) -> None
         macos_tauri_smoke._load_operator_evidence(
             path,
             source_sha="a" * 40,
+            source_tree="b" * 40,
             session_nonce="nonce",
+            host_pid=42,
         )
 
 
@@ -566,12 +668,28 @@ def test_macos_tauri_smoke_rejects_invalid_operator_json(tmp_path: Path) -> None
             "source SHA",
         ),
         (
+            lambda evidence: {**evidence, "source_tree": "c" * 40},
+            "source tree",
+        ),
+        (
             lambda evidence: {**evidence, "session_nonce": "other"},
             "session nonce",
         ),
         (
             lambda evidence: {**evidence, "app_identifier": "other"},
             "app identifier",
+        ),
+        (
+            lambda evidence: {**evidence, "host_pid": 41},
+            "host PID",
+        ),
+        (
+            lambda evidence: {**evidence, "physical_mouse_click": False},
+            "physical mouse clicks",
+        ),
+        (
+            lambda evidence: {**evidence, "input_method": "other"},
+            "input method",
         ),
         (
             lambda evidence: {**evidence, "actions": []},
@@ -587,6 +705,16 @@ def test_macos_tauri_smoke_rejects_invalid_operator_json(tmp_path: Path) -> None
             },
             "observe every action",
         ),
+        (
+            lambda evidence: {
+                **evidence,
+                "actions": [
+                    {**evidence["actions"][0], "input_method": "keyboard"},
+                    *evidence["actions"][1:],
+                ],
+            },
+            "click record",
+        ),
     ],
 )
 def test_macos_tauri_smoke_rejects_unbound_operator_evidence(
@@ -594,16 +722,7 @@ def test_macos_tauri_smoke_rejects_unbound_operator_evidence(
     mutator: Callable[[dict[str, Any]], object],
     message: str,
 ) -> None:
-    base = {
-        "driver": "codex-computer-use",
-        "source_sha": "a" * 40,
-        "session_nonce": "nonce",
-        "app_identifier": macos_tauri_smoke.APP_IDENTIFIER,
-        "actions": [
-            {"action": action, "observed": True}
-            for action in macos_tauri_smoke.EXPECTED_ACTIONS
-        ],
-    }
+    base = _bound_operator_evidence()
     invalid = mutator(base)
     path = tmp_path / "operator-evidence.json"
     path.write_text(json.dumps(invalid), encoding="utf-8")
@@ -612,7 +731,9 @@ def test_macos_tauri_smoke_rejects_unbound_operator_evidence(
         macos_tauri_smoke._load_operator_evidence(
             path,
             source_sha="a" * 40,
+            source_tree="b" * 40,
             session_nonce="nonce",
+            host_pid=42,
         )
 
 
@@ -674,7 +795,7 @@ def test_macos_tauri_smoke_runs_disposable_app_orchestration(
         "driver": "independent-state-observer",
         "actions": observer_actions,
     }
-    operator_evidence = {"actions": observer_actions}
+    operator_evidence = _bound_operator_evidence()
     window = {
         "title": "Stock Desk",
         "on_screen": True,
@@ -684,6 +805,7 @@ def test_macos_tauri_smoke_runs_disposable_app_orchestration(
         "window_number": 81,
     }
     observer = SimpleNamespace(poll=lambda: 0)
+    git_calls: list[tuple[str, ...]] = []
 
     monkeypatch.setattr(macos_tauri_smoke.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(
@@ -694,15 +816,16 @@ def test_macos_tauri_smoke_runs_disposable_app_orchestration(
     monkeypatch.setattr(macos_tauri_smoke.platform, "machine", lambda: "arm64")
     monkeypatch.setattr(macos_tauri_smoke.shutil, "which", lambda _name: "/bin/tool")
     monkeypatch.setattr(macos_tauri_smoke, "_screen_is_locked", lambda: False)
-    monkeypatch.setattr(
-        macos_tauri_smoke,
-        "_git",
-        lambda *arguments: {
+
+    def fake_git(*arguments: str) -> str:
+        git_calls.append(arguments)
+        return {
             ("rev-parse", "HEAD"): "a" * 40,
             ("rev-parse", "HEAD^{tree}"): "b" * 40,
             ("status", "--porcelain=v1"): "",
-        }[arguments],
-    )
+        }[arguments]
+
+    monkeypatch.setattr(macos_tauri_smoke, "_git", fake_git)
     monkeypatch.setattr(
         macos_tauri_smoke.tempfile,
         "mkdtemp",
@@ -756,6 +879,7 @@ def test_macos_tauri_smoke_runs_disposable_app_orchestration(
         assert evidence["host_pid"] == 4242
         assert evidence["native_click_sequence_confirmed"] is True
         assert evidence["process_cleanup_confirmed"] is True
+        assert git_calls.count(("status", "--porcelain=v1")) == 3
         assert (output / "macos-tauri-smoke.json").is_file()
         assert not temporary_root.exists()
     finally:

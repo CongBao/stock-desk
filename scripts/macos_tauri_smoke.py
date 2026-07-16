@@ -37,6 +37,12 @@ EXPECTED_ACTIONS = (
     "titlebar-close-reopen-dialog",
     "confirm-exit-dialog",
 )
+EXPECTED_OPERATOR_TARGETS = (
+    ("native-titlebar", "close button", "close"),
+    ("embedded-webview", "button", "取消"),
+    ("native-titlebar", "close button", "close"),
+    ("embedded-webview", "button", "退出应用"),
+)
 OPERATOR_EVIDENCE_WAIT_SECONDS = 60
 
 
@@ -53,6 +59,27 @@ def _git(*arguments: str) -> str:
         text=True,
     )
     return result.stdout.strip()
+
+
+def _require_clean_source_identity(
+    expected: tuple[str, str] | None = None,
+) -> tuple[str, str]:
+    source_sha = _git("rev-parse", "HEAD")
+    source_tree = _git("rev-parse", "HEAD^{tree}")
+    if any(
+        len(value) != 40
+        or not all(character in "0123456789abcdefABCDEF" for character in value)
+        for value in (source_sha, source_tree)
+    ):
+        raise MacOSTauriSmokeError("macOS smoke source identity is invalid")
+    if _git("status", "--porcelain=v1"):
+        raise MacOSTauriSmokeError("macOS smoke requires a clean source tree")
+    identity = (source_sha.lower(), source_tree.lower())
+    if expected is not None and identity != expected:
+        raise MacOSTauriSmokeError(
+            "macOS smoke source identity changed during the gate"
+        )
+    return identity
 
 
 def _screen_is_locked() -> bool:
@@ -415,7 +442,12 @@ def _finish_interaction_observer(
 
 
 def _load_operator_evidence(
-    path: Path, *, source_sha: str, session_nonce: str
+    path: Path,
+    *,
+    source_sha: str,
+    source_tree: str,
+    session_nonce: str,
+    host_pid: int,
 ) -> dict[str, Any]:
     deadline = time.monotonic() + OPERATOR_EVIDENCE_WAIT_SECONDS
     while time.monotonic() < deadline and not path.is_file():
@@ -428,14 +460,39 @@ def _load_operator_evidence(
         raise MacOSTauriSmokeError("operator evidence is not valid JSON") from error
     if not isinstance(evidence, dict):
         raise MacOSTauriSmokeError("operator evidence is not an object")
+    if set(evidence) != {
+        "schema_version",
+        "driver",
+        "input_method",
+        "physical_mouse_click",
+        "source_sha",
+        "source_tree",
+        "session_nonce",
+        "app_identifier",
+        "host_pid",
+        "actions",
+    }:
+        raise MacOSTauriSmokeError("operator evidence shape is invalid")
+    if evidence.get("schema_version") != "stock-desk-macos-computer-use-v1":
+        raise MacOSTauriSmokeError("operator evidence schema version is invalid")
     if evidence.get("driver") != "codex-computer-use":
         raise MacOSTauriSmokeError("operator evidence did not use Codex Computer Use")
+    if evidence.get("input_method") != "codex-computer-use-sky-click":
+        raise MacOSTauriSmokeError("operator evidence input method is invalid")
+    if evidence.get("physical_mouse_click") is not True:
+        raise MacOSTauriSmokeError(
+            "operator evidence did not record physical mouse clicks"
+        )
     if evidence.get("source_sha") != source_sha:
         raise MacOSTauriSmokeError("operator evidence source SHA does not match")
+    if evidence.get("source_tree") != source_tree:
+        raise MacOSTauriSmokeError("operator evidence source tree does not match")
     if evidence.get("session_nonce") != session_nonce:
         raise MacOSTauriSmokeError("operator evidence session nonce does not match")
     if evidence.get("app_identifier") != APP_IDENTIFIER:
         raise MacOSTauriSmokeError("operator evidence app identifier does not match")
+    if evidence.get("host_pid") != host_pid:
+        raise MacOSTauriSmokeError("operator evidence host PID does not match")
     actions = evidence.get("actions")
     if (
         not isinstance(actions, list)
@@ -446,6 +503,32 @@ def _load_operator_evidence(
         raise MacOSTauriSmokeError("operator evidence action sequence is invalid")
     if any(action.get("observed") is not True for action in actions):
         raise MacOSTauriSmokeError("operator evidence did not observe every action")
+    for action, (surface, role, label) in zip(
+        actions, EXPECTED_OPERATOR_TARGETS, strict=True
+    ):
+        if set(action) != {
+            "action",
+            "observed",
+            "input_method",
+            "physical_mouse_click",
+            "surface",
+            "role",
+            "label",
+            "element_index",
+        }:
+            raise MacOSTauriSmokeError("operator evidence action shape is invalid")
+        element_index = action.get("element_index")
+        if (
+            action.get("input_method") != "sky.click"
+            or action.get("physical_mouse_click") is not True
+            or action.get("surface") != surface
+            or action.get("role") != role
+            or action.get("label") != label
+            or isinstance(element_index, bool)
+            or not isinstance(element_index, int)
+            or element_index < 0
+        ):
+            raise MacOSTauriSmokeError("operator evidence click record is invalid")
     return evidence
 
 
@@ -561,9 +644,8 @@ def run_smoke(*, output: Path, timeout_seconds: int) -> dict[str, Any]:
         )
 
     output = _validated_output(output)
-    source_sha = _git("rev-parse", "HEAD")
-    source_tree = _git("rev-parse", "HEAD^{tree}")
-    dirty_paths = _git("status", "--porcelain=v1").splitlines()
+    source_sha, source_tree = _require_clean_source_identity()
+    source_identity = (source_sha, source_tree)
     session_nonce = uuid.uuid4().hex
     temporary_root = Path(tempfile.mkdtemp(prefix="stock-desk-tauri-macos-smoke-"))
     cargo_target = temporary_root / "cargo-target"
@@ -634,6 +716,7 @@ def run_smoke(*, output: Path, timeout_seconds: int) -> dict[str, Any]:
             raise MacOSTauriSmokeError(
                 f"macOS debug app build failed; inspect {build_log_path}"
             )
+        _require_clean_source_identity(source_identity)
         subprocess.run(
             ("open", "-n", os.fspath(app_path)),
             check=True,
@@ -664,9 +747,12 @@ def run_smoke(*, output: Path, timeout_seconds: int) -> dict[str, Any]:
         ready = {
             "schema_version": "stock-desk-macos-click-ready-v1",
             "source_sha": source_sha,
+            "source_tree": source_tree,
             "session_nonce": session_nonce,
             "app_identifier": APP_IDENTIFIER,
             "host_pid": host_pid,
+            "input_method": "codex-computer-use-sky-click",
+            "physical_mouse_click": True,
             "expected_actions": list(EXPECTED_ACTIONS),
             "operator_evidence_path": os.fspath(operator_evidence_path),
             "independent_observer": "ready",
@@ -684,7 +770,9 @@ def run_smoke(*, output: Path, timeout_seconds: int) -> dict[str, Any]:
         operator_evidence = _load_operator_evidence(
             operator_evidence_path,
             source_sha=source_sha,
+            source_tree=source_tree,
             session_nonce=session_nonce,
+            host_pid=host_pid,
         )
     finally:
         active_error = sys.exception()
@@ -709,25 +797,35 @@ def run_smoke(*, output: Path, timeout_seconds: int) -> dict[str, Any]:
         raise MacOSTauriSmokeError("macOS native interaction evidence is incomplete")
     if temporary_root.exists() or _host_pid(host_path) is not None:
         raise MacOSTauriSmokeError("macOS smoke left a process or Cargo target behind")
+    _require_clean_source_identity(source_identity)
 
     screenshot_sha256 = hashlib.sha256(screenshot_path.read_bytes()).hexdigest()
+    native_click_sequence_confirmed = bool(
+        operator_evidence["physical_mouse_click"] is True
+        and all(
+            action["input_method"] == "sky.click"
+            and action["physical_mouse_click"] is True
+            for action in operator_evidence["actions"]
+        )
+    )
     evidence: dict[str, Any] = {
         "schema_version": "stock-desk-macos-tauri-smoke-v3",
         "scope": "macos-tauri-host-recovery-smoke",
         "source_sha": source_sha,
         "source_tree": source_tree,
-        "source_dirty": bool(dirty_paths),
+        "source_dirty": False,
         "host_pid": host_pid,
         "host_binary": os.fspath(host_path),
         "native_window": window,
         "embedded_webview": "WKWebView",
         "external_browser_opened": False,
-        "driver": "codex-computer-use",
-        "input_method": "codex-computer-use-native-ui-click",
+        "driver": operator_evidence["driver"],
+        "input_method": operator_evidence["input_method"],
+        "physical_mouse_click": operator_evidence["physical_mouse_click"],
         "actions": observer_evidence["actions"],
         "operator_actions": operator_evidence["actions"],
         "interaction_observer": observer_evidence,
-        "native_click_sequence_confirmed": True,
+        "native_click_sequence_confirmed": native_click_sequence_confirmed,
         "independent_state_sequence_confirmed": True,
         "process_exit_observed": True,
         "screenshot": {
