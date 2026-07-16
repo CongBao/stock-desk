@@ -56,21 +56,6 @@ function Wait-Until([scriptblock]$Condition, [int]$Seconds, [string]$Failure) {
   throw $Failure
 }
 
-function Get-AvailableLoopbackPort() {
-  $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
-  try {
-    $listener.Start()
-    $endpoint = [Net.IPEndPoint]$listener.LocalEndpoint
-    [int]$selectedPort = $endpoint.Port
-    if ($selectedPort -lt 1 -or $selectedPort -gt 65535) {
-      throw 'selected loopback DevTools port is invalid'
-    }
-    return $selectedPort
-  } finally {
-    $listener.Stop()
-  }
-}
-
 function Wait-CaptureMarker([string]$Path, [Diagnostics.Process]$NodeProcess, [string]$Nonce, [int]$Seconds, [string]$Failure) {
   return Wait-Until {
     $NodeProcess.Refresh()
@@ -394,11 +379,11 @@ try {
   if (-not (Test-Path -LiteralPath $packagedBacktestSeed -PathType Leaf)) {
     throw 'packaged backtest evidence seed manifest is missing'
   }
-  # Select the loopback port immediately before launch so evidence does not
-  # depend on a runtime-generated browser discovery file and minimizes the
-  # interval between releasing the selection socket and WebView2 binding it.
-  $devToolsPort = Get-AvailableLoopbackPort
-  $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=$devToolsPort --remote-debugging-address=127.0.0.1"
+  # Let WebView2 atomically allocate the loopback debugging port. Fixed-port
+  # preselection has a TOCTOU gap and newer WebView2 guidance recommends port
+  # zero. Discovery below accepts only a listener owned by this isolated UDF's
+  # WebView2 processes and then validates the browser endpoint identity.
+  $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=0"
   New-ItemProperty -LiteralPath $webviewArgsPolicy -Name $webviewAppName -PropertyType String -Value $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS | Out-Null
   $webviewArgsPolicySet = $true
   New-ItemProperty -LiteralPath $webviewDataPolicy -Name $webviewAppName -PropertyType String -Value $webviewUserData | Out-Null
@@ -412,13 +397,6 @@ try {
   $desktopProcess = [Diagnostics.Process]::Start($desktopStart)
   if ($null -eq $desktopProcess) { throw 'packaged Tauri host could not be started' }
   Wait-Until { $desktopProcess.Refresh(); if ($desktopProcess.HasExited) { throw 'packaged Tauri host exited during startup' }; if ($desktopProcess.MainWindowHandle -ne [IntPtr]::Zero) { $desktopProcess.MainWindowHandle } } 90 'packaged Tauri main window did not appear' | Out-Null
-  $desktopCdp = "http://127.0.0.1:$devToolsPort"
-  $devToolsVersion = Wait-Until { try { Invoke-RestMethod -Uri "$desktopCdp/json/version" -TimeoutSec 2 } catch { $false } } 90 'packaged WebView2 CDP endpoint did not appear'
-  try { $devToolsWebSocket = [Uri]$devToolsVersion.webSocketDebuggerUrl }
-  catch { throw 'packaged WebView2 published an invalid CDP browser endpoint' }
-  if ($devToolsWebSocket.Scheme -ne 'ws' -or $devToolsWebSocket.Host -ne '127.0.0.1' -or $devToolsWebSocket.Port -ne $devToolsPort -or $devToolsWebSocket.AbsolutePath -notmatch '^/devtools/browser/[A-Za-z0-9-]+$') {
-    throw 'packaged WebView2 CDP endpoint does not match the isolated browser identity'
-  }
   $isolatedWebViews = @(
     Wait-Until {
       $processes = @(Get-IsolatedWebViewProcesses $webviewUserData)
@@ -427,21 +405,47 @@ try {
     } 90 'isolated packaged WebView2 process is missing'
   )
   $isolatedWebViewProcessIds = @($isolatedWebViews | ForEach-Object { [int]$_.ProcessId })
-  $devToolsListeners = @(
-    Wait-Until {
-      $listeners = @(
-        Get-NetTCPConnection -State Listen -LocalPort $devToolsPort -ErrorAction SilentlyContinue |
-          Where-Object {
-            $_.LocalAddress -eq '127.0.0.1' -and
-            $isolatedWebViewProcessIds -contains [int]($_.OwningProcess)
-          }
-      )
-      if ($listeners.Count -eq 1) { return $listeners[0] }
-      return $false
-    } 30 'isolated WebView2 process does not own the selected CDP listener'
-  )
+  $devToolsObservation = Wait-Until {
+    $ownedLoopbackListeners = @(
+      Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
+        Where-Object {
+          $_.LocalAddress -eq '127.0.0.1' -and
+          $isolatedWebViewProcessIds -contains [int]($_.OwningProcess)
+        }
+    )
+    foreach ($candidateListener in $ownedLoopbackListeners) {
+      [int]$candidatePort = $candidateListener.LocalPort
+      if ($candidatePort -lt 1 -or $candidatePort -gt 65535) { continue }
+      $candidateCdp = "http://127.0.0.1:$candidatePort"
+      try {
+        $candidateVersion = Invoke-RestMethod -Uri "$candidateCdp/json/version" -TimeoutSec 2
+        $candidateWebSocket = [Uri]$candidateVersion.webSocketDebuggerUrl
+      } catch {
+        continue
+      }
+      if (
+        $candidateWebSocket.Scheme -eq 'ws' -and
+        $candidateWebSocket.Host -eq '127.0.0.1' -and
+        $candidateWebSocket.Port -eq $candidatePort -and
+        $candidateWebSocket.AbsolutePath -match '^/devtools/browser/[A-Za-z0-9-]+$'
+      ) {
+        return [pscustomobject]@{
+          Port = $candidatePort
+          Listener = $candidateListener
+          Version = $candidateVersion
+          WebSocket = $candidateWebSocket
+        }
+      }
+    }
+    return $false
+  } 90 'runtime-assigned WebView2 CDP endpoint did not appear'
+  [int]$devToolsPort = $devToolsObservation.Port
+  $desktopCdp = "http://127.0.0.1:$devToolsPort"
+  $devToolsVersion = $devToolsObservation.Version
+  $devToolsWebSocket = $devToolsObservation.WebSocket
+  $devToolsListeners = @($devToolsObservation.Listener)
   if ($devToolsListeners.Count -ne 1) {
-    throw 'isolated WebView2 process does not own exactly one selected CDP listener'
+    throw 'isolated WebView2 process does not own exactly one runtime-assigned CDP listener'
   }
   $installedSidecarPath = Join-Path $installRoot 'stock-desk-sidecar.exe'
   $sidecar = Wait-Until { @(Get-InstalledHostSidecarProcesses $desktopProcess.Id $installedSidecarPath) | Select-Object -First 1 } 60 'packaged Python sidecar did not remain running'
