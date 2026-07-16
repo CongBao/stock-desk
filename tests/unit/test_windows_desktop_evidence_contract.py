@@ -432,6 +432,30 @@ def test_installed_desktop_exit_uses_real_windows_mouse_input() -> None:
     )
 
 
+def test_real_mouse_driver_does_not_require_foreground_lock_ownership() -> None:
+    driver = (ROOT / "scripts" / "windows_desktop_real_click.ps1").read_text(
+        encoding="utf-8"
+    )
+    focus_helper = driver[
+        driver.index("function Focus-Window") : driver.index(
+            "function Invoke-PhysicalClick"
+        )
+    ]
+
+    # SetForegroundWindow is intentionally best-effort: Windows may reject a
+    # background PowerShell process under its foreground-lock policy. The
+    # authoritative click proof is exact UIA FromPoint hit testing, SendInput,
+    # and the observed dialog/process state transitions after each click.
+    assert "SetForegroundWindow" in focus_helper
+    assert "Wait-Until" not in focus_helper
+    assert "throw" not in focus_helper
+    assert "return $false" in focus_helper
+    assert "$focusPreparationSucceeded = Focus-Window" in driver
+    assert "focus_preparation_succeeded = $focusPreparationSucceeded" in driver
+    assert "foreground_hwnd_before_click" in driver
+    assert "foreground_hwnd_after_click" in driver
+
+
 def test_packaged_backtest_matrix_uses_webview_host_ipc_and_new_worker_resume() -> None:
     source = (ROOT / "scripts" / "windows_packaged_backtest_evidence.mjs").read_text(
         encoding="utf-8"

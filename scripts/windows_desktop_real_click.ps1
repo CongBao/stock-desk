@@ -180,12 +180,14 @@ function Get-ButtonAtPoint([Windows.Point]$Point) {
 
 function Focus-Window {
   [StockDeskRealMouseInput]::ShowWindow($hwnd, 5) | Out-Null
-  [StockDeskRealMouseInput]::SetForegroundWindow($hwnd) | Out-Null
-  Wait-Until {
-    if ([StockDeskRealMouseInput]::GetForegroundWindow() -eq $hwnd) { return $true }
+  for ($attempt = 1; $attempt -le 10; $attempt++) {
+    if ([StockDeskRealMouseInput]::GetForegroundWindow() -eq $hwnd) {
+      return $true
+    }
     [StockDeskRealMouseInput]::SetForegroundWindow($hwnd) | Out-Null
-    return $false
-  } 5 'installed Stock Desk could not become the foreground window' | Out-Null
+    Start-Sleep -Milliseconds 100
+  }
+  return $false
 }
 
 function Invoke-PhysicalClick {
@@ -193,7 +195,8 @@ function Invoke-PhysicalClick {
     [string]$Action,
     [System.Windows.Automation.AutomationElement]$Element
   )
-  Focus-Window
+  $foregroundBeforeClick = [long][StockDeskRealMouseInput]::GetForegroundWindow()
+  $focusPreparationSucceeded = Focus-Window
   $automationId = [string]$Element.Current.AutomationId
   $name = [string]$Element.Current.Name
   $controlType = [string]$Element.Current.ControlType.ProgrammaticName
@@ -243,6 +246,7 @@ function Invoke-PhysicalClick {
     $errorCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
     throw "Windows SendInput did not publish the exact mouse sequence: sent=$sent win32=$errorCode"
   }
+  $foregroundAfterClick = [long][StockDeskRealMouseInput]::GetForegroundWindow()
   $actions.Add([ordered]@{
       action = $Action
       automation_id = $automationId
@@ -252,7 +256,10 @@ function Invoke-PhysicalClick {
       bounding_rectangle = [ordered]@{ x=$rect.X; y=$rect.Y; width=$rect.Width; height=$rect.Height }
       center = [ordered]@{ x=$centerX; y=$centerY }
       from_point_runtime_id = $hitRuntimeId
-      foreground_hwnd = [long][StockDeskRealMouseInput]::GetForegroundWindow()
+      focus_preparation_succeeded = $focusPreparationSucceeded
+      foreground_hwnd_before_click = $foregroundBeforeClick
+      foreground_hwnd_after_click = $foregroundAfterClick
+      foreground_hwnd = $foregroundAfterClick
       send_input_returned = [int]$sent
       captured_at_utc = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
     })
