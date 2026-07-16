@@ -6,6 +6,7 @@ param(
   [Parameter(Mandatory = $true)] [string]$ExpectedInstaller,
   [Parameter(Mandatory = $true)] [string]$Kit,
   [Parameter(Mandatory = $true)] [string]$EvidenceRoot,
+  [Parameter(Mandatory = $true)] [ValidatePattern('^(refs/heads/main|refs/pull/[1-9][0-9]*/merge)$')] [string]$SourceRef,
   [Parameter(Mandatory = $true)] [ValidatePattern('^[0-9a-f]{40}$')] [string]$SourceSha,
   [Parameter(Mandatory = $true)] [ValidatePattern('^[0-9a-f]{40}$')] [string]$SourceTree,
   [Parameter(Mandatory = $true)] [ValidateRange(1, [long]::MaxValue)] [long]$SourceEpoch
@@ -209,7 +210,7 @@ $mainBinarySourceIdentityBefore = [ordered]@{
   size=(Get-Item -LiteralPath $mainBinarySource).Length
   sha256=(Get-Sha256 $mainBinarySource)
 }
-$patchedPayloadRelative = 'captured/main-binary-nss.exe'
+$patchedPayloadRelative = 'payload/main-binary-nss.exe'
 Copy-PrivateSnapshot `
   (Split-Path $mainBinarySource -Parent) `
   @((Split-Path $mainBinarySource -Leaf)) `
@@ -370,7 +371,8 @@ $plugins = @($pluginNames | ForEach-Object {
   [ordered]@{name=$_;path=$pluginPath;sha256=(Get-Sha256 (Join-Path $stage $pluginPath))}
 })
 $descriptor = [ordered]@{
-  schema_version=1;source_sha=$SourceSha;source_tree=$SourceTree;source_epoch=$SourceEpoch
+  schema_version=1;source_ref=$SourceRef;source_sha=$SourceSha;source_tree=$SourceTree;source_epoch=$SourceEpoch
+  transformation=$payloadPatch
   toolchain=[ordered]@{
     path='toolchain/makensis.exe';sha256=(Get-Sha256 $compiler)
     tauri_cli_version='2.11.4';nsis_version='3.11';nsis_tauri_utils_version='0.5.3';plugins=$plugins
@@ -389,13 +391,13 @@ Confirm-PrivateDirectory $captureRoot
 Confirm-PrivateDirectory $stage
 Confirm-PrivateDirectory $snapshots
 
-$createKitJson = @(& $python scripts\nsis_repack_contract.py create-kit --descriptor $descriptorPath --source-root $stage --output $Kit --expected-source-sha $SourceSha --expected-source-tree $SourceTree)
+$createKitJson = @(& $python scripts\nsis_repack_contract.py create-kit --descriptor $descriptorPath --source-root $stage --output $Kit --expected-source-ref $SourceRef --expected-source-sha $SourceSha --expected-source-tree $SourceTree --expected-source-epoch $SourceEpoch)
 if ($LASTEXITCODE -ne 0) { throw 'content-addressed NSIS repack kit creation failed' }
 try { $createKitResult = ($createKitJson -join "`n") | ConvertFrom-Json }
 catch { throw 'content-addressed NSIS repack kit returned invalid JSON' }
 $expectedKitSha = [string]$createKitResult.kit_sha256
 if ($expectedKitSha -cnotmatch '^[0-9a-f]{64}$') { throw 'content-addressed NSIS repack kit returned an invalid kit SHA-256' }
-& $python scripts\nsis_repack_contract.py verify-kit --kit $Kit --expected-source-sha $SourceSha --expected-source-tree $SourceTree --expected-kit-sha256 $expectedKitSha
+& $python scripts\nsis_repack_contract.py verify-kit --kit $Kit --expected-source-ref $SourceRef --expected-source-sha $SourceSha --expected-source-tree $SourceTree --expected-source-epoch $SourceEpoch --expected-kit-sha256 $expectedKitSha
 if ($LASTEXITCODE -ne 0) { throw 'NSIS repack kit verification failed' }
 
 $privateRepack = Join-Path $captureRoot 'repack'
@@ -406,19 +408,20 @@ $first = Join-Path $privateRepack 'a\stock-desk-unsigned-nsis.exe'
 $second = Join-Path $privateRepack 'b\stock-desk-unsigned-nsis.exe'
 $firstReceipt = Join-Path $EvidenceRoot 'repack-a-receipt.json'
 $secondReceipt = Join-Path $EvidenceRoot 'repack-b-receipt.json'
-& $python scripts\nsis_repack_contract.py repack --kit $Kit --output $first --receipt $firstReceipt --expected-source-sha $SourceSha --expected-source-tree $SourceTree --expected-kit-sha256 $expectedKitSha
+& $python scripts\nsis_repack_contract.py repack --kit $Kit --output $first --receipt $firstReceipt --repack-slot a --expected-source-ref $SourceRef --expected-source-sha $SourceSha --expected-source-tree $SourceTree --expected-source-epoch $SourceEpoch --expected-kit-sha256 $expectedKitSha
 if ($LASTEXITCODE -ne 0) { throw 'first fixed NSIS repack failed' }
-& $python scripts\nsis_repack_contract.py repack --kit $Kit --output $second --receipt $secondReceipt --expected-source-sha $SourceSha --expected-source-tree $SourceTree --expected-kit-sha256 $expectedKitSha
+& $python scripts\nsis_repack_contract.py repack --kit $Kit --output $second --receipt $secondReceipt --repack-slot b --expected-source-ref $SourceRef --expected-source-sha $SourceSha --expected-source-tree $SourceTree --expected-source-epoch $SourceEpoch --expected-kit-sha256 $expectedKitSha
 if ($LASTEXITCODE -ne 0) { throw 'second fixed NSIS repack failed' }
 
 $receiptPairs = @(
-  [PSCustomObject]@{ Receipt = $firstReceipt; Output = $first },
-  [PSCustomObject]@{ Receipt = $secondReceipt; Output = $second }
+  [PSCustomObject]@{ Receipt = $firstReceipt; Output = $first; Slot = 'a' },
+  [PSCustomObject]@{ Receipt = $secondReceipt; Output = $second; Slot = 'b' }
 )
 foreach ($pair in $receiptPairs) {
   & $python scripts\nsis_repack_contract.py verify-receipt `
     --receipt $pair.Receipt --kit $Kit --output $pair.Output `
-    --expected-source-sha $SourceSha --expected-source-tree $SourceTree `
+    --expected-repack-slot $pair.Slot --expected-source-ref $SourceRef `
+    --expected-source-sha $SourceSha --expected-source-tree $SourceTree --expected-source-epoch $SourceEpoch `
     --expected-kit-sha256 $expectedKitSha
   if ($LASTEXITCODE -ne 0) { throw "fixed NSIS repack receipt verification failed: $($pair.Receipt)" }
 }

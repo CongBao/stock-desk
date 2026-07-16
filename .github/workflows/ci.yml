@@ -346,6 +346,7 @@ jobs:
             -ExpectedInstaller $installers[0].FullName `
             -Kit (Join-Path $artifact 'nsis-repack-kit') `
             -EvidenceRoot (Join-Path $artifact 'nsis-repack-verification') `
+            -SourceRef $env:GITHUB_REF `
             -SourceSha $env:SOURCE_SHA -SourceTree (git rev-parse 'HEAD^{tree}') `
             -SourceEpoch ([long](git show -s --format=%ct HEAD))
           if ($LASTEXITCODE -ne 0) { throw 'fixed NSIS repack integration failed' }
@@ -733,8 +734,9 @@ jobs:
           $leftRepackEvidence = Join-Path $leftArtifact 'nsis-repack-verification'
           $leftKitManifest = Get-Content -LiteralPath (Join-Path $leftRepackKit 'nsis-repack-kit.json') -Raw | ConvertFrom-Json
           $leftKitSha = [string]$leftKitManifest.kit_sha256
+          $sourceEpoch = [long](git show -s --format=%ct HEAD)
           if ($leftKitSha -cnotmatch '^[0-9a-f]{64}$') { throw 'candidate A NSIS repack kit SHA-256 is invalid' }
-          uv run --frozen python scripts\nsis_repack_contract.py verify-kit --kit $leftRepackKit --expected-source-sha $env:SOURCE_SHA --expected-source-tree (git rev-parse 'HEAD^{tree}') --expected-kit-sha256 $leftKitSha
+          uv run --frozen python scripts\nsis_repack_contract.py verify-kit --kit $leftRepackKit --expected-source-ref $env:GITHUB_REF --expected-source-sha $env:SOURCE_SHA --expected-source-tree (git rev-parse 'HEAD^{tree}') --expected-source-epoch $sourceEpoch --expected-kit-sha256 $leftKitSha
           if ($LASTEXITCODE -ne 0) { throw 'candidate A NSIS repack kit is invalid' }
           $leftInstallerHash = (Get-FileHash -LiteralPath $left.Installer -Algorithm SHA256).Hash.ToLowerInvariant()
           $receiptRoot = Get-Item -LiteralPath $leftRepackEvidence -Force
@@ -750,7 +752,8 @@ jobs:
           foreach ($receiptName in $expectedReceiptNames) {
             $receiptPath = Join-Path $leftRepackEvidence $receiptName
             if (-not (Test-Path -LiteralPath $receiptPath -PathType Leaf)) { throw "candidate A is missing NSIS repack receipt: $receiptName" }
-            uv run --frozen python scripts\nsis_repack_contract.py verify-receipt --receipt $receiptPath --kit $leftRepackKit --output $left.Installer --expected-source-sha $env:SOURCE_SHA --expected-source-tree (git rev-parse 'HEAD^{tree}') --expected-kit-sha256 $leftKitSha
+            $receiptSlot = if ($receiptName -ceq 'repack-a-receipt.json') { 'a' } else { 'b' }
+            uv run --frozen python scripts\nsis_repack_contract.py verify-receipt --receipt $receiptPath --kit $leftRepackKit --output $left.Installer --expected-repack-slot $receiptSlot --expected-source-ref $env:GITHUB_REF --expected-source-sha $env:SOURCE_SHA --expected-source-tree (git rev-parse 'HEAD^{tree}') --expected-source-epoch $sourceEpoch --expected-kit-sha256 $leftKitSha
             if ($LASTEXITCODE -ne 0) { throw "candidate A NSIS repack receipt is invalid: $receiptName" }
           }
           $tauriConfig = Get-Content -LiteralPath 'src-tauri\tauri.conf.json' -Raw | ConvertFrom-Json

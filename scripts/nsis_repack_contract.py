@@ -40,12 +40,14 @@ from scripts.secure_artifact_snapshot import (
 
 KIT_ARTIFACT: Final = "stock-desk-nsis-repack-kit"
 RECEIPT_ARTIFACT: Final = "stock-desk-nsis-repack-receipt-v1"
+PROVENANCE_SET_ARTIFACT: Final = "stock-desk-nsis-repack-provenance-set-v1"
 KIT_MANIFEST: Final = "nsis-repack-kit.json"
 SCHEMA_VERSION: Final = 1
 MAX_JSON_BYTES: Final = 2 * 1024 * 1024
 MAX_FILE_BYTES: Final = 2 * 1024 * 1024 * 1024
 MAX_FILES: Final = 4096
 MAX_TAURI_HOST_BYTES: Final = MAX_FILE_BYTES
+MAX_SOURCE_EPOCH: Final = 2**63 - 1
 NSIS_DIAGNOSTIC_TAIL_BYTES: Final = 32 * 1024
 _NSIS_DIAGNOSTIC_MAX_LINES: Final = 40
 TOOLCHAIN_LOCK_PATH: Final = (
@@ -54,6 +56,7 @@ TOOLCHAIN_LOCK_PATH: Final = (
 
 _SHA: Final = re.compile(r"^[0-9a-f]{40}$")
 _DIGEST: Final = re.compile(r"^[0-9a-f]{64}$")
+_SOURCE_REF: Final = re.compile(r"^(?:refs/heads/main|refs/pull/[1-9][0-9]*/merge)$")
 _PLUGIN_NAME: Final = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,63}$")
 _ENV_NAME: Final = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
 _WINDOWS_ABSOLUTE: Final = re.compile(r"^(?:[A-Za-z]:|[/\\]{2})")
@@ -71,8 +74,15 @@ _OFFICIAL_ARGV: Final = (
     "installer.nsi",
 )
 _PRIVATE_WORK_PLACEHOLDER: Final = "@STOCK_DESK_PRIVATE_WORK@"
-_TAURI_BUNDLE_MARKER_UNKNOWN: Final = b"__TAURI_BUNDLE_TYPE_VAR_UNK"
-_TAURI_BUNDLE_MARKER_NSIS: Final = b"__TAURI_BUNDLE_TYPE_VAR_NSS"
+TAURI_TRANSFORMATION_ALGORITHM: Final = "tauri-bundle-type-unk-to-nss-v1"
+TAURI_SOURCE_TAG: Final = "tauri-cli-v2.11.4"
+TAURI_SOURCE_COMMIT: Final = "8909f221d1515955fc843808032bdc5d62209c96"
+TAURI_SOURCE_PATH: Final = "crates/tauri-bundler/src/bundle.rs"
+TAURI_TRANSFORMED_PAYLOAD_PATH: Final = "payload/main-binary-nss.exe"
+TAURI_BUNDLE_MARKER_UNKNOWN: Final = b"__TAURI_BUNDLE_TYPE_VAR_UNK"
+TAURI_BUNDLE_MARKER_NSIS: Final = b"__TAURI_BUNDLE_TYPE_VAR_NSS"
+_TAURI_BUNDLE_MARKER_UNKNOWN: Final = TAURI_BUNDLE_MARKER_UNKNOWN
+_TAURI_BUNDLE_MARKER_NSIS: Final = TAURI_BUNDLE_MARKER_NSIS
 _ALLOWED_ENVIRONMENT: Final = frozenset(
     {"SOURCE_DATE_EPOCH", "LANG", "LC_ALL", "TZ", "TEMP", "TMP"}
 )
@@ -186,6 +196,12 @@ def _canonical_json(value: object) -> bytes:
     ).encode("utf-8")
 
 
+def _transformation_digest(transformation: Mapping[str, object]) -> str:
+    unsigned = dict(transformation)
+    unsigned.pop("transformation_sha256", None)
+    return hashlib.sha256(_canonical_json(unsigned)).hexdigest()
+
+
 def _read_json(path: Path, field: str) -> object:
     payload = _read_regular_file(path, field, limit=MAX_JSON_BYTES)
     return _parse_json(payload, field)
@@ -279,12 +295,35 @@ def _git_id(value: object, field: str) -> str:
     return text
 
 
+def _source_ref(value: object, field: str) -> str:
+    text = _text(value, field, limit=128)
+    if _SOURCE_REF.fullmatch(text) is None:
+        raise NsisRepackContractError(
+            f"{field} must be refs/heads/main or a canonical refs/pull/N/merge"
+        )
+    return text
+
+
+def _repack_slot(value: object, field: str) -> str:
+    slot = _text(value, field, limit=1)
+    if slot not in {"a", "b"}:
+        raise NsisRepackContractError(f"{field} must be a or b")
+    return slot
+
+
 def _positive_int(value: object, field: str, *, allow_zero: bool = False) -> int:
     minimum = 0 if allow_zero else 1
     if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
         qualifier = "non-negative" if allow_zero else "positive"
         raise NsisRepackContractError(f"{field} must be a {qualifier} integer")
     return value
+
+
+def _source_epoch(value: object, field: str) -> int:
+    epoch = _positive_int(value, field)
+    if epoch > MAX_SOURCE_EPOCH:
+        raise NsisRepackContractError(f"{field} exceeds signed 64-bit range")
+    return epoch
 
 
 def _relative_path(value: object, field: str) -> str:
@@ -785,10 +824,10 @@ def _marker_scan(
                     if absolute + marker_length > previous_total:
                         if marker_name == "unknown":
                             unknown_count += 1
-                            if marker_offset < 0:
-                                marker_offset = absolute
                         else:
                             nsis_count += 1
+                        if marker_offset < 0:
+                            marker_offset = absolute
                     search_from = index + 1
             tail = window[-(marker_length - 1) :]
     return total, digest.hexdigest(), unknown_count, nsis_count, marker_offset
@@ -968,12 +1007,32 @@ def patch_tauri_bundle_payload(
             except OSError:
                 pass
 
-    return {
-        "algorithm": "tauri-bundle-type-unk-to-nss-v1",
+    result: dict[str, object] = {
+        "algorithm": TAURI_TRANSFORMATION_ALGORITHM,
+        "source": {
+            "tag": TAURI_SOURCE_TAG,
+            "commit": TAURI_SOURCE_COMMIT,
+            "path": TAURI_SOURCE_PATH,
+        },
+        "payload_path": portable_relative,
+        "before_token": TAURI_BUNDLE_MARKER_UNKNOWN.decode("ascii"),
+        "after_token": TAURI_BUNDLE_MARKER_NSIS.decode("ascii"),
         "marker_offset": marker_offset,
-        "before": {"size": before_size, "sha256": before_sha256},
-        "after": {"size": before_size, "sha256": patched_sha256},
+        "before": {
+            "size": before_size,
+            "sha256": before_sha256,
+            "before_token_count": 1,
+            "after_token_count": 0,
+        },
+        "after": {
+            "size": before_size,
+            "sha256": patched_sha256,
+            "before_token_count": 0,
+            "after_token_count": 1,
+        },
     }
+    result["transformation_sha256"] = _transformation_digest(result)
+    return result
 
 
 def _canonical_toolchain_tree(
@@ -1594,6 +1653,234 @@ def _normalize_normalization(
     }
 
 
+def _normalize_transformation_identity(value: object, field: str) -> dict[str, object]:
+    identity = _object(value, field)
+    _exact_fields(
+        identity,
+        {"size", "sha256", "before_token_count", "after_token_count"},
+        field,
+    )
+    size = _positive_int(identity["size"], f"{field}.size")
+    if size > MAX_TAURI_HOST_BYTES:
+        raise NsisRepackContractError(f"{field}.size exceeds the Tauri host limit")
+    return {
+        "size": size,
+        "sha256": _digest(identity["sha256"], f"{field}.sha256"),
+        "before_token_count": _positive_int(
+            identity["before_token_count"],
+            f"{field}.before_token_count",
+            allow_zero=True,
+        ),
+        "after_token_count": _positive_int(
+            identity["after_token_count"],
+            f"{field}.after_token_count",
+            allow_zero=True,
+        ),
+    }
+
+
+def _normalize_transformation(
+    value: object, files: Sequence[Mapping[str, object]]
+) -> dict[str, object]:
+    transformation = _object(value, "transformation")
+    _exact_fields(
+        transformation,
+        {
+            "algorithm",
+            "transformation_sha256",
+            "source",
+            "payload_path",
+            "before_token",
+            "after_token",
+            "marker_offset",
+            "before",
+            "after",
+        },
+        "transformation",
+    )
+    if transformation["algorithm"] != TAURI_TRANSFORMATION_ALGORITHM:
+        raise NsisRepackContractError(
+            "transformation.algorithm is not the fixed Tauri transformation"
+        )
+    source = _object(transformation["source"], "transformation.source")
+    _exact_fields(source, {"tag", "commit", "path"}, "transformation.source")
+    fixed_source = {
+        "tag": TAURI_SOURCE_TAG,
+        "commit": TAURI_SOURCE_COMMIT,
+        "path": TAURI_SOURCE_PATH,
+    }
+    if dict(source) != fixed_source:
+        raise NsisRepackContractError(
+            "transformation.source is not the fixed audited Tauri source"
+        )
+    payload_path = _relative_path(
+        transformation["payload_path"], "transformation.payload_path"
+    )
+    if payload_path != TAURI_TRANSFORMED_PAYLOAD_PATH:
+        raise NsisRepackContractError(
+            f"transformation.payload_path must be {TAURI_TRANSFORMED_PAYLOAD_PATH}"
+        )
+    before_token = _text(
+        transformation["before_token"], "transformation.before_token", limit=64
+    )
+    after_token = _text(
+        transformation["after_token"], "transformation.after_token", limit=64
+    )
+    if before_token != TAURI_BUNDLE_MARKER_UNKNOWN.decode("ascii"):
+        raise NsisRepackContractError("transformation.before_token is not fixed")
+    if after_token != TAURI_BUNDLE_MARKER_NSIS.decode("ascii"):
+        raise NsisRepackContractError("transformation.after_token is not fixed")
+    if len(before_token.encode("ascii")) != len(after_token.encode("ascii")):
+        raise NsisRepackContractError("transformation tokens must have equal length")
+    before = _normalize_transformation_identity(
+        transformation["before"], "transformation.before"
+    )
+    after = _normalize_transformation_identity(
+        transformation["after"], "transformation.after"
+    )
+    if before["size"] != after["size"]:
+        raise NsisRepackContractError("transformation must preserve payload size")
+    if (
+        before["before_token_count"] != 1
+        or before["after_token_count"] != 0
+        or after["before_token_count"] != 0
+        or after["after_token_count"] != 1
+    ):
+        raise NsisRepackContractError("transformation token counts are not reversible")
+    marker_offset = _positive_int(
+        transformation["marker_offset"],
+        "transformation.marker_offset",
+        allow_zero=True,
+    )
+    after_size = _positive_int(after["size"], "transformation.after.size")
+    if marker_offset + len(TAURI_BUNDLE_MARKER_NSIS) > after_size:
+        raise NsisRepackContractError("transformation.marker_offset is outside payload")
+    records = [
+        record
+        for record in files
+        if record["path"] == payload_path and record["role"] == "payload"
+    ]
+    if len(records) != 1:
+        raise NsisRepackContractError(
+            "transformation payload must be exactly one bound payload record"
+        )
+    if records[0]["size"] != after["size"] or records[0]["sha256"] != after["sha256"]:
+        raise NsisRepackContractError(
+            "transformation after identity is not bound by its payload record"
+        )
+    normalized: dict[str, object] = {
+        "algorithm": TAURI_TRANSFORMATION_ALGORITHM,
+        "source": fixed_source,
+        "payload_path": payload_path,
+        "before_token": before_token,
+        "after_token": after_token,
+        "marker_offset": marker_offset,
+        "before": before,
+        "after": after,
+    }
+    supplied_digest = _digest(
+        transformation["transformation_sha256"],
+        "transformation.transformation_sha256",
+    )
+    expected_digest = _transformation_digest(normalized)
+    if supplied_digest != expected_digest:
+        raise NsisRepackContractError(
+            "transformation_sha256 does not match canonical transformation"
+        )
+    normalized["transformation_sha256"] = supplied_digest
+    return normalized
+
+
+def _verify_transformation_payload(
+    content: Path, manifest: Mapping[str, object]
+) -> None:
+    transformation = _object(manifest["transformation"], "transformation")
+    payload = _safe_child(
+        content, str(transformation["payload_path"]), "transformation payload"
+    )
+    after = _object(transformation["after"], "transformation.after")
+    size, digest, unknown_count, nsis_count, marker_offset = _marker_scan(
+        payload, max_bytes=MAX_TAURI_HOST_BYTES
+    )
+    if (
+        size != after["size"]
+        or digest != after["sha256"]
+        or unknown_count != after["before_token_count"]
+        or nsis_count != after["after_token_count"]
+        or marker_offset != transformation["marker_offset"]
+    ):
+        raise NsisRepackContractError(
+            "transformation post payload identity or marker position does not match"
+        )
+    reconstructed = hashlib.sha256()
+    remaining = int(transformation["marker_offset"])
+    reconstructed_size = 0
+    reconstructed_tail = b""
+    reconstructed_unknown_count = 0
+    reconstructed_nsis_count = 0
+    reconstructed_marker_offset = -1
+
+    def consume_reconstructed(block: bytes) -> None:
+        nonlocal reconstructed_size
+        nonlocal reconstructed_tail
+        nonlocal reconstructed_unknown_count
+        nonlocal reconstructed_nsis_count
+        nonlocal reconstructed_marker_offset
+        previous_total = reconstructed_size
+        reconstructed.update(block)
+        reconstructed_size += len(block)
+        window = reconstructed_tail + block
+        window_base = previous_total - len(reconstructed_tail)
+        for marker, marker_name in (
+            (TAURI_BUNDLE_MARKER_UNKNOWN, "unknown"),
+            (TAURI_BUNDLE_MARKER_NSIS, "nsis"),
+        ):
+            search_from = 0
+            while True:
+                index = window.find(marker, search_from)
+                if index < 0:
+                    break
+                absolute = window_base + index
+                if absolute + len(marker) > previous_total:
+                    if marker_name == "unknown":
+                        reconstructed_unknown_count += 1
+                    else:
+                        reconstructed_nsis_count += 1
+                    if reconstructed_marker_offset < 0:
+                        reconstructed_marker_offset = absolute
+                search_from = index + 1
+        reconstructed_tail = window[-(len(TAURI_BUNDLE_MARKER_UNKNOWN) - 1) :]
+
+    with _open_regular_file(payload, "transformation payload") as stream:
+        while remaining:
+            block = stream.read(min(1024 * 1024, remaining))
+            if not block:
+                raise NsisRepackContractError(
+                    "transformation payload ended before marker"
+                )
+            consume_reconstructed(block)
+            remaining -= len(block)
+        marker = stream.read(len(TAURI_BUNDLE_MARKER_NSIS))
+        if marker != TAURI_BUNDLE_MARKER_NSIS:
+            raise NsisRepackContractError(
+                "transformation NSS marker is not at its offset"
+            )
+        consume_reconstructed(TAURI_BUNDLE_MARKER_UNKNOWN)
+        while block := stream.read(1024 * 1024):
+            consume_reconstructed(block)
+    before = _object(transformation["before"], "transformation.before")
+    if (
+        reconstructed_size != before["size"]
+        or reconstructed.hexdigest() != before["sha256"]
+        or reconstructed_unknown_count != before["before_token_count"]
+        or reconstructed_nsis_count != before["after_token_count"]
+        or reconstructed_marker_offset != transformation["marker_offset"]
+    ):
+        raise NsisRepackContractError(
+            "transformation reversal does not reconstruct the exact preimage"
+        )
+
+
 def _kit_digest(manifest: Mapping[str, object]) -> str:
     unsigned = dict(manifest)
     unsigned.pop("kit_sha256", None)
@@ -1604,9 +1891,11 @@ def _normalize_contract(raw: object, *, manifest: bool) -> dict[str, object]:
     value = _object(raw, "NSIS repack contract")
     expected = {
         "schema_version",
+        "source_ref",
         "source_sha",
         "source_tree",
         "source_epoch",
+        "transformation",
         "toolchain",
         "argv",
         "environment",
@@ -1623,11 +1912,13 @@ def _normalize_contract(raw: object, *, manifest: bool) -> dict[str, object]:
         raise NsisRepackContractError("schema_version must be 1")
     if manifest and value["artifact"] != KIT_ARTIFACT:
         raise NsisRepackContractError(f"artifact must be {KIT_ARTIFACT}")
+    source_ref = _source_ref(value["source_ref"], "source_ref")
     source_sha = _git_id(value["source_sha"], "source_sha")
     source_tree = _git_id(value["source_tree"], "source_tree")
-    source_epoch = _positive_int(value["source_epoch"], "source_epoch")
+    source_epoch = _source_epoch(value["source_epoch"], "source_epoch")
     cleared_environment = _normalize_cleared_environment(value["cleared_environment"])
     files = _normalize_file_records(value["files"])
+    transformation = _normalize_transformation(value["transformation"], files)
     toolchain = _normalize_toolchain(value["toolchain"], files, manifest=manifest)
     argv = _normalize_argv(value["argv"], files)
     environment = _normalize_environment(value["environment"], source_epoch)
@@ -1640,9 +1931,11 @@ def _normalize_contract(raw: object, *, manifest: bool) -> dict[str, object]:
     normalized: dict[str, object] = {
         "schema_version": SCHEMA_VERSION,
         "artifact": KIT_ARTIFACT,
+        "source_ref": source_ref,
         "source_sha": source_sha,
         "source_tree": source_tree,
         "source_epoch": source_epoch,
+        "transformation": transformation,
         "toolchain": toolchain,
         "argv": argv,
         "environment": environment,
@@ -2121,6 +2414,7 @@ def _verify_snapshot_files(kit: Path, manifest: Mapping[str, object]) -> None:
     _assert_case_unique(sorted(actual), "snapshot files")
     if actual != expected:
         raise NsisRepackContractError("kit content has missing or unbound files")
+    _verify_transformation_payload(content, manifest)
     _audit_scripts(content, manifest)
 
 
@@ -2129,8 +2423,10 @@ def create_kit(
     descriptor: Path,
     source_root: Path,
     output: Path,
+    expected_source_ref: str,
     expected_source_sha: str,
     expected_source_tree: str,
+    expected_source_epoch: int,
 ) -> dict[str, object]:
     if output.exists() or output.is_symlink():
         raise NsisRepackContractError("output kit must not already exist")
@@ -2143,6 +2439,12 @@ def create_kit(
     descriptor_contract = _normalize_contract(
         _read_descriptor_secure(descriptor), manifest=False
     )
+    if descriptor_contract["source_ref"] != _source_ref(
+        expected_source_ref, "expected_source_ref"
+    ):
+        raise NsisRepackContractError(
+            "descriptor source_ref does not match expected_source_ref"
+        )
     if descriptor_contract["source_sha"] != _git_id(
         expected_source_sha, "expected_source_sha"
     ):
@@ -2154,6 +2456,12 @@ def create_kit(
     ):
         raise NsisRepackContractError(
             "descriptor source_tree does not match expected_source_tree"
+        )
+    if descriptor_contract["source_epoch"] != _source_epoch(
+        expected_source_epoch, "expected_source_epoch"
+    ):
+        raise NsisRepackContractError(
+            "descriptor source_epoch does not match expected_source_epoch"
         )
     try:
         output_parent = output.parent.absolute()
@@ -2207,26 +2515,30 @@ def create_kit(
 def _verify_private_kit(
     *,
     kit: Path,
-    expected_source_sha: str | None = None,
-    expected_source_tree: str | None = None,
-    expected_kit_sha256: str | None = None,
+    expected_source_ref: str,
+    expected_source_sha: str,
+    expected_source_tree: str,
+    expected_source_epoch: int,
+    expected_kit_sha256: str,
 ) -> dict[str, object]:
     if kit.is_symlink() or not kit.is_dir():
         raise NsisRepackContractError("kit must be a non-link directory")
     manifest = _normalize_contract(
         _read_json(kit / KIT_MANIFEST, "kit manifest"), manifest=True
     )
-    if expected_source_sha is not None and manifest["source_sha"] != _git_id(
-        expected_source_sha, "expected_source_sha"
+    if manifest["source_ref"] != _source_ref(
+        expected_source_ref, "expected_source_ref"
     ):
+        raise NsisRepackContractError("kit source_ref does not match expectation")
+    if manifest["source_sha"] != _git_id(expected_source_sha, "expected_source_sha"):
         raise NsisRepackContractError("kit source_sha does not match expectation")
-    if expected_source_tree is not None and manifest["source_tree"] != _git_id(
-        expected_source_tree, "expected_source_tree"
-    ):
+    if manifest["source_tree"] != _git_id(expected_source_tree, "expected_source_tree"):
         raise NsisRepackContractError("kit source_tree does not match expectation")
-    if expected_kit_sha256 is not None and manifest["kit_sha256"] != _digest(
-        expected_kit_sha256, "expected_kit_sha256"
+    if manifest["source_epoch"] != _source_epoch(
+        expected_source_epoch, "expected_source_epoch"
     ):
+        raise NsisRepackContractError("kit source_epoch does not match expectation")
+    if manifest["kit_sha256"] != _digest(expected_kit_sha256, "expected_kit_sha256"):
         raise NsisRepackContractError("kit_sha256 does not match expectation")
     top_level = {entry.name for entry in kit.iterdir()}
     if top_level != {KIT_MANIFEST, "content"}:
@@ -2239,19 +2551,25 @@ def _verify_private_kit(
 def _verified_kit_snapshot(
     *,
     kit: Path,
-    expected_source_sha: str | None = None,
-    expected_source_tree: str | None = None,
-    expected_kit_sha256: str | None = None,
+    expected_source_ref: str,
+    expected_source_sha: str,
+    expected_source_tree: str,
+    expected_source_epoch: int,
+    expected_kit_sha256: str,
 ) -> Iterator[tuple[dict[str, object], Path]]:
     """Keep the exact verified private snapshot alive for its consumer."""
     if kit.is_symlink() or not kit.is_dir():
         raise NsisRepackContractError("kit must be a non-link directory")
+    source_entries = sorted(entry.name for entry in os.scandir(kit))
+    _assert_case_unique(source_entries, "kit root entries")
+    if not source_entries:
+        raise NsisRepackContractError("kit root is empty")
     with tempfile.TemporaryDirectory(prefix="stock-desk-verify-nsis-kit-") as temporary:
         snapshot = (Path(temporary) / "snapshot").resolve(strict=False)
         try:
             snapshot_artifacts(
                 kit.absolute(),
-                [KIT_MANIFEST, "content"],
+                source_entries,
                 snapshot.absolute(),
                 limits=SnapshotLimits(
                     max_files=MAX_FILES + 1,
@@ -2266,8 +2584,10 @@ def _verified_kit_snapshot(
             ) from error
         manifest = _verify_private_kit(
             kit=snapshot,
+            expected_source_ref=expected_source_ref,
             expected_source_sha=expected_source_sha,
             expected_source_tree=expected_source_tree,
+            expected_source_epoch=expected_source_epoch,
             expected_kit_sha256=expected_kit_sha256,
         )
         yield manifest, snapshot
@@ -2276,15 +2596,19 @@ def _verified_kit_snapshot(
 def verify_kit(
     *,
     kit: Path,
+    expected_source_ref: str,
     expected_source_sha: str,
     expected_source_tree: str,
+    expected_source_epoch: int,
     expected_kit_sha256: str,
 ) -> dict[str, object]:
     """Verify only a private secure snapshot, never the caller's mutable tree."""
     with _verified_kit_snapshot(
         kit=kit,
+        expected_source_ref=expected_source_ref,
         expected_source_sha=expected_source_sha,
         expected_source_tree=expected_source_tree,
+        expected_source_epoch=expected_source_epoch,
         expected_kit_sha256=expected_kit_sha256,
     ) as (manifest, _snapshot):
         return dict(manifest)
@@ -2305,6 +2629,9 @@ def _normalize_receipt(raw: object) -> dict[str, object]:
             "artifact",
             "receipt_sha256",
             "kit_sha256",
+            "transformation_sha256",
+            "repack_slot",
+            "source_ref",
             "source_sha",
             "source_tree",
             "source_epoch",
@@ -2319,7 +2646,7 @@ def _normalize_receipt(raw: object) -> dict[str, object]:
         raise NsisRepackContractError("receipt schema_version must be 1")
     if receipt["artifact"] != RECEIPT_ARTIFACT:
         raise NsisRepackContractError(f"receipt artifact must be {RECEIPT_ARTIFACT}")
-    source_epoch = _positive_int(receipt["source_epoch"], "receipt.source_epoch")
+    source_epoch = _source_epoch(receipt["source_epoch"], "receipt.source_epoch")
     argv = [
         _text(argument, f"receipt.argv[{index}]", limit=1024)
         for index, argument in enumerate(_array(receipt["argv"], "receipt.argv"))
@@ -2335,6 +2662,11 @@ def _normalize_receipt(raw: object) -> dict[str, object]:
         "schema_version": SCHEMA_VERSION,
         "artifact": RECEIPT_ARTIFACT,
         "kit_sha256": _digest(receipt["kit_sha256"], "receipt.kit_sha256"),
+        "transformation_sha256": _digest(
+            receipt["transformation_sha256"], "receipt.transformation_sha256"
+        ),
+        "repack_slot": _repack_slot(receipt["repack_slot"], "receipt.repack_slot"),
+        "source_ref": _source_ref(receipt["source_ref"], "receipt.source_ref"),
         "source_sha": _git_id(receipt["source_sha"], "receipt.source_sha"),
         "source_tree": _git_id(receipt["source_tree"], "receipt.source_tree"),
         "source_epoch": source_epoch,
@@ -2362,8 +2694,11 @@ def verify_receipt(
     receipt: Path,
     kit: Path,
     output: Path,
+    expected_repack_slot: str,
+    expected_source_ref: str,
     expected_source_sha: str,
     expected_source_tree: str,
+    expected_source_epoch: int,
     expected_kit_sha256: str,
 ) -> dict[str, object]:
     """Close a receipt over the exact kit and installer bytes using private snapshots."""
@@ -2406,14 +2741,23 @@ def verify_receipt(
         normalized = _normalize_receipt(_parse_json(receipt_bytes, "receipt"))
         if receipt_bytes != _canonical_json(normalized):
             raise NsisRepackContractError("receipt must use canonical JSON encoding")
+        if normalized["repack_slot"] != _repack_slot(
+            expected_repack_slot, "expected_repack_slot"
+        ):
+            raise NsisRepackContractError(
+                "receipt repack_slot does not match expected_repack_slot"
+            )
         with _verified_kit_snapshot(
             kit=kit,
+            expected_source_ref=expected_source_ref,
             expected_source_sha=expected_source_sha,
             expected_source_tree=expected_source_tree,
+            expected_source_epoch=expected_source_epoch,
             expected_kit_sha256=expected_kit_sha256,
         ) as (manifest, _kit_snapshot):
             for field in (
                 "kit_sha256",
+                "source_ref",
                 "source_sha",
                 "source_tree",
                 "source_epoch",
@@ -2425,11 +2769,23 @@ def verify_receipt(
                     raise NsisRepackContractError(
                         f"receipt.{field} does not match the verified kit"
                     )
+            transformation = _object(manifest["transformation"], "transformation")
+            if (
+                normalized["transformation_sha256"]
+                != transformation["transformation_sha256"]
+            ):
+                raise NsisRepackContractError(
+                    "receipt.transformation_sha256 does not match the verified kit"
+                )
+            expected_output = _object(
+                manifest["expected_unsigned_installer"],
+                "expected_unsigned_installer",
+            )
         output_record = normalized["output"]
         assert isinstance(output_record, Mapping)
         captured = output_snapshot.files[0]
         if (
-            output_record["path"] != output.name
+            output_record["path"] != expected_output["path"]
             or output_record["size"] != captured.size
             or output_record["sha256"] != captured.sha256
         ):
@@ -2439,13 +2795,223 @@ def verify_receipt(
         return normalized
 
 
+def verify_provenance_set(
+    *,
+    candidate_root: Path,
+    installer: Path,
+    expected_source_ref: str,
+    expected_source_sha: str,
+    expected_source_tree: str,
+    expected_source_epoch: int,
+    expected_kit_sha256: str,
+) -> dict[str, object]:
+    """Secure and semantically close one kit, two slotted receipts, and installer."""
+
+    candidate_root = candidate_root.absolute()
+    installer = installer.absolute()
+    try:
+        installer_relative_path = installer.relative_to(candidate_root)
+    except ValueError as error:
+        raise NsisRepackContractError(
+            "promoted installer must be inside the candidate root"
+        ) from error
+    if len(installer_relative_path.parts) != 1:
+        raise NsisRepackContractError(
+            "promoted installer must be a direct candidate-root file"
+        )
+    installer_relative = _relative_path(
+        PurePosixPath(*installer_relative_path.parts).as_posix(),
+        "promoted installer path",
+    )
+    if installer_relative.casefold() in {
+        "nsis-repack-kit",
+        "nsis-repack-verification",
+    }:
+        raise NsisRepackContractError("promoted installer path collides with evidence")
+    expected_entries = [
+        "nsis-repack-kit",
+        "nsis-repack-verification",
+        installer_relative,
+    ]
+    try:
+        root_metadata = os.lstat(candidate_root)
+    except OSError as error:
+        raise NsisRepackContractError("candidate root is missing or unsafe") from error
+    if (
+        not stat.S_ISDIR(root_metadata.st_mode)
+        or stat.S_ISLNK(root_metadata.st_mode)
+        or _is_reparse(root_metadata)
+    ):
+        raise NsisRepackContractError("candidate root must be a non-link directory")
+    source_entries = sorted(entry.name for entry in os.scandir(candidate_root))
+    _assert_case_unique(source_entries, "candidate root entries")
+    if not set(expected_entries).issubset(source_entries):
+        raise NsisRepackContractError(
+            "candidate root is missing NSIS provenance evidence"
+        )
+    for selected in expected_entries:
+        selected_path = candidate_root / selected
+        selected_metadata = os.lstat(selected_path)
+        if stat.S_ISLNK(selected_metadata.st_mode) or _is_reparse(selected_metadata):
+            raise NsisRepackContractError(
+                "NSIS provenance evidence contains a link or reparse point"
+            )
+        if stat.S_ISREG(selected_metadata.st_mode) and selected_metadata.st_nlink != 1:
+            raise NsisRepackContractError(
+                "NSIS provenance evidence contains a hardlinked file"
+            )
+        for root, directories, filenames in os.walk(selected_path, followlinks=False):
+            root_path = Path(root)
+            _assert_case_unique(
+                [*directories, *filenames], f"NSIS provenance entries under {selected}"
+            )
+            for name in [*directories, *filenames]:
+                path = root_path / name
+                metadata = os.lstat(path)
+                if stat.S_ISLNK(metadata.st_mode) or _is_reparse(metadata):
+                    raise NsisRepackContractError(
+                        "NSIS provenance evidence contains a link or reparse point"
+                    )
+                if stat.S_ISREG(metadata.st_mode) and metadata.st_nlink != 1:
+                    raise NsisRepackContractError(
+                        "NSIS provenance evidence contains a hardlinked file"
+                    )
+    with tempfile.TemporaryDirectory(
+        prefix="stock-desk-verify-nsis-provenance-"
+    ) as temporary:
+        snapshot_root = (Path(temporary) / "candidate").resolve(strict=False)
+        try:
+            snapshot_artifacts(
+                candidate_root,
+                expected_entries,
+                snapshot_root,
+                limits=SnapshotLimits(
+                    max_files=MAX_FILES + 4,
+                    max_file_size=MAX_FILE_BYTES,
+                    max_total_size=10 * 1024 * 1024 * 1024,
+                    max_depth=35,
+                ),
+            )
+        except SecureArtifactSnapshotError as error:
+            raise NsisRepackContractError(
+                "could not secure the NSIS provenance set"
+            ) from error
+        final_source_entries = sorted(
+            entry.name for entry in os.scandir(candidate_root)
+        )
+        _assert_case_unique(final_source_entries, "candidate root final entries")
+        if final_source_entries != source_entries:
+            raise NsisRepackContractError(
+                "candidate root inventory changed during provenance snapshot"
+            )
+        verification_root = snapshot_root / "nsis-repack-verification"
+        if verification_root.is_symlink() or not verification_root.is_dir():
+            raise NsisRepackContractError(
+                "NSIS repack verification evidence is missing or unsafe"
+            )
+        verification_entries = {entry.name for entry in verification_root.iterdir()}
+        expected_receipts = {
+            "repack-a-receipt.json": "a",
+            "repack-b-receipt.json": "b",
+        }
+        _assert_case_unique(
+            sorted(verification_entries), "NSIS repack verification evidence"
+        )
+        if verification_entries != set(expected_receipts):
+            raise NsisRepackContractError(
+                "NSIS repack verification evidence must contain exactly two receipts"
+            )
+        kit = snapshot_root / "nsis-repack-kit"
+        promoted_installer = snapshot_root / installer_relative
+        manifest = verify_kit(
+            kit=kit,
+            expected_source_ref=expected_source_ref,
+            expected_source_sha=expected_source_sha,
+            expected_source_tree=expected_source_tree,
+            expected_source_epoch=expected_source_epoch,
+            expected_kit_sha256=expected_kit_sha256,
+        )
+        verified_receipts: list[dict[str, object]] = []
+        receipt_summaries: list[dict[str, object]] = []
+        for receipt_name, slot in expected_receipts.items():
+            receipt_path = verification_root / receipt_name
+            receipt = verify_receipt(
+                receipt=receipt_path,
+                kit=kit,
+                output=promoted_installer,
+                expected_repack_slot=slot,
+                expected_source_ref=expected_source_ref,
+                expected_source_sha=expected_source_sha,
+                expected_source_tree=expected_source_tree,
+                expected_source_epoch=expected_source_epoch,
+                expected_kit_sha256=expected_kit_sha256,
+            )
+            if receipt["repack_slot"] != slot:
+                raise NsisRepackContractError(
+                    f"{receipt_name} does not bind repack slot {slot}"
+                )
+            verified_receipts.append(receipt)
+            _receipt_size, receipt_raw_sha256 = _hash_regular_file(
+                receipt_path, receipt_name
+            )
+            receipt_summaries.append(
+                {
+                    "path": f"nsis-repack-verification/{receipt_name}",
+                    "repack_slot": slot,
+                    "sha256": receipt_raw_sha256,
+                    "receipt_sha256": receipt["receipt_sha256"],
+                }
+            )
+        if {str(receipt["repack_slot"]) for receipt in verified_receipts} != {"a", "b"}:
+            raise NsisRepackContractError(
+                "NSIS provenance receipts do not have distinct slots"
+            )
+        installer_size, installer_sha256 = _hash_regular_file(
+            promoted_installer, "promoted installer"
+        )
+        expected_output = _object(
+            manifest["expected_unsigned_installer"], "expected_unsigned_installer"
+        )
+        if (
+            installer_size != expected_output["size"]
+            or installer_sha256 != expected_output["sha256"]
+        ):
+            raise NsisRepackContractError(
+                "promoted installer does not match the verified kit output"
+            )
+        _kit_manifest_size, kit_manifest_sha256 = _hash_regular_file(
+            kit / KIT_MANIFEST, "kit manifest"
+        )
+        transformation = dict(_object(manifest["transformation"], "transformation"))
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "artifact": PROVENANCE_SET_ARTIFACT,
+            "source_ref": manifest["source_ref"],
+            "source_sha": manifest["source_sha"],
+            "source_tree": manifest["source_tree"],
+            "source_epoch": manifest["source_epoch"],
+            "kit": {
+                "path": f"nsis-repack-kit/{KIT_MANIFEST}",
+                "sha256": kit_manifest_sha256,
+                "kit_sha256": manifest["kit_sha256"],
+            },
+            "transformation": transformation,
+            "transformation_sha256": transformation["transformation_sha256"],
+            "receipts": receipt_summaries,
+            "installer": {"size": installer_size, "sha256": installer_sha256},
+        }
+
+
 def repack(
     *,
     kit: Path,
     output: Path,
     receipt: Path,
+    repack_slot: str,
+    expected_source_ref: str,
     expected_source_sha: str,
     expected_source_tree: str,
+    expected_source_epoch: int,
     expected_kit_sha256: str,
 ) -> dict[str, object]:
     if output.exists() or output.is_symlink():
@@ -2454,8 +3020,10 @@ def repack(
         raise NsisRepackContractError("receipt output must not already exist")
     with _verified_kit_snapshot(
         kit=kit,
+        expected_source_ref=expected_source_ref,
         expected_source_sha=expected_source_sha,
         expected_source_tree=expected_source_tree,
+        expected_source_epoch=expected_source_epoch,
         expected_kit_sha256=expected_kit_sha256,
     ) as (manifest, verified_snapshot):
         return _repack_verified_snapshot(
@@ -2463,6 +3031,7 @@ def repack(
             manifest=manifest,
             output=output,
             receipt=receipt,
+            repack_slot=_repack_slot(repack_slot, "repack_slot"),
         )
 
 
@@ -2531,10 +3100,10 @@ def _repack_verified_snapshot(
     manifest: Mapping[str, object],
     output: Path,
     receipt: Path,
+    repack_slot: str,
 ) -> dict[str, object]:
     records = manifest["files"]
     assert isinstance(records, list)
-    output_name = _relative_path(output.name, "receipt output path")
     output_identity: tuple[int, int] | None = None
     with tempfile.TemporaryDirectory(prefix="stock-desk-nsis-repack-") as temporary_raw:
         temporary_root = Path(temporary_raw).resolve(strict=True)
@@ -2683,13 +3252,25 @@ def _repack_verified_snapshot(
         "schema_version": SCHEMA_VERSION,
         "artifact": RECEIPT_ARTIFACT,
         "kit_sha256": manifest["kit_sha256"],
+        "transformation_sha256": _object(manifest["transformation"], "transformation")[
+            "transformation_sha256"
+        ],
+        "repack_slot": repack_slot,
+        "source_ref": manifest["source_ref"],
         "source_sha": manifest["source_sha"],
         "source_tree": manifest["source_tree"],
         "source_epoch": manifest["source_epoch"],
         "argv": manifest["argv"],
         "environment": manifest["environment"],
         "cleared_environment": manifest["cleared_environment"],
-        "output": {"path": output_name, "size": size, "sha256": digest},
+        "output": {
+            "path": _object(
+                manifest["expected_unsigned_installer"],
+                "expected_unsigned_installer",
+            )["path"],
+            "size": size,
+            "sha256": digest,
+        },
     }
     result["receipt_sha256"] = _receipt_digest(result)
     try:
@@ -2709,27 +3290,49 @@ def main(argv: Sequence[str] | None = None) -> int:
     create.add_argument("--descriptor", type=Path, required=True)
     create.add_argument("--source-root", type=Path, required=True)
     create.add_argument("--output", type=Path, required=True)
+    create.add_argument("--expected-source-ref", required=True)
     create.add_argument("--expected-source-sha", required=True)
     create.add_argument("--expected-source-tree", required=True)
+    create.add_argument("--expected-source-epoch", type=int, required=True)
     verify = commands.add_parser("verify-kit")
     verify.add_argument("--kit", type=Path, required=True)
+    verify.add_argument("--expected-source-ref", required=True)
     verify.add_argument("--expected-source-sha", required=True)
     verify.add_argument("--expected-source-tree", required=True)
+    verify.add_argument("--expected-source-epoch", type=int, required=True)
     verify.add_argument("--expected-kit-sha256", required=True)
     run = commands.add_parser("repack")
     run.add_argument("--kit", type=Path, required=True)
     run.add_argument("--output", type=Path, required=True)
     run.add_argument("--receipt", type=Path, required=True)
+    run.add_argument("--repack-slot", required=True, choices=("a", "b"))
+    run.add_argument("--expected-source-ref", required=True)
     run.add_argument("--expected-source-sha", required=True)
     run.add_argument("--expected-source-tree", required=True)
+    run.add_argument("--expected-source-epoch", type=int, required=True)
     run.add_argument("--expected-kit-sha256", required=True)
     verify_receipt_command = commands.add_parser("verify-receipt")
     verify_receipt_command.add_argument("--receipt", type=Path, required=True)
     verify_receipt_command.add_argument("--kit", type=Path, required=True)
     verify_receipt_command.add_argument("--output", type=Path, required=True)
+    verify_receipt_command.add_argument(
+        "--expected-repack-slot", required=True, choices=("a", "b")
+    )
+    verify_receipt_command.add_argument("--expected-source-ref", required=True)
     verify_receipt_command.add_argument("--expected-source-sha", required=True)
     verify_receipt_command.add_argument("--expected-source-tree", required=True)
+    verify_receipt_command.add_argument(
+        "--expected-source-epoch", type=int, required=True
+    )
     verify_receipt_command.add_argument("--expected-kit-sha256", required=True)
+    verify_set_command = commands.add_parser("verify-provenance-set")
+    verify_set_command.add_argument("--candidate-root", type=Path, required=True)
+    verify_set_command.add_argument("--installer", type=Path, required=True)
+    verify_set_command.add_argument("--expected-source-ref", required=True)
+    verify_set_command.add_argument("--expected-source-sha", required=True)
+    verify_set_command.add_argument("--expected-source-tree", required=True)
+    verify_set_command.add_argument("--expected-source-epoch", type=int, required=True)
+    verify_set_command.add_argument("--expected-kit-sha256", required=True)
     verify_toolchain_command = commands.add_parser("verify-extracted-toolchain")
     verify_toolchain_command.add_argument("--nsis-root", type=Path, required=True)
     verify_toolchain_command.add_argument(
@@ -2745,14 +3348,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                 descriptor=arguments.descriptor,
                 source_root=arguments.source_root,
                 output=arguments.output,
+                expected_source_ref=arguments.expected_source_ref,
                 expected_source_sha=arguments.expected_source_sha,
                 expected_source_tree=arguments.expected_source_tree,
+                expected_source_epoch=arguments.expected_source_epoch,
             )
         elif arguments.command == "verify-kit":
             result = verify_kit(
                 kit=arguments.kit,
+                expected_source_ref=arguments.expected_source_ref,
                 expected_source_sha=arguments.expected_source_sha,
                 expected_source_tree=arguments.expected_source_tree,
+                expected_source_epoch=arguments.expected_source_epoch,
                 expected_kit_sha256=arguments.expected_kit_sha256,
             )
         elif arguments.command == "repack":
@@ -2760,8 +3367,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 kit=arguments.kit,
                 output=arguments.output,
                 receipt=arguments.receipt,
+                repack_slot=arguments.repack_slot,
+                expected_source_ref=arguments.expected_source_ref,
                 expected_source_sha=arguments.expected_source_sha,
                 expected_source_tree=arguments.expected_source_tree,
+                expected_source_epoch=arguments.expected_source_epoch,
                 expected_kit_sha256=arguments.expected_kit_sha256,
             )
         elif arguments.command == "verify-receipt":
@@ -2769,8 +3379,21 @@ def main(argv: Sequence[str] | None = None) -> int:
                 receipt=arguments.receipt,
                 kit=arguments.kit,
                 output=arguments.output,
+                expected_repack_slot=arguments.expected_repack_slot,
+                expected_source_ref=arguments.expected_source_ref,
                 expected_source_sha=arguments.expected_source_sha,
                 expected_source_tree=arguments.expected_source_tree,
+                expected_source_epoch=arguments.expected_source_epoch,
+                expected_kit_sha256=arguments.expected_kit_sha256,
+            )
+        elif arguments.command == "verify-provenance-set":
+            result = verify_provenance_set(
+                candidate_root=arguments.candidate_root,
+                installer=arguments.installer,
+                expected_source_ref=arguments.expected_source_ref,
+                expected_source_sha=arguments.expected_source_sha,
+                expected_source_tree=arguments.expected_source_tree,
+                expected_source_epoch=arguments.expected_source_epoch,
                 expected_kit_sha256=arguments.expected_kit_sha256,
             )
         elif arguments.command == "verify-extracted-toolchain":

@@ -8,9 +8,11 @@
     "schema_version",
     "artifact",
     "kit_sha256",
+    "source_ref",
     "source_sha",
     "source_tree",
     "source_epoch",
+    "transformation",
     "toolchain",
     "argv",
     "environment",
@@ -23,9 +25,11 @@
     "schema_version": { "const": 1 },
     "artifact": { "const": "stock-desk-nsis-repack-kit" },
     "kit_sha256": { "$ref": "#/$defs/sha256" },
+    "source_ref": { "$ref": "#/$defs/sourceRef" },
     "source_sha": { "$ref": "#/$defs/gitObject" },
     "source_tree": { "$ref": "#/$defs/gitObject" },
-    "source_epoch": { "type": "integer", "minimum": 1 },
+    "source_epoch": { "type": "integer", "minimum": 1, "maximum": 9223372036854775807 },
+    "transformation": { "$ref": "#/$defs/transformation" },
     "toolchain": {
       "type": "object",
       "additionalProperties": false,
@@ -136,6 +140,56 @@
   "$defs": {
     "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
     "gitObject": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "sourceRef": {
+      "type": "string",
+      "pattern": "^(?:refs/heads/main|refs/pull/[1-9][0-9]*/merge)(?![\\s\\S])"
+    },
+    "transformationIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["size", "sha256", "before_token_count", "after_token_count"],
+      "properties": {
+        "size": { "type": "integer", "minimum": 1, "maximum": 2147483648 },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "before_token_count": { "type": "integer", "minimum": 0, "maximum": 1 },
+        "after_token_count": { "type": "integer", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "transformation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "algorithm",
+        "transformation_sha256",
+        "source",
+        "payload_path",
+        "before_token",
+        "after_token",
+        "marker_offset",
+        "before",
+        "after"
+      ],
+      "properties": {
+        "algorithm": { "const": "tauri-bundle-type-unk-to-nss-v1" },
+        "transformation_sha256": { "$ref": "#/$defs/sha256" },
+        "source": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["tag", "commit", "path"],
+          "properties": {
+            "tag": { "const": "tauri-cli-v2.11.4" },
+            "commit": { "const": "8909f221d1515955fc843808032bdc5d62209c96" },
+            "path": { "const": "crates/tauri-bundler/src/bundle.rs" }
+          }
+        },
+        "payload_path": { "const": "payload/main-binary-nss.exe" },
+        "before_token": { "const": "__TAURI_BUNDLE_TYPE_VAR_UNK" },
+        "after_token": { "const": "__TAURI_BUNDLE_TYPE_VAR_NSS" },
+        "marker_offset": { "type": "integer", "minimum": 0, "maximum": 2147483621 },
+        "before": { "$ref": "#/$defs/transformationIdentity" },
+        "after": { "$ref": "#/$defs/transformationIdentity" }
+      }
+    },
     "toolchainTree": {
       "type": "object",
       "additionalProperties": false,

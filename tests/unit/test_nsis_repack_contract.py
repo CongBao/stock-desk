@@ -3,9 +3,11 @@ from __future__ import annotations
 import copy
 from contextlib import contextmanager
 import hashlib
+import inspect
 import json
 import os
 from pathlib import Path
+import shutil
 import stat
 import subprocess
 import sys
@@ -21,7 +23,13 @@ from scripts import nsis_repack_contract as contract
 SHA = "a" * 40
 TREE = "b" * 40
 EPOCH = 1_700_000_000
+REF = "refs/heads/main"
 INSTALLER = b"unsigned-installer\n"
+BEFORE_MARKER = b"__TAURI_BUNDLE_TYPE_VAR_UNK"
+AFTER_MARKER = b"__TAURI_BUNDLE_TYPE_VAR_NSS"
+BEFORE_HOST = b"host-prefix:" + BEFORE_MARKER + b":host-suffix\n"
+AFTER_HOST = b"host-prefix:" + AFTER_MARKER + b":host-suffix\n"
+HOST_PATH = "payload/main-binary-nss.exe"
 PLUGIN_PATH = "toolchain/Plugins/x86-unicode/additional/nsis_tauri_utils.dll"
 NSISDL_PLUGIN_PATH = "toolchain/Plugins/x86-unicode/NSISdl.dll"
 REQUIRED_TOOL_PATHS = sorted(contract._REQUIRED_TOOLCHAIN_PATHS)
@@ -29,6 +37,44 @@ REQUIRED_TOOL_PATHS = sorted(contract._REQUIRED_TOOLCHAIN_PATHS)
 
 def _digest(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
+
+
+def _canonical_digest(value: Mapping[str, object]) -> str:
+    return _digest(
+        (
+            json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            + "\n"
+        ).encode()
+    )
+
+
+def _transformation() -> dict[str, object]:
+    value: dict[str, object] = {
+        "algorithm": "tauri-bundle-type-unk-to-nss-v1",
+        "source": {
+            "tag": "tauri-cli-v2.11.4",
+            "commit": "8909f221d1515955fc843808032bdc5d62209c96",
+            "path": "crates/tauri-bundler/src/bundle.rs",
+        },
+        "payload_path": HOST_PATH,
+        "before_token": BEFORE_MARKER.decode(),
+        "after_token": AFTER_MARKER.decode(),
+        "marker_offset": BEFORE_HOST.index(BEFORE_MARKER),
+        "before": {
+            "size": len(BEFORE_HOST),
+            "sha256": _digest(BEFORE_HOST),
+            "before_token_count": 1,
+            "after_token_count": 0,
+        },
+        "after": {
+            "size": len(AFTER_HOST),
+            "sha256": _digest(AFTER_HOST),
+            "before_token_count": 0,
+            "after_token_count": 1,
+        },
+    }
+    value["transformation_sha256"] = _canonical_digest(value)
+    return value
 
 
 def _install_fixture_toolchain_lock(
@@ -84,7 +130,7 @@ def _fixture(tmp_path: Path, *, prefix: str = "A") -> tuple[Path, dict[str, Any]
         '!include "FileAssociation.nsh"\n'
         '!include "${HOOK}"\n'
         'File "${MAIN}"\n'
-        'File "/oname=$TEMP\\stock-desk.exe" "payload/stock-desk.exe"\n'
+        'File "/oname=$TEMP\\stock-desk.exe" "payload/main-binary-nss.exe"\n'
         '${GetOptions} $CMDLINE "/P" $PassiveMode\n'
         '${GetSize} "$INSTDIR" "/M=uninstall.exe /S=0K /G=0" $0 $1 $2\n'
         'NSISdl::download "https://go.microsoft.com/fwlink/p/?LinkId=2124703" '
@@ -101,7 +147,7 @@ def _fixture(tmp_path: Path, *, prefix: str = "A") -> tuple[Path, dict[str, Any]
         "languages/SimpChinese.nsh": ("nsis-language", b"; language\n", False),
         "icons/app.ico": ("icon", b"icon\n", False),
         "runtime/WebView2.exe": ("webview2", b"webview\n", False),
-        "payload/stock-desk.exe": ("payload", b"application\n", False),
+        HOST_PATH: ("payload", AFTER_HOST, False),
         "tauri.conf.json": ("tauri-config", b"{}\n", False),
         NSISDL_PLUGIN_PATH: ("nsis-plugin", b"nsisdl-plugin\n", False),
     }
@@ -136,9 +182,11 @@ def _fixture(tmp_path: Path, *, prefix: str = "A") -> tuple[Path, dict[str, Any]
     nsisdl_plugin = contents[NSISDL_PLUGIN_PATH][1]
     descriptor: dict[str, Any] = {
         "schema_version": 1,
+        "source_ref": REF,
         "source_sha": SHA,
         "source_tree": TREE,
         "source_epoch": EPOCH,
+        "transformation": _transformation(),
         "toolchain": {
             "path": "toolchain/makensis.exe",
             "sha256": _digest(tool),
@@ -180,7 +228,7 @@ def _fixture(tmp_path: Path, *, prefix: str = "A") -> tuple[Path, dict[str, Any]
         "path_mappings": [
             {
                 "source_absolute": absolute_payload,
-                "target": "payload/stock-desk.exe",
+                "target": HOST_PATH,
                 "occurrences": 1,
             },
             {
@@ -357,18 +405,32 @@ def test_tauri_payload_patch_streams_one_exact_marker_and_preserves_original(
         payload=private_payload,
     )
 
-    assert result == {
+    expected: dict[str, object] = {
         "algorithm": "tauri-bundle-type-unk-to-nss-v1",
+        "source": {
+            "tag": "tauri-cli-v2.11.4",
+            "commit": "8909f221d1515955fc843808032bdc5d62209c96",
+            "path": "crates/tauri-bundler/src/bundle.rs",
+        },
+        "payload_path": "stock-desk-desktop.exe",
+        "before_token": _UNK_MARKER.decode(),
+        "after_token": _NSS_MARKER.decode(),
         "marker_offset": 6,
         "before": {
             "size": len(original_payload),
             "sha256": _digest(original_payload),
+            "before_token_count": 1,
+            "after_token_count": 0,
         },
         "after": {
             "size": len(original_payload),
             "sha256": _digest(b"prefix" + _NSS_MARKER + b"suffix"),
+            "before_token_count": 0,
+            "after_token_count": 1,
         },
     }
+    expected["transformation_sha256"] = _canonical_digest(expected)
+    assert result == expected
     assert original.read_bytes() == original_payload
     assert private_payload.read_bytes() == b"prefix" + _NSS_MARKER + b"suffix"
 
@@ -656,15 +718,19 @@ def _create_kit(
     descriptor: Path,
     source_root: Path,
     output: Path,
+    expected_source_ref: str = REF,
     expected_source_sha: str = SHA,
     expected_source_tree: str = TREE,
+    expected_source_epoch: int = EPOCH,
 ) -> dict[str, object]:
     return contract.create_kit(
         descriptor=descriptor,
         source_root=source_root,
         output=output,
+        expected_source_ref=expected_source_ref,
         expected_source_sha=expected_source_sha,
         expected_source_tree=expected_source_tree,
+        expected_source_epoch=expected_source_epoch,
     )
 
 
@@ -740,14 +806,19 @@ def test_create_kit_preserves_safe_private_lease_diagnostics(
         )
 
 
-def _repack(kit: Path, output: Path, receipt: Path) -> dict[str, object]:
+def _repack(
+    kit: Path, output: Path, receipt: Path, *, repack_slot: str = "a"
+) -> dict[str, object]:
     manifest = json.loads((kit / contract.KIT_MANIFEST).read_bytes())
     return contract.repack(
         kit=kit,
         output=output,
         receipt=receipt,
+        repack_slot=repack_slot,
+        expected_source_ref=str(manifest["source_ref"]),
         expected_source_sha=str(manifest["source_sha"]),
         expected_source_tree=str(manifest["source_tree"]),
+        expected_source_epoch=int(manifest["source_epoch"]),
         expected_kit_sha256=str(manifest["kit_sha256"]),
     )
 
@@ -755,15 +826,19 @@ def _repack(kit: Path, output: Path, receipt: Path) -> dict[str, object]:
 def _verify_kit(
     *,
     kit: Path,
+    expected_source_ref: str = REF,
     expected_source_sha: str = SHA,
     expected_source_tree: str = TREE,
+    expected_source_epoch: int = EPOCH,
     expected_kit_sha256: str | None = None,
 ) -> dict[str, object]:
     manifest = json.loads((kit / contract.KIT_MANIFEST).read_bytes())
     return contract.verify_kit(
         kit=kit,
+        expected_source_ref=expected_source_ref,
         expected_source_sha=expected_source_sha,
         expected_source_tree=expected_source_tree,
+        expected_source_epoch=expected_source_epoch,
         expected_kit_sha256=expected_kit_sha256 or str(manifest["kit_sha256"]),
     )
 
@@ -773,8 +848,11 @@ def _verify_receipt(
     receipt: Path,
     kit: Path,
     output: Path,
+    expected_repack_slot: str = "a",
+    expected_source_ref: str = REF,
     expected_source_sha: str = SHA,
     expected_source_tree: str = TREE,
+    expected_source_epoch: int = EPOCH,
     expected_kit_sha256: str | None = None,
 ) -> dict[str, object]:
     manifest = json.loads((kit / contract.KIT_MANIFEST).read_bytes())
@@ -782,8 +860,11 @@ def _verify_receipt(
         receipt=receipt,
         kit=kit,
         output=output,
+        expected_repack_slot=expected_repack_slot,
+        expected_source_ref=expected_source_ref,
         expected_source_sha=expected_source_sha,
         expected_source_tree=expected_source_tree,
+        expected_source_epoch=expected_source_epoch,
         expected_kit_sha256=expected_kit_sha256 or str(manifest["kit_sha256"]),
     )
 
@@ -799,6 +880,9 @@ def test_create_and_verify_content_addressed_kit(tmp_path: Path) -> None:
         contract.KIT_MANIFEST,
     }
     assert created["artifact"] == contract.KIT_ARTIFACT
+    assert created["source_ref"] == REF
+    assert created["source_epoch"] == EPOCH
+    assert created["transformation"] == _transformation()
     assert created["cleared_environment"] == ["NSISCONFDIR", "NSISDIR"]
     assert created["environment"] == {
         "SOURCE_DATE_EPOCH": str(EPOCH),
@@ -823,12 +907,357 @@ def test_create_and_verify_content_addressed_kit(tmp_path: Path) -> None:
     )
     normalized_script = (kit / "content/installer.nsi").read_text()
     assert "C:\\runner" not in normalized_script
-    assert '!define MAIN "payload\\stock-desk.exe"' in normalized_script
+    assert '!define MAIN "payload\\main-binary-nss.exe"' in normalized_script
     assert '!define HOOK "packaging\\installer-hooks.nsh"' in normalized_script
     assert {
         str(item["target"])
         for item in cast(list[Mapping[str, object]], normalization["mapped_targets"])
-    } >= {"payload/stock-desk.exe", "packaging/installer-hooks.nsh"}
+    } >= {HOST_PATH, "packaging/installer-hooks.nsh"}
+
+
+@pytest.mark.parametrize(
+    "value",
+    [REF, "refs/pull/1/merge", "refs/pull/987654/merge"],
+)
+def test_canonical_source_ref_accepts_only_main_or_positive_pr_merge(
+    value: str,
+) -> None:
+    assert contract._source_ref(value, "source_ref") == value
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "main",
+        "refs/heads/Main",
+        "refs/heads/feature",
+        "refs/tags/v1.1.0",
+        "refs/pull/0/merge",
+        "refs/pull/01/merge",
+        "refs/pull/1/head",
+        "refs/pull/1/merge/",
+        "refs/pull/1//merge",
+        "refs//pull/1/merge",
+        "refs/pull/../merge",
+        " refs/heads/main",
+        "refs/heads/main ",
+        "refs/heads/main\n",
+        "refs/pull/١/merge",
+        "refs/pull/１/merge",
+    ],
+)
+def test_canonical_source_ref_rejects_every_other_form(value: str) -> None:
+    with pytest.raises(contract.NsisRepackContractError, match="source_ref"):
+        contract._source_ref(value, "source_ref")
+
+
+@pytest.mark.parametrize(
+    ("expectation", "value", "match"),
+    [
+        ("expected_source_ref", "refs/pull/2/merge", "source_ref"),
+        ("expected_source_sha", "c" * 40, "source_sha"),
+        ("expected_source_tree", "c" * 40, "source_tree"),
+        ("expected_source_epoch", EPOCH + 1, "source_epoch"),
+    ],
+)
+def test_create_kit_requires_all_external_source_expectations(
+    tmp_path: Path, expectation: str, value: object, match: str
+) -> None:
+    source, descriptor = _fixture(tmp_path)
+    kwargs: dict[str, object] = {
+        "descriptor": _write_descriptor(tmp_path, descriptor),
+        "source_root": source,
+        "output": tmp_path / "kit",
+        "expected_source_ref": REF,
+        "expected_source_sha": SHA,
+        "expected_source_tree": TREE,
+        "expected_source_epoch": EPOCH,
+    }
+    kwargs[expectation] = value
+    with pytest.raises(contract.NsisRepackContractError, match=match):
+        contract.create_kit(**kwargs)
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        (("algorithm",), "tauri-bundle-type-unk-to-nss-v2"),
+        (("source", "tag"), "tauri-cli-v2.11.5"),
+        (("source", "commit"), "c" * 40),
+        (("source", "path"), "crates/tauri-bundler/src/bundle/windows/nsis/mod.rs"),
+        (("before_token",), "__TAURI_BUNDLE_TYPE_VAR_BAD"),
+        (("after_token",), "__TAURI_BUNDLE_TYPE_VAR_BAD"),
+        (("payload_path",), "payload/other.exe"),
+    ],
+)
+def test_fixed_tauri_transformation_source_rejects_redigested_tampering(
+    tmp_path: Path, path: tuple[str, ...], value: str
+) -> None:
+    kit, _created = _create(tmp_path)
+    manifest = json.loads((kit / contract.KIT_MANIFEST).read_bytes())
+    transformation = cast(dict[str, object], manifest["transformation"])
+    target: dict[str, object] = transformation
+    for component in path[:-1]:
+        target = cast(dict[str, object], target[component])
+    target[path[-1]] = value
+    transformation.pop("transformation_sha256")
+    transformation["transformation_sha256"] = _canonical_digest(transformation)
+    _rewrite_kit_manifest(kit, manifest)
+    with pytest.raises(contract.NsisRepackContractError, match="transformation"):
+        _verify_kit(kit=kit)
+
+
+def _rewrite_kit_manifest(kit: Path, manifest: dict[str, object]) -> None:
+    manifest.pop("kit_sha256", None)
+    manifest["kit_sha256"] = contract._kit_digest(manifest)
+    path = kit / contract.KIT_MANIFEST
+    path.chmod(0o600)
+    path.write_bytes(contract._canonical_json(manifest))
+
+
+@pytest.mark.parametrize("mutation", ["offset", "before-hash", "outside-byte"])
+def test_verify_kit_reverses_transformation_and_rejects_redigested_mutation(
+    tmp_path: Path, mutation: str
+) -> None:
+    kit, _created = _create(tmp_path)
+    manifest = json.loads((kit / contract.KIT_MANIFEST).read_bytes())
+    transformation = cast(dict[str, object], manifest["transformation"])
+    if mutation == "offset":
+        transformation["marker_offset"] = int(transformation["marker_offset"]) + 1
+    elif mutation == "before-hash":
+        cast(dict[str, object], transformation["before"])["sha256"] = "c" * 64
+    else:
+        payload = kit / "content" / HOST_PATH
+        payload.chmod(0o600)
+        changed = b"X" + payload.read_bytes()[1:]
+        payload.write_bytes(changed)
+        after = cast(dict[str, object], transformation["after"])
+        after["sha256"] = _digest(changed)
+        record = next(
+            cast(dict[str, object], item)
+            for item in cast(list[object], manifest["files"])
+            if cast(dict[str, object], item)["path"] == HOST_PATH
+        )
+        record["sha256"] = _digest(changed)
+    transformation.pop("transformation_sha256")
+    transformation["transformation_sha256"] = _canonical_digest(transformation)
+    _rewrite_kit_manifest(kit, manifest)
+
+    with pytest.raises(
+        contract.NsisRepackContractError, match="transformation|preimage"
+    ):
+        _verify_kit(kit=kit)
+
+
+@pytest.mark.parametrize("mutation", ["missing-nss", "extra-nss", "extra-unk"])
+def test_reverse_verifier_rejects_post_marker_cardinality_mutations(
+    tmp_path: Path, mutation: str
+) -> None:
+    kit, _created = _create(tmp_path)
+    manifest = json.loads((kit / contract.KIT_MANIFEST).read_bytes())
+    transformation = cast(dict[str, object], manifest["transformation"])
+    payload_path = kit / "content" / HOST_PATH
+    payload_path.chmod(0o600)
+    payload = payload_path.read_bytes()
+    if mutation == "missing-nss":
+        payload = payload.replace(AFTER_MARKER, b"Z" * len(AFTER_MARKER))
+    elif mutation == "extra-nss":
+        payload += AFTER_MARKER
+    else:
+        payload += BEFORE_MARKER
+    payload_path.write_bytes(payload)
+    after = cast(dict[str, object], transformation["after"])
+    after["size"] = len(payload)
+    after["sha256"] = _digest(payload)
+    cast(dict[str, object], transformation["before"])["size"] = len(payload)
+    record = next(
+        cast(dict[str, object], item)
+        for item in cast(list[object], manifest["files"])
+        if cast(dict[str, object], item)["path"] == HOST_PATH
+    )
+    record["size"] = len(payload)
+    record["sha256"] = _digest(payload)
+    transformation.pop("transformation_sha256")
+    transformation["transformation_sha256"] = _canonical_digest(transformation)
+    _rewrite_kit_manifest(kit, manifest)
+    with pytest.raises(contract.NsisRepackContractError, match="transformation"):
+        _verify_kit(kit=kit)
+
+
+def test_transformation_digest_has_one_acyclic_known_answer(tmp_path: Path) -> None:
+    source, descriptor = _fixture(tmp_path)
+    transformation = cast(dict[str, object], descriptor["transformation"])
+    unsigned = copy.deepcopy(transformation)
+    supplied = unsigned.pop("transformation_sha256")
+    assert supplied == _canonical_digest(unsigned)
+    files = contract._normalize_file_records(descriptor["files"])
+    assert contract._normalize_transformation(transformation, files) == transformation
+
+    first = _create_kit(
+        descriptor=_write_descriptor(tmp_path, descriptor),
+        source_root=source,
+        output=tmp_path / "first",
+    )
+    changed = copy.deepcopy(first)
+    cast(dict[str, object], changed["transformation"])["transformation_sha256"] = (
+        "c" * 64
+    )
+    assert contract._kit_digest(changed) != first["kit_sha256"]
+
+
+@pytest.mark.parametrize("role", ["icon", "webview2", "nsis-toolchain"])
+def test_transformation_payload_requires_one_exact_authorized_file_record(
+    tmp_path: Path, role: str
+) -> None:
+    source, descriptor = _fixture(tmp_path)
+    record = next(item for item in descriptor["files"] if item["path"] == HOST_PATH)
+    record["role"] = role
+    with pytest.raises(
+        contract.NsisRepackContractError, match="transformation payload|toolchain"
+    ):
+        _create_kit(
+            descriptor=_write_descriptor(tmp_path, descriptor),
+            source_root=source,
+            output=tmp_path / "kit",
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("marker_offset", -1),
+        ("marker_offset", True),
+        ("marker_offset", 1.0),
+        ("marker_offset", len(AFTER_HOST)),
+        ("after.before_token_count", 1),
+        ("after.after_token_count", 0),
+        ("before.before_token_count", 2),
+        ("before.after_token_count", 1),
+    ],
+)
+def test_reverse_verifier_rejects_marker_offset_and_count_mutations(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    source, descriptor = _fixture(tmp_path)
+    transformation = cast(dict[str, object], descriptor["transformation"])
+    target: dict[str, object] = transformation
+    parts = field.split(".")
+    for part in parts[:-1]:
+        target = cast(dict[str, object], target[part])
+    target[parts[-1]] = value
+    transformation.pop("transformation_sha256")
+    transformation["transformation_sha256"] = _canonical_digest(transformation)
+    with pytest.raises(contract.NsisRepackContractError, match="transformation"):
+        _create_kit(
+            descriptor=_write_descriptor(tmp_path, descriptor),
+            source_root=source,
+            output=tmp_path / "kit",
+        )
+
+
+def test_all_contract_apis_require_external_source_expectations() -> None:
+    names = (
+        "create_kit",
+        "verify_kit",
+        "repack",
+        "verify_receipt",
+        "verify_provenance_set",
+        "_verify_private_kit",
+        "_verified_kit_snapshot",
+    )
+    for name in names:
+        signature = inspect.signature(getattr(contract, name))
+        for parameter in (
+            "expected_source_ref",
+            "expected_source_sha",
+            "expected_source_tree",
+            "expected_source_epoch",
+        ):
+            assert signature.parameters[parameter].default is inspect.Parameter.empty
+
+
+@pytest.mark.parametrize(
+    ("command", "specific"),
+    [
+        ("create-kit", ["--descriptor", "x", "--source-root", "x", "--output", "x"]),
+        ("verify-kit", ["--kit", "x", "--expected-kit-sha256", "c" * 64]),
+        (
+            "repack",
+            [
+                "--kit",
+                "x",
+                "--output",
+                "x",
+                "--receipt",
+                "x",
+                "--repack-slot",
+                "a",
+                "--expected-kit-sha256",
+                "c" * 64,
+            ],
+        ),
+        (
+            "verify-receipt",
+            [
+                "--receipt",
+                "x",
+                "--kit",
+                "x",
+                "--output",
+                "x",
+                "--expected-repack-slot",
+                "a",
+                "--expected-kit-sha256",
+                "c" * 64,
+            ],
+        ),
+        (
+            "verify-provenance-set",
+            [
+                "--candidate-root",
+                "x",
+                "--installer",
+                "x",
+                "--expected-kit-sha256",
+                "c" * 64,
+            ],
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "omitted",
+    [
+        "--expected-source-ref",
+        "--expected-source-sha",
+        "--expected-source-tree",
+        "--expected-source-epoch",
+    ],
+)
+def test_cli_operations_require_all_four_external_source_expectations(
+    command: str, specific: list[str], omitted: str
+) -> None:
+    expectations = [
+        "--expected-source-ref",
+        REF,
+        "--expected-source-sha",
+        SHA,
+        "--expected-source-tree",
+        TREE,
+        "--expected-source-epoch",
+        str(EPOCH),
+    ]
+    index = expectations.index(omitted)
+    del expectations[index : index + 2]
+    with pytest.raises(SystemExit) as raised:
+        contract.main([command, *specific, *expectations])
+    assert raised.value.code == 2
+
+
+def test_source_epoch_uses_signed_64_bit_contract() -> None:
+    assert contract._source_epoch(2**63 - 1, "epoch") == 2**63 - 1
+    for value in (0, -1, True, 1.0, 2**63):
+        with pytest.raises(contract.NsisRepackContractError):
+            contract._source_epoch(value, "epoch")
 
 
 def test_independent_directories_produce_identical_kit_digest(tmp_path: Path) -> None:
@@ -1243,7 +1672,7 @@ def test_uninstaller_finalize_branch_must_be_provably_dead(
 
 def test_verify_rejects_tampering_extra_files_and_wrong_source(tmp_path: Path) -> None:
     kit, _result = _create(tmp_path)
-    payload = kit / "content/payload/stock-desk.exe"
+    payload = kit / "content" / HOST_PATH
     payload.chmod(0o600)
     payload.write_bytes(b"tampered")
     with pytest.raises(contract.NsisRepackContractError, match="identity mismatch"):
@@ -1306,7 +1735,14 @@ def test_repack_uses_only_fixed_argv_and_environment_and_writes_receipt(
     assert receipt["artifact"] == contract.RECEIPT_ARTIFACT
     assert receipt["kit_sha256"] == manifest["kit_sha256"]
     receipt_output = cast(Mapping[str, object], receipt["output"])
-    assert receipt_output["path"] == "stock-desk.exe"
+    assert receipt_output["path"] == "unsigned/stock-desk.exe"
+    assert receipt["repack_slot"] == "a"
+    assert (
+        receipt["transformation_sha256"]
+        == cast(Mapping[str, object], manifest["transformation"])[
+            "transformation_sha256"
+        ]
+    )
     assert json.loads(receipt_path.read_bytes()) == receipt
 
 
@@ -1424,6 +1860,28 @@ def test_schema_files_close_every_object_shape() -> None:
                 stack.extend(current)
 
 
+def test_schemas_bind_source_ref_epoch_transformation_and_receipt_slots() -> None:
+    kit = json.loads(Path("schemas/nsis-repack-kit-v1.schema.json").read_bytes())
+    receipt = json.loads(
+        Path("schemas/nsis-repack-receipt-v1.schema.json").read_bytes()
+    )
+    hardened_ref = "^(?:refs/heads/main|refs/pull/[1-9][0-9]*/merge)(?![\\s\\S])"
+    assert kit["$defs"]["sourceRef"]["pattern"] == hardened_ref
+    assert receipt["$defs"]["sourceRef"]["pattern"] == hardened_ref
+    assert kit["properties"]["source_epoch"]["maximum"] == 2**63 - 1
+    assert receipt["properties"]["source_epoch"]["maximum"] == 2**63 - 1
+    transformation = kit["$defs"]["transformation"]
+    assert transformation["properties"]["payload_path"]["const"] == HOST_PATH
+    assert transformation["properties"]["marker_offset"]["maximum"] == (
+        contract.MAX_TAURI_HOST_BYTES - len(contract.TAURI_BUNDLE_MARKER_NSIS)
+    )
+    assert (
+        transformation["properties"]["source"]["properties"]["commit"]["const"]
+        == contract.TAURI_SOURCE_COMMIT
+    )
+    assert receipt["properties"]["repack_slot"] == {"enum": ["a", "b"]}
+
+
 def test_cli_create_verify_and_fail_closed(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -1440,20 +1898,28 @@ def test_cli_create_verify_and_fail_closed(
                 str(source),
                 "--output",
                 str(kit),
+                "--expected-source-ref",
+                REF,
                 "--expected-source-sha",
                 SHA,
                 "--expected-source-tree",
                 TREE,
+                "--expected-source-epoch",
+                str(EPOCH),
             ]
         )
         == 0
     )
     manifest = json.loads((kit / contract.KIT_MANIFEST).read_bytes())
     verification_arguments = [
+        "--expected-source-ref",
+        REF,
         "--expected-source-sha",
         SHA,
         "--expected-source-tree",
         TREE,
+        "--expected-source-epoch",
+        str(EPOCH),
         "--expected-kit-sha256",
         str(manifest["kit_sha256"]),
     ]
@@ -1884,17 +2350,21 @@ def test_repack_executes_the_same_private_snapshot_that_was_verified(
     def mutate_original_after_snapshot(
         *,
         kit: Path,
-        expected_source_sha: str | None = None,
-        expected_source_tree: str | None = None,
-        expected_kit_sha256: str | None = None,
+        expected_source_ref: str,
+        expected_source_sha: str,
+        expected_source_tree: str,
+        expected_source_epoch: int,
+        expected_kit_sha256: str,
     ) -> Any:
         with original_context(
             kit=kit,
+            expected_source_ref=expected_source_ref,
             expected_source_sha=expected_source_sha,
             expected_source_tree=expected_source_tree,
+            expected_source_epoch=expected_source_epoch,
             expected_kit_sha256=expected_kit_sha256,
         ) as verified:
-            original_payload = kit / "content/payload/stock-desk.exe"
+            original_payload = kit / "content" / HOST_PATH
             original_payload.chmod(0o600)
             original_payload.write_bytes(b"mutated-after-verification")
             yield verified
@@ -1903,7 +2373,7 @@ def test_repack_executes_the_same_private_snapshot_that_was_verified(
         command: list[str], **kwargs: object
     ) -> subprocess.CompletedProcess[bytes]:
         cwd = Path(str(kwargs["cwd"]))
-        assert (cwd / "payload/stock-desk.exe").read_bytes() == b"application\n"
+        assert (cwd / HOST_PATH).read_bytes() == AFTER_HOST
         generated = cwd / "unsigned/stock-desk.exe"
         generated.parent.mkdir(parents=True, exist_ok=True)
         generated.write_bytes(INSTALLER)
@@ -1957,10 +2427,16 @@ def test_verify_receipt_closes_kit_and_installer_bytes(
                 str(kit),
                 "--output",
                 str(output),
+                "--expected-repack-slot",
+                "a",
+                "--expected-source-ref",
+                REF,
                 "--expected-source-sha",
                 SHA,
                 "--expected-source-tree",
                 TREE,
+                "--expected-source-epoch",
+                str(EPOCH),
                 "--expected-kit-sha256",
                 str(generated["kit_sha256"]),
             ]
@@ -2016,3 +2492,363 @@ def test_verify_receipt_rejects_output_size_above_contract_limit(
 
     with pytest.raises(contract.NsisRepackContractError, match="exceeds size limit"):
         _verify_receipt(receipt=receipt, kit=kit, output=output)
+
+
+def _provenance_fixture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[Path, Path, str]:
+    monkeypatch.setattr(
+        "scripts.nsis_repack_contract.subprocess.run", _fake_successful_makensis
+    )
+    candidate = tmp_path / "candidate"
+    candidate.mkdir(parents=True)
+    source, descriptor = _fixture(tmp_path / "source")
+    kit = candidate / "nsis-repack-kit"
+    manifest = _create_kit(
+        descriptor=_write_descriptor(tmp_path, descriptor),
+        source_root=source,
+        output=kit,
+    )
+    verification = candidate / "nsis-repack-verification"
+    verification.mkdir()
+    output_a = tmp_path / "repack-a.exe"
+    output_b = tmp_path / "repack-b.exe"
+    _repack(
+        kit,
+        output_a,
+        verification / "repack-a-receipt.json",
+        repack_slot="a",
+    )
+    _repack(
+        kit,
+        output_b,
+        verification / "repack-b-receipt.json",
+        repack_slot="b",
+    )
+    installer = candidate / "stock-desk-1.1.0-unsigned-x64-setup.exe"
+    shutil.copyfile(output_a, installer)
+    return candidate, installer, str(manifest["kit_sha256"])
+
+
+def _verify_provenance(
+    candidate: Path,
+    installer: Path,
+    kit_sha256: str,
+    **updates: object,
+) -> dict[str, object]:
+    values: dict[str, object] = {
+        "candidate_root": candidate,
+        "installer": installer,
+        "expected_source_ref": REF,
+        "expected_source_sha": SHA,
+        "expected_source_tree": TREE,
+        "expected_source_epoch": EPOCH,
+        "expected_kit_sha256": kit_sha256,
+    }
+    values.update(updates)
+    return contract.verify_provenance_set(**values)
+
+
+def test_receipt_slot_is_required_and_externally_expected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    kit, _manifest = _create(tmp_path)
+    monkeypatch.setattr(
+        "scripts.nsis_repack_contract.subprocess.run", _fake_successful_makensis
+    )
+    output = tmp_path / "temporary-name.exe"
+    receipt = tmp_path / "receipt.json"
+    _repack(kit, output, receipt, repack_slot="a")
+    promoted = tmp_path / "renamed-promoted-installer.exe"
+    shutil.copyfile(output, promoted)
+    verified = _verify_receipt(
+        receipt=receipt,
+        kit=kit,
+        output=promoted,
+        expected_repack_slot="a",
+    )
+    assert cast(Mapping[str, object], verified["output"])["path"] == (
+        "unsigned/stock-desk.exe"
+    )
+    with pytest.raises(contract.NsisRepackContractError, match="repack_slot"):
+        _verify_receipt(
+            receipt=receipt,
+            kit=kit,
+            output=promoted,
+            expected_repack_slot="b",
+        )
+    promoted.write_bytes(b"substituted")
+    with pytest.raises(contract.NsisRepackContractError, match="installer bytes"):
+        _verify_receipt(
+            receipt=receipt,
+            kit=kit,
+            output=promoted,
+            expected_repack_slot="a",
+        )
+
+
+@pytest.mark.parametrize("value", ["A", "b ", "1", None, True])
+def test_repack_slot_accepts_only_exact_a_or_b(value: object) -> None:
+    with pytest.raises(contract.NsisRepackContractError, match="slot"):
+        contract._repack_slot(value, "slot")
+
+
+def test_epoch_mutation_with_recomputed_receipt_digest_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    kit, _manifest = _create(tmp_path)
+    monkeypatch.setattr(
+        "scripts.nsis_repack_contract.subprocess.run", _fake_successful_makensis
+    )
+    output = tmp_path / "out.exe"
+    receipt_path = tmp_path / "receipt.json"
+    _repack(kit, output, receipt_path)
+    receipt = json.loads(receipt_path.read_bytes())
+    receipt["source_epoch"] = EPOCH + 1
+    receipt["environment"]["SOURCE_DATE_EPOCH"] = str(EPOCH + 1)
+    receipt.pop("receipt_sha256")
+    receipt["receipt_sha256"] = contract._receipt_digest(receipt)
+    receipt_path.chmod(0o600)
+    receipt_path.write_bytes(contract._canonical_json(receipt))
+    with pytest.raises(contract.NsisRepackContractError, match="source_epoch"):
+        _verify_receipt(receipt=receipt_path, kit=kit, output=output)
+
+
+def test_receipt_transformation_digest_mutation_is_rejected_after_redigest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    kit, _manifest = _create(tmp_path)
+    monkeypatch.setattr(
+        "scripts.nsis_repack_contract.subprocess.run", _fake_successful_makensis
+    )
+    output = tmp_path / "out.exe"
+    receipt_path = tmp_path / "receipt.json"
+    _repack(kit, output, receipt_path)
+    receipt = json.loads(receipt_path.read_bytes())
+    receipt["transformation_sha256"] = "c" * 64
+    receipt.pop("receipt_sha256")
+    receipt["receipt_sha256"] = contract._receipt_digest(receipt)
+    receipt_path.chmod(0o600)
+    receipt_path.write_bytes(contract._canonical_json(receipt))
+    with pytest.raises(contract.NsisRepackContractError, match="transformation"):
+        _verify_receipt(receipt=receipt_path, kit=kit, output=output)
+
+
+def test_verify_repack_and_receipt_reject_each_external_source_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    kit, manifest = _create(tmp_path)
+    monkeypatch.setattr(
+        "scripts.nsis_repack_contract.subprocess.run", _fake_successful_makensis
+    )
+    output = tmp_path / "valid.exe"
+    receipt = tmp_path / "valid-receipt.json"
+    _repack(kit, output, receipt)
+    mismatches: dict[str, object] = {
+        "expected_source_ref": "refs/pull/2/merge",
+        "expected_source_sha": "c" * 40,
+        "expected_source_tree": "d" * 40,
+        "expected_source_epoch": EPOCH + 1,
+    }
+    base: dict[str, object] = {
+        "expected_source_ref": REF,
+        "expected_source_sha": SHA,
+        "expected_source_tree": TREE,
+        "expected_source_epoch": EPOCH,
+    }
+    for index, (field, value) in enumerate(mismatches.items()):
+        expectations = {**base, field: value}
+        with pytest.raises(contract.NsisRepackContractError):
+            contract.verify_kit(
+                kit=kit,
+                expected_kit_sha256=str(manifest["kit_sha256"]),
+                **expectations,
+            )
+        with pytest.raises(contract.NsisRepackContractError):
+            contract.repack(
+                kit=kit,
+                output=tmp_path / f"bad-{index}.exe",
+                receipt=tmp_path / f"bad-{index}.json",
+                repack_slot="a",
+                expected_kit_sha256=str(manifest["kit_sha256"]),
+                **expectations,
+            )
+        with pytest.raises(contract.NsisRepackContractError):
+            contract.verify_receipt(
+                receipt=receipt,
+                kit=kit,
+                output=output,
+                expected_repack_slot="a",
+                expected_kit_sha256=str(manifest["kit_sha256"]),
+                **expectations,
+            )
+
+
+def test_provenance_summary_is_exact_canonical_and_cross_binds_every_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    candidate, installer, kit_sha256 = _provenance_fixture(tmp_path, monkeypatch)
+    summary = _verify_provenance(candidate, installer, kit_sha256)
+    assert set(summary) == {
+        "schema_version",
+        "artifact",
+        "source_ref",
+        "source_sha",
+        "source_tree",
+        "source_epoch",
+        "kit",
+        "transformation",
+        "transformation_sha256",
+        "receipts",
+        "installer",
+    }
+    assert [
+        item["repack_slot"]
+        for item in cast(list[dict[str, object]], summary["receipts"])
+    ] == ["a", "b"]
+    assert contract._parse_json(contract._canonical_json(summary), "summary") == summary
+    assert cast(Mapping[str, object], summary["installer"])["sha256"] == _digest(
+        INSTALLER
+    )
+    for field, bad in (
+        ("expected_source_ref", "refs/pull/2/merge"),
+        ("expected_source_sha", "c" * 40),
+        ("expected_source_tree", "c" * 40),
+        ("expected_source_epoch", EPOCH + 1),
+    ):
+        with pytest.raises(contract.NsisRepackContractError):
+            _verify_provenance(candidate, installer, kit_sha256, **{field: bad})
+
+
+@pytest.mark.parametrize("case", ["swapped", "duplicate", "missing", "extra"])
+def test_provenance_set_rejects_swapped_or_duplicate_receipt_slots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    candidate, installer, kit_sha256 = _provenance_fixture(tmp_path, monkeypatch)
+    verification = candidate / "nsis-repack-verification"
+    receipt_a = verification / "repack-a-receipt.json"
+    receipt_b = verification / "repack-b-receipt.json"
+    if case == "swapped":
+        left = receipt_a.read_bytes()
+        right = receipt_b.read_bytes()
+        receipt_a.write_bytes(right)
+        receipt_b.write_bytes(left)
+    elif case == "duplicate":
+        value = json.loads(receipt_b.read_bytes())
+        value["repack_slot"] = "a"
+        value.pop("receipt_sha256")
+        value["receipt_sha256"] = contract._receipt_digest(value)
+        receipt_b.write_bytes(contract._canonical_json(value))
+    elif case == "missing":
+        receipt_b.unlink()
+    else:
+        (verification / "repack-c-receipt.json").write_bytes(receipt_a.read_bytes())
+    with pytest.raises(contract.NsisRepackContractError, match="receipt|slot|evidence"):
+        _verify_provenance(candidate, installer, kit_sha256)
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "case-alias",
+        "symlink",
+        "hardlink",
+        "external",
+        "missing-installer",
+        "missing-kit-manifest",
+        "extra-kit",
+    ],
+)
+def test_provenance_set_rejects_case_link_and_external_installer_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    case: str,
+) -> None:
+    candidate, installer, kit_sha256 = _provenance_fixture(tmp_path, monkeypatch)
+    if case == "case-alias":
+        alias = candidate / "NSIS-Repack-Kit"
+        try:
+            alias.mkdir()
+        except OSError:
+            pytest.skip("case-distinct aliases are unavailable")
+    elif case == "symlink":
+        receipt = candidate / "nsis-repack-verification/repack-a-receipt.json"
+        backing = receipt.with_suffix(".backing")
+        receipt.rename(backing)
+        try:
+            receipt.symlink_to(backing.name)
+        except OSError:
+            pytest.skip("symlink creation is unavailable")
+    elif case == "hardlink":
+        alias = candidate / "installer-hardlink.exe"
+        os.link(installer, alias)
+    elif case == "external":
+        external = tmp_path / "external.exe"
+        shutil.copyfile(installer, external)
+        installer = external
+    elif case == "missing-installer":
+        installer.unlink()
+    elif case == "missing-kit-manifest":
+        (candidate / "nsis-repack-kit" / contract.KIT_MANIFEST).unlink()
+    else:
+        (candidate / "nsis-repack-kit" / "extra.txt").write_text("extra")
+    with pytest.raises(contract.NsisRepackContractError):
+        _verify_provenance(candidate, installer, kit_sha256)
+
+
+def test_provenance_set_consumes_one_private_snapshot_under_source_race(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate, installer, kit_sha256 = _provenance_fixture(tmp_path, monkeypatch)
+    original_verify_kit = contract.verify_kit
+    original_receipt = candidate / "nsis-repack-verification/repack-a-receipt.json"
+    mutated = False
+
+    def mutate_original_after_snapshot(**kwargs: object) -> dict[str, object]:
+        nonlocal mutated
+        kit_path = cast(Path, kwargs["kit"])
+        assert candidate not in kit_path.parents
+        if not mutated:
+            mutated = True
+            original_receipt.write_bytes(b"mutated-original-receipt")
+            installer.write_bytes(b"mutated-original-installer")
+        return original_verify_kit(**kwargs)
+
+    monkeypatch.setattr(contract, "verify_kit", mutate_original_after_snapshot)
+    summary = _verify_provenance(candidate, installer, kit_sha256)
+    assert mutated
+    assert cast(Mapping[str, object], summary["installer"])["sha256"] == _digest(
+        INSTALLER
+    )
+
+
+def test_verify_provenance_set_cli_emits_canonical_summary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    candidate, installer, kit_sha256 = _provenance_fixture(tmp_path, monkeypatch)
+    result = contract.main(
+        [
+            "verify-provenance-set",
+            "--candidate-root",
+            str(candidate),
+            "--installer",
+            str(installer),
+            "--expected-source-ref",
+            REF,
+            "--expected-source-sha",
+            SHA,
+            "--expected-source-tree",
+            TREE,
+            "--expected-source-epoch",
+            str(EPOCH),
+            "--expected-kit-sha256",
+            kit_sha256,
+        ]
+    )
+    assert result == 0
+    assert json.loads(capsys.readouterr().out)["artifact"] == (
+        contract.PROVENANCE_SET_ARTIFACT
+    )

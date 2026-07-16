@@ -9,6 +9,9 @@
     "artifact",
     "receipt_sha256",
     "kit_sha256",
+    "transformation_sha256",
+    "repack_slot",
+    "source_ref",
     "source_sha",
     "source_tree",
     "source_epoch",
@@ -22,9 +25,12 @@
     "artifact": { "const": "stock-desk-nsis-repack-receipt-v1" },
     "receipt_sha256": { "$ref": "#/$defs/sha256" },
     "kit_sha256": { "$ref": "#/$defs/sha256" },
+    "transformation_sha256": { "$ref": "#/$defs/sha256" },
+    "repack_slot": { "enum": ["a", "b"] },
+    "source_ref": { "$ref": "#/$defs/sourceRef" },
     "source_sha": { "$ref": "#/$defs/gitObject" },
     "source_tree": { "$ref": "#/$defs/gitObject" },
-    "source_epoch": { "type": "integer", "minimum": 1 },
+    "source_epoch": { "type": "integer", "minimum": 1, "maximum": 9223372036854775807 },
     "argv": {
       "const": [
         "-INPUTCHARSET",
@@ -63,6 +69,10 @@
   "$defs": {
     "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
     "gitObject": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "sourceRef": {
+      "type": "string",
+      "pattern": "^(?:refs/heads/main|refs/pull/[1-9][0-9]*/merge)(?![\\s\\S])"
+    },
     "path": {
       "type": "string",
       "minLength": 1,

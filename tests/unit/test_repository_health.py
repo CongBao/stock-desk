@@ -558,6 +558,7 @@ def test_windows_candidate_binds_reproducible_nsis_repack_kit_without_new_family
         "nsis_repack_contract_integration.ps1",
         "nsis-repack-kit",
         "nsis-repack-verification",
+        "SourceRef",
         "SourceEpoch",
     ):
         assert required in repack
@@ -586,6 +587,9 @@ def test_windows_candidate_binds_reproducible_nsis_repack_kit_without_new_family
         "actualReceiptInventory",
         "expectedReceiptInventory",
         "--expected-kit-sha256 $leftKitSha",
+        "--expected-source-ref $env:GITHUB_REF",
+        "--expected-source-epoch $sourceEpoch",
+        "--expected-repack-slot $receiptSlot",
         "$repackPayloadList",
         "--payload-list $repackPayloadList",
         "config/nsis-toolchain-lock.json=$toolchainLockHash",
@@ -623,6 +627,11 @@ def test_windows_candidate_binds_reproducible_nsis_repack_kit_without_new_family
     assert integration.count("--expected-kit-sha256 $expectedKitSha") == 4
     assert integration.count("--expected-source-sha $SourceSha") == 5
     assert integration.count("--expected-source-tree $SourceTree") == 5
+    assert integration.count("--expected-source-ref $SourceRef") == 5
+    assert integration.count("--expected-source-epoch $SourceEpoch") == 5
+    assert integration.count("--repack-slot a") == 1
+    assert integration.count("--repack-slot b") == 1
+    assert "--expected-repack-slot $pair.Slot" in integration
     assert "--prepare-private-directory" in integration
     assert "--verify-private-directory" in integration
     assert (
@@ -664,6 +673,8 @@ def test_windows_candidate_binds_reproducible_nsis_repack_kit_without_new_family
     assert "--private-root $stage" in integration
     assert "--payload $patchedPayload" in integration
     assert "tauri-bundle-type-unk-to-nss-v1" in integration
+    assert "$patchedPayloadRelative = 'payload/main-binary-nss.exe'" in integration
+    assert "transformation=$payloadPatch" in integration
     assert "$payloadPatch.marker_offset" in integration
     assert "workspace host binary changed" in integration
     assert "original unsigned candidate changed" in integration
