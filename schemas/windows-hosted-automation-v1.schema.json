@@ -1,0 +1,336 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/CongBao/stock-desk/schemas/windows-hosted-automation-v1.schema.json",
+  "title": "Stock Desk Windows hosted automation evidence v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "input_method",
+    "physical_mouse_click",
+    "source_sha",
+    "source_tree",
+    "candidate_sha256",
+    "installed_executable_sha256",
+    "capture_nonce",
+    "process_id",
+    "main_window_handle",
+    "webview2",
+    "actions",
+    "host_exit_code",
+    "hosted_runner_limitations"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "stock-desk-windows-hosted-automation-v1"
+    },
+    "input_method": {
+      "const": "windows-uia-and-cdp-automation"
+    },
+    "physical_mouse_click": {
+      "const": false
+    },
+    "source_sha": {
+      "$ref": "#/$defs/gitObject"
+    },
+    "source_tree": {
+      "$ref": "#/$defs/gitObject"
+    },
+    "candidate_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "installed_executable_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "capture_nonce": {
+      "$ref": "#/$defs/uuid4"
+    },
+    "process_id": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "main_window_handle": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "webview2": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "user_data_dir",
+        "cdp_port",
+        "browser_process_id"
+      ],
+      "properties": {
+        "user_data_dir": {
+          "type": "string",
+          "minLength": 1
+        },
+        "cdp_port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "browser_process_id": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "actions": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "prefixItems": [
+        {
+          "$ref": "#/$defs/nativeOpen"
+        },
+        {
+          "$ref": "#/$defs/webviewCancel"
+        },
+        {
+          "$ref": "#/$defs/nativeReopen"
+        },
+        {
+          "$ref": "#/$defs/webviewConfirm"
+        }
+      ],
+      "items": false
+    },
+    "host_exit_code": {
+      "const": 0
+    },
+    "hosted_runner_limitations": {
+      "const": [
+        "github-hosted-windows-server-is-not-win10-or-win11-desktop",
+        "runner-account-is-not-real-standard-user-acceptance",
+        "automation-does-not-prove-uac-secure-desktop-or-physical-input"
+      ]
+    }
+  },
+  "$defs": {
+    "gitObject": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "uuid4": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "nativeTarget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "process_id",
+        "window_handle",
+        "automation_id",
+        "name",
+        "runtime_id",
+        "titlebar_ancestor",
+        "enabled",
+        "offscreen"
+      ],
+      "properties": {
+        "process_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "window_handle": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "automation_id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "runtime_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "titlebar_ancestor": {
+          "const": true
+        },
+        "enabled": {
+          "const": true
+        },
+        "offscreen": {
+          "const": false
+        }
+      },
+      "anyOf": [
+        {
+          "properties": {
+            "automation_id": {
+              "minLength": 1
+            }
+          }
+        },
+        {
+          "properties": {
+            "name": {
+              "minLength": 1
+            }
+          }
+        }
+      ]
+    },
+    "webviewTarget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "role",
+        "name",
+        "exact"
+      ],
+      "properties": {
+        "role": {
+          "const": "button"
+        },
+        "name": {
+          "enum": [
+            "取消",
+            "退出应用"
+          ]
+        },
+        "exact": {
+          "const": true
+        }
+      }
+    },
+    "nativeOpen": {
+      "$ref": "#/$defs/actionBase",
+      "properties": {
+        "sequence": {
+          "const": 1
+        },
+        "action": {
+          "const": "native-close-open-dialog"
+        },
+        "target": {
+          "$ref": "#/$defs/nativeTarget"
+        },
+        "invocation": {
+          "const": "uia-invoke-pattern"
+        },
+        "physical_mouse_click": {
+          "const": false
+        },
+        "observed_state": {
+          "const": "exit-dialog-visible"
+        }
+      }
+    },
+    "webviewCancel": {
+      "$ref": "#/$defs/actionBase",
+      "properties": {
+        "sequence": {
+          "const": 2
+        },
+        "action": {
+          "const": "webview-cancel-dialog"
+        },
+        "target": {
+          "$ref": "#/$defs/webviewTarget"
+        },
+        "invocation": {
+          "const": "playwright-cdp-click"
+        },
+        "physical_mouse_click": {
+          "const": false
+        },
+        "observed_state": {
+          "const": "dialog-hidden-host-alive"
+        }
+      }
+    },
+    "nativeReopen": {
+      "$ref": "#/$defs/actionBase",
+      "properties": {
+        "sequence": {
+          "const": 3
+        },
+        "action": {
+          "const": "native-close-reopen-dialog"
+        },
+        "target": {
+          "$ref": "#/$defs/nativeTarget"
+        },
+        "invocation": {
+          "const": "uia-invoke-pattern"
+        },
+        "physical_mouse_click": {
+          "const": false
+        },
+        "observed_state": {
+          "const": "exit-dialog-visible"
+        }
+      }
+    },
+    "webviewConfirm": {
+      "$ref": "#/$defs/actionBase",
+      "properties": {
+        "sequence": {
+          "const": 4
+        },
+        "action": {
+          "const": "webview-confirm-exit"
+        },
+        "target": {
+          "$ref": "#/$defs/webviewTarget"
+        },
+        "invocation": {
+          "const": "playwright-cdp-click"
+        },
+        "physical_mouse_click": {
+          "const": false
+        },
+        "observed_state": {
+          "const": "host-exited-zero"
+        }
+      }
+    },
+    "actionBase": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4
+        },
+        "action": {
+          "type": "string",
+          "minLength": 1
+        },
+        "target": {
+          "type": "object"
+        },
+        "invocation": {
+          "type": "string",
+          "minLength": 1
+        },
+        "physical_mouse_click": {
+          "type": "boolean"
+        },
+        "observed_state": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "sequence",
+        "action",
+        "target",
+        "invocation",
+        "physical_mouse_click",
+        "observed_state"
+      ]
+    }
+  }
+}
