@@ -83,6 +83,18 @@ public static class StockDeskRealMouseInput {
   public static extern bool SetForegroundWindow(IntPtr hwnd);
   [DllImport("user32.dll", SetLastError=true)]
   public static extern bool ShowWindow(IntPtr hwnd, int command);
+  [DllImport("user32.dll")]
+  public static extern bool IsIconic(IntPtr hwnd);
+  [DllImport("kernel32.dll")]
+  public static extern uint GetCurrentThreadId();
+  [DllImport("user32.dll", SetLastError=true)]
+  public static extern uint GetWindowThreadProcessId(IntPtr hwnd, IntPtr processId);
+  [DllImport("user32.dll", SetLastError=true)]
+  public static extern bool AttachThreadInput(uint attach, uint attachTo, bool value);
+  [DllImport("user32.dll", SetLastError=true)]
+  public static extern bool BringWindowToTop(IntPtr hwnd);
+  [DllImport("user32.dll", SetLastError=true)]
+  public static extern bool GetCursorPos(out POINT point);
   [DllImport("user32.dll", SetLastError=true)]
   public static extern bool GetClientRect(IntPtr hwnd, out RECT rect);
   [DllImport("user32.dll", SetLastError=true)]
@@ -110,6 +122,7 @@ $hwnd = [IntPtr]$WindowHandle
 $process = [Diagnostics.Process]::GetProcessById($ExpectedProcessId)
 $evidenceProcess = [Diagnostics.Process]::GetProcessById($EvidenceProcessId)
 $actions = [Collections.Generic.List[object]]::new()
+$progressPath = Join-Path (Split-Path -Parent $OutputPath) 'packaged-real-click-progress.json'
 
 function Wait-Until([scriptblock]$Condition, [int]$Seconds, [string]$Failure) {
   $deadline = [DateTimeOffset]::UtcNow.AddSeconds($Seconds)
@@ -249,15 +262,92 @@ function Get-ButtonAtPoint([Windows.Point]$Point) {
 }
 
 function Focus-Window {
-  [StockDeskRealMouseInput]::ShowWindow($hwnd, 5) | Out-Null
-  for ($attempt = 1; $attempt -le 10; $attempt++) {
-    if ([StockDeskRealMouseInput]::GetForegroundWindow() -eq $hwnd) {
-      return $true
-    }
-    [StockDeskRealMouseInput]::SetForegroundWindow($hwnd) | Out-Null
-    Start-Sleep -Milliseconds 100
+  if ([StockDeskRealMouseInput]::IsIconic($hwnd)) {
+    [StockDeskRealMouseInput]::ShowWindow($hwnd, 9) | Out-Null
+  } else {
+    [StockDeskRealMouseInput]::ShowWindow($hwnd, 5) | Out-Null
   }
-  return $false
+  $currentThread = [StockDeskRealMouseInput]::GetCurrentThreadId()
+  $foregroundWindow = [StockDeskRealMouseInput]::GetForegroundWindow()
+  $foregroundThread = if ($foregroundWindow -eq [IntPtr]::Zero) {
+    [uint32]0
+  } else {
+    [StockDeskRealMouseInput]::GetWindowThreadProcessId($foregroundWindow, [IntPtr]::Zero)
+  }
+  $targetThread = [StockDeskRealMouseInput]::GetWindowThreadProcessId($hwnd, [IntPtr]::Zero)
+  $attachedForeground = $false
+  $attachedTarget = $false
+  try {
+    if ($foregroundThread -ne 0 -and $foregroundThread -ne $currentThread) {
+      $attachedForeground = [StockDeskRealMouseInput]::AttachThreadInput(
+        $currentThread,
+        $foregroundThread,
+        $true
+      )
+    }
+    if ($targetThread -ne 0 -and $targetThread -ne $currentThread) {
+      $attachedTarget = [StockDeskRealMouseInput]::AttachThreadInput(
+        $currentThread,
+        $targetThread,
+        $true
+      )
+    }
+    for ($attempt = 1; $attempt -le 10; $attempt++) {
+      if ([StockDeskRealMouseInput]::GetForegroundWindow() -eq $hwnd) {
+        return $true
+      }
+      [StockDeskRealMouseInput]::BringWindowToTop($hwnd) | Out-Null
+      [StockDeskRealMouseInput]::SetForegroundWindow($hwnd) | Out-Null
+      Start-Sleep -Milliseconds 100
+    }
+    return $false
+  } finally {
+    if ($attachedTarget) {
+      [StockDeskRealMouseInput]::AttachThreadInput($currentThread, $targetThread, $false) | Out-Null
+    }
+    if ($attachedForeground) {
+      [StockDeskRealMouseInput]::AttachThreadInput($currentThread, $foregroundThread, $false) | Out-Null
+    }
+  }
+}
+
+function Send-MouseInput([uint32]$Flags, [int]$Dx = 0, [int]$Dy = 0) {
+  $input = [StockDeskRealMouseInput+INPUT[]]::new(1)
+  $input[0].type = [StockDeskRealMouseInput]::INPUT_MOUSE
+  $input[0].data.mouse.dx = $Dx
+  $input[0].data.mouse.dy = $Dy
+  $input[0].data.mouse.dwFlags = $Flags
+  $sent = [StockDeskRealMouseInput]::SendInput(
+    1,
+    $input,
+    [Runtime.InteropServices.Marshal]::SizeOf([type][StockDeskRealMouseInput+INPUT])
+  )
+  if ($sent -ne 1) {
+    $errorCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+    throw "Windows SendInput did not publish a physical mouse event: flags=$Flags sent=$sent win32=$errorCode"
+  }
+  return [int]$sent
+}
+
+function Write-ProgressEvidence {
+  $progress = [ordered]@{
+    schema_version = 'stock-desk-windows-real-click-progress-v1'
+    source_sha = $SourceSha
+    source_tree = $SourceTree
+    candidate_sha256 = $CandidateSha256
+    installed_executable_sha256 = $ExpectedExecutableSha256
+    process_id = $ExpectedProcessId
+    main_window_handle = $WindowHandle
+    capture_nonce = $CaptureNonce
+    actions = $actions
+  }
+  $temporaryProgress = "$progressPath.$([Guid]::NewGuid().ToString('N')).tmp"
+  [IO.File]::WriteAllText(
+    $temporaryProgress,
+    (($progress | ConvertTo-Json -Depth 12) + [Environment]::NewLine),
+    [Text.UTF8Encoding]::new($false)
+  )
+  Move-Item -LiteralPath $temporaryProgress -Destination $progressPath -Force
 }
 
 function Invoke-PhysicalPointClick {
@@ -279,30 +369,53 @@ function Invoke-PhysicalPointClick {
     $centerY -lt $virtualY -or $centerY -ge $virtualY + $virtualHeight
   ) { throw 'real click target is outside the Windows virtual screen' }
 
+  $targetPointBeforeMove = [StockDeskRealMouseInput+POINT]::new()
+  $targetPointBeforeMove.X = $CenterX
+  $targetPointBeforeMove.Y = $CenterY
+  $targetWindowBeforeMove = [StockDeskRealMouseInput]::WindowFromPoint($targetPointBeforeMove)
+  $targetRootBeforeMove = if ($targetWindowBeforeMove -eq [IntPtr]::Zero) {
+    [IntPtr]::Zero
+  } else {
+    [StockDeskRealMouseInput]::GetAncestor(
+      $targetWindowBeforeMove,
+      [StockDeskRealMouseInput]::GA_ROOT
+    )
+  }
+  if ($targetRootBeforeMove -ne $hwnd) {
+    throw 'real click target became obscured after foreground preparation'
+  }
+
   $absoluteX = [int][Math]::Round((($centerX - $virtualX) * 65535.0) / ($virtualWidth - 1))
   $absoluteY = [int][Math]::Round((($centerY - $virtualY) * 65535.0) / ($virtualHeight - 1))
-  $inputs = [StockDeskRealMouseInput+INPUT[]]::new(3)
-  $inputs[0].type = [StockDeskRealMouseInput]::INPUT_MOUSE
-  $inputs[0].data.mouse.dx = $absoluteX
-  $inputs[0].data.mouse.dy = $absoluteY
-  $inputs[0].data.mouse.dwFlags = (
+  $moveSent = Send-MouseInput -Dx $absoluteX -Dy $absoluteY -Flags (
     [StockDeskRealMouseInput]::MOUSEEVENTF_MOVE -bor
     [StockDeskRealMouseInput]::MOUSEEVENTF_ABSOLUTE -bor
     [StockDeskRealMouseInput]::MOUSEEVENTF_VIRTUALDESK
   )
-  $inputs[1].type = [StockDeskRealMouseInput]::INPUT_MOUSE
-  $inputs[1].data.mouse.dwFlags = [StockDeskRealMouseInput]::MOUSEEVENTF_LEFTDOWN
-  $inputs[2].type = [StockDeskRealMouseInput]::INPUT_MOUSE
-  $inputs[2].data.mouse.dwFlags = [StockDeskRealMouseInput]::MOUSEEVENTF_LEFTUP
-  $sent = [StockDeskRealMouseInput]::SendInput(
-    [uint32]$inputs.Count,
-    $inputs,
-    [Runtime.InteropServices.Marshal]::SizeOf([type][StockDeskRealMouseInput+INPUT])
-  )
-  if ($sent -ne 3) {
-    $errorCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
-    throw "Windows SendInput did not publish the exact mouse sequence: sent=$sent win32=$errorCode"
+  Start-Sleep -Milliseconds 150
+  $cursor = [StockDeskRealMouseInput+POINT]::new()
+  if (-not [StockDeskRealMouseInput]::GetCursorPos([ref]$cursor)) {
+    throw 'Windows could not verify the physical mouse position'
   }
+  if ([Math]::Abs($cursor.X - $CenterX) -gt 2 -or [Math]::Abs($cursor.Y - $CenterY) -gt 2) {
+    throw 'cursor did not reach the exact physical click target'
+  }
+  $targetWindowAfterMove = [StockDeskRealMouseInput]::WindowFromPoint($cursor)
+  $targetRootAfterMove = if ($targetWindowAfterMove -eq [IntPtr]::Zero) {
+    [IntPtr]::Zero
+  } else {
+    [StockDeskRealMouseInput]::GetAncestor(
+      $targetWindowAfterMove,
+      [StockDeskRealMouseInput]::GA_ROOT
+    )
+  }
+  if ($targetRootAfterMove -ne $hwnd) {
+    throw 'real click target became obscured after foreground preparation'
+  }
+  $downSent = Send-MouseInput -Flags ([StockDeskRealMouseInput]::MOUSEEVENTF_LEFTDOWN)
+  Start-Sleep -Milliseconds 80
+  $upSent = Send-MouseInput -Flags ([StockDeskRealMouseInput]::MOUSEEVENTF_LEFTUP)
+  Start-Sleep -Milliseconds 150
   $foregroundAfterClick = [long][StockDeskRealMouseInput]::GetForegroundWindow()
   $record = [ordered]@{
       action = $Action
@@ -311,7 +424,10 @@ function Invoke-PhysicalPointClick {
       foreground_hwnd_before_click = $foregroundBeforeClick
       foreground_hwnd_after_click = $foregroundAfterClick
       foreground_hwnd = $foregroundAfterClick
-      send_input_returned = [int]$sent
+      cursor_after_move = [ordered]@{ x=$cursor.X; y=$cursor.Y }
+      point_window_hwnd_after_move = [long]$targetWindowAfterMove
+      point_host_root_hwnd_after_move = [long]$targetRootAfterMove
+      send_input_returned = [int]($moveSent + $downSent + $upSent)
       captured_at_utc = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
   }
   foreach ($key in $TargetEvidence.Keys) {
@@ -319,6 +435,7 @@ function Invoke-PhysicalPointClick {
     $record[$key] = $TargetEvidence[$key]
   }
   $actions.Add($record)
+  Write-ProgressEvidence
 }
 
 function Invoke-PhysicalClick {
@@ -326,6 +443,7 @@ function Invoke-PhysicalClick {
     [string]$Action,
     [System.Windows.Automation.AutomationElement]$Element
   )
+  $null = Focus-Window
   $automationId = [string]$Element.Current.AutomationId
   $name = [string]$Element.Current.Name
   $controlType = [string]$Element.Current.ControlType.ProgrammaticName
@@ -522,5 +640,6 @@ $temporary = "$OutputPath.$([Guid]::NewGuid().ToString('N')).tmp"
   [Text.UTF8Encoding]::new($false)
 )
 Move-Item -LiteralPath $temporary -Destination $OutputPath -Force
+Remove-Item -LiteralPath $progressPath -Force -ErrorAction SilentlyContinue
 
 exit 0

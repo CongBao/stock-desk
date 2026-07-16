@@ -503,9 +503,7 @@ def test_real_mouse_driver_does_not_require_foreground_lock_ownership() -> None:
         encoding="utf-8"
     )
     focus_helper = driver[
-        driver.index("function Focus-Window") : driver.index(
-            "function Invoke-PhysicalPointClick"
-        )
+        driver.index("function Focus-Window") : driver.index("function Send-MouseInput")
     ]
 
     # SetForegroundWindow is intentionally best-effort: Windows may reject a
@@ -520,6 +518,75 @@ def test_real_mouse_driver_does_not_require_foreground_lock_ownership() -> None:
     assert "focus_preparation_succeeded = $focusPreparationSucceeded" in driver
     assert "foreground_hwnd_before_click" in driver
     assert "foreground_hwnd_after_click" in driver
+
+
+def test_real_mouse_driver_focuses_and_paces_each_physical_click() -> None:
+    driver = (ROOT / "scripts" / "windows_desktop_real_click.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    # Hosted Windows can reject a plain SetForegroundWindow call. Attach the
+    # input queues long enough to foreground the exact Tauri HWND, but retain
+    # the observable state transition as the authoritative success signal.
+    for native_api in (
+        "GetCurrentThreadId",
+        "GetWindowThreadProcessId",
+        "AttachThreadInput",
+        "BringWindowToTop",
+        "GetCursorPos",
+        "IsIconic",
+    ):
+        assert native_api in driver
+    assert "if ([StockDeskRealMouseInput]::IsIconic($hwnd))" in driver
+    assert "ShowWindow($hwnd, 9)" in driver
+    assert "ShowWindow($hwnd, 5)" in driver
+    assert "finally" in driver[driver.index("function Focus-Window") :]
+
+    # A single batched move/down/up can be swallowed while Windows changes the
+    # foreground window. Publish and verify the move first, then pace the real
+    # button transition as a human click while preserving SendInput evidence.
+    click_helper = driver[
+        driver.index("function Invoke-PhysicalPointClick") : driver.index(
+            "function Invoke-PhysicalClick"
+        )
+    ]
+    assert "Send-MouseInput" in click_helper
+    assert "$moveSent" in click_helper
+    assert "$downSent" in click_helper
+    assert "$upSent" in click_helper
+    assert click_helper.count("Start-Sleep -Milliseconds") >= 2
+    assert "cursor did not reach the exact physical click target" in click_helper
+    assert (
+        "real click target became obscured after foreground preparation" in click_helper
+    )
+    assert (
+        "send_input_returned = [int]($moveSent + $downSent + $upSent)" in click_helper
+    )
+
+    native_helper = driver[
+        driver.index("function Invoke-PhysicalClick") : driver.index(
+            "function Convert-ToFiniteDouble"
+        )
+    ]
+    assert native_helper.index("$null = Focus-Window") < native_helper.index(
+        "$rect = $Element.Current.BoundingRectangle"
+    )
+
+
+def test_real_mouse_driver_preserves_partial_failure_evidence() -> None:
+    driver = (ROOT / "scripts" / "windows_desktop_real_click.ps1").read_text(
+        encoding="utf-8"
+    )
+    capture = (ROOT / "scripts" / "capture_windows_desktop_evidence.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    assert "packaged-real-click-progress.json" in driver
+    assert "function Write-ProgressEvidence" in driver
+    action_record = driver.index("$actions.Add($record)")
+    assert action_record < driver.index("Write-ProgressEvidence", action_record)
+    assert "Remove-Item -LiteralPath $progressPath" in driver
+    assert "-Filter 'packaged-*'" in capture
 
 
 def test_packaged_backtest_matrix_uses_webview_host_ipc_and_new_worker_resume() -> None:
