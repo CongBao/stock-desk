@@ -103,6 +103,30 @@ def test_macos_tauri_smoke_rejects_destructive_output_paths() -> None:
         macos_tauri_smoke._validated_output(ROOT / "test-results")
 
 
+def test_macos_tauri_smoke_rejects_a_locked_console_before_build(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(macos_tauri_smoke.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(macos_tauri_smoke.shutil, "which", lambda _command: "/bin/tool")
+    monkeypatch.setattr(macos_tauri_smoke, "_screen_is_locked", lambda: True)
+
+    def unexpected_git(*_arguments: str) -> str:
+        raise AssertionError(
+            "locked-session preflight must run before source/build work"
+        )
+
+    monkeypatch.setattr(macos_tauri_smoke, "_git", unexpected_git)
+
+    with pytest.raises(
+        macos_tauri_smoke.MacOSTauriSmokeError,
+        match="unlock the Mac",
+    ):
+        macos_tauri_smoke.run_smoke(
+            output=tmp_path / "test-results" / "macos-tauri-smoke",
+            timeout_seconds=300,
+        )
+
+
 def test_macos_tauri_smoke_cleanup_removes_target_after_other_cleanup_errors(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

@@ -65,10 +65,11 @@ def test_native_harness_installs_candidate_checks_shell_icons_and_exits_cleanly(
         "32 -32512",
         "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
         "WEBVIEW2_USER_DATA_FOLDER",
+        "Get-AvailableLoopbackPort",
         "Get-NetTCPConnection",
         "OwningProcess",
-        "--remote-debugging-port=0",
-        "runtime-assigned WebView2 CDP endpoint did not appear",
+        "--remote-debugging-port=$devToolsPort",
+        "selected-port WebView2 CDP endpoint did not appear",
         "shortcuts_share_host_identity = $true",
         "packaged_entries_match_reviewed_identity = $true",
         "graceful_exit = $true",
@@ -94,17 +95,18 @@ def test_native_harness_installs_candidate_checks_shell_icons_and_exits_cleanly(
     assert "--remote-allow-origins=*" not in source
     assert "http://127.0.0.1:9222" not in source
     assert "DevToolsActivePort" not in source
+    port_selection = source.index("$devToolsPort = Get-AvailableLoopbackPort")
     browser_arguments = source.index(
-        '$env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=0"'
+        '$env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=$devToolsPort"'
     )
     assert "[int]$devToolsPort = 0" in source
-    assert fixture_prepare < browser_arguments < launch
-    assert "Get-AvailableLoopbackPort" not in source
+    assert fixture_prepare < port_selection < browser_arguments < launch
+    assert "--remote-debugging-port=0" not in source
     assert "--remote-debugging-address" not in source
     assert "Test-RemoteDebuggingPortCommandLine" not in source
     assert "$_.LocalAddress -in @('127.0.0.1', '::1')" in source
     assert (
-        "isolated WebView2 process does not own exactly one runtime-assigned CDP listener"
+        "isolated WebView2 process does not own exactly one selected-port CDP listener"
         in source
     )
     process_cleanup = source.index("Stop-Process -Id $desktopProcess.Id")
@@ -238,28 +240,34 @@ def test_native_harness_rejects_visible_auxiliary_shell_windows_during_startup()
     assert "packaged app opened an auxiliary command window during startup" in source
 
 
-def test_webview_cdp_uses_runtime_assigned_owned_loopback_listener() -> None:
+def test_webview_cdp_uses_selected_nonzero_owned_loopback_listener() -> None:
     source = (ROOT / "scripts" / "capture_windows_desktop_evidence.ps1").read_text(
         encoding="utf-8"
     )
 
     assert (
-        'WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=0"' in source
+        'WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=$devToolsPort"'
+        in source
     )
-    assert "Get-AvailableLoopbackPort" not in source
+    assert "Get-AvailableLoopbackPort" in source
+    assert "[Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)" in source
+    assert "$listener.Stop()" in source
+    assert "selected loopback DevTools port is invalid" in source
+    assert "--remote-debugging-port=0" not in source
     assert "--remote-debugging-address" not in source
     assert "Get-IsolatedWebViewProcesses $webviewUserData" in source
-    assert "Get-NetTCPConnection -State Listen" in source
+    assert "Get-NetTCPConnection -State Listen -LocalPort $devToolsPort" in source
     assert "$_.OwningProcess" in source
     assert 'Invoke-RestMethod -Uri "$candidateCdp/json/version"' in source
-    assert "runtime-assigned WebView2 CDP endpoint did not appear" in source
+    assert "selected-port WebView2 CDP endpoint did not appear" in source
 
     launch = source.index(
         "$desktopProcess = [Diagnostics.Process]::Start($desktopStart)"
     )
     isolated_processes = source.index("$isolatedWebViews = @(", launch)
     owned_listeners = source.index(
-        "Get-NetTCPConnection -State Listen", isolated_processes
+        "Get-NetTCPConnection -State Listen -LocalPort $devToolsPort",
+        isolated_processes,
     )
     endpoint_probe = source.index("$candidateCdp/json/version", owned_listeners)
     cdp_export = source.index("$env:STOCK_DESK_DESKTOP_CDP = $desktopCdp")

@@ -54,6 +54,17 @@ def _git(*arguments: str) -> str:
     return result.stdout.strip()
 
 
+def _screen_is_locked() -> bool:
+    result = subprocess.run(
+        ("ioreg", "-n", "Root", "-d1"),
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    return '"CGSSessionScreenIsLocked"=Yes' in result.stdout
+
+
 def _host_pid(host_path: Path) -> int | None:
     result = subprocess.run(
         ("ps", "-axo", "pid=,command="),
@@ -531,6 +542,7 @@ def run_smoke(*, output: Path, timeout_seconds: int) -> dict[str, Any]:
         raise MacOSTauriSmokeError("macOS Tauri smoke requires Darwin")
     for required_command in (
         "git",
+        "ioreg",
         "pnpm",
         "rustc",
         "swift",
@@ -542,6 +554,10 @@ def run_smoke(*, output: Path, timeout_seconds: int) -> dict[str, Any]:
             raise MacOSTauriSmokeError(
                 f"required macOS smoke command is missing: {required_command}"
             )
+    if _screen_is_locked():
+        raise MacOSTauriSmokeError(
+            "unlock the Mac before running the native Tauri click smoke"
+        )
 
     output = _validated_output(output)
     source_sha = _git("rev-parse", "HEAD")
