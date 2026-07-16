@@ -33,9 +33,9 @@ LOCAL_WEBVIEW_GUARD_CLOSE = (
     b'      {{/if}}\n\n      !if "${INSTALLWEBVIEW2MODE}" == "offlineInstaller"\n'
 )
 LOCAL_PREVIOUS_UNINSTALL_HOOK = (
-    b'      !ifmacrodef NSIS_HOOK_PREVIOUS_INSTALL_UNINSTALL\n'
+    b"      !ifmacrodef NSIS_HOOK_PREVIOUS_INSTALL_UNINSTALL\n"
     b'        !insertmacro NSIS_HOOK_PREVIOUS_INSTALL_UNINSTALL "$4"\n'
-    b'      !endif\n'
+    b"      !endif\n"
 )
 UPSTREAM_WEBVIEW_GUARD_CLOSE = (
     b'\n      !if "${INSTALLWEBVIEW2MODE}" == "offlineInstaller"\n'
@@ -200,12 +200,8 @@ def test_legacy_readonly_payload_is_repaired_only_inside_install_root() -> None:
         "!macroend", maxsplit=1
     )[0]
     install_call = 'Push "$INSTDIR"\n  Call StockDeskClearLegacyReadOnlyAttributes'
-    uninstall_call = (
-        'Push "$INSTDIR"\n  Call un.StockDeskClearLegacyReadOnlyAttributes'
-    )
-    upgrade_call = (
-        '!insertmacro NSIS_HOOK_PREVIOUS_INSTALL_UNINSTALL "$4"'
-    )
+    uninstall_call = 'Push "$INSTDIR"\n  Call un.StockDeskClearLegacyReadOnlyAttributes'
+    upgrade_call = '!insertmacro NSIS_HOOK_PREVIOUS_INSTALL_UNINSTALL "$4"'
 
     # beta.3 inherited read-only attributes from the private repack snapshot.
     # Repair those legacy program files before either overwriting or deleting them.
