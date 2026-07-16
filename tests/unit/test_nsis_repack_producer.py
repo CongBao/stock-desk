@@ -644,6 +644,7 @@ def test_prepare_stage_writes_canonical_task2a_descriptor_and_closed_stage(
     )
     assert not (result.stage / "captured").exists()
     patched = result.stage / contract.TAURI_TRANSFORMED_PAYLOAD_PATH
+    assert patched.name == "stock-desk-desktop.exe"
     assert contract.TAURI_BUNDLE_MARKER_UNKNOWN not in patched.read_bytes()
     assert patched.read_bytes().count(contract.TAURI_BUNDLE_MARKER_NSIS) == 1
     plugin = "toolchain/Plugins/x86-unicode/additional/nsis_tauri_utils.dll"

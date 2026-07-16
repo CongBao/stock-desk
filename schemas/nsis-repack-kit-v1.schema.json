@@ -182,7 +182,7 @@
             "path": { "const": "crates/tauri-bundler/src/bundle.rs" }
           }
         },
-        "payload_path": { "const": "payload/main-binary-nss.exe" },
+        "payload_path": { "const": "payload/stock-desk-desktop.exe" },
         "before_token": { "const": "__TAURI_BUNDLE_TYPE_VAR_UNK" },
         "after_token": { "const": "__TAURI_BUNDLE_TYPE_VAR_NSS" },
         "marker_offset": { "type": "integer", "minimum": 0, "maximum": 2147483621 },

@@ -30,7 +30,7 @@ BEFORE_MARKER = b"__TAURI_BUNDLE_TYPE_VAR_UNK"
 AFTER_MARKER = b"__TAURI_BUNDLE_TYPE_VAR_NSS"
 BEFORE_HOST = b"host-prefix:" + BEFORE_MARKER + b":host-suffix\n"
 AFTER_HOST = b"host-prefix:" + AFTER_MARKER + b":host-suffix\n"
-HOST_PATH = "payload/main-binary-nss.exe"
+HOST_PATH = "payload/stock-desk-desktop.exe"
 PLUGIN_PATH = "toolchain/Plugins/x86-unicode/additional/nsis_tauri_utils.dll"
 NSISDL_PLUGIN_PATH = "toolchain/Plugins/x86-unicode/NSISdl.dll"
 REQUIRED_TOOL_PATHS = sorted(contract._REQUIRED_TOOLCHAIN_PATHS)
@@ -131,7 +131,7 @@ def _fixture(tmp_path: Path, *, prefix: str = "A") -> tuple[Path, dict[str, Any]
         '!include "FileAssociation.nsh"\n'
         '!include "${HOOK}"\n'
         'File "${MAIN}"\n'
-        'File "/oname=$TEMP\\stock-desk.exe" "payload/main-binary-nss.exe"\n'
+        'File "/oname=$TEMP\\stock-desk.exe" "payload/stock-desk-desktop.exe"\n'
         '${GetOptions} $CMDLINE "/P" $PassiveMode\n'
         '${GetSize} "$INSTDIR" "/M=uninstall.exe /S=0K /G=0" $0 $1 $2\n'
         'NSISdl::download "https://go.microsoft.com/fwlink/p/?LinkId=2124703" '
@@ -924,7 +924,7 @@ def test_create_and_verify_content_addressed_kit(tmp_path: Path) -> None:
     )
     normalized_script = (kit / "content/installer.nsi").read_text()
     assert "C:\\runner" not in normalized_script
-    assert '!define MAIN "payload\\main-binary-nss.exe"' in normalized_script
+    assert '!define MAIN "payload\\stock-desk-desktop.exe"' in normalized_script
     assert '!define HOOK "packaging\\installer-hooks.nsh"' in normalized_script
     assert {
         str(item["target"])

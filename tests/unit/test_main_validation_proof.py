@@ -37,7 +37,7 @@ def _transformation() -> dict[str, object]:
             "commit": "8909f221d1515955fc843808032bdc5d62209c96",
             "path": "crates/tauri-bundler/src/bundle.rs",
         },
-        "payload_path": "payload/main-binary-nss.exe",
+        "payload_path": "payload/stock-desk-desktop.exe",
         "before_token": before_token,
         "after_token": after_token,
         "marker_offset": 0,

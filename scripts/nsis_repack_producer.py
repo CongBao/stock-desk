@@ -594,7 +594,7 @@ def analyze_rendered_installer(
         raise NsisRepackProducerError("rendered plugin call set is not the audited set")
 
     path_uses = (
-        PathUse("main-host-unk", main, "payload/main-binary-nss.exe", 1),
+        PathUse("main-host-unk", main, "payload/stock-desk-desktop.exe", 1),
         PathUse(
             "additional-plugin-dir",
             plugin_dir,
@@ -960,7 +960,7 @@ def _assemble_stage_and_descriptor(
                 anchors.release_root / "stock-desk-desktop.exe",
                 "host",
             ),
-            "payload/main-binary-nss.exe",
+            "payload/stock-desk-desktop.exe",
             "payload",
         ),
     )
@@ -973,7 +973,7 @@ def _assemble_stage_and_descriptor(
         _copy_new(source_path, destination)
     transformation = patch_tauri_bundle_payload(
         private_root=stage,
-        payload=stage / "payload/main-binary-nss.exe",
+        payload=stage / "payload/stock-desk-desktop.exe",
     )
 
     nsis_snapshot = tools_snapshot / "NSIS"
