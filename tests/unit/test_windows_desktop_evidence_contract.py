@@ -274,6 +274,46 @@ def test_webview_cdp_uses_selected_nonzero_owned_loopback_listener() -> None:
     assert launch < isolated_processes < owned_listeners < endpoint_probe < cdp_export
 
 
+def test_webview_policy_targets_aumid_before_executable_name() -> None:
+    source = (ROOT / "scripts" / "capture_windows_desktop_evidence.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    assert "$webviewApplicationUserModelId = 'com.congbao.stockdesk'" in source
+    assert (
+        "$webviewPolicyAppIds = @(\n"
+        "  $webviewApplicationUserModelId,\n"
+        "  $webviewAppName\n"
+        ")" in source
+    )
+    assert "foreach ($appId in $webviewPolicyAppIds)" in source
+    assert (
+        "New-ItemProperty -LiteralPath $webviewArgsPolicy -Name $appId "
+        "-PropertyType String" in source
+    )
+    assert (
+        "New-ItemProperty -LiteralPath $webviewDataPolicy -Name $appId "
+        "-PropertyType String" in source
+    )
+    assert "Remove-ItemProperty -LiteralPath $webviewArgsPolicy -Name $appId" in source
+    assert "Remove-ItemProperty -LiteralPath $webviewDataPolicy -Name $appId" in source
+    assert "additional_browser_argument_policy_app_ids" in source
+    assert (
+        "WebView2 processes did not receive the selected remote debugging switch"
+        in source
+    )
+    args_cleanup_armed = source.index("$webviewArgsPolicySet = $true")
+    args_first_write = source.index(
+        "New-ItemProperty -LiteralPath $webviewArgsPolicy -Name $appId"
+    )
+    data_cleanup_armed = source.index("$webviewDataPolicySet = $true")
+    data_first_write = source.index(
+        "New-ItemProperty -LiteralPath $webviewDataPolicy -Name $appId"
+    )
+    assert args_cleanup_armed < args_first_write
+    assert data_cleanup_armed < data_first_write
+
+
 def test_webview_cdp_accepts_only_ipv4_or_ipv6_loopback_and_keeps_diagnostics() -> None:
     source = (ROOT / "scripts" / "capture_windows_desktop_evidence.ps1").read_text(
         encoding="utf-8"

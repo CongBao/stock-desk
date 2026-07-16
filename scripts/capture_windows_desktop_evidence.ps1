@@ -294,6 +294,11 @@ $webviewPolicyRoot = 'HKCU:\Software\Policies\Microsoft\Edge\WebView2'
 $webviewArgsPolicy = Join-Path $webviewPolicyRoot 'AdditionalBrowserArguments'
 $webviewDataPolicy = Join-Path $webviewPolicyRoot 'UserDataFolder'
 $webviewAppName = [IO.Path]::GetFileName($hostPath)
+$webviewApplicationUserModelId = 'com.congbao.stockdesk'
+$webviewPolicyAppIds = @(
+  $webviewApplicationUserModelId,
+  $webviewAppName
+)
 $webviewEdgePolicyCreated = -not (Test-Path -LiteralPath $webviewEdgePolicy)
 $webviewPolicyRootCreated = -not (Test-Path -LiteralPath $webviewPolicyRoot)
 $webviewArgsPolicyCreated = -not (Test-Path -LiteralPath $webviewArgsPolicy)
@@ -389,10 +394,14 @@ try {
   $env:WEBVIEW2_USER_DATA_FOLDER = $webviewUserData
   New-Item -Path $webviewEdgePolicy -Force | Out-Null
   New-Item -Path $webviewPolicyRoot -Force | Out-Null
-  foreach ($policy in @($webviewArgsPolicy, $webviewDataPolicy)) {
-    if ($null -ne (Get-ItemProperty -LiteralPath $policy -Name $webviewAppName -ErrorAction SilentlyContinue)) {
-      throw 'packaged WebView2 evidence refuses to replace an existing app policy'
+  foreach ($appId in $webviewPolicyAppIds) {
+    foreach ($policy in @($webviewArgsPolicy, $webviewDataPolicy)) {
+      if ($null -ne (Get-ItemProperty -LiteralPath $policy -Name $appId -ErrorAction SilentlyContinue)) {
+        throw 'packaged WebView2 evidence refuses to replace an existing app policy'
+      }
     }
+  }
+  foreach ($policy in @($webviewArgsPolicy, $webviewDataPolicy)) {
     New-Item -Path $policy -Force | Out-Null
   }
   # This candidate proof owns an isolated public fixture. Removing stale state
@@ -413,10 +422,16 @@ try {
   # validates the published browser endpoint before exposing it to Node.
   $devToolsPort = Get-AvailableLoopbackPort
   $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=$devToolsPort"
-  New-ItemProperty -LiteralPath $webviewArgsPolicy -Name $webviewAppName -PropertyType String -Value $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS | Out-Null
+  # Arm cleanup before the multi-AppId writes so a partial registry failure
+  # cannot leave a debug policy behind in a pre-existing policy key.
   $webviewArgsPolicySet = $true
-  New-ItemProperty -LiteralPath $webviewDataPolicy -Name $webviewAppName -PropertyType String -Value $webviewUserData | Out-Null
+  foreach ($appId in $webviewPolicyAppIds) {
+    New-ItemProperty -LiteralPath $webviewArgsPolicy -Name $appId -PropertyType String -Value $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS | Out-Null
+  }
   $webviewDataPolicySet = $true
+  foreach ($appId in $webviewPolicyAppIds) {
+    New-ItemProperty -LiteralPath $webviewDataPolicy -Name $appId -PropertyType String -Value $webviewUserData | Out-Null
+  }
   $desktopStart = [Diagnostics.ProcessStartInfo]::new()
   $desktopStart.FileName = $hostPath
   $desktopStart.WorkingDirectory = $installRoot
@@ -443,6 +458,17 @@ try {
       if ($processes.Count -gt 0) { return $processes }
       return $false
     } 90 'isolated packaged WebView2 process is missing'
+  )
+  $isolatedWebViews = @(
+    Wait-Until {
+      $processes = @(Get-IsolatedWebViewProcesses $webviewUserData)
+      $debugProcesses = @(
+        $processes |
+          Where-Object { [string]$_.CommandLine -match '(?:^|\s)--remote-debugging-port(?:=|\s)' }
+      )
+      if ($debugProcesses.Count -gt 0) { return $processes }
+      return $false
+    } 15 'WebView2 processes did not receive the selected remote debugging switch'
   )
   $isolatedWebViewProcessIds = @($isolatedWebViews | ForEach-Object { [int]$_.ProcessId })
   $devToolsObservation = Wait-Until {
@@ -788,6 +814,7 @@ try {
         $webviewProcesses |
           Where-Object { [string]$_.CommandLine -match '(?:^|\s)--remote-debugging-port(?:=|\s)' }
       ).Count
+      additional_browser_argument_policy_app_ids = @($webviewPolicyAppIds)
       devtools_listener_owned_by_isolated_webview = $diagnosticDevToolsListeners.Count -eq 1
       host_has_main_window = if ($null -ne $desktopProcess) { $desktopProcess.MainWindowHandle -ne [IntPtr]::Zero } else { $false }
     } | ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $diagnosticsRoot 'webview-startup-summary.json') -Encoding utf8NoBOM
@@ -799,8 +826,16 @@ try {
   Remove-Item Env:STOCK_DESK_CANDIDATE_SHA256 -ErrorAction SilentlyContinue
   Remove-Item Env:STOCK_DESK_RESTART_SYNC_DIR -ErrorAction SilentlyContinue
   Remove-Item Env:STOCK_DESK_CAPTURE_NONCE -ErrorAction SilentlyContinue
-  if ($webviewArgsPolicySet) { Remove-ItemProperty -LiteralPath $webviewArgsPolicy -Name $webviewAppName -ErrorAction SilentlyContinue }
-  if ($webviewDataPolicySet) { Remove-ItemProperty -LiteralPath $webviewDataPolicy -Name $webviewAppName -ErrorAction SilentlyContinue }
+  if ($webviewArgsPolicySet) {
+    foreach ($appId in $webviewPolicyAppIds) {
+      Remove-ItemProperty -LiteralPath $webviewArgsPolicy -Name $appId -ErrorAction SilentlyContinue
+    }
+  }
+  if ($webviewDataPolicySet) {
+    foreach ($appId in $webviewPolicyAppIds) {
+      Remove-ItemProperty -LiteralPath $webviewDataPolicy -Name $appId -ErrorAction SilentlyContinue
+    }
+  }
   if ($webviewArgsPolicyCreated) { Remove-Item -LiteralPath $webviewArgsPolicy -Force -ErrorAction SilentlyContinue }
   if ($webviewDataPolicyCreated) { Remove-Item -LiteralPath $webviewDataPolicy -Force -ErrorAction SilentlyContinue }
   if ($webviewPolicyRootCreated) { Remove-Item -LiteralPath $webviewPolicyRoot -Force -ErrorAction SilentlyContinue }
