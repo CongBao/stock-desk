@@ -29,7 +29,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT = ROOT / "test-results" / "macos-tauri-smoke"
 HOST_NAME = "stock-desk-desktop"
 APP_NAME = "Stock Desk.app"
-APP_IDENTIFIER = "com.congbao.stockdesk"
+APP_IDENTIFIER = "com.baozijuan.stockdesk"
 WINDOW_TITLE = "Stock Desk"
 EXPECTED_ACTIONS = (
     "titlebar-close-open-dialog",

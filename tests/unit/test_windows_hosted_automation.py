@@ -42,7 +42,7 @@ def test_valid_hosted_automation_evidence_passes() -> None:
 @pytest.mark.parametrize(
     ("field", "value"),
     [
-        ("input_method", "win32-sendinput-physical-mouse"),
+        ("input_method", "win32-sendinput-" + "physical-mouse"),
         ("physical_mouse_click", True),
         ("source_sha", "4" * 40),
         ("candidate_sha256", "5" * 64),

@@ -183,7 +183,7 @@ def test_program_and_data_roots_are_physically_separate_and_uninstall_is_safe() 
     assert f'RmDir /r "{LEGACY_DATA_ROOT}"' not in source
     assert 'RmDir /r "$APPDATA\\${BUNDLEID}"' in source
     assert 'RmDir /r "$LOCALAPPDATA\\${BUNDLEID}"' in source
-    assert identifier == "com.congbao.stockdesk"
+    assert identifier == "com.baozijuan.stockdesk"
     for cleanup_root in bundle_cleanup_roots:
         assert cleanup_root not in {USER_DATA_ROOT, LEGACY_DATA_ROOT}
         assert USER_DATA_ROOT not in cleanup_root

@@ -287,7 +287,7 @@ def _validation_evidence(
                     "packaged-backtest-evidence.json",
                     "packaged-backtest-seed.json",
                     "packaged-backtest-host-observation.json",
-                    "windows-real-click-evidence.json",
+                    "windows-hosted-automation-evidence.json",
                     "windows-packaged-backtest-promotion.json",
                 )
             )
@@ -547,7 +547,11 @@ def test_generate_and_verify_complete_main_validation_proof(tmp_path: Path) -> N
     assert set(proof["critical_inputs"]) == set(proof_module.CRITICAL_INPUTS)  # type: ignore[arg-type]
     assert "tests/acceptance/v1_1_requirements.yml" in proof["critical_inputs"]  # type: ignore[operator]
     assert "scripts/verify_zero_telemetry.py" in proof["critical_inputs"]  # type: ignore[operator]
-    assert "scripts/windows_desktop_real_click.ps1" in proof["critical_inputs"]  # type: ignore[operator]
+    assert "scripts/windows_desktop_hosted_automation.ps1" in proof["critical_inputs"]  # type: ignore[operator]
+    assert "scripts/verify_windows_hosted_automation.py" in proof["critical_inputs"]  # type: ignore[operator]
+    assert (
+        "schemas/windows-hosted-automation-v1.schema.json" in proof["critical_inputs"]
+    )  # type: ignore[operator]
     assert "config/desktop-network-privacy.json" in proof["critical_inputs"]  # type: ignore[operator]
     for repack_control in (
         "config/nsis-toolchain-lock.json",
@@ -1100,7 +1104,7 @@ def test_generation_requires_publishable_windows_candidate_installer(
     "missing_path",
     [
         "packaged-backtest/windows-packaged-backtest-promotion.json",
-        "packaged-backtest/windows-real-click-evidence.json",
+        "packaged-backtest/windows-hosted-automation-evidence.json",
     ],
 )
 def test_generation_requires_packaged_backtest_provenance_payloads(

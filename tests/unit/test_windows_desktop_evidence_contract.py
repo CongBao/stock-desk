@@ -154,7 +154,7 @@ def test_native_harness_installs_candidate_checks_shell_icons_and_exits_cleanly(
     assert "$afterSidecars[0].Id -eq $sidecarBeforePid" in source
     assert "sidecar binary identity changed before restart" in source
     assert "old packaged sidecar OS process survived" in source
-    assert "com.congbao.stockdesk" in source
+    assert "com.baozijuan.stockdesk" in source
     assert "$tauriDefaultWebViewDataExisted" in source
     diagnostics = source.index(
         "$webviewProcesses = @(Get-IsolatedWebViewProcesses $webviewUserData)"
@@ -279,7 +279,7 @@ def test_webview_policy_targets_aumid_before_executable_name() -> None:
         encoding="utf-8"
     )
 
-    assert "$webviewApplicationUserModelId = 'com.congbao.stockdesk'" in source
+    assert "$webviewApplicationUserModelId = 'com.baozijuan.stockdesk'" in source
     assert (
         "$webviewPolicyAppIds = @(\n"
         "  $webviewApplicationUserModelId,\n"
@@ -416,7 +416,8 @@ def test_packaged_webview_matrix_is_explicitly_equivalent_not_real_os_dpi() -> N
 def test_installed_desktop_exit_uses_honest_hosted_uia_automation() -> None:
     driver_path = ROOT / "scripts" / "windows_desktop_hosted_automation.ps1"
     assert driver_path.is_file()
-    assert not (ROOT / "scripts" / "windows_desktop_real_click.ps1").exists()
+    old_driver = "windows_desktop_" + "real_click.ps1"
+    assert not (ROOT / "scripts" / old_driver).exists()
     driver = driver_path.read_text(encoding="utf-8")
 
     for contract in (
@@ -513,6 +514,46 @@ def test_webview_hosted_clicks_publish_exact_role_name_and_state() -> None:
     assert "observed_state: observedState" in source
     assert '"dialog-hidden-host-alive"' in source
     assert '"click-dispatched"' in source
+
+
+def test_hosted_automation_is_bound_to_capture_candidate_and_main_proof() -> None:
+    capture = (ROOT / "scripts" / "capture_windows_desktop_evidence.ps1").read_text(
+        encoding="utf-8"
+    )
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    proof = (ROOT / "scripts" / "main_validation_proof.py").read_text(encoding="utf-8")
+    impact = (ROOT / "scripts" / "ci_impact.py").read_text(encoding="utf-8")
+
+    assert "windows_desktop_hosted_automation.ps1" in capture
+    assert "windows-hosted-automation-evidence.json" in capture
+    assert "verify_windows_hosted_automation.py" in capture
+    for parameter in (
+        "-WebViewUserDataDir $webviewUserData",
+        "-CdpPort $devToolsPort",
+        "-WebViewBrowserProcessId $webviewBrowserProcessId",
+    ):
+        assert parameter in capture
+    assert "hosted_automation = [ordered]@{" in capture
+    assert "physical_mouse_click = $false" in capture
+    assert "windows-hosted-automation-evidence.json:provenance" in workflow
+    assert '"packaged-backtest/windows-hosted-automation-evidence.json"' in proof
+    for critical_input in (
+        "schemas/windows-hosted-automation-v1.schema.json",
+        "scripts/verify_windows_hosted_automation.py",
+        "scripts/windows_desktop_hosted_automation.ps1",
+    ):
+        assert critical_input in workflow
+        assert f'"{critical_input}"' in proof
+        assert f'"{critical_input}"' in impact
+
+    combined = "\n".join((capture, workflow, proof, impact))
+    for forbidden in (
+        "windows-" + "real-click",
+        "real_os_" + "mouse_click",
+        "win32-sendinput-" + "physical-mouse",
+        "windows_desktop_" + "real_click",
+    ):
+        assert forbidden not in combined
 
 
 def test_packaged_backtest_matrix_uses_webview_host_ipc_and_new_worker_resume() -> None:

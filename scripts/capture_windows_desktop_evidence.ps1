@@ -294,7 +294,7 @@ $webviewPolicyRoot = 'HKCU:\Software\Policies\Microsoft\Edge\WebView2'
 $webviewArgsPolicy = Join-Path $webviewPolicyRoot 'AdditionalBrowserArguments'
 $webviewDataPolicy = Join-Path $webviewPolicyRoot 'UserDataFolder'
 $webviewAppName = [IO.Path]::GetFileName($hostPath)
-$webviewApplicationUserModelId = 'com.congbao.stockdesk'
+$webviewApplicationUserModelId = 'com.baozijuan.stockdesk'
 $webviewPolicyAppIds = @(
   $webviewApplicationUserModelId,
   $webviewAppName
@@ -305,7 +305,7 @@ $webviewArgsPolicyCreated = -not (Test-Path -LiteralPath $webviewArgsPolicy)
 $webviewDataPolicyCreated = -not (Test-Path -LiteralPath $webviewDataPolicy)
 $webviewArgsPolicySet = $false
 $webviewDataPolicySet = $false
-$tauriDefaultWebViewData = Join-Path $env:LOCALAPPDATA 'com.congbao.stockdesk'
+$tauriDefaultWebViewData = Join-Path $env:LOCALAPPDATA 'com.baozijuan.stockdesk'
 $tauriDefaultWebViewDataExisted = Test-Path -LiteralPath $tauriDefaultWebViewData
 $packagedDataRoot = Join-Path $env:LOCALAPPDATA 'Stock Desk\v1.1'
 $baselineSidecarProcessIds = @(
@@ -519,6 +519,10 @@ try {
   if ($devToolsListeners.Count -ne 1) {
     throw 'isolated WebView2 process does not own exactly one selected-port CDP listener'
   }
+  [int]$webviewBrowserProcessId = $devToolsListeners[0].OwningProcess
+  if ($isolatedWebViewProcessIds -notcontains $webviewBrowserProcessId) {
+    throw 'selected-port CDP listener does not belong to the isolated WebView2 process set'
+  }
   $installedSidecarPath = Join-Path $installRoot 'stock-desk-sidecar.exe'
   $sidecar = Wait-Until { @(Get-InstalledHostSidecarProcesses $desktopProcess.Id $installedSidecarPath) | Select-Object -First 1 } 60 'packaged Python sidecar did not remain running'
   $initialSidecars = @(Get-InstalledHostSidecarProcesses $desktopProcess.Id $installedSidecarPath)
@@ -625,76 +629,50 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "packaged fixture switch failed after restart: $fixtureId" }
     Write-CaptureAck (Join-Path $restartSyncRoot "fixture-$markerName.ack") $captureNonce
   }
-  $realClickMarkerPath = Join-Path $restartSyncRoot 'os-real-click-exit.json'
-  $realClickMarker = Wait-CaptureMarker $realClickMarkerPath $nodeProcess $captureNonce 300 'packaged WebView did not reach the real OS click boundary'
+  $hostedReadyPath = Join-Path $restartSyncRoot 'hosted-automation-ready.json'
+  $hostedReady = Wait-CaptureMarker $hostedReadyPath $nodeProcess $captureNonce 300 'packaged WebView did not reach the Hosted automation boundary'
   if (
-    $realClickMarker.phase -ne 'ready-for-native-titlebar-and-dialog-clicks' -or
-    $realClickMarker.candidate_sha256 -ne $candidateSha256
-  ) { throw 'real OS click marker identity is invalid' }
-  Write-CaptureAck (Join-Path $restartSyncRoot 'os-real-click-exit.ack') $captureNonce
-  $realClickEvidencePath = Join-Path $Output 'windows-real-click-evidence.json'
-  & (Join-Path $PSScriptRoot 'windows_desktop_real_click.ps1') `
+    $hostedReady.phase -ne 'ready-for-uia-and-cdp-automation' -or
+    $hostedReady.candidate_sha256 -ne $candidateSha256
+  ) { throw 'Hosted automation marker identity is invalid' }
+  Write-CaptureAck (Join-Path $restartSyncRoot 'hosted-automation-ready.ack') $captureNonce
+  $hostedEvidencePath = Join-Path $Output 'windows-hosted-automation-evidence.json'
+  & (Join-Path $PSScriptRoot 'windows_desktop_hosted_automation.ps1') `
     -WindowHandle $hostMainWindowHandle `
     -ExpectedProcessId $desktopProcess.Id `
     -EvidenceProcessId $nodeProcess.Id `
     -ExpectedExecutableSha256 $installedHostSha256 `
     -SourceSha $SourceSha -SourceTree $SourceTree `
     -CandidateSha256 $candidateSha256 `
+    -WebViewUserDataDir $webviewUserData `
+    -CdpPort $devToolsPort `
+    -WebViewBrowserProcessId $webviewBrowserProcessId `
     -CaptureSyncRoot $restartSyncRoot `
     -CaptureNonce $captureNonce `
-    -OutputPath $realClickEvidencePath
-  if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $realClickEvidencePath -PathType Leaf)) {
-    throw 'installed Stock Desk real OS mouse click evidence failed'
+    -OutputPath $hostedEvidencePath
+  if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $hostedEvidencePath -PathType Leaf)) {
+    throw 'installed Stock Desk Hosted interaction automation failed'
   }
-  $realClickEvidence = Get-Content -LiteralPath $realClickEvidencePath -Raw | ConvertFrom-Json
+  & $python (Join-Path $PSScriptRoot 'verify_windows_hosted_automation.py') `
+    $hostedEvidencePath `
+    --source-sha $SourceSha `
+    --source-tree $SourceTree `
+    --candidate-sha256 $candidateSha256
+  if ($LASTEXITCODE -ne 0) { throw 'Windows Hosted interaction evidence is invalid' }
+  $hostedEvidence = Get-Content -LiteralPath $hostedEvidencePath -Raw | ConvertFrom-Json
   if (
-    $realClickEvidence.source_sha -ne $SourceSha -or
-    $realClickEvidence.source_tree -ne $SourceTree -or
-    $realClickEvidence.candidate_sha256 -ne $candidateSha256 -or
-    $realClickEvidence.installed_executable_sha256 -ne $installedHostSha256 -or
-    $realClickEvidence.process_id -ne $desktopProcess.Id -or
-    $realClickEvidence.main_window_handle -ne $hostMainWindowHandle -or
-    $realClickEvidence.real_os_mouse_click -ne $true -or
-    $realClickEvidence.native_close_click_opened_dialog -ne $true -or
-    $realClickEvidence.cancel_click_kept_process_alive -ne $true -or
-    $realClickEvidence.second_close_reopened_dialog -ne $true -or
-    $realClickEvidence.exit_click_host_exit_code -ne 0 -or
-    @($realClickEvidence.actions).Count -ne 4
-  ) { throw 'real OS mouse click evidence is incomplete or unbound' }
-  $realClickActions = @($realClickEvidence.actions)
-  $expectedRealClickActions = @(
-    'titlebar-close-open-dialog',
-    'cancel-exit-dialog',
-    'titlebar-close-reopen-dialog',
-    'confirm-exit-dialog'
-  )
-  for ($index = 0; $index -lt $expectedRealClickActions.Count; $index++) {
-    $action = $realClickActions[$index]
-    if (
-      $action.action -cne $expectedRealClickActions[$index] -or
-      $action.mouse_move_attempts -lt 1 -or
-      $action.mouse_move_attempts -gt 4 -or
-      $action.mouse_button_events -ne 2 -or
-      $action.cursor_target_confirmed -ne $true -or
-      $action.send_input_returned -ne ($action.mouse_move_attempts + 2)
-    ) { throw 'real OS mouse click action sequence is invalid' }
-  }
-  foreach ($index in @(0, 2)) {
-    $action = $realClickActions[$index]
-    if (
-      $action.target_source -cne 'windows-uia-exact-from-point' -or
-      [string]::IsNullOrWhiteSpace([string]$action.runtime_id) -or
-      $action.runtime_id -cne $action.from_point_runtime_id
-    ) { throw 'native titlebar click proof is incomplete' }
-  }
-  foreach ($index in @(1, 3)) {
-    $action = $realClickActions[$index]
-    if (
-      $action.target_source -cne 'cdp-dom-bounds-host-client-transform' -or
-      $action.dom_hit_test -ne $true -or
-      $action.point_host_root_hwnd -ne $hostMainWindowHandle
-    ) { throw 'WebView DOM physical click proof is incomplete' }
-  }
+    $hostedEvidence.source_sha -ne $SourceSha -or
+    $hostedEvidence.source_tree -ne $SourceTree -or
+    $hostedEvidence.candidate_sha256 -ne $candidateSha256 -or
+    $hostedEvidence.installed_executable_sha256 -ne $installedHostSha256 -or
+    $hostedEvidence.process_id -ne $desktopProcess.Id -or
+    $hostedEvidence.main_window_handle -ne $hostMainWindowHandle -or
+    $hostedEvidence.webview2.user_data_dir -ne $webviewUserData -or
+    $hostedEvidence.webview2.cdp_port -ne $devToolsPort -or
+    $hostedEvidence.webview2.browser_process_id -ne $webviewBrowserProcessId -or
+    $hostedEvidence.physical_mouse_click -ne $false -or
+    @($hostedEvidence.actions).Count -ne 4
+  ) { throw 'Windows Hosted interaction evidence is incomplete or unbound' }
   Wait-Until { $nodeProcess.Refresh(); if ($nodeProcess.HasExited) { $true } else { $false } } 300 'packaged Tauri WebView evidence did not finish after restart observation' | Out-Null
   if ($nodeProcess.ExitCode -ne 0) {
     throw "packaged Tauri WebView evidence failed: $(Get-Content -LiteralPath $nodeStderr -Raw -ErrorAction SilentlyContinue)"
@@ -796,11 +774,13 @@ try {
       host_observation = 'packaged-backtest-host-observation.json'
       host_observation_sha256 = (Get-FileHash -LiteralPath (Join-Path $Output 'packaged-backtest-host-observation.json') -Algorithm SHA256).Hash.ToLowerInvariant()
     }
-    real_os_mouse_click = [ordered]@{
-      manifest = 'windows-real-click-evidence.json'
-      sha256 = (Get-FileHash -LiteralPath $realClickEvidencePath -Algorithm SHA256).Hash.ToLowerInvariant()
-      input_method = 'win32-sendinput-physical-mouse'
-      action_count = @($realClickEvidence.actions).Count
+    hosted_automation = [ordered]@{
+      manifest = 'windows-hosted-automation-evidence.json'
+      sha256 = (Get-FileHash -LiteralPath $hostedEvidencePath -Algorithm SHA256).Hash.ToLowerInvariant()
+      schema_version = 'stock-desk-windows-hosted-automation-v1'
+      input_method = 'windows-uia-and-cdp-automation'
+      physical_mouse_click = $false
+      action_count = @($hostedEvidence.actions).Count
     }
     graceful_exit = $true
     hosted_runner_limitations = @(
