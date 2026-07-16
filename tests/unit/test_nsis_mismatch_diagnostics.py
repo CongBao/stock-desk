@@ -116,8 +116,7 @@ def test_windows_repack_integration_captures_mismatch_before_failing() -> None:
 
     diagnostic = "scripts\\nsis_mismatch_diagnostics.py"
     mismatch = (
-        "throw 'fixed NSIS repack does not reproduce the original unsigned "
-        "candidate'"
+        "throw 'fixed NSIS repack does not reproduce the original unsigned candidate'"
     )
     assert "[string]$DiagnosticsRoot" in integration
     assert diagnostic in integration

@@ -54,9 +54,7 @@ def _hash_file(path: Path, field: str, *, limit: int) -> tuple[int, str]:
             while block := stream.read(CHUNK_SIZE):
                 size += len(block)
                 if size > limit:
-                    raise NsisMismatchDiagnosticError(
-                        f"{field} exceeds the size limit"
-                    )
+                    raise NsisMismatchDiagnosticError(f"{field} exceeds the size limit")
                 digest.update(block)
     except OSError as error:
         raise NsisMismatchDiagnosticError(f"cannot read {field}") from error
