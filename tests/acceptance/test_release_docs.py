@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 import re
 import shlex
 import shutil
 import subprocess
 import sys
 from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlsplit
@@ -22,6 +24,16 @@ from scripts.verify_docs import (
     verify_repository,
 )
 from scripts.verify_release import _candidate_gates
+from stock_desk.config import resolve_v11_data_root
+from stock_desk.market.types import ProviderId
+from stock_desk.onboarding.models import (
+    OnboardingSource,
+    OnboardingState,
+    OnboardingStatus,
+    OnboardingStep,
+    OnboardingSynchronization,
+    SynchronizationStatus,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -177,6 +189,147 @@ def test_v11_stable_docs_disclose_the_unsigned_windows_boundary() -> None:
     assert "SPDX" in release_note
     assert "not self-signed" in release_note.casefold()
     assert "不是自签名" in release_note
+
+
+def test_v11_entry_docs_state_the_complete_user_facing_release_contract() -> None:
+    english, chinese = _readmes()
+    release_note = (PROJECT_ROOT / "docs/releases/v1.1.0.md").read_text(
+        encoding="utf-8"
+    )
+
+    chinese_markers = (
+        "零遥测",
+        "只读演示",
+        "不读取、导入、迁移、修改或删除旧版 v1 数据",
+        "exact-SHA",
+        "不在发布阶段重建或重复运行源码测试",
+        "production updater 继续关闭",
+        "macOS、Linux、Android 或 ARM64",
+    )
+    english_markers = (
+        "zero telemetry",
+        "read-only demo",
+        "does not read, import, migrate, modify, or delete legacy v1 data",
+        "exact-SHA",
+        "without rebuilding or rerunning source tests",
+        "production updater remains disabled",
+        "macOS, Linux, Android, or ARM64",
+    )
+    for marker in chinese_markers:
+        assert marker in chinese
+        assert marker in release_note
+    for marker in english_markers:
+        assert marker in english
+        assert marker in release_note
+
+    stale_markers = (
+        "v1.1.0-beta.3",
+        "当前稳定版为 `v1.0.0`",
+        "current stable release is `v1.0.0`",
+        "pending-review",
+    )
+    for marker in stale_markers:
+        assert marker not in english
+        assert marker not in chinese
+        assert marker not in release_note
+
+
+def test_v11_distribution_docs_separate_disabled_legacy_updater_from_store() -> None:
+    signing = (PROJECT_ROOT / "docs/code-signing-policy.md").read_text(encoding="utf-8")
+    download = (PROJECT_ROOT / "docs/download.md").read_text(encoding="utf-8")
+
+    assert "v1.1.0 不发布应用内更新元数据" in download
+    assert "v1.1.0 does not publish in-app update metadata" in download
+    assert "历史且不可达的脚手架，不是 v1.2 Store/MSIX 方案" in signing
+    assert "historical, unreachable scaffold, not the v1.2 Store/MSIX design" in signing
+
+
+def test_v11_entry_claims_are_bound_to_product_and_release_controls(
+    tmp_path: Path,
+) -> None:
+    privacy = json.loads(
+        (PROJECT_ROOT / "config/desktop-network-privacy.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    phase = privacy["phases"][privacy["active_phase"]]
+    assert phase["telemetry"] == "disabled"
+    assert phase["automatic_crash_upload"] == "disabled"
+    assert phase["automatic_diagnostic_upload"] == "disabled"
+    assert phase["updater"]["runtime_enabled"] is False
+    assert phase["updater"]["installation"]["automatic_download"] is False
+
+    updater = json.loads(
+        (PROJECT_ROOT / "config/tauri-updater-runtime.json").read_text(encoding="utf-8")
+    )
+    assert updater["enabled"] is False
+    assert updater["public_key"] is None
+
+    now = datetime(2026, 7, 16, tzinfo=timezone.utc)
+    digest = "sha256:" + ("0" * 64)
+    source = OnboardingSource(
+        id=ProviderId.AKSHARE,
+        label="AKShare",
+        catalog_manifest_record_id=digest,
+        catalog_dataset_version=digest,
+        data_cutoff=now,
+    )
+    synchronized = OnboardingSynchronization(
+        status=SynchronizationStatus.VERIFIED,
+        provider_id=ProviderId.AKSHARE,
+        manifest_record_id=digest,
+        dataset_version=digest,
+        data_cutoff=now,
+        row_count=1,
+    )
+    with pytest.raises(
+        ValueError, match="completed onboarding requires verified real data"
+    ):
+        OnboardingState(
+            status=OnboardingStatus.COMPLETED,
+            current_step=OnboardingStep.COMPLETED,
+            source=source,
+            sync=synchronized,
+            demo_mode=True,
+            updated_at=now,
+        )
+
+    local_app_data = tmp_path / "用户 名" / "Local App Data"
+    legacy = local_app_data / "stock-desk"
+    legacy.mkdir(parents=True)
+    canary = legacy / "v1-canary.txt"
+    canary.write_bytes(b"do-not-read-or-change")
+    before = canary.stat()
+    resolved = resolve_v11_data_root(
+        platform_name="Windows",
+        known_folder_resolver=lambda: local_app_data,
+    )
+    assert resolved == local_app_data / "Stock Desk" / "v1.1"
+    assert not resolved.exists()
+    assert canary.read_bytes() == b"do-not-read-or-change"
+    assert canary.stat().st_mtime_ns == before.st_mtime_ns
+
+    workflow = _workflow()
+    jobs = workflow["jobs"]
+    release_jobs = (jobs["prerelease-verify"], jobs["prerelease"])
+    commands = "\n".join(
+        str(step.get("run", ""))
+        for job in release_jobs
+        for step in job["steps"]
+        if isinstance(step, dict)
+    )
+    assert "main-validation-proof-$GITHUB_SHA" in commands
+    assert "windows-desktop-alpha-candidate-$GITHUB_SHA" in commands
+    for forbidden in (
+        "make build",
+        "make test",
+        "pytest",
+        "pnpm build",
+        "pnpm e2e",
+        "cargo build",
+        "scripts.build_windows_desktop",
+    ):
+        assert forbidden not in commands
 
 
 def test_readme_commands_map_to_executed_release_evidence() -> None:
@@ -463,9 +616,10 @@ def test_wiki_publication_contract_uses_chinese_default_paths() -> None:
         "Home",
         "Feature-Index",
         "Windows-Installation",
-        "macOS-Installation",
         "First-Launch-and-Health",
+        "Project-Governance-and-Release-Evidence",
     )
+    assert "macOS-Installation" not in stems
     assert "Market-Charts" in stems
     assert "Formula-Studio-Quickstart" in stems
     assert "MACD-Backtest-Tutorial" in stems

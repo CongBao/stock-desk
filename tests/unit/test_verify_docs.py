@@ -27,7 +27,6 @@ EXPECTED_WIKI_PAGE_STEMS = (
     "Home",
     "Feature-Index",
     "Windows-Installation",
-    "macOS-Installation",
     "First-Launch-and-Health",
     "Project-Governance-and-Release-Evidence",
     "Data-Sources-and-Tushare",
@@ -81,6 +80,8 @@ def _initialize_fixture_git(root: Path) -> None:
 
 EXPECTED_REPLACED_WIKI_PAGES = (
     "Installation.md",
+    "macOS-Installation.md",
+    "macOS-Installation-en.md",
     "Market-Data-and-Charts.md",
     "Formula-Studio.md",
     "Backtesting.md",
@@ -330,15 +331,8 @@ EXPECTED_WIKI_EXTERNAL_UI_LABELS = {
         ("github", "Releases", "发行版"),
         ("windows", "Start menu", "“开始”菜单"),
     ),
-    "macOS-Installation": (
-        ("github", "Releases", "发行版"),
-        ("macos", "About This Mac", "关于本机"),
-        ("macos", "Applications", "“应用程序”"),
-        ("macos", "Gatekeeper", "安全性检查"),
-    ),
     "Backup-Restore-Upgrade-and-Uninstall": (
         ("windows", "Installed apps", "已安装的应用"),
-        ("macos", "Applications", "“应用程序”"),
     ),
 }
 
@@ -2226,7 +2220,7 @@ EXPECTED_WIKI_ANALYSIS_PLATFORM_GUIDE_SOURCE_CLAIMS = {
     ),
     "Backup-Restore-Upgrade-and-Uninstall.md": (
         (
-            "无源码 Windows 和 macOS 安装包都不内置备份/恢复命令行工具",
+            "v1.1 无源码 Windows 安装包不内置备份/恢复命令行工具；历史 v1.0 macOS 安装包同样不内置",
             "docs/backup-and-restore.md",
             "The source-free Windows and macOS installers do not bundle this operator CLI.",
         ),
@@ -2248,7 +2242,7 @@ EXPECTED_WIKI_ANALYSIS_PLATFORM_GUIDE_SOURCE_CLAIMS = {
     ),
     "Backup-Restore-Upgrade-and-Uninstall-en.md": (
         (
-            "Source-free Windows and macOS installers do not bundle the backup/restore operator CLI",
+            "The v1.1 source-free Windows installer does not bundle the backup/restore operator CLI; historical v1.0 macOS installers did not bundle it either",
             "docs/backup-and-restore.md",
             "The source-free Windows and macOS installers do not bundle this operator CLI.",
         ),
@@ -2421,6 +2415,9 @@ REPOSITORY_DOCUMENTS = {
 
 从 https://github.com/CongBao/stock-desk/releases/latest 选择无需源码的
 `stock-desk-1.1.0-unsigned-x64-setup.exe` Windows 安装包。
+production updater 继续关闭。`v1.1.0` 零遥测，不自动上传崩溃报告、诊断包或使用数据。只读演示不能完成首次向导。
+v1.1 不发布 macOS、Linux、Android 或 ARM64，也不读取、导入、迁移、修改或删除旧版 v1 数据。
+正式发布复用 exact-SHA 候选，不在发布阶段重建或重复运行源码测试。
 
 ## 使用文档
 
@@ -2447,6 +2444,10 @@ Use the task center, market charts, Formula Studio, backtesting, and research.
 Choose a source-free installer from
 https://github.com/CongBao/stock-desk/releases/latest:
 `stock-desk-1.1.0-unsigned-x64-setup.exe` for Windows.
+The production updater remains disabled. `v1.1.0` uses zero telemetry and does not automatically upload crash reports, diagnostics, or usage data.
+The read-only demo cannot complete onboarding. v1.1 does not ship macOS, Linux, Android, or ARM64
+and does not read, import, migrate, modify, or delete legacy v1 data.
+The release reuses an exact-SHA candidate without rebuilding or rerunning source tests.
 
 ## Documentation
 
@@ -2455,6 +2456,16 @@ See [configuration](docs/configuration.md) and the [disclaimer](docs/disclaimer.
 ## Safety and scope
 
 Research only; no live trading.
+""",
+    "docs/releases/v1.1.0.md": """# Stock Desk v1.1.0
+
+## 中文
+
+`v1.1.0` 零遥测，不自动上传崩溃报告、诊断包或使用数据。只读演示不能完成首次向导。它不读取、导入、迁移、修改或删除旧版 v1 数据。production updater 继续关闭。正式发布复用 exact-SHA 候选，不在发布阶段重建或重复运行源码测试。
+
+## English
+
+`v1.1.0` uses zero telemetry and does not automatically upload crash reports, diagnostics, or usage data. The read-only demo cannot complete onboarding. It does not read, import, migrate, modify, or delete legacy v1 data. The production updater remains disabled. The release reuses an exact-SHA candidate without rebuilding or rerunning source tests.
 """,
     "CONTRIBUTING.md": """# Contributing
 
@@ -3392,6 +3403,47 @@ def test_repository_documentation_contract_passes_for_complete_tree(
     _write_repository(tmp_path)
 
     assert verify_repository(tmp_path) == []
+
+
+@pytest.mark.parametrize(
+    ("relative_path", "contradiction"),
+    (
+        ("README.md", "Stock Desk 不使用零遥测。"),
+        ("README.md", "只读演示可以完成首次向导。"),
+        ("README.md", "v1.1 会读取旧版 v1 数据。"),
+        ("README.md", "production updater 已启用。"),
+        ("README.md", "发布阶段会重建 Windows 候选。"),
+        ("README.en.md", "Stock Desk does not use zero telemetry."),
+        ("README.en.md", "The read-only demo can complete onboarding."),
+        ("README.en.md", "v1.1 reads legacy v1 data."),
+        ("README.en.md", "The production updater is enabled."),
+        ("README.en.md", "The release rebuilds the Windows candidate."),
+        ("README.en.md", "Telemetry is enabled."),
+        ("README.en.md", "The read-only demo may finish onboarding."),
+        ("README.en.md", "v1.1 imports legacy v1 data."),
+        ("docs/releases/v1.1.0.md", "v1.1 会自动迁移旧版 v1 数据。"),
+        ("docs/releases/v1.1.0.md", "The updater will download updates."),
+        ("docs/releases/v1.1.0.md", "The release reruns source tests."),
+    ),
+)
+def test_repository_contract_rejects_contradictory_v11_entry_guidance(
+    tmp_path: Path,
+    relative_path: str,
+    contradiction: str,
+) -> None:
+    _write_repository(tmp_path)
+    path = tmp_path / relative_path
+    path.write_text(
+        f"{path.read_text(encoding='utf-8')}\n{contradiction}\n",
+        encoding="utf-8",
+    )
+
+    failures = verify_repository(tmp_path)
+
+    assert any(
+        relative_path in failure and "contradictory v1.1 guidance" in failure
+        for failure in failures
+    )
 
 
 def _readme_manifest(root: Path) -> tuple[Path, dict[str, Any]]:
