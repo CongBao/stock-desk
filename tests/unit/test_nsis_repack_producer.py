@@ -777,6 +777,29 @@ def test_prepare_uses_snapshot_and_final_recheck_rejects_source_change_during_as
         )
 
 
+def test_producer_uses_locked_windows_hardlink_policy_for_native_build_inputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _anchors_fixture, source, work = _prepare_fixture(tmp_path, monkeypatch)
+    original_snapshot = producer.snapshot_artifacts
+    observed_policies: list[bool] = []
+
+    def record_snapshot_policy(*args: object, **kwargs: object) -> object:
+        observed_policies.append(bool(kwargs["allow_windows_hardlinks"]))
+        return original_snapshot(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(producer, "snapshot_artifacts", record_snapshot_policy)
+
+    producer.prepare_producer_stage(
+        work_root=work, source=source, local_appdata=tmp_path / "local"
+    )
+    producer.verify_live_producer_inputs(
+        work_root=work, source=source, local_appdata=tmp_path / "local"
+    )
+
+    assert observed_policies == [True, True, True, True]
+
+
 @pytest.mark.parametrize(
     "mutation",
     [
