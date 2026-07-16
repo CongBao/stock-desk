@@ -413,197 +413,76 @@ def test_packaged_webview_matrix_is_explicitly_equivalent_not_real_os_dpi() -> N
     assert "routeTransition" in source
 
 
-def test_installed_desktop_exit_uses_real_windows_mouse_input() -> None:
-    driver_path = ROOT / "scripts" / "windows_desktop_real_click.ps1"
+def test_installed_desktop_exit_uses_honest_hosted_uia_automation() -> None:
+    driver_path = ROOT / "scripts" / "windows_desktop_hosted_automation.ps1"
     assert driver_path.is_file()
+    assert not (ROOT / "scripts" / "windows_desktop_real_click.ps1").exists()
     driver = driver_path.read_text(encoding="utf-8")
-    powershell = (ROOT / "scripts" / "capture_windows_desktop_evidence.ps1").read_text(
-        encoding="utf-8"
-    )
-    webview = (ROOT / "scripts" / "windows_desktop_webview_evidence.mjs").read_text(
-        encoding="utf-8"
-    )
-    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
 
     for contract in (
-        "SendInput",
-        "MOUSEEVENTF_MOVE",
-        "MOUSEEVENTF_LEFTDOWN",
-        "MOUSEEVENTF_LEFTUP",
-        "MOUSEEVENTF_ABSOLUTE",
-        "MOUSEEVENTF_VIRTUALDESK",
-        "GetSystemMetrics",
-        "SM_XVIRTUALSCREEN",
-        "SM_YVIRTUALSCREEN",
-        "SM_CXVIRTUALSCREEN",
-        "SM_CYVIRTUALSCREEN",
-        "AutomationElement]::FromPoint",
-        "GetClientRect",
-        "ClientToScreen",
-        "WindowFromPoint",
-        "GetAncestor",
-        "GetForegroundWindow",
-        "SetForegroundWindow",
-        "RequireTitleBarAncestor",
+        "Add-Type -AssemblyName UIAutomationClient",
+        "NativeWindowHandleProperty",
+        "Find-NativeCloseButton",
+        "Test-HasTitleBarAncestor",
         "ControlType]::TitleBar",
-        "native_close_click_opened_dialog",
-        "cancel_click_kept_process_alive",
-        "second_close_reopened_dialog",
-        "exit_click_host_exit_code",
+        "InvokePattern]::Pattern",
+        "$pattern.Invoke()",
+        "native-close-open-dialog",
+        "webview-cancel-dialog",
+        "native-close-reopen-dialog",
+        "webview-confirm-exit",
+        "stock-desk-windows-hosted-automation-v1",
+        "windows-uia-and-cdp-automation",
+        "physical_mouse_click = $false",
     ):
         assert contract in driver
-    assert "InvokePattern" not in driver
-    assert ".Invoke()" not in driver
-    assert "mouse_event" not in driver
-    assert "SetCursorPos" not in driver
-    assert "Find-Button -Names @('取消')" not in driver
-    assert "Find-Button -Names @('退出应用')" not in driver
-    assert driver.count("-RequireTitleBarAncestor") >= 2
-    for marker in (
-        "os-real-click-cancel-target",
-        "os-real-click-cancel-observed",
-        "os-real-click-confirm-target",
-    ):
-        assert marker in driver
-        assert f'captureHandshake("{marker}"' in webview
-    assert "bounding_rectangle_css" in webview
-    assert "viewport_css" in webview
-    assert "dom_hit_test" in webview
-    assert "target_source = 'cdp-dom-bounds-host-client-transform'" in driver
-    assert "point_host_root_hwnd" in driver
-    assert "Windows Server 2025" in driver
-    assert "runneradmin" in driver
-    assert "not_equivalent_to_standard_user_windows_10_or_11" in driver
-
-    marker = "os-real-click-exit"
-    assert f'captureHandshake("{marker}"' in webview
-    assert f"'{marker}.json'" in powershell
-    assert f"'{marker}.ack'" in powershell
-    assert "windows_desktop_real_click.ps1" in powershell
-    assert "-CaptureSyncRoot $restartSyncRoot" in powershell
-    assert "-CaptureNonce $captureNonce" in powershell
-    assert "real OS mouse click action sequence is invalid" in powershell
-    assert "native titlebar click proof is incomplete" in powershell
-    assert "WebView DOM physical click proof is incomplete" in powershell
-    assert "windows-real-click-evidence.json" in powershell
-    assert "real_os_mouse_click" in powershell
-    assert "windows-real-click-evidence.json:provenance" in workflow
-
-    assert (
-        'page.getByRole("button", { name: "退出应用", exact: true }).click()'
-        not in webview
-    )
-    assert (
-        'page.getByRole("button", { name: "取消", exact: true }).click()' not in webview
-    )
-
-
-def test_real_mouse_driver_does_not_require_foreground_lock_ownership() -> None:
-    driver = (ROOT / "scripts" / "windows_desktop_real_click.ps1").read_text(
-        encoding="utf-8"
-    )
-    focus_helper = driver[
-        driver.index("function Focus-Window") : driver.index("function Send-MouseInput")
-    ]
-
-    # SetForegroundWindow is intentionally best-effort: Windows may reject a
-    # background PowerShell process under its foreground-lock policy. The
-    # authoritative click proof is exact UIA FromPoint hit testing, SendInput,
-    # and the observed dialog/process state transitions after each click.
-    assert "SetForegroundWindow" in focus_helper
-    assert "Wait-Until" not in focus_helper
-    assert "throw" not in focus_helper
-    assert "return $false" in focus_helper
-    assert "$focusPreparationSucceeded = Focus-Window" in driver
-    assert "focus_preparation_succeeded = $focusPreparationSucceeded" in driver
-    assert "foreground_hwnd_before_click" in driver
-    assert "foreground_hwnd_after_click" in driver
-
-
-def test_real_mouse_driver_focuses_and_paces_each_physical_click() -> None:
-    driver = (ROOT / "scripts" / "windows_desktop_real_click.ps1").read_text(
-        encoding="utf-8"
-    )
-
-    # Hosted Windows can reject a plain SetForegroundWindow call. Attach the
-    # input queues long enough to foreground the exact Tauri HWND, but retain
-    # the observable state transition as the authoritative success signal.
-    for native_api in (
-        "GetCurrentThreadId",
-        "GetWindowThreadProcessId",
-        "AttachThreadInput",
-        "BringWindowToTop",
+    for forbidden in (
+        "SendInput",
+        "mouse_event",
+        "SetCursorPos",
+        "MOUSEEVENTF_",
+        "AutomationElement]::FromPoint",
         "GetCursorPos",
-        "IsIconic",
     ):
-        assert native_api in driver
-    assert "if ([StockDeskRealMouseInput]::IsIconic($hwnd))" in driver
-    assert "ShowWindow($hwnd, 9)" in driver
-    assert "ShowWindow($hwnd, 5)" in driver
-    assert "finally" in driver[driver.index("function Focus-Window") :]
-
-    # A single batched move/down/up can be swallowed while Windows changes the
-    # foreground window. Publish and verify the move first, then pace the real
-    # button transition as a human click while preserving SendInput evidence.
-    click_helper = driver[
-        driver.index("function Invoke-PhysicalPointClick") : driver.index(
-            "function Invoke-PhysicalClick"
-        )
-    ]
-    assert "Send-MouseInput" in click_helper
-    assert "$moveAttempts" in click_helper
-    assert "$moveAttempts -lt 4" in click_helper
-    assert "$moveEventsSent" in click_helper
-    assert "$downSent" in click_helper
-    assert "$upSent" in click_helper
-    assert click_helper.count("Start-Sleep -Milliseconds") >= 2
-    assert "cursor did not reach the exact physical click target" in click_helper
-    assert (
-        "real click target became obscured after foreground preparation" in click_helper
-    )
-    assert (
-        "send_input_returned = [int]($moveEventsSent + $downSent + $upSent)"
-        in click_helper
-    )
-    assert "mouse_move_attempts = $moveAttempts" in click_helper
-    assert "mouse_button_events = 2" in click_helper
-    assert "cursor_target_confirmed = $true" in click_helper
-    assert click_helper.index("Write-ProgressEvidence") < click_helper.index(
-        "cursor did not reach the exact physical click target"
-    )
-
-    native_helper = driver[
-        driver.index("function Invoke-PhysicalClick") : driver.index(
-            "function Convert-ToFiniteDouble"
-        )
-    ]
-    assert native_helper.index("$null = Focus-Window") < native_helper.index(
-        "$rect = $Element.Current.BoundingRectangle"
-    )
+        assert forbidden not in driver
 
 
-def test_real_mouse_driver_preserves_partial_failure_evidence() -> None:
-    driver = (ROOT / "scripts" / "windows_desktop_real_click.ps1").read_text(
-        encoding="utf-8"
-    )
-    capture = (ROOT / "scripts" / "capture_windows_desktop_evidence.ps1").read_text(
-        encoding="utf-8"
-    )
+def test_hosted_uia_driver_rejects_ambiguous_or_cross_process_targets() -> None:
+    driver = (
+        ROOT / "scripts" / "windows_desktop_hosted_automation.ps1"
+    ).read_text(encoding="utf-8")
 
-    assert "packaged-real-click-progress.json" in driver
-    assert "function Write-ProgressEvidence" in driver
-    action_record = driver.index("$actions.Add($record)")
-    assert action_record < driver.index("Write-ProgressEvidence", action_record)
-    assert "Remove-Item -LiteralPath $progressPath" in driver
-    assert "-Filter 'packaged-*'" in capture
-    for contract in (
-        "$action.mouse_move_attempts -lt 1",
-        "$action.mouse_move_attempts -gt 4",
-        "$action.mouse_button_events -ne 2",
-        "$action.cursor_target_confirmed -ne $true",
-        "$action.send_input_returned -ne ($action.mouse_move_attempts + 2)",
-    ):
-        assert contract in capture
+    assert "$candidate.Current.ProcessId -ne $ExpectedProcessId" in driver
+    assert "$candidate.Current.IsEnabled" in driver
+    assert "$candidate.Current.IsOffscreen" in driver
+    assert "$matches.Count -eq 1" in driver
+    assert "$matches.Count -gt 1" in driver
+    assert "native close UIA target is ambiguous" in driver
+    assert "native close button does not expose InvokePattern" in driver
+    assert "titlebar_ancestor = $true" in driver
+    assert "runtime_id = $runtimeId" in driver
+
+
+def test_hosted_uia_driver_uses_nonce_bound_cross_observation() -> None:
+    driver = (
+        ROOT / "scripts" / "windows_desktop_hosted_automation.ps1"
+    ).read_text(encoding="utf-8")
+
+    markers = (
+        "hosted-dialog-visible-1",
+        "hosted-cancel-authorized",
+        "hosted-cancel-complete",
+        "hosted-dialog-visible-2",
+        "hosted-confirm-authorized",
+        "hosted-confirm-complete",
+    )
+    positions = [driver.index(marker) for marker in markers]
+    assert positions == sorted(positions)
+    assert "if ($candidate.capture_nonce -ceq $CaptureNonce)" in driver
+    assert "$CaptureNonce | Set-Content" in driver
+    assert "Move-Item -LiteralPath $temporary -Destination $path -Force" in driver
+    assert "host exited after cancel automation" in driver
+    assert "host did not exit successfully after confirmation automation" in driver
 
 
 def test_packaged_backtest_matrix_uses_webview_host_ipc_and_new_worker_resume() -> None:
