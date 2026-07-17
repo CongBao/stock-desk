@@ -22,8 +22,7 @@ def test_macos_test_data_root_is_resolved_once_and_shared_by_all_host_state() ->
     override_readers = {
         path.name
         for path in rust_root.glob("*.rs")
-        if "STOCK_DESK_MACOS_TEST_DATA_ROOT"
-        in path.read_text(encoding="utf-8")
+        if "STOCK_DESK_MACOS_TEST_DATA_ROOT" in path.read_text(encoding="utf-8")
     }
     assert override_readers == {"data_root.rs"}
     assert data_root.count("STOCK_DESK_MACOS_TEST_DATA_ROOT") == 1
@@ -41,9 +40,9 @@ def test_macos_test_data_root_is_resolved_once_and_shared_by_all_host_state() ->
 
 
 def test_macos_test_data_root_env_read_is_compiled_only_with_authority() -> None:
-    data_root = (
-        macos_sidecar.ROOT / "src-tauri" / "src" / "data_root.rs"
-    ).read_text(encoding="utf-8")
+    data_root = (macos_sidecar.ROOT / "src-tauri" / "src" / "data_root.rs").read_text(
+        encoding="utf-8"
+    )
 
     assert (
         "#[cfg(all(debug_assertions, not(windows)))]\n"
@@ -57,15 +56,15 @@ def test_macos_test_data_root_env_read_is_compiled_only_with_authority() -> None
         "    None\n"
         "}"
     ) in data_root
-    setup = data_root[data_root.index("pub(crate) fn setup"):]
+    setup = data_root[data_root.index("pub(crate) fn setup") :]
     assert "let override_root = macos_test_data_root_override();" in setup
     assert "std::env::var_os" not in setup
 
 
 def test_non_windows_debug_lifecycle_releases_without_windows_enforcement() -> None:
-    app = (
-        macos_sidecar.ROOT / "src-tauri" / "src" / "app.rs"
-    ).read_text(encoding="utf-8")
+    app = (macos_sidecar.ROOT / "src-tauri" / "src" / "app.rs").read_text(
+        encoding="utf-8"
+    )
     test_start = app.index(
         "fn non_windows_test_host_releases_gate_without_claiming_job_protection"
     )
@@ -89,9 +88,9 @@ def test_sidecar_filename_accepts_only_supported_macos_host_targets() -> None:
 
 
 def test_generated_native_sidecars_are_ignored_without_ignoring_sources() -> None:
-    ignore = (macos_sidecar.ROOT / ".gitignore").read_text(
-        encoding="utf-8"
-    ).splitlines()
+    ignore = (
+        (macos_sidecar.ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+    )
 
     assert "src-tauri/binaries/stock-desk-sidecar-*" in ignore
     assert "src-tauri/binaries/" not in ignore
@@ -127,6 +126,7 @@ def test_build_native_sidecar_uses_current_python_and_validated_name(
 ) -> None:
     root = tmp_path / "repo"
     output_dir = tmp_path / "dist"
+    work_dir = tmp_path / "harness" / "pyinstaller-work"
     (root / "packaging").mkdir(parents=True)
     spec = root / "packaging" / "stock-desk-sidecar.spec"
     spec.write_text("# test spec\n", encoding="utf-8")
@@ -147,7 +147,14 @@ def test_build_native_sidecar_uses_current_python_and_validated_name(
     )
 
     assert (
-        macos_sidecar.build_native_sidecar(root, output_dir, target) == expected
+        macos_sidecar.build_native_sidecar(
+            root,
+            output_dir,
+            target,
+            work_dir=work_dir,
+            timeout_seconds=120,
+        )
+        == expected
     )
     assert calls[0][0] == [
         "/current/python",
@@ -158,15 +165,90 @@ def test_build_native_sidecar_uses_current_python_and_validated_name(
         "--distpath",
         os.fspath(output_dir),
         "--workpath",
-        os.fspath(root / "build"),
+        os.fspath(work_dir),
         os.fspath(spec),
     ]
     invocation = calls[0][1]
     assert invocation["cwd"] == root
     assert invocation["check"] is True
+    assert invocation["timeout"] == 120
     environment = invocation["env"]
     assert isinstance(environment, dict)
     assert environment["STOCK_DESK_PYINSTALLER_SIDECAR_NAME"] == expected.name
+
+
+def test_build_native_sidecar_uses_caller_work_path_and_bounded_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "repo"
+    output_dir = tmp_path / "dist"
+    work_dir = tmp_path / "harness" / "pyinstaller-work"
+    (root / "packaging").mkdir(parents=True)
+    spec = root / "packaging" / "stock-desk-sidecar.spec"
+    spec.write_text("# test spec\n", encoding="utf-8")
+    target = "aarch64-apple-darwin"
+    expected = output_dir / sidecar_filename(target)
+    captured: dict[str, object] = {}
+
+    def run(arguments: list[str], **kwargs: object) -> SimpleNamespace:
+        captured["arguments"] = arguments
+        captured.update(kwargs)
+        expected.write_bytes(b"native executable")
+        expected.chmod(0o755)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(macos_sidecar.subprocess, "run", run)
+
+    assert (
+        macos_sidecar.build_native_sidecar(
+            root,
+            output_dir,
+            target,
+            work_dir=work_dir,
+            timeout_seconds=123,
+        )
+        == expected
+    )
+    arguments = captured["arguments"]
+    assert isinstance(arguments, list)
+    assert arguments[arguments.index("--workpath") + 1] == os.fspath(work_dir)
+    assert captured["timeout"] == 123
+    assert not work_dir.exists()
+
+
+def test_build_native_sidecar_preserves_preexisting_repository_build_content(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "repo"
+    output_dir = tmp_path / "dist"
+    work_dir = tmp_path / "harness" / "pyinstaller-work"
+    packaging = root / "packaging"
+    packaging.mkdir(parents=True)
+    (packaging / "stock-desk-sidecar.spec").write_text(
+        "# source spec\n", encoding="utf-8"
+    )
+    sentinel = root / "build" / "preexisting.txt"
+    sentinel.parent.mkdir()
+    sentinel.write_text("keep me", encoding="utf-8")
+    target = "aarch64-apple-darwin"
+    expected = output_dir / sidecar_filename(target)
+
+    def run(_arguments: list[str], **_kwargs: object) -> SimpleNamespace:
+        expected.write_bytes(b"native executable")
+        expected.chmod(0o755)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(macos_sidecar.subprocess, "run", run)
+
+    macos_sidecar.build_native_sidecar(
+        root,
+        output_dir,
+        target,
+        work_dir=work_dir,
+        timeout_seconds=60,
+    )
+
+    assert sentinel.read_text(encoding="utf-8") == "keep me"
 
 
 @pytest.mark.parametrize("artifact_state", ["missing", "extra"])
@@ -177,6 +259,7 @@ def test_build_native_sidecar_requires_exactly_one_expected_executable(
 ) -> None:
     root = tmp_path / "repo"
     output_dir = tmp_path / "dist"
+    work_dir = tmp_path / "harness" / "pyinstaller-work"
     (root / "packaging").mkdir(parents=True)
     target = "x86_64-apple-darwin"
     expected = output_dir / sidecar_filename(target)
@@ -195,7 +278,13 @@ def test_build_native_sidecar_requires_exactly_one_expected_executable(
     with pytest.raises(
         MacOSSidecarError, match="exactly one native sidecar executable"
     ):
-        macos_sidecar.build_native_sidecar(root, output_dir, target)
+        macos_sidecar.build_native_sidecar(
+            root,
+            output_dir,
+            target,
+            work_dir=work_dir,
+            timeout_seconds=120,
+        )
 
 
 @pytest.mark.parametrize("build_fails", [False, True])
@@ -206,6 +295,7 @@ def test_build_native_sidecar_always_deletes_pyinstaller_intermediates(
 ) -> None:
     root = tmp_path / "repo"
     output_dir = tmp_path / "dist"
+    work_dir = tmp_path / "harness" / "pyinstaller-work"
     packaging = root / "packaging"
     packaging.mkdir(parents=True)
     source_spec = packaging / "stock-desk-sidecar.spec"
@@ -213,12 +303,10 @@ def test_build_native_sidecar_always_deletes_pyinstaller_intermediates(
     target = "aarch64-apple-darwin"
     name = sidecar_filename(target)
     expected = output_dir / name
-    generated_spec = root / f"{name}.spec"
 
     def run(arguments: list[str], **_kwargs: object) -> SimpleNamespace:
-        assert os.fspath(root / "build") in arguments
-        (root / "build" / "nested").mkdir(parents=True)
-        generated_spec.write_text("# generated\n", encoding="utf-8")
+        assert os.fspath(work_dir) in arguments
+        (work_dir / "nested").mkdir(parents=True)
         if build_fails:
             raise macos_sidecar.subprocess.CalledProcessError(1, arguments)
         expected.write_bytes(b"native executable")
@@ -229,15 +317,26 @@ def test_build_native_sidecar_always_deletes_pyinstaller_intermediates(
 
     if build_fails:
         with pytest.raises(macos_sidecar.subprocess.CalledProcessError):
-            macos_sidecar.build_native_sidecar(root, output_dir, target)
+            macos_sidecar.build_native_sidecar(
+                root,
+                output_dir,
+                target,
+                work_dir=work_dir,
+                timeout_seconds=120,
+            )
     else:
         assert (
-            macos_sidecar.build_native_sidecar(root, output_dir, target)
+            macos_sidecar.build_native_sidecar(
+                root,
+                output_dir,
+                target,
+                work_dir=work_dir,
+                timeout_seconds=120,
+            )
             == expected
         )
 
-    assert not (root / "build").exists()
-    assert not generated_spec.exists()
+    assert not work_dir.exists()
     assert source_spec.is_file()
 
 
@@ -249,16 +348,31 @@ def test_cli_builds_the_host_target_into_the_requested_output(
     output_dir = tmp_path / "native-sidecar"
     target = "aarch64-apple-darwin"
     expected = output_dir / sidecar_filename(target)
-    calls: list[tuple[Path, Path, str]] = []
+    calls: list[tuple[Path, Path, str, Path, int]] = []
 
     monkeypatch.setattr(macos_sidecar, "host_target_triple", lambda: target)
 
-    def build(root: Path, output: Path, target_triple: str) -> Path:
-        calls.append((root, output, target_triple))
+    def build(
+        root: Path,
+        output: Path,
+        target_triple: str,
+        *,
+        work_dir: Path,
+        timeout_seconds: int,
+    ) -> Path:
+        calls.append((root, output, target_triple, work_dir, timeout_seconds))
         return expected
 
     monkeypatch.setattr(macos_sidecar, "build_native_sidecar", build)
 
     assert macos_sidecar.main(["--output", os.fspath(output_dir)]) == 0
-    assert calls == [(macos_sidecar.ROOT, output_dir.resolve(), target)]
+    assert len(calls) == 1
+    root, output, called_target, work_dir, timeout = calls[0]
+    assert (root, output, called_target, timeout) == (
+        macos_sidecar.ROOT,
+        output_dir.resolve(),
+        target,
+        900,
+    )
+    assert not work_dir.is_relative_to(macos_sidecar.ROOT)
     assert capsys.readouterr().out.strip() == os.fspath(expected)

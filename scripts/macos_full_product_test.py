@@ -50,6 +50,7 @@ class HarnessPaths:
     app_root: Path
     app_path: Path
     host_path: Path
+    local_data_root: Path
     data_root: Path
     build_log: Path
     host_log: Path
@@ -60,8 +61,9 @@ class HarnessPaths:
         cargo = temporary_root / "cargo"
         app_root = temporary_root / "app"
         app_path = app_root / APP_NAME
-        data_root = temporary_root / "data" / "Stock Desk" / "v1.1"
-        for directory in (pyinstaller, cargo, app_root, data_root):
+        local_data_root = temporary_root / "data"
+        data_root = local_data_root / "Stock Desk" / "v1.1"
+        for directory in (pyinstaller, cargo, app_root, local_data_root):
             directory.mkdir(parents=True, exist_ok=False)
         return cls(
             temporary_root=temporary_root,
@@ -70,6 +72,7 @@ class HarnessPaths:
             app_root=app_root,
             app_path=app_path,
             host_path=app_path / "Contents" / "MacOS" / HOST_NAME,
+            local_data_root=local_data_root,
             data_root=data_root,
             build_log=temporary_root / "tauri-build.log",
             host_log=temporary_root / "desktop-host.log",
@@ -108,7 +111,13 @@ def _build_application(
 ) -> None:
     paths = context.paths
     target = macos_sidecar.host_target_triple()
-    artifact = macos_sidecar.build_native_sidecar(ROOT, paths.pyinstaller, target)
+    artifact = macos_sidecar.build_native_sidecar(
+        ROOT,
+        paths.pyinstaller / "dist",
+        target,
+        work_dir=paths.pyinstaller / "work",
+        timeout_seconds=timeout_seconds,
+    )
     sidecar_copy = (
         ROOT / "src-tauri" / "binaries" / macos_sidecar.sidecar_filename(target)
     )
@@ -160,7 +169,7 @@ def _launch_application(
     environment = os.environ.copy()
     environment.update(
         {
-            "STOCK_DESK_MACOS_TEST_DATA_ROOT": os.fspath(context.paths.data_root),
+            "STOCK_DESK_MACOS_TEST_DATA_ROOT": os.fspath(context.paths.local_data_root),
             "STOCK_DESK_SOURCE_REVISION": source_sha,
             "STOCK_DESK_SOURCE_TREE": source_tree,
             "STOCK_DESK_MACOS_TEST_SESSION_NONCE": nonce,
@@ -256,10 +265,17 @@ def _write_interaction_ready(
 
 
 def _await_operator_evidence(
-    path: Path, identity: JourneyIdentity, timeout_seconds: int
+    path: Path,
+    identity: JourneyIdentity,
+    timeout_seconds: int,
+    *,
+    process_tree: macos_tauri_support.VerifiedProcessTree,
 ) -> JourneyEvidence:
     deadline = time.monotonic() + timeout_seconds
-    while time.monotonic() < deadline and not path.exists():
+    while time.monotonic() < deadline:
+        process_tree.observe()
+        if path.exists():
+            break
         time.sleep(0.1)
     if not path.is_file() or path.is_symlink():
         raise MacOSJourneyError("Codex Computer Use operator evidence timed out")
@@ -283,18 +299,23 @@ def _await_operator_evidence(
             or macos_tauri_support.sha256_file(screenshot_path) != screenshot.sha256
         ):
             raise MacOSJourneyError("operator screenshot identity does not match")
+    process_tree.observe()
     return evidence
 
 
 def _wait_for_graceful_exit(context: HarnessContext, timeout_seconds: int) -> None:
     if context.host_process is None or context.process_tree is None:
         raise MacOSFullProductError("macOS process identity is incomplete")
-    try:
-        return_code = context.host_process.wait(timeout=timeout_seconds)
-    except subprocess.TimeoutExpired as error:
-        raise MacOSFullProductError(
-            "timed out waiting for graceful host exit"
-        ) from error
+    deadline = time.monotonic() + timeout_seconds
+    return_code: int | None = None
+    while time.monotonic() < deadline:
+        context.process_tree.observe()
+        return_code = context.host_process.poll()
+        if return_code is not None:
+            break
+        time.sleep(0.1)
+    if return_code is None:
+        raise MacOSFullProductError("timed out waiting for graceful host exit")
     if return_code != 0:
         raise MacOSFullProductError("macOS host did not exit gracefully")
     context.process_tree.verify_absent()
@@ -345,6 +366,16 @@ def _cleanup(context: HarnessContext) -> None:
         raise MacOSFullProductError(f"macOS full-product cleanup failed: {details}")
 
 
+def _create_context(output: Path) -> HarnessContext:
+    temporary_root = Path(tempfile.mkdtemp(prefix="stock-desk-macos-full-product-"))
+    try:
+        paths = HarnessPaths.create(temporary_root)
+    except BaseException:
+        shutil.rmtree(temporary_root, ignore_errors=True)
+        raise
+    return HarnessContext(paths=paths, output=output)
+
+
 def run_full_product_test(output: Path, timeout_seconds: int) -> dict[str, Any]:
     """Build, wait for real operator evidence, validate, and clean unconditionally."""
 
@@ -356,11 +387,8 @@ def run_full_product_test(output: Path, timeout_seconds: int) -> dict[str, Any]:
     source_identity = (source_sha, source_tree)
     shutil.rmtree(output, ignore_errors=True)
     output.mkdir(parents=True, exist_ok=False)
-    temporary_root = Path(tempfile.mkdtemp(prefix="stock-desk-macos-full-product-"))
-    context = HarnessContext(
-        paths=HarnessPaths.create(temporary_root),
-        output=output,
-    )
+    context = _create_context(output)
+    temporary_root = context.paths.temporary_root
     evidence: JourneyEvidence | None = None
     product_state: dict[str, Any] | None = None
     window: dict[str, Any] | None = None
@@ -384,10 +412,19 @@ def run_full_product_test(output: Path, timeout_seconds: int) -> dict[str, Any]:
             f"Stock Desk full-product journey ready: {output / 'interaction-ready.json'}",
             flush=True,
         )
-        evidence = _await_operator_evidence(operator_path, identity, timeout_seconds)
+        if context.process_tree is None:
+            raise MacOSFullProductError("macOS process tree is unavailable")
+        evidence = _await_operator_evidence(
+            operator_path,
+            identity,
+            timeout_seconds,
+            process_tree=context.process_tree,
+        )
+        context.process_tree.observe()
         product_state = validate_isolated_product_state(
             context.paths.data_root, evidence
         )
+        context.process_tree.observe()
         _wait_for_graceful_exit(context, 20)
     finally:
         active_error = sys.exception()

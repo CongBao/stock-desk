@@ -6,12 +6,11 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tempfile
 
 
 ROOT = Path(__file__).resolve().parent.parent
-SUPPORTED_TARGETS = frozenset(
-    {"aarch64-apple-darwin", "x86_64-apple-darwin"}
-)
+SUPPORTED_TARGETS = frozenset({"aarch64-apple-darwin", "x86_64-apple-darwin"})
 
 
 class MacOSSidecarError(RuntimeError):
@@ -41,16 +40,30 @@ def sidecar_filename(target_triple: str) -> str:
 
 
 def build_native_sidecar(
-    root: Path, output_dir: Path, target_triple: str
+    root: Path,
+    output_dir: Path,
+    target_triple: str,
+    *,
+    work_dir: Path,
+    timeout_seconds: int,
 ) -> Path:
     root = root.resolve()
     output_dir = output_dir.resolve()
+    work_dir = work_dir.resolve()
+    if timeout_seconds < 1:
+        raise MacOSSidecarError("native sidecar build timeout is invalid")
+    if work_dir == root or work_dir.is_relative_to(root):
+        raise MacOSSidecarError(
+            "native sidecar work path must be outside the repository"
+        )
+    if work_dir.exists():
+        raise MacOSSidecarError("native sidecar work path must be unique")
+    if output_dir == work_dir or output_dir.is_relative_to(work_dir):
+        raise MacOSSidecarError("native sidecar output cannot be inside its work path")
     name = sidecar_filename(target_triple)
     output_dir.mkdir(parents=True, exist_ok=True)
     environment = os.environ.copy()
     environment["STOCK_DESK_PYINSTALLER_SIDECAR_NAME"] = name
-    work_dir = root / "build"
-    generated_spec = root / f"{name}.spec"
     try:
         subprocess.run(  # noqa: S603
             [
@@ -68,6 +81,7 @@ def build_native_sidecar(
             cwd=root,
             env=environment,
             check=True,
+            timeout=timeout_seconds,
         )
         expected = output_dir / name
         executables = sorted(
@@ -82,16 +96,20 @@ def build_native_sidecar(
         return expected
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
-        generated_spec.unlink(missing_ok=True)
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Build the native macOS sidecar")
     parser.add_argument("--output", type=Path, required=True)
     arguments = parser.parse_args(argv)
-    artifact = build_native_sidecar(
-        ROOT, arguments.output.resolve(), host_target_triple()
-    )
+    with tempfile.TemporaryDirectory(prefix="stock-desk-macos-sidecar-") as temporary:
+        artifact = build_native_sidecar(
+            ROOT,
+            arguments.output.resolve(),
+            host_target_triple(),
+            work_dir=Path(temporary) / "pyinstaller-work",
+            timeout_seconds=900,
+        )
     print(artifact)
     return 0
 

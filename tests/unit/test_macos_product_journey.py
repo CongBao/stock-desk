@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import replace
 import json
+import os
 from pathlib import Path
 import sqlite3
 
@@ -57,7 +59,7 @@ def valid_payload() -> dict[str, object]:
         "kline_cutoff": "2026-07-16",
         "formula_version_id": "formula-version-1",
         "backtest_run_id": "backtest-run-1",
-        "backtest_report_id": "backtest-report-1",
+        "backtest_report_id": "backtest-run-1",
         "screenshots": screenshots,
         "actions": [
             {
@@ -102,10 +104,22 @@ def test_evidence_rejects_identity_mismatch(field: str) -> None:
         (lambda value: value.update(demo_mode=True), "demo"),
         (lambda value: value.update(providers=["demo"]), "provider"),
         (lambda value: value.update(symbols=["000001.SS", "600519"]), "symbol"),
+        (
+            lambda value: value.update(symbols=["000001.SS", "600519.SZ"]),
+            "symbol",
+        ),
+        (
+            lambda value: value.update(symbols=["000001.SS", "000001.SH"]),
+            "symbol",
+        ),
         (lambda value: value.update(kline_cutoff=""), "K-line"),
         (lambda value: value.update(formula_version_id=""), "formula"),
         (lambda value: value.update(backtest_run_id=""), "backtest"),
         (lambda value: value.update(backtest_report_id=""), "backtest"),
+        (
+            lambda value: value.update(backtest_report_id="different-report"),
+            "report identity",
+        ),
         (lambda value: value.update(raw_token="secret"), "shape"),
         (lambda value: value.update(database_path="/Users/alice/private.db"), "shape"),
     ],
@@ -248,7 +262,7 @@ def test_isolated_state_independently_confirms_product_evidence(tmp_path: Path) 
     result = validate_isolated_product_state(tmp_path, evidence)
 
     assert result == {
-        "backtest_report_id": "backtest-report-1",
+        "backtest_report_id": "backtest-run-1",
         "backtest_run_id": "backtest-run-1",
         "daily_bar_rows": 4,
         "formula_version_id": "formula-version-1",
@@ -257,6 +271,17 @@ def test_isolated_state_independently_confirms_product_evidence(tmp_path: Path) 
         "symbols": ["000001.SS", "600519.SH"],
         "trade_rows": 1,
     }
+
+
+def test_isolated_state_rejects_report_identity_not_bound_to_persisted_run(
+    tmp_path: Path,
+) -> None:
+    _isolated_database(tmp_path)
+    evidence = validate_operator_evidence(valid_payload(), identity=IDENTITY)
+    mismatched = replace(evidence, backtest_report_id="different-report")
+
+    with pytest.raises(MacOSJourneyError, match="report identity"):
+        validate_isolated_product_state(tmp_path, mismatched)
 
 
 @pytest.mark.parametrize(
@@ -297,6 +322,109 @@ class _HostProcess:
     pid = 4242
 
 
+def test_harness_separates_local_data_root_from_v11_product_root(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    temporary_root = tmp_path / "harness"
+    temporary_root.mkdir()
+    paths = macos_full_product_test.HarnessPaths.create(temporary_root)
+    context = macos_full_product_test.HarnessContext(
+        paths=paths,
+        output=tmp_path / "output",
+    )
+    paths.host_path.parent.mkdir(parents=True)
+    paths.host_path.write_bytes(b"host")
+    captured: dict[str, object] = {}
+
+    class Process:
+        pid = 4242
+
+    def popen(*args: object, **kwargs: object) -> Process:
+        captured["args"] = args
+        captured.update(kwargs)
+        return Process()
+
+    monkeypatch.setattr(macos_full_product_test.subprocess, "Popen", popen)
+
+    macos_full_product_test._launch_application(context, "a" * 40, "b" * 40, "nonce")
+
+    assert paths.local_data_root == temporary_root / "data"
+    assert paths.data_root == paths.local_data_root / "Stock Desk" / "v1.1"
+    environment = captured["env"]
+    assert isinstance(environment, dict)
+    assert environment["STOCK_DESK_MACOS_TEST_DATA_ROOT"] == os.fspath(
+        paths.local_data_root
+    )
+    assert environment["STOCK_DESK_MACOS_TEST_DATA_ROOT"] != os.fspath(paths.data_root)
+    app_source = (ROOT / "src-tauri" / "src" / "app.rs").read_text(encoding="utf-8")
+    sidecar_source = (ROOT / "src-tauri" / "src" / "sidecar.rs").read_text(
+        encoding="utf-8"
+    )
+    assert 'local_data_root.join("Stock Desk").join("v1.1")' in app_source
+    assert 'data_root: local_data_root.join("Stock Desk").join("v1.1")' in (
+        sidecar_source
+    )
+
+
+def test_context_creation_removes_partial_temporary_root_on_baseexception(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    temporary_root = tmp_path / "partial-harness"
+    temporary_root.mkdir()
+    monkeypatch.setattr(
+        macos_full_product_test.tempfile,
+        "mkdtemp",
+        lambda **_kwargs: os.fspath(temporary_root),
+    )
+
+    def fail_create(root: Path) -> object:
+        (root / "partially-created").mkdir()
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(
+        macos_full_product_test.HarnessPaths,
+        "create",
+        fail_create,
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        macos_full_product_test._create_context(tmp_path / "output")
+
+    assert not temporary_root.exists()
+
+
+def test_operator_wait_observes_process_tree_before_accepting_evidence(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    evidence_path = tmp_path / "operator-evidence.json"
+    evidence_path.write_text("{}", encoding="utf-8")
+    observed: list[str] = []
+
+    class Tree:
+        def observe(self) -> tuple[object, ...]:
+            observed.append("observe")
+            return ()
+
+    class Evidence:
+        screenshots: tuple[object, ...] = ()
+
+    monkeypatch.setattr(
+        macos_full_product_test,
+        "validate_operator_evidence",
+        lambda *_args: Evidence(),
+    )
+
+    result = macos_full_product_test._await_operator_evidence(
+        evidence_path,
+        IDENTITY,
+        60,
+        process_tree=Tree(),
+    )
+
+    assert isinstance(result, Evidence)
+    assert len(observed) >= 2
+
+
 def _orchestration_fakes(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> tuple[Path, list[tuple[object, ...]]]:
@@ -324,6 +452,13 @@ def _orchestration_fakes(
 
     def launch(paths: object, source_sha: str, source_tree: str, nonce: str) -> object:
         calls.append(("launch", paths, source_sha, source_tree, nonce))
+        assert isinstance(paths, macos_full_product_test.HarnessContext)
+
+        class Tree:
+            def observe(self) -> tuple[object, ...]:
+                return ()
+
+        paths.process_tree = Tree()  # type: ignore[assignment]
         return _HostProcess()
 
     monkeypatch.setattr(macos_full_product_test, "_build_application", build)
@@ -345,7 +480,14 @@ def _orchestration_fakes(
         },
     )
 
-    def evidence(path: Path, identity: JourneyIdentity, timeout_seconds: int) -> object:
+    def evidence(
+        path: Path,
+        identity: JourneyIdentity,
+        timeout_seconds: int,
+        *,
+        process_tree: object,
+    ) -> object:
+        assert process_tree is not None
         ready = json.loads((output / "interaction-ready.json").read_text())
         assert ready["session_nonce"] == identity.session_nonce
         assert ready["host_pid"] == 4242
@@ -372,7 +514,7 @@ def _orchestration_fakes(
             "daily_bar_rows": 4,
             "formula_version_id": "formula-version-1",
             "backtest_run_id": "backtest-run-1",
-            "backtest_report_id": "backtest-report-1",
+            "backtest_report_id": "backtest-run-1",
             "trade_rows": 1,
             "metric_rows": 1,
         },

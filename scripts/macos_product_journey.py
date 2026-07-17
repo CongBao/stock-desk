@@ -27,7 +27,7 @@ _SCHEMA_VERSION = "stock-desk-macos-full-product-operator-v1"
 _REAL_PROVIDERS = frozenset({"akshare", "baostock", "tushare"})
 _HEX_40 = re.compile(r"[0-9a-f]{40}\Z")
 _HEX_64 = re.compile(r"[0-9a-f]{64}\Z")
-_ORDINARY_A_SHARE = re.compile(r"(?:[036]\d{5})\.(?:SH|SZ)\Z")
+_ORDINARY_A_SHARE = re.compile(r"(?:6\d{5}\.SH|[03]\d{5}\.SZ)\Z")
 _SAFE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 _SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
 
@@ -253,6 +253,8 @@ def validate_operator_evidence(
     backtest_report_id = _require_safe_id(
         value["backtest_report_id"], "backtest report"
     )
+    if backtest_report_id != backtest_run_id:
+        raise MacOSJourneyError("operator evidence backtest report identity is invalid")
     screenshots = _validate_screenshots(value["screenshots"])
     actions = _validate_actions(
         value["actions"], frozenset(item.sha256 for item in screenshots)
@@ -299,6 +301,8 @@ def validate_isolated_product_state(
 ) -> dict[str, Any]:
     """Independently validate product proof in the disposable local database."""
 
+    if evidence.backtest_report_id != evidence.backtest_run_id:
+        raise MacOSJourneyError("isolated backtest report identity is invalid")
     resolved_root = data_root.resolve()
     database = resolved_root / "stock-desk.db"
     if data_root.is_symlink() or not database.is_file() or database.is_symlink():

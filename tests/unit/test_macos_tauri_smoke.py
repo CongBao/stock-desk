@@ -21,12 +21,16 @@ def test_shared_macos_support_tracks_and_stops_only_verified_process_tree(
     host = tmp_path / "Stock Desk.app" / "Contents" / "MacOS" / "stock-desk-desktop"
     sidecar = host.parent / "stock-desk-sidecar"
     rows = {
-        42: macos_tauri_support.ProcessInfo(42, 1, os.fspath(host)),
-        43: macos_tauri_support.ProcessInfo(43, 42, os.fspath(sidecar)),
-        44: macos_tauri_support.ProcessInfo(
-            44, 43, f"{sidecar} --multiprocessing-fork"
+        42: macos_tauri_support.ProcessInfo(42, 1, "host-start", os.fspath(host)),
+        43: macos_tauri_support.ProcessInfo(
+            43, 42, "sidecar-start", os.fspath(sidecar)
         ),
-        99: macos_tauri_support.ProcessInfo(99, 1, "/usr/bin/unrelated"),
+        44: macos_tauri_support.ProcessInfo(
+            44, 43, "worker-start", f"{sidecar} --multiprocessing-fork"
+        ),
+        99: macos_tauri_support.ProcessInfo(
+            99, 1, "unrelated-start", "/usr/bin/unrelated"
+        ),
     }
     monkeypatch.setattr(macos_tauri_support, "process_table", lambda: rows.copy())
     signals: list[tuple[int, int]] = []
@@ -50,22 +54,87 @@ def test_shared_macos_support_tracks_and_stops_only_verified_process_tree(
     assert 99 in rows
 
 
-def test_shared_macos_support_ignores_pid_reuse_and_out_of_root_descendants(
+def test_shared_macos_support_ignores_same_command_pid_reuse(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     host = tmp_path / "Stock Desk.app" / "Contents" / "MacOS" / "stock-desk-desktop"
+    sidecar = host.parent / "stock-desk-sidecar"
     rows = {
-        42: macos_tauri_support.ProcessInfo(42, 1, os.fspath(host)),
-        43: macos_tauri_support.ProcessInfo(43, 42, "/usr/bin/not-stock-desk"),
+        42: macos_tauri_support.ProcessInfo(42, 1, "host-start", os.fspath(host)),
+        43: macos_tauri_support.ProcessInfo(
+            43, 42, "old-sidecar-start", os.fspath(sidecar)
+        ),
     }
     monkeypatch.setattr(macos_tauri_support, "process_table", lambda: rows.copy())
+    signals: list[int] = []
+
+    def kill(pid: int, _sent_signal: int) -> None:
+        signals.append(pid)
+        rows.pop(pid, None)
+
+    monkeypatch.setattr(macos_tauri_support.os, "kill", kill)
     tree = macos_tauri_support.VerifiedProcessTree(42, host, tmp_path)
 
     tree.observe()
-    assert tree.sidecar_pid() is None
-    rows[42] = macos_tauri_support.ProcessInfo(42, 1, "/usr/bin/reused")
+    assert tree.sidecar_pid() == 43
+    rows[43] = macos_tauri_support.ProcessInfo(
+        43, 42, "reused-sidecar-start", os.fspath(sidecar)
+    )
 
-    tree.verify_absent()
+    tree.terminate(timeout_seconds=1)
+
+    assert signals == [42]
+    assert 43 in rows
+
+
+def test_shared_macos_support_discovers_late_descendants_before_cleanup(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    host = tmp_path / "Stock Desk.app" / "Contents" / "MacOS" / "stock-desk-desktop"
+    sidecar = host.parent / "stock-desk-sidecar"
+    rows = {
+        42: macos_tauri_support.ProcessInfo(42, 1, "host-start", os.fspath(host)),
+        43: macos_tauri_support.ProcessInfo(
+            43, 42, "sidecar-start", os.fspath(sidecar)
+        ),
+    }
+    monkeypatch.setattr(macos_tauri_support, "process_table", lambda: rows.copy())
+    signals: list[int] = []
+
+    def kill(pid: int, _sent_signal: int) -> None:
+        signals.append(pid)
+        rows.pop(pid, None)
+
+    monkeypatch.setattr(macos_tauri_support.os, "kill", kill)
+    tree = macos_tauri_support.VerifiedProcessTree(42, host, tmp_path)
+
+    tree.observe()
+    rows[44] = macos_tauri_support.ProcessInfo(
+        44, 43, "late-worker-start", f"{sidecar} --multiprocessing-fork"
+    )
+    tree.observe()
+    tree.terminate(timeout_seconds=1)
+
+    assert signals == [44, 43, 42]
+
+
+def test_shared_macos_support_parses_stable_process_start_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stdout = (
+        " 42 1 Fri Jul 18 10:11:12 2026 /tmp/stock-desk-desktop\n"
+        " 43 42 Fri Jul 18 10:11:13 2026 /tmp/stock-desk-sidecar --child\n"
+    )
+    monkeypatch.setattr(
+        macos_tauri_support.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(stdout=stdout),
+    )
+
+    rows = macos_tauri_support.process_table()
+
+    assert rows[42].start_time == "Fri Jul 18 10:11:12 2026"
+    assert rows[43].command == "/tmp/stock-desk-sidecar --child"
 
 
 def _operator_action_records() -> list[dict[str, object]]:

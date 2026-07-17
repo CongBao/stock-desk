@@ -22,12 +22,13 @@ class MacOSTauriSupportError(RuntimeError):
 class ProcessInfo:
     pid: int
     parent_pid: int
+    start_time: str
     command: str
 
 
 def process_table() -> dict[int, ProcessInfo]:
     result = subprocess.run(  # noqa: S603
-        ("ps", "-axo", "pid=,ppid=,command="),
+        ("ps", "-axo", "pid=,ppid=,lstart=,command="),
         check=True,
         capture_output=True,
         text=True,
@@ -35,15 +36,20 @@ def process_table() -> dict[int, ProcessInfo]:
     )
     processes: dict[int, ProcessInfo] = {}
     for raw in result.stdout.splitlines():
-        fields = raw.strip().split(maxsplit=2)
-        if len(fields) != 3:
+        fields = raw.strip().split(maxsplit=7)
+        if len(fields) != 8:
             continue
         try:
             pid = int(fields[0])
             parent_pid = int(fields[1])
         except ValueError:
             continue
-        processes[pid] = ProcessInfo(pid, parent_pid, fields[2])
+        processes[pid] = ProcessInfo(
+            pid,
+            parent_pid,
+            " ".join(fields[2:7]),
+            fields[7],
+        )
     return processes
 
 
@@ -60,7 +66,7 @@ class VerifiedProcessTree:
         self._allowed_roots = frozenset(
             {os.fspath(allowed_root), os.path.realpath(allowed_root)}
         )
-        self._known: dict[int, tuple[str, int]] = {}
+        self._known: dict[int, tuple[str, str, int]] = {}
 
     def _inside_allowed_root(self, command: str) -> bool:
         return "stock-desk" in command.lower() and any(
@@ -74,17 +80,33 @@ class VerifiedProcessTree:
             return ()
         if root.command not in self._host_commands:
             raise MacOSTauriSupportError("Stock Desk host process identity changed")
-        observed: dict[int, tuple[str, int]] = {self._root_pid: (root.command, 0)}
+        known_root = self._known.get(self._root_pid)
+        if known_root is not None and (
+            known_root[0] != root.start_time or known_root[1] != root.command
+        ):
+            raise MacOSTauriSupportError("Stock Desk host process identity changed")
+        observed: dict[int, tuple[str, str, int]] = {
+            self._root_pid: (root.start_time, root.command, 0)
+        }
         pending = {self._root_pid}
         while pending:
             parent_pid = pending.pop()
-            parent_depth = observed[parent_pid][1]
+            parent_depth = observed[parent_pid][2]
             for row in rows.values():
                 if row.parent_pid != parent_pid or row.pid in observed:
                     continue
                 if not self._inside_allowed_root(row.command):
                     continue
-                observed[row.pid] = (row.command, parent_depth + 1)
+                known = self._known.get(row.pid)
+                if known is not None and (
+                    known[0] != row.start_time or known[1] != row.command
+                ):
+                    continue
+                observed[row.pid] = (
+                    row.start_time,
+                    row.command,
+                    parent_depth + 1,
+                )
                 pending.add(row.pid)
         self._known.update(observed)
         return tuple(rows[pid] for pid in sorted(observed) if pid != self._root_pid)
@@ -92,7 +114,7 @@ class VerifiedProcessTree:
     def sidecar_pid(self) -> int | None:
         candidates = [
             (depth, pid)
-            for pid, (command, depth) in self._known.items()
+            for pid, (_start_time, command, depth) in self._known.items()
             if pid != self._root_pid and "stock-desk-sidecar" in command
         ]
         if not candidates:
@@ -105,11 +127,15 @@ class VerifiedProcessTree:
         except MacOSTauriSupportError:
             # A reused root PID is not authority to discover or signal processes.
             pass
-        for pid, (command, _depth) in sorted(
-            self._known.items(), key=lambda item: item[1][1], reverse=True
+        for pid, (start_time, command, _depth) in sorted(
+            self._known.items(), key=lambda item: item[1][2], reverse=True
         ):
             current = process_table().get(pid)
-            if current is None or current.command != command:
+            if (
+                current is None
+                or current.start_time != start_time
+                or current.command != command
+            ):
                 continue
             try:
                 os.kill(pid, signal.SIGTERM)
@@ -118,12 +144,20 @@ class VerifiedProcessTree:
             deadline = time.monotonic() + timeout_seconds
             while time.monotonic() < deadline:
                 current = process_table().get(pid)
-                if current is None or current.command != command:
+                if (
+                    current is None
+                    or current.start_time != start_time
+                    or current.command != command
+                ):
                     break
                 time.sleep(0.05)
             else:
                 current = process_table().get(pid)
-                if current is not None and current.command == command:
+                if (
+                    current is not None
+                    and current.start_time == start_time
+                    and current.command == command
+                ):
                     try:
                         os.kill(pid, signal.SIGKILL)
                     except ProcessLookupError:
@@ -134,8 +168,10 @@ class VerifiedProcessTree:
         rows = process_table()
         remaining = [
             pid
-            for pid, (command, _depth) in self._known.items()
-            if pid in rows and rows[pid].command == command
+            for pid, (start_time, command, _depth) in self._known.items()
+            if pid in rows
+            and rows[pid].start_time == start_time
+            and rows[pid].command == command
         ]
         if remaining:
             raise MacOSTauriSupportError(
