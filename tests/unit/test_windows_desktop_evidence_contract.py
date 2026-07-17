@@ -426,8 +426,9 @@ def test_installed_desktop_exit_uses_honest_hosted_uia_automation() -> None:
         "Find-NativeCloseButton",
         "Test-HasTitleBarAncestor",
         "ControlType]::TitleBar",
-        "InvokePattern]::Pattern",
-        "$pattern.Invoke()",
+        "WindowPattern]::Pattern",
+        "$pattern.Close()",
+        "uia-window-pattern-close",
         "native-close-open-dialog",
         "webview-cancel-dialog",
         "native-close-reopen-dialog",
@@ -459,7 +460,7 @@ def test_hosted_uia_driver_rejects_ambiguous_or_cross_process_targets() -> None:
     assert "$matches.Count -eq 1" in driver
     assert "$matches.Count -gt 1" in driver
     assert "native close UIA target is ambiguous" in driver
-    assert "native close button does not expose InvokePattern" in driver
+    assert "native window does not expose WindowPattern" in driver
     assert "titlebar_ancestor = $true" in driver
     assert "runtime_id = $runtimeId" in driver
 

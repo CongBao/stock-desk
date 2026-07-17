@@ -1540,7 +1540,7 @@ test('records aggregate 2/3/5 budgets and worker-backed UI responsiveness', asyn
     scope: { total: number; runnable: number };
   };
   expect(preflightEvidence.scope).toMatchObject({ total: 5_000, runnable: 40 });
-  const preflight = page.getByLabel('服务端预检结果');
+  const preflight = page.getByLabel('预检结果');
   await expect(preflight).toContainText(/可运行 40 \/ 5000/u);
   const confirmation = preflight.getByRole('checkbox');
   if (await confirmation.isVisible()) await confirmation.check();

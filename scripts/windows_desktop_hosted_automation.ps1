@@ -185,11 +185,12 @@ function Find-NativeCloseButton([int]$TimeoutSeconds = 15) {
 
 function Invoke-NativeClose([int]$Sequence, [string]$Action) {
   $button = Find-NativeCloseButton
+  $window = Get-RootElement
   $patternObject = $null
-  if (-not $button.TryGetCurrentPattern(
-    [System.Windows.Automation.InvokePattern]::Pattern,
+  if (-not $window.TryGetCurrentPattern(
+    [System.Windows.Automation.WindowPattern]::Pattern,
     [ref]$patternObject
-  )) { throw 'native close button does not expose InvokePattern' }
+  )) { throw 'native window does not expose WindowPattern' }
   $runtimeId = @($button.GetRuntimeId()) -join '.'
   $record = [ordered]@{
     sequence = $Sequence
@@ -204,12 +205,12 @@ function Invoke-NativeClose([int]$Sequence, [string]$Action) {
       enabled = $true
       offscreen = $false
     }
-    invocation = 'uia-invoke-pattern'
+    invocation = 'uia-window-pattern-close'
     physical_mouse_click = $false
     observed_state = 'pending-webview-observation'
   }
-  $pattern = [System.Windows.Automation.InvokePattern]$patternObject
-  $pattern.Invoke()
+  $pattern = [System.Windows.Automation.WindowPattern]$patternObject
+  $pattern.Close()
   return $record
 }
 

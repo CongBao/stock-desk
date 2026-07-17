@@ -124,9 +124,7 @@ test.describe.serial('Stage 3 real local backtesting', () => {
     await expect(page.getByText(`${START} → ${END}`)).toBeVisible();
     await chooseFormula(page, MACD_NAME);
     await finishCommonSteps(page);
-    await expect(page.getByLabel('服务端预检结果')).toContainText(
-      '可运行 1 / 1',
-    );
+    await expect(page.getByLabel('预检结果')).toContainText('可运行 1 / 1');
     await page.getByRole('button', { name: '提交回测' }).click();
     await expect(page).toHaveURL(/\/backtests\/[0-9a-f-]{36}$/u);
     completedRunUrl = page.url();
@@ -233,7 +231,7 @@ test.describe.serial('Stage 3 real local backtesting', () => {
     await page.getByRole('button', { name: '下一步' }).click();
     await page.getByRole('button', { name: '下一步' }).click();
     await page.getByRole('button', { name: '运行预检' }).click();
-    const preflight = page.getByLabel('服务端预检结果');
+    const preflight = page.getByLabel('预检结果');
     await expect(preflight).toContainText('可运行 2 / 3');
     await expect(preflight).toContainText('缺口 1');
     await preflight.getByRole('checkbox').check();

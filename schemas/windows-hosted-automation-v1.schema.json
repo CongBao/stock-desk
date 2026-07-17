@@ -216,7 +216,7 @@
           "$ref": "#/$defs/nativeTarget"
         },
         "invocation": {
-          "const": "uia-invoke-pattern"
+          "const": "uia-window-pattern-close"
         },
         "physical_mouse_click": {
           "const": false
@@ -262,7 +262,7 @@
           "$ref": "#/$defs/nativeTarget"
         },
         "invocation": {
-          "const": "uia-invoke-pattern"
+          "const": "uia-window-pattern-close"
         },
         "physical_mouse_click": {
           "const": false

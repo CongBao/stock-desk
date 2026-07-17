@@ -54,7 +54,12 @@ _NATIVE_TARGET_FIELDS = {
 }
 _WEBVIEW_TARGET_FIELDS = {"role", "name", "exact"}
 EXPECTED_ACTIONS = (
-    (1, "native-close-open-dialog", "uia-invoke-pattern", "exit-dialog-visible"),
+    (
+        1,
+        "native-close-open-dialog",
+        "uia-window-pattern-close",
+        "exit-dialog-visible",
+    ),
     (
         2,
         "webview-cancel-dialog",
@@ -64,7 +69,7 @@ EXPECTED_ACTIONS = (
     (
         3,
         "native-close-reopen-dialog",
-        "uia-invoke-pattern",
+        "uia-window-pattern-close",
         "exit-dialog-visible",
     ),
     (4, "webview-confirm-exit", "playwright-cdp-click", "host-exited-zero"),

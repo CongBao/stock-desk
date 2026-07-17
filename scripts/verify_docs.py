@@ -125,10 +125,10 @@ REQUIRED_WIKI_APP_UI_LABELS = {
     "First-Launch-and-Health": (
         ("About", "关于"),
         ("Data source settings", "数据源设置"),
-        ("Worker running", "Worker 运行中"),
-        ("Worker not detected", "Worker 未检测"),
-        ("Worker status unavailable", "Worker 状态不可用"),
-        ("Worker: API offline", "Worker：API 离线"),
+        ("Task service running", "任务服务运行中"),
+        ("Task service not detected", "任务服务未检测"),
+        ("Task service status unavailable", "任务服务状态不可用"),
+        ("Task service: API offline", "任务服务：API 离线"),
     ),
     "Data-Sources-and-Tushare": (
         ("Data source settings", "数据源设置"),
@@ -224,7 +224,7 @@ REQUIRED_WIKI_APP_UI_LABELS = {
         ("Backtest results", "回测结果"),
         ("Backtest conclusion", "回测结论"),
         ("Grouped performance", "分组表现"),
-        ("Pinned snapshot and execution assumptions", "固定快照与执行口径"),
+        ("Backtest data and calculation rules", "回测数据与计算规则"),
     ),
     "Backtest-Replay-Export-and-Failures": (
         ("Pinned replay", "固定回放"),
@@ -265,7 +265,7 @@ REQUIRED_WIKI_APP_UI_LABELS = {
         ("Status filter", "状态筛选"),
         ("Type filter", "类型筛选"),
         ("Open backtest report", "打开回测报告"),
-        ("Security event timeline", "安全事件时间线"),
+        ("Task records", "任务记录"),
         ("Cancel task", "取消任务"),
     ),
     "Responsive-Navigation-and-Accessibility": (
@@ -278,7 +278,7 @@ REQUIRED_WIKI_APP_UI_LABELS = {
     ),
     "Troubleshooting": (
         ("Task Center", "任务中心"),
-        ("Safe event timeline", "安全事件时间线"),
+        ("Task records", "任务记录"),
     ),
 }
 
@@ -514,7 +514,7 @@ REQUIRED_WIKI_VISIBLE_APP_UI_SOURCE_EVIDENCE: dict[
         "回测结果": ("web/src/features/backtests/BacktestRunPage.tsx", "jsx_text"),
         "回测结论": ("web/src/features/backtests/ReportOverview.tsx", "jsx_text"),
         "分组表现": ("web/src/features/backtests/GroupedMetrics.tsx", "jsx_text"),
-        "固定快照与执行口径": (
+        "回测数据与计算规则": (
             "web/src/features/backtests/BacktestReportPage.tsx",
             "jsx_text",
         ),
@@ -628,21 +628,21 @@ REQUIRED_WIKI_DOCUMENTATION_ENTRY_MARKERS = {
 REQUIRED_WIKI_WORKFLOW_CONTENT = {
     "First-Launch-and-Health.md": (
         (
-            "Worker 运行中",
-            "Worker 未检测",
-            "Worker 状态不可用",
-            "Worker：API 离线",
-            "API 正常且 Worker 运行中",
+            "任务服务运行中",
+            "任务服务未检测",
+            "任务服务状态不可用",
+            "任务服务：API 离线",
+            "API 正常且任务服务运行中",
         ),
         (),
     ),
     "First-Launch-and-Health-en.md": (
         (
-            "Worker running（Worker 运行中）",
-            "Worker not detected（Worker 未检测）",
-            "Worker status unavailable（Worker 状态不可用）",
-            "Worker: API offline（Worker：API 离线）",
-            "API is healthy and Worker is running",
+            "Task service running（任务服务运行中）",
+            "Task service not detected（任务服务未检测）",
+            "Task service status unavailable（任务服务状态不可用）",
+            "Task service: API offline（任务服务：API 离线）",
+            "API and task service are healthy",
         ),
         (),
     ),
@@ -1096,7 +1096,7 @@ REQUIRED_WIKI_WORKFLOW_CONTENT = {
             "运行进度",
             "任务中心",
             "回测结果",
-            "任何配置修改都会使服务端预检失效",
+            "修改配置后需重新预检。",
             "38 笔已实现交易",
             "胜率 36.84%",
         ),
@@ -1251,7 +1251,7 @@ REQUIRED_WIKI_WORKFLOW_CONTENT = {
             "单一证券占比超过 50% 仍为低可靠性",
             "当前版本不计算组合资金曲线、最大回撤或基准超额收益",
             "最大单笔亏损不能当作最大回撤",
-            "固定快照与执行口径",
+            "回测数据与计算规则",
             "证券数据集",
             "来源证据",
             "聚合结论不可计算",
@@ -1289,7 +1289,7 @@ REQUIRED_WIKI_WORKFLOW_CONTENT = {
             "Any symbol above 50% keeps reliability low",
             "The current release does not calculate a portfolio equity curve, maximum drawdown, or benchmark excess return",
             "Worst single trade is not maximum drawdown",
-            "Pinned snapshot and execution assumptions（固定快照与执行口径）",
+            "Backtest data and calculation rules（回测数据与计算规则）",
             "instrument dataset",
             "provenance digest",
             "Aggregate conclusion unavailable",
@@ -1322,7 +1322,7 @@ REQUIRED_WIKI_WORKFLOW_CONTENT = {
             "已处理 / 总数",
             "失败记录",
             "运行日志",
-            "安全事件时间线不是运行日志",
+            "任务记录不是运行日志",
             "取消回测",
             "取消任务",
             "取消不会删除已持久化的数据",
@@ -1443,8 +1443,8 @@ REQUIRED_WIKI_WORKFLOW_CONTENT = {
         (
             "状态筛选",
             "类型筛选",
-            "安全任务摘要",
-            "安全事件时间线",
+            "任务详情",
+            "任务记录",
             "取消任务",
             "任务中心读取最近 100 项任务的安全视图",
             "只显示经过约束的可见审计事件，不是运行日志",
@@ -1464,8 +1464,8 @@ REQUIRED_WIKI_WORKFLOW_CONTENT = {
         (
             "Status filter（状态筛选）",
             "Type filter（类型筛选）",
-            "safe summary",
-            "Security event timeline（安全事件时间线）",
+            "task details",
+            "Task records（任务记录）",
             "Open backtest report（打开回测报告）",
             "Cancel task（取消任务）",
             "Task Center reads the safe view for the most recent 100 tasks",
@@ -1817,9 +1817,9 @@ REQUIRED_WIKI_BACKTEST_GUIDE_SOURCE_CLAIMS = {
             "BUY:CROSS(DIF,DEA);SELL:CROSS(DEA,DIF);",
         ),
         (
-            "任何配置修改都会使服务端预检失效",
+            "修改配置后需重新预检。",
             "web/src/features/backtests/BacktestWizard.tsx",
-            "任何配置修改都会使服务端预检失效",
+            "修改配置后需重新预检。",
         ),
         (
             "提交后自动进入“回测运行”",
@@ -1836,7 +1836,7 @@ REQUIRED_WIKI_BACKTEST_GUIDE_SOURCE_CLAIMS = {
         (
             "Any configuration change invalidates the server preflight",
             "web/src/features/backtests/BacktestWizard.tsx",
-            "任何配置修改都会使服务端预检失效",
+            "修改配置后需重新预检。",
         ),
         (
             "Submission opens Backtest run（回测运行） automatically",
@@ -1991,7 +1991,7 @@ REQUIRED_WIKI_BACKTEST_GUIDE_SOURCE_CLAIMS = {
         (
             "旧结果的快照、结果哈希、公式版本和来源证据不会被新任务改写",
             "web/src/features/backtests/BacktestReportPage.tsx",
-            "固定快照与执行口径",
+            "回测数据与计算规则",
         ),
         (
             "高级 API：`POST /api/backtests/{run_id}/copy`",
@@ -2033,7 +2033,7 @@ REQUIRED_WIKI_BACKTEST_GUIDE_SOURCE_CLAIMS = {
         (
             "A new task never rewrites the old result's snapshot, result hash, formula version, or provenance",
             "web/src/features/backtests/BacktestReportPage.tsx",
-            "固定快照与执行口径",
+            "回测数据与计算规则",
         ),
         (
             "Advanced API: `POST /api/backtests/{run_id}/copy`",
@@ -2079,7 +2079,7 @@ REQUIRED_WIKI_ANALYSIS_PLATFORM_GUIDE_SOURCE_CLAIMS = {
         (
             "编辑会创建后继配置，原配置保持不可变",
             "web/src/features/analysis/ModelSettings.tsx",
-            "后继配置已创建，原配置保持不可变。",
+            "后继配置已创建，原配置保持不变。",
         ),
     ),
     "Model-Provider-Setup-en.md": (
@@ -2101,7 +2101,7 @@ REQUIRED_WIKI_ANALYSIS_PLATFORM_GUIDE_SOURCE_CLAIMS = {
         (
             "Editing creates a successor configuration and leaves the original immutable",
             "web/src/features/analysis/ModelSettings.tsx",
-            "后继配置已创建，原配置保持不可变。",
+            "后继配置已创建，原配置保持不变。",
         ),
     ),
     "Research-Reports-and-Evidence.md": (
@@ -2150,9 +2150,9 @@ REQUIRED_WIKI_ANALYSIS_PLATFORM_GUIDE_SOURCE_CLAIMS = {
             "allowed = frozenset(item.stage.value for item in report.retry_actions)",
         ),
         (
-            "阶段重试创建子运行，父运行保持不可变",
+            "阶段重试创建子运行，父任务保持不变",
             "web/src/features/analysis/ProcessRail.tsx",
-            "父运行保持不可变",
+            "父任务保持不变",
         ),
         (
             "新闻、公告与模型输出按不可信数据块处理，不能把其中指令当成控制指令",
@@ -2174,7 +2174,7 @@ REQUIRED_WIKI_ANALYSIS_PLATFORM_GUIDE_SOURCE_CLAIMS = {
         (
             "A stage retry creates a child run and keeps the parent run immutable",
             "web/src/features/analysis/ProcessRail.tsx",
-            "父运行保持不可变",
+            "父任务保持不变",
         ),
         (
             "News, announcements, and model output are untrusted data blocks; their instructions are not control instructions",
@@ -3529,13 +3529,18 @@ def _responsive_e2e_contract(source: str) -> bool:
 def _analysis_start_eligibility_contract(source: str) -> bool:
     start_index = source.find("async function start()")
     start_end = source.find("\n  return (", start_index)
-    label_index = source.find("'启动智能分析'")
-    button_start = source.rfind("<button", 0, label_index)
-    button_end = source.find("</button>", label_index)
+    label_index = source.find("启动智能分析")
+    native_button_start = source.rfind("<button", 0, label_index)
+    async_button_start = source.rfind("<AsyncActionButton", 0, label_index)
+    button_start = max(native_button_start, async_button_start)
+    closing_tag = (
+        "</AsyncActionButton>" if button_start == async_button_start else "</button>"
+    )
+    button_end = source.find(closing_tag, label_index)
     if min(start_index, start_end, label_index, button_start, button_end) < 0:
         return False
     start_section = source[start_index:start_end]
-    button_section = source[button_start : button_end + len("</button>")]
+    button_section = source[button_start : button_end + len(closing_tag)]
     start_required = (
         "if (!maxRetriesIsValid)",
         "preflight === null",
@@ -3718,12 +3723,14 @@ def _source_contains_visible_ui_label(
                 return True
         return False
     cursor = 0
-    while (button_start := source.find("<button", cursor)) >= 0:
+    action_tag = re.compile(r"<(button|AsyncActionButton)\b")
+    while (action_match := action_tag.search(source, cursor)) is not None:
+        tag_name = action_match.group(1)
         brace_depth = 0
         quote: str | None = None
         escaped_character = False
         opening_end = -1
-        for index in range(button_start + len("<button"), len(source)):
+        for index in range(action_match.end(), len(source)):
             character = source[index]
             if quote is not None:
                 if escaped_character:
@@ -3744,12 +3751,13 @@ def _source_contains_visible_ui_label(
                 break
         if opening_end < 0:
             return False
-        closing_start = source.find("</button>", opening_end + 1)
+        closing_tag = f"</{tag_name}>"
+        closing_start = source.find(closing_tag, opening_end + 1)
         if closing_start < 0:
             return False
         if label in source[opening_end + 1 : closing_start]:
             return True
-        cursor = closing_start + len("</button>")
+        cursor = closing_start + len(closing_tag)
     return False
 
 

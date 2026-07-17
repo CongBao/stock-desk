@@ -701,7 +701,7 @@ test('configures a model and completes traceable analysis, retry, and insufficie
   await expect.poll(() => flow.detailRunIds.at(-1)).toBe(retryRunId);
   await page.getByRole('button', { name: '查看分析流程' }).click();
   await expect(process).toContainText('阶段重试子运行');
-  await expect(process).toContainText('父运行保持不可变');
+  await expect(process).toContainText('父任务保持不变');
   await expect(process).toContainText('重试阶段看多论证');
   await expect(stage('技术研究')).toContainText('已复用');
   await expect(stage('看多论证')).toContainText('已完成');
@@ -743,7 +743,7 @@ test('configures a model and completes traceable analysis, retry, and insufficie
       name: new RegExp(`智能分析.*${analysisTaskId}`, 'u'),
     }),
   ).toBeVisible();
-  await expect(page.getByText('安全任务摘要')).toBeVisible();
+  await expect(page.getByText('任务详情')).toBeVisible();
   await expect(page.locator('body')).not.toContainText(secretTaskPayload);
   for (const target of [
     'tasks-metrics',

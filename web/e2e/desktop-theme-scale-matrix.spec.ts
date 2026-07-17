@@ -448,7 +448,10 @@ function criticalAction(route: CoreRoute, page: Page) {
         await page.keyboard.press('Enter');
         await refreshRequest;
         try {
-          await expect(target).toHaveText('刷新中…');
+          await expect(target).toHaveText('刷新任务');
+          await expect(
+            target.getByTestId('async-action-spinner'),
+          ).toBeVisible();
           await expect(target).toBeDisabled();
         } finally {
           releaseTaskList();
@@ -870,7 +873,7 @@ async function prepareBacktestDenseState(page: Page) {
     await page.getByRole('button', { name: '下一步' }).click();
   }
   await page.getByRole('button', { name: '运行预检' }).click();
-  await expect(page.getByLabel('服务端预检结果')).toContainText('可运行 1 / 1');
+  await expect(page.getByLabel('预检结果')).toContainText('可运行 1 / 1');
   await page.getByRole('button', { name: '提交回测' }).click();
   await expect(page).toHaveURL(/\/backtests\/[0-9a-f-]{36}$/u);
   await expect(page.getByRole('heading', { name: '回测结论' })).toBeVisible({

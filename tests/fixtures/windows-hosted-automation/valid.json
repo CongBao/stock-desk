@@ -28,7 +28,7 @@
         "enabled": true,
         "offscreen": false
       },
-      "invocation": "uia-invoke-pattern",
+      "invocation": "uia-window-pattern-close",
       "physical_mouse_click": false,
       "observed_state": "exit-dialog-visible"
     },
@@ -57,7 +57,7 @@
         "enabled": true,
         "offscreen": false
       },
-      "invocation": "uia-invoke-pattern",
+      "invocation": "uia-window-pattern-close",
       "physical_mouse_click": false,
       "observed_state": "exit-dialog-visible"
     },
