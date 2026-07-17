@@ -193,7 +193,34 @@ class AkShareSdkFacade:
         raise ProviderUnsupported()
 
     def stock_info_a_code_name(self) -> object:
-        return call_sdk(required_sdk_callable(self._module, "stock_info_a_code_name"))
+        try:
+            return call_sdk(
+                required_sdk_callable(self._module, "stock_info_a_code_name")
+            )
+        except Exception:
+            response = call_sdk(required_sdk_callable(self._module, "stock_zh_a_spot"))
+            rows = records_from_table(
+                response,
+                required=frozenset({"代码", "名称"}),
+            )
+            projected: list[dict[str, object]] = []
+            exchanges = {"sh": Exchange.SH, "sz": Exchange.SZ, "bj": Exchange.BJ}
+            for row in rows:
+                provider_code = required_text(row["代码"])
+                prefix, code = provider_code[:2], provider_code[2:]
+                if (
+                    prefix not in exchanges
+                    or len(provider_code) != 8
+                    or len(code) != 6
+                    or not code.isascii()
+                    or not code.isdigit()
+                    or _stock_exchange(code) is not exchanges[prefix]
+                ):
+                    raise ProviderInvalidResponse()
+                projected.append({"code": code, "name": required_text(row["名称"])})
+            if not projected:
+                raise ProviderNoData()
+            return tuple(projected)
 
     def stock_zh_index_spot_sina(self) -> object:
         return call_sdk(required_sdk_callable(self._module, "stock_zh_index_spot_sina"))
@@ -297,6 +324,7 @@ class AkShareProvider:
         module = import_optional_sdk("akshare")
         required_sdk_callable(module, "stock_zh_a_hist")
         required_sdk_callable(module, "stock_zh_a_daily")
+        required_sdk_callable(module, "stock_zh_a_spot")
         required_sdk_callable(module, "stock_zh_index_daily")
         required_sdk_callable(module, "stock_zh_index_spot_sina")
         required_sdk_callable(module, "tool_trade_date_hist_sina")

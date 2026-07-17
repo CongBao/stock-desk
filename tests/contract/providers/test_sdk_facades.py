@@ -142,6 +142,14 @@ class FakeTushareModule:
         return [rows[0].copy() for _ in range(self.row_count)]
 
 
+def _fake_akshare_prefix(code: str) -> str:
+    if code.startswith(("6", "9")):
+        return "sh"
+    if code.startswith(("0", "2", "3")):
+        return "sz"
+    return "bj"
+
+
 class FakeAkShareModule:
     def __init__(
         self,
@@ -150,16 +158,21 @@ class FakeAkShareModule:
         bar_error: Exception | None = None,
         daily_rows: list[dict[str, object]] | None = None,
         trade_dates: list[dict[str, object]] | None = None,
+        catalog_error: Exception | None = None,
+        spot_rows: list[dict[str, object]] | None = None,
     ) -> None:
         self.fixture = load_fixture("akshare")
         self.bar_calls: list[dict[str, object]] = []
         self.daily_calls: list[dict[str, object]] = []
         self.index_bar_calls: list[dict[str, object]] = []
         self.trade_date_calls = 0
+        self.spot_calls = 0
         self.chunk_rows = chunk_rows
         self.bar_error = bar_error
         self.daily_rows = daily_rows
         self.trade_dates = trade_dates
+        self.catalog_error = catalog_error
+        self.spot_rows = spot_rows
 
     def stock_zh_a_hist(self, **kwargs: object) -> object:
         self.bar_calls.append(kwargs)
@@ -187,7 +200,19 @@ class FakeAkShareModule:
         ]
 
     def stock_info_a_code_name(self) -> object:
+        if self.catalog_error is not None:
+            raise self.catalog_error
         return self.fixture["instruments"]
+
+    def stock_zh_a_spot(self) -> object:
+        self.spot_calls += 1
+        return self.spot_rows or [
+            {
+                "代码": f"{_fake_akshare_prefix(str(row['代码']))}{row['代码']}",
+                "名称": row["名称"],
+            }
+            for row in self.fixture["instruments"]
+        ]
 
     def stock_zh_index_spot_sina(self) -> object:
         return self.fixture["indices"]
@@ -367,6 +392,48 @@ def test_akshare_sdk_facade_uses_explicit_index_endpoint_and_provider_code(
     assert isinstance(outcome, BarResult)
     assert module.index_bar_calls == [{"symbol": "sh000001"}]
     assert module.bar_calls == []
+
+
+def test_akshare_instruments_fall_back_to_sina_spot_catalog(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = FakeAkShareModule(
+        catalog_error=RequestsTimeout("eastmoney unavailable"),
+        spot_rows=[
+            {"代码": "sh600000", "名称": "浦发银行"},
+            {"代码": "sz000001", "名称": "平安银行"},
+            {"代码": "bj920000", "名称": "安徽凤凰"},
+        ],
+    )
+    install_fake_module(monkeypatch, "akshare", module)
+    provider = AkShareProvider.from_sdk(clock=lambda: FETCHED_AT)
+
+    outcome = provider.fetch_instruments()
+
+    assert isinstance(outcome, ProviderBatch)
+    assert {item.symbol for item in outcome.items} == {
+        "000001.SS",
+        "000001.SZ",
+        "600000.SH",
+        "920000.BJ",
+    }
+    assert module.spot_calls == 1
+
+
+def test_akshare_instrument_fallback_rejects_prefix_exchange_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = FakeAkShareModule(
+        catalog_error=RequestsTimeout("eastmoney unavailable"),
+        spot_rows=[{"代码": "sz600000", "名称": "错误代码"}],
+    )
+    install_fake_module(monkeypatch, "akshare", module)
+    provider = AkShareProvider.from_sdk(clock=lambda: FETCHED_AT)
+
+    outcome = provider.fetch_instruments()
+
+    assert isinstance(outcome, ProviderBatchFailure)
+    assert outcome.reason is FailureReason.INVALID_RESPONSE
 
 
 def test_akshare_daily_bars_fall_back_to_sina_with_share_volume(
@@ -870,6 +937,8 @@ def test_real_requests_timeout_maps_to_typed_provider_outcome(
         }[operation]
         if operation == "bars":
             monkeypatch.setattr(module, "stock_zh_a_daily", raising(error))
+        elif operation == "instruments":
+            monkeypatch.setattr(module, "stock_zh_a_spot", raising(error))
     else:
         module = FakeBaoStockModule()
         install_fake_module(monkeypatch, "baostock", module)
