@@ -284,6 +284,20 @@ def test_isolated_state_rejects_report_identity_not_bound_to_persisted_run(
         validate_isolated_product_state(tmp_path, mismatched)
 
 
+def test_isolated_state_rejects_operator_provider_not_present_in_database(
+    tmp_path: Path,
+) -> None:
+    _isolated_database(tmp_path)
+    evidence = validate_operator_evidence(valid_payload(), identity=IDENTITY)
+    overreported = replace(
+        evidence,
+        providers=(*evidence.providers, "tushare"),
+    )
+
+    with pytest.raises(MacOSJourneyError, match="provider.*match"):
+        validate_isolated_product_state(tmp_path, overreported)
+
+
 @pytest.mark.parametrize(
     ("statement", "message"),
     [
@@ -391,6 +405,48 @@ def test_context_creation_removes_partial_temporary_root_on_baseexception(
         macos_full_product_test._create_context(tmp_path / "output")
 
     assert not temporary_root.exists()
+
+
+@pytest.mark.parametrize("cleanup_mode", ["raises", "leaves-residual"])
+def test_context_creation_preserves_original_error_and_notes_cleanup_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    cleanup_mode: str,
+) -> None:
+    temporary_root = tmp_path / "unclean-partial-harness"
+    temporary_root.mkdir()
+    monkeypatch.setattr(
+        macos_full_product_test.tempfile,
+        "mkdtemp",
+        lambda **_kwargs: os.fspath(temporary_root),
+    )
+
+    def fail_create(root: Path) -> object:
+        (root / "partially-created").mkdir()
+        raise KeyboardInterrupt("initialization interrupted")
+
+    monkeypatch.setattr(macos_full_product_test.HarnessPaths, "create", fail_create)
+    if cleanup_mode == "raises":
+        monkeypatch.setattr(
+            macos_full_product_test.shutil,
+            "rmtree",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("remove failed")),
+        )
+    else:
+        monkeypatch.setattr(
+            macos_full_product_test.shutil,
+            "rmtree",
+            lambda *_args, **_kwargs: None,
+        )
+
+    with pytest.raises(
+        KeyboardInterrupt, match="initialization interrupted"
+    ) as captured:
+        macos_full_product_test._create_context(tmp_path / "output")
+
+    notes = getattr(captured.value, "__notes__", [])
+    assert any("context cleanup failed" in note for note in notes)
+    assert any("temporary root remains" in note for note in notes)
 
 
 def test_operator_wait_observes_process_tree_before_accepting_evidence(

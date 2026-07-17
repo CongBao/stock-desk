@@ -368,6 +368,10 @@ def validate_isolated_product_state(
                 providers.add(str(provider))
                 daily_bar_rows += row_count
 
+            if providers != set(evidence.providers):
+                raise MacOSJourneyError(
+                    "isolated market provider set does not match operator evidence"
+                )
             instrument = connection.execute(
                 "SELECT instrument_kind FROM instrument_dataset_item "
                 "WHERE symbol = ? LIMIT 1",

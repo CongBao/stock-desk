@@ -118,6 +118,76 @@ def test_shared_macos_support_discovers_late_descendants_before_cleanup(
     assert signals == [44, 43, 42]
 
 
+def test_shared_macos_support_discovers_worker_after_host_exit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    host = tmp_path / "Stock Desk.app" / "Contents" / "MacOS" / "stock-desk-desktop"
+    sidecar = host.parent / "stock-desk-sidecar"
+    rows = {
+        42: macos_tauri_support.ProcessInfo(42, 1, "host-start", os.fspath(host)),
+        43: macos_tauri_support.ProcessInfo(
+            43, 42, "sidecar-start", os.fspath(sidecar)
+        ),
+    }
+    monkeypatch.setattr(macos_tauri_support, "process_table", lambda: rows.copy())
+    signals: list[int] = []
+
+    def kill(pid: int, _sent_signal: int) -> None:
+        signals.append(pid)
+        rows.pop(pid, None)
+
+    monkeypatch.setattr(macos_tauri_support.os, "kill", kill)
+    tree = macos_tauri_support.VerifiedProcessTree(42, host, tmp_path)
+    tree.observe()
+    rows.pop(42)
+    rows[43] = macos_tauri_support.ProcessInfo(
+        43, 1, "sidecar-start", os.fspath(sidecar)
+    )
+    rows[44] = macos_tauri_support.ProcessInfo(
+        44, 43, "late-worker-start", f"{sidecar} --multiprocessing-fork"
+    )
+
+    observed = tree.observe()
+    tree.terminate(timeout_seconds=1)
+
+    assert {item.pid for item in observed} == {43, 44}
+    assert signals == [44, 43]
+
+
+def test_shared_macos_support_reused_known_process_cannot_authorize_descendants(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    host = tmp_path / "Stock Desk.app" / "Contents" / "MacOS" / "stock-desk-desktop"
+    sidecar = host.parent / "stock-desk-sidecar"
+    rows = {
+        42: macos_tauri_support.ProcessInfo(42, 1, "host-start", os.fspath(host)),
+        43: macos_tauri_support.ProcessInfo(
+            43, 42, "sidecar-start", os.fspath(sidecar)
+        ),
+    }
+    monkeypatch.setattr(macos_tauri_support, "process_table", lambda: rows.copy())
+    signals: list[int] = []
+    monkeypatch.setattr(
+        macos_tauri_support.os,
+        "kill",
+        lambda pid, _sent_signal: signals.append(pid),
+    )
+    tree = macos_tauri_support.VerifiedProcessTree(42, host, tmp_path)
+    tree.observe()
+    rows.pop(42)
+    rows[43] = macos_tauri_support.ProcessInfo(
+        43, 1, "reused-sidecar-start", os.fspath(sidecar)
+    )
+    rows[44] = macos_tauri_support.ProcessInfo(
+        44, 43, "untrusted-worker-start", f"{sidecar} --multiprocessing-fork"
+    )
+
+    assert tree.observe() == ()
+    tree.terminate(timeout_seconds=1)
+
+    assert signals == []
+
+
 def test_shared_macos_support_parses_stable_process_start_time(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

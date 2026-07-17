@@ -76,19 +76,23 @@ class VerifiedProcessTree:
     def observe(self) -> tuple[ProcessInfo, ...]:
         rows = process_table()
         root = rows.get(self._root_pid)
-        if root is None:
-            return ()
-        if root.command not in self._host_commands:
-            raise MacOSTauriSupportError("Stock Desk host process identity changed")
-        known_root = self._known.get(self._root_pid)
-        if known_root is not None and (
-            known_root[0] != root.start_time or known_root[1] != root.command
-        ):
-            raise MacOSTauriSupportError("Stock Desk host process identity changed")
-        observed: dict[int, tuple[str, str, int]] = {
-            self._root_pid: (root.start_time, root.command, 0)
-        }
-        pending = {self._root_pid}
+        if not self._known:
+            if root is None:
+                return ()
+            if root.command not in self._host_commands:
+                raise MacOSTauriSupportError("Stock Desk host process identity changed")
+            observed: dict[int, tuple[str, str, int]] = {
+                self._root_pid: (root.start_time, root.command, 0)
+            }
+        else:
+            observed = {
+                pid: identity
+                for pid, identity in self._known.items()
+                if (row := rows.get(pid)) is not None
+                and row.start_time == identity[0]
+                and row.command == identity[1]
+            }
+        pending = set(observed)
         while pending:
             parent_pid = pending.pop()
             parent_depth = observed[parent_pid][2]

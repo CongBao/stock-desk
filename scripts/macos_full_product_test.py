@@ -371,7 +371,17 @@ def _create_context(output: Path) -> HarnessContext:
     try:
         paths = HarnessPaths.create(temporary_root)
     except BaseException:
-        shutil.rmtree(temporary_root, ignore_errors=True)
+        active_error = sys.exception()
+        cleanup_errors: list[BaseException] = []
+        try:
+            shutil.rmtree(temporary_root, ignore_errors=False)
+        except BaseException as cleanup_error:
+            cleanup_errors.append(cleanup_error)
+        if temporary_root.exists():
+            cleanup_errors.append(RuntimeError("temporary root remains"))
+        if active_error is not None and cleanup_errors:
+            details = "; ".join(str(error) for error in cleanup_errors)
+            active_error.add_note(f"context cleanup failed: {details}")
         raise
     return HarnessContext(paths=paths, output=output)
 
