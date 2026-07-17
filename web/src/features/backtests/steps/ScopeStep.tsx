@@ -54,7 +54,7 @@ export function ScopeStep({
         })
       ).filter(
         (item) =>
-          item.instrumentKind === 'stock' && item.listingStatus === 'listed',
+          item.instrumentKind === 'stock' && item.listingStatus !== 'delisted',
       );
       if (
         !controller.signal.aborted &&
@@ -171,7 +171,7 @@ export function ScopeStep({
           {searchError ? (
             <p role="alert">证券搜索暂时不可用，请稍后重试。</p>
           ) : searched && matches.length === 0 ? (
-            <p role="status">未找到可回测的已上市 A 股</p>
+            <p role="status">未找到可回测的 A 股</p>
           ) : null}
           {matches.length > 0 ? (
             <ul className="instrument-matches">

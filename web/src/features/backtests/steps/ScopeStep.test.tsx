@@ -68,6 +68,7 @@ it('filters out non-stock and delisted instruments from selectable results', asy
     .fn()
     .mockResolvedValue([
       instrument('600000.SH'),
+      { ...instrument('600519.SH'), listingStatus: 'unknown' },
       { ...instrument('000300.SH'), instrumentKind: 'index' },
       { ...instrument('000001.SZ'), listingStatus: 'delisted' },
     ]);
@@ -84,6 +85,7 @@ it('filters out non-stock and delisted instruments from selectable results', asy
   expect(
     await screen.findByRole('button', { name: /600000.SH/u }),
   ).toBeVisible();
+  expect(screen.getByRole('button', { name: /600519.SH/u })).toBeVisible();
   expect(
     screen.queryByRole('button', { name: /000300.SH/u }),
   ).not.toBeInTheDocument();
