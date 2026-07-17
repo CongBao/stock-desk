@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { ApiError, type JsonValue } from '../../shared/api/client';
+import { AsyncActionButton } from '../../shared/components/AsyncActionButton';
 import {
   isMarketNotFound,
   MarketProtocolError,
@@ -38,6 +39,7 @@ import type { TdxDocumentationEntry } from './tdxLanguage';
 
 const EMPTY_SCHEMA: ParameterSchema = {};
 type OperationName = 'validation' | 'load' | 'preview' | 'save' | 'copy';
+type PendingAction = 'validation' | 'copy' | 'save-draft' | 'save-version';
 
 function schemaFingerprint(schema: ParameterSchema): string {
   return JSON.stringify(
@@ -100,7 +102,7 @@ function errorMessage(error: unknown): string {
       return '公式或预览参数未通过服务端校验，请按诊断修改后重试。';
     }
     if (error.kind === 'network') {
-      return '无法连接本地 API，请确认 stock-desk 服务正在运行。';
+      return '无法连接本地服务，请确认 stock-desk 正在运行。';
     }
     if (error.kind === 'http') {
       return '本地服务暂时无法完成公式请求，请按页面诊断处理。';
@@ -114,7 +116,7 @@ function errorMessage(error: unknown): string {
   ) {
     return '';
   }
-  return '操作失败，请确认本地 API 已启动并重试。';
+  return '操作失败，请确认本地服务已启动并重试。';
 }
 
 function snippetFor(
@@ -194,6 +196,9 @@ export function FormulaStudioPage({
   const [isValidating, setIsValidating] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isPreviewing, setIsPreviewing] = useState(false);
+  const [pendingAction, setPendingAction] = useState<PendingAction | null>(
+    null,
+  );
   const [notice, setNotice] = useState<string | null>(null);
   const [operationError, setOperationError] = useState<string | null>(null);
   const [symbol, setSymbol] = useState('600000.SH');
@@ -231,6 +236,18 @@ export function FormulaStudioPage({
       operationControllers.current.get(name) === controller,
     [],
   );
+
+  async function runPendingAction(
+    action: PendingAction,
+    operation: () => Promise<unknown>,
+  ) {
+    setPendingAction(action);
+    try {
+      await operation();
+    } finally {
+      setPendingAction((current) => (current === action ? null : current));
+    }
+  }
 
   useEffect(() => {
     mountedRef.current = true;
@@ -428,6 +445,7 @@ export function FormulaStudioPage({
     cancelOperation('preview');
     setIsSaving(false);
     setIsPreviewing(false);
+    setPendingAction(null);
     setSource(next);
     setBars(undefined);
     setPreview(undefined);
@@ -449,6 +467,7 @@ export function FormulaStudioPage({
     }
     setIsSaving(false);
     setIsPreviewing(false);
+    setPendingAction(null);
     setFormulaId(null);
     setSavedVersionId(null);
     setSavedFingerprint(null);
@@ -629,6 +648,7 @@ export function FormulaStudioPage({
     }
     setIsSaving(false);
     setIsPreviewing(false);
+    setPendingAction(null);
     setBars(undefined);
     setPreview(undefined);
     setOperationError(null);
@@ -959,7 +979,9 @@ export function FormulaStudioPage({
             documentation={documentation}
             source={source}
             onChange={updateSource}
-            onValidate={() => void runValidation()}
+            onValidate={() =>
+              void runPendingAction('validation', runValidation)
+            }
           />
           <div className="formula-diagnostic-panel" aria-live="polite">
             {diagnostics.length === 0 ? (
@@ -992,6 +1014,7 @@ export function FormulaStudioPage({
               cancelOperation('preview');
               setIsSaving(false);
               setIsPreviewing(false);
+              setPendingAction(null);
               setParameterSchema(schema);
               setBars(undefined);
               setPreview(undefined);
@@ -1005,18 +1028,20 @@ export function FormulaStudioPage({
                   ? '草稿已变更，请先校验并保存新版本'
                   : '保存会创建不可变版本')}
             </div>
-            <button
+            <AsyncActionButton
               type="button"
               className="formula-secondary-action"
-              onClick={() => void runValidation()}
+              pending={pendingAction === 'validation'}
+              onClick={() => void runPendingAction('validation', runValidation)}
               disabled={isValidating || source.length === 0}
             >
               立即校验
-            </button>
-            <button
+            </AsyncActionButton>
+            <AsyncActionButton
               type="button"
               className="formula-secondary-action"
-              onClick={() => void copyFormula()}
+              pending={pendingAction === 'copy'}
+              onClick={() => void runPendingAction('copy', copyFormula)}
               disabled={
                 formulaId === null ||
                 savedVersionId === null ||
@@ -1025,24 +1050,26 @@ export function FormulaStudioPage({
               }
             >
               复制公式
-            </button>
-            <button
+            </AsyncActionButton>
+            <AsyncActionButton
               type="button"
               className="formula-secondary-action"
-              onClick={() => void saveDraft()}
+              pending={pendingAction === 'save-draft'}
+              onClick={() => void runPendingAction('save-draft', saveDraft)}
               disabled={!canSaveDraft}
             >
               保存草稿
-            </button>
-            <button
+            </AsyncActionButton>
+            <AsyncActionButton
               type="button"
               className="formula-primary-action"
               data-guidance-target="formula-save"
-              onClick={() => void saveFormula()}
+              pending={pendingAction === 'save-version'}
+              onClick={() => void runPendingAction('save-version', saveFormula)}
               disabled={!canSave}
             >
-              {isSaving ? '保存中…' : '保存为新版本'}
-            </button>
+              保存为新版本
+            </AsyncActionButton>
           </footer>
         </section>
 

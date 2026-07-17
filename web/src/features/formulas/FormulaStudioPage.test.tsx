@@ -650,6 +650,24 @@ it('finishes async validation after the StrictMode effect setup-cleanup-setup cy
   expect(screen.getByRole('button', { name: '立即校验' })).toBeEnabled();
 });
 
+it('keeps manual validation on one stable busy button and blocks duplicate clicks', async () => {
+  const user = userEvent.setup();
+  const api = apiFixture();
+  const pending = deferred<FormulaValidation>();
+  vi.mocked(api.validateFormula).mockImplementation(() => pending.promise);
+  renderStudio({ initialFormula: detail, validationDebounceMs: 60_000 }, api);
+
+  const button = screen.getByRole('button', { name: '立即校验' });
+  await user.click(button);
+
+  expect(button).toHaveAttribute('aria-busy', 'true');
+  expect(button).toHaveTextContent('立即校验');
+  expect(button).toBeDisabled();
+  expect(screen.getAllByTestId('async-action-spinner')).toHaveLength(1);
+  await user.click(button);
+  expect(api.validateFormula).toHaveBeenCalledOnce();
+});
+
 it('disables copying a saved version while the current draft is dirty', () => {
   const api = apiFixture();
   renderStudio({ initialFormula: detail }, api);
@@ -679,6 +697,49 @@ it('copies a saved immutable version as an independent formula with cancellable 
   expect(
     await screen.findByText(`已复制为独立公式版本：${detail.name} 副本`),
   ).toBeVisible();
+});
+
+it('shows copy progress only on the copy button while its request is pending', async () => {
+  const user = userEvent.setup();
+  const api = apiFixture();
+  const pending = deferred<Awaited<ReturnType<FormulaApi['copyFormula']>>>();
+  vi.mocked(api.copyFormula).mockImplementation(() => pending.promise);
+  renderStudio({ initialFormula: detail }, api);
+
+  const copyButton = screen.getByRole('button', { name: '复制公式' });
+  await user.click(copyButton);
+
+  expect(copyButton).toHaveAttribute('aria-busy', 'true');
+  expect(copyButton).toHaveTextContent('复制公式');
+  expect(screen.getAllByTestId('async-action-spinner')).toHaveLength(1);
+  expect(
+    screen.getByRole('button', { name: '保存为新版本' }),
+  ).not.toHaveAttribute('aria-busy');
+  await user.click(copyButton);
+  expect(api.copyFormula).toHaveBeenCalledOnce();
+});
+
+it('keeps the save label stable and blocks duplicate version saves', async () => {
+  const user = userEvent.setup();
+  const api = apiFixture();
+  const pending = deferred<Awaited<ReturnType<FormulaApi['saveFormula']>>>();
+  vi.mocked(api.saveFormula).mockImplementation(() => pending.promise);
+  renderStudio({ initialFormula: detail }, api);
+
+  fireEvent.change(screen.getByRole('textbox', { name: '通达信公式代码' }), {
+    target: { value: `${detail.draft.source}\nEXTRA:CLOSE;` },
+  });
+  await waitFor(() =>
+    expect(screen.getByRole('button', { name: '保存为新版本' })).toBeEnabled(),
+  );
+  const saveButton = screen.getByRole('button', { name: '保存为新版本' });
+  await user.click(saveButton);
+
+  expect(saveButton).toHaveAttribute('aria-busy', 'true');
+  expect(saveButton).toHaveTextContent('保存为新版本');
+  expect(screen.getAllByTestId('async-action-spinner')).toHaveLength(1);
+  await user.click(saveButton);
+  expect(api.saveFormula).toHaveBeenCalledOnce();
 });
 
 it('aborts and ignores a deferred save response after the draft changes', async () => {
@@ -752,6 +813,23 @@ it('keeps preview explicit and marks the saved revision stale after editing', as
 
   expect(previewButton).toBeDisabled();
   expect(screen.getByText('草稿已变更，请先校验并保存新版本')).toBeVisible();
+});
+
+it('keeps the preview label stable and blocks duplicate preview requests', async () => {
+  const user = userEvent.setup();
+  const marketApiClient = marketApiFixture();
+  const pending = deferred<MarketBarsResponse>();
+  vi.mocked(marketApiClient.getBars).mockImplementation(() => pending.promise);
+  renderStudio({ initialFormula: detail }, apiFixture(), marketApiClient);
+
+  const previewButton = screen.getByRole('button', { name: '运行预览' });
+  await user.click(previewButton);
+
+  expect(previewButton).toHaveAttribute('aria-busy', 'true');
+  expect(previewButton).toHaveTextContent('运行预览');
+  expect(screen.getAllByTestId('async-action-spinner')).toHaveLength(1);
+  await user.click(previewButton);
+  expect(marketApiClient.getBars).toHaveBeenCalledOnce();
 });
 
 it('explains a missing local bar cache without reporting the healthy API as down', async () => {

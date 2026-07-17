@@ -1,3 +1,4 @@
+import { AsyncActionButton } from '../../shared/components/AsyncActionButton';
 import { MarketChart, type FormulaChartLayer } from '../market/MarketChart';
 import type { MarketBar } from '../market/marketApi';
 import type { MarketAdjustment, MarketPeriod } from '../market/marketStore';
@@ -117,14 +118,15 @@ export function FormulaPreview({
             <option value="hfq">后复权</option>
           </select>
         </label>
-        <button
+        <AsyncActionButton
           className="formula-preview-run"
           type="button"
+          pending={isLoading}
           disabled={previewDisabled || isLoading}
           onClick={onPreview}
         >
-          {isLoading ? '计算中…' : '运行预览'}
-        </button>
+          运行预览
+        </AsyncActionButton>
       </div>
       <p className="formula-preview-policy">
         预览只运行已保存且校验通过的不可变版本，不会在输入时自动计算。
