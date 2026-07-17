@@ -167,3 +167,14 @@ it('keeps update notices in document flow and stacks actions on narrow or scaled
     /\.desktop-update-slot\s*\{[^}]*padding-inline-end:\s*60px/su,
   );
 });
+
+it('uses a theme-specific high-contrast release badge foreground', () => {
+  expect(theme).toMatch(/:root\s*\{[^}]*--release-badge-text:\s*#7dd3fc/su);
+  expect(theme).toMatch(
+    /:root\[data-theme='light'\]\s*\{[^}]*--release-badge-text:\s*#075985/su,
+  );
+  expect(theme).toMatch(
+    /\.release-badge\s*\{[^}]*color:\s*var\(--release-badge-text\)/su,
+  );
+  expect(theme).not.toMatch(/\.release-badge\s*\{[^}]*color:\s*#7dd3fc/su);
+});
