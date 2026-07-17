@@ -45,6 +45,7 @@ coverage/
 src-tauri/target/
 src-tauri/gen/
 src-tauri/binaries/*.exe
+src-tauri/binaries/stock-desk-sidecar-*
 
 # Editors
 .idea/

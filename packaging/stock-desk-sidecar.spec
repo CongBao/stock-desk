@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 from pathlib import Path
+import re
 
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
@@ -54,6 +56,16 @@ for optional_provider in ("akshare", "baostock", "tushare"):
     binaries += provider_binaries
     hiddenimports += provider_hiddenimports
 
+sidecar_name = os.environ.get(
+    "STOCK_DESK_PYINSTALLER_SIDECAR_NAME",
+    "stock-desk-sidecar-x86_64-pc-windows-msvc",
+)
+if not re.fullmatch(
+    r"stock-desk-sidecar-(?:x86_64-pc-windows-msvc|aarch64-apple-darwin|x86_64-apple-darwin)",
+    sidecar_name,
+):
+    raise ValueError("unsupported Stock Desk sidecar name")
+
 analysis = Analysis(
     [str(ROOT / "src" / "stock_desk" / "sidecar.py")],
     pathex=[str(ROOT / "src")],
@@ -73,7 +85,7 @@ executable = EXE(
     analysis.binaries,
     analysis.datas,
     [],
-    name="stock-desk-sidecar-x86_64-pc-windows-msvc",
+    name=sidecar_name,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

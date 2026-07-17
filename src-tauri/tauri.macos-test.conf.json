@@ -1,0 +1,6 @@
+{
+  "bundle": {
+    "externalBin": ["binaries/stock-desk-sidecar"],
+    "targets": ["app"]
+  }
+}

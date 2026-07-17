@@ -63,6 +63,16 @@ def test_tauri_bundle_is_current_user_windows_x64_without_shell_acl() -> None:
     assert "process" not in serialized_permissions
 
 
+def test_macos_test_config_is_explicit_and_never_a_release_target() -> None:
+    config = json.loads(
+        (TAURI_ROOT / "tauri.macos-test.conf.json").read_text(encoding="utf-8")
+    )
+
+    assert config["bundle"]["externalBin"] == ["binaries/stock-desk-sidecar"]
+    assert config["bundle"]["targets"] == ["app"]
+    assert "dmg" not in json.dumps(config).lower()
+
+
 def test_windows_icon_assets_are_rgba_nonempty_and_multisize() -> None:
     icons = TAURI_ROOT / "icons"
 
@@ -132,6 +142,7 @@ def test_frozen_sidecar_is_a_dedicated_binary_without_browser_assets() -> None:
     )
 
     assert '"stock_desk" / "sidecar.py"' in sidecar_spec
-    assert 'name="stock-desk-sidecar-x86_64-pc-windows-msvc"' in sidecar_spec
+    assert 'name=sidecar_name' in sidecar_spec
+    assert '"stock-desk-sidecar-x86_64-pc-windows-msvc"' in sidecar_spec
     assert "web-dist" not in sidecar_spec
     assert '"stock_desk" / "desktop.py"' not in sidecar_spec

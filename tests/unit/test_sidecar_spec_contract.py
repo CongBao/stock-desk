@@ -119,6 +119,29 @@ def test_sidecar_packages_only_sorted_migration_sources_not_ignored_caches() -> 
     assert "sorted(" in source
 
 
+def test_sidecar_name_defaults_to_windows_and_rejects_unknown_overrides() -> None:
+    tree = _spec_tree()
+    source = SPEC.read_text(encoding="utf-8")
+    executable = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "EXE"
+    )
+    name = next(
+        keyword.value for keyword in executable.keywords if keyword.arg == "name"
+    )
+
+    assert isinstance(name, ast.Name)
+    assert name.id == "sidecar_name"
+    assert '"STOCK_DESK_PYINSTALLER_SIDECAR_NAME"' in source
+    assert '"stock-desk-sidecar-x86_64-pc-windows-msvc"' in source
+    assert "aarch64-apple-darwin" in source
+    assert "x86_64-apple-darwin" in source
+    assert "unsupported Stock Desk sidecar name" in source
+
+
 def test_frozen_sidecar_runtime_path_never_imports_excluded_modules() -> None:
     sidecar = (ROOT / "src" / "stock_desk" / "sidecar.py").read_text(encoding="utf-8")
     main = (ROOT / "src" / "stock_desk" / "main.py").read_text(encoding="utf-8")
