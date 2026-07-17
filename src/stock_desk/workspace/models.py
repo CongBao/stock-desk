@@ -89,7 +89,10 @@ class WorkspacePreferences(_FrozenModel):
     current_page: WorkspacePage = "/market"
     instrument: WorkspaceInstrument
     period: Period = Period.DAY
-    adjustment: Adjustment = Adjustment.QFQ
+    # The safe default instrument is the Shanghai Composite index.  Onboarding
+    # writes that index as an unadjusted series, so the first restored chart
+    # must request the same cache identity.
+    adjustment: Adjustment = Adjustment.NONE
     zoom: WorkspaceZoom = WorkspaceZoom()
     main_chart: Literal["candlestick"] = "candlestick"
     subchart: SubchartPreference = VolumeSubchart(kind="volume")

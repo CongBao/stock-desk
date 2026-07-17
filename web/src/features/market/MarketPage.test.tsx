@@ -362,7 +362,7 @@ it('does not request bars before selection and refetches by period and adjustmen
   expect(getBars).toHaveBeenLastCalledWith({
     symbol: '600000.SH',
     period: '1d',
-    adjustment: 'qfq',
+    adjustment: 'none',
     signal: expect.any(AbortSignal) as unknown,
   });
   expect(await screen.findByText(/数据来源：BaoStock/u)).toHaveAttribute(
@@ -378,7 +378,7 @@ it('does not request bars before selection and refetches by period and adjustmen
   await user.click(screen.getByRole('radio', { name: '周线' }));
   await waitFor(() => expect(getBars).toHaveBeenCalledTimes(2));
   expect(getBars).toHaveBeenLastCalledWith(
-    expect.objectContaining({ period: '1w', adjustment: 'qfq' }),
+    expect.objectContaining({ period: '1w', adjustment: 'none' }),
   );
 
   await user.click(screen.getByRole('radio', { name: '60 分钟' }));
@@ -402,6 +402,7 @@ it('restores a saved formula version as the Market subchart and can safely disab
       formulaVersionId: 'version-1',
     }),
   );
+  act(() => store.result.current.setAdjustment('qfq'));
   const response = {
     ...barsResponse('1d', 'qfq'),
     formula: {

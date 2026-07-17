@@ -42,7 +42,7 @@ export type MarketState = {
 
 export function createMarketStore(): StoreApi<MarketState> {
   return createStore<MarketState>((set) => ({
-    adjustment: 'qfq',
+    adjustment: 'none',
     period: '1d',
     selectedInstrument: null,
     selectedPoolId: null,
@@ -71,7 +71,7 @@ const marketStore = createMarketStore();
 
 export function resetMarketStore(): void {
   marketStore.setState({
-    adjustment: 'qfq',
+    adjustment: 'none',
     period: '1d',
     selectedInstrument: null,
     selectedPoolId: null,

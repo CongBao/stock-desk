@@ -3,7 +3,13 @@ from pathlib import Path
 
 import pytest
 
-from stock_desk.market.types import Exchange, Instrument, InstrumentKind, ListingStatus
+from stock_desk.market.types import (
+    Adjustment,
+    Exchange,
+    Instrument,
+    InstrumentKind,
+    ListingStatus,
+)
 from stock_desk.workspace.models import (
     WorkspaceInstrument,
     WorkspacePreferences,
@@ -69,6 +75,15 @@ def test_missing_workspace_recovers_to_non_blocking_market_default(
     assert restored.restored is False
     assert restored.notice == "workspace_missing"
     assert restored.workspace == WorkspacePreferences.safe_default()
+
+
+def test_default_index_workspace_matches_unadjusted_onboarding_cache(
+    tmp_path: Path,
+) -> None:
+    initialized = _service(tmp_path).initialize(WorkspaceInstrument.default())
+
+    assert initialized.workspace.instrument.kind is InstrumentKind.INDEX
+    assert initialized.workspace.adjustment is Adjustment.NONE
 
 
 @pytest.mark.parametrize(

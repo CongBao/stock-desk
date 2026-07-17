@@ -7,7 +7,7 @@ it('keeps market selection, period, and adjustment explicit', () => {
     selectedInstrument: null,
     selectedPoolId: null,
     period: '1d',
-    adjustment: 'qfq',
+    adjustment: 'none',
     zoom: { start: 0, end: 100 },
     mainChart: 'candlestick',
     subchart: { kind: 'volume' },

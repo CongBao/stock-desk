@@ -30,7 +30,7 @@ const DEFAULT_WORKSPACE: WorkspaceValue = {
     instrumentKind: 'index',
   },
   period: '1d',
-  adjustment: 'qfq',
+  adjustment: 'none',
   zoom: { start: 0, end: 100 },
   mainChart: 'candlestick',
   subchart: { kind: 'volume' },

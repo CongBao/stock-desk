@@ -203,6 +203,9 @@ it('does not navigate or leak a protocol failure from an illegal route', async (
   expect(screen.getByRole('status')).toHaveTextContent(
     '工作区恢复暂不可用，已安全打开默认行情。',
   );
+  expect(
+    screen.getByText('market:1d:none:0:100:candlestick:volume'),
+  ).toBeVisible();
 });
 
 it('does not persist the initial restored snapshot', async () => {
