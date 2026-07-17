@@ -247,11 +247,17 @@ const PROGRESS_RECOVERY_INTERVAL_MS = 1_000;
 async function recoverAdvancedProgress(
   api: OnboardingApi,
   revision: number,
+  isTarget: (state: OnboardingState) => boolean,
 ): Promise<OnboardingState | null> {
   for (let attempt = 0; attempt < PROGRESS_RECOVERY_ATTEMPTS; attempt += 1) {
     try {
       const recovered = await api.getState();
-      if (recovered.revision > revision) return recovered;
+      if (
+        recovered.revision > revision &&
+        (isTarget(recovered) || recovered.error !== null)
+      ) {
+        return recovered;
+      }
     } catch {
       // The desktop sidecar may still be completing the original request.
     }
@@ -309,13 +315,20 @@ function OnboardingWizard({
   }, [api, state.currentStep]);
 
   const perform = useCallback(
-    async (operation: () => Promise<OnboardingState>) => {
+    async (
+      operation: () => Promise<OnboardingState>,
+      isRecoveryTarget: (state: OnboardingState) => boolean,
+    ) => {
       setBusy(true);
       setActionError(false);
       try {
         setState(await operation());
       } catch {
-        const recovered = await recoverAdvancedProgress(api, state.revision);
+        const recovered = await recoverAdvancedProgress(
+          api,
+          state.revision,
+          isRecoveryTarget,
+        );
         if (recovered === null) {
           setActionError(true);
         } else {
@@ -372,8 +385,11 @@ function OnboardingWizard({
                   type="button"
                   disabled={busy}
                   onClick={() =>
-                    void perform(() =>
-                      api.saveProgress({ currentStep: 'data_preparation' }),
+                    void perform(
+                      () =>
+                        api.saveProgress({ currentStep: 'data_preparation' }),
+                      (recovered) =>
+                        recovered.currentStep === 'data_preparation',
                     )
                   }
                 >
@@ -439,11 +455,14 @@ function OnboardingWizard({
                     selectedSource.status === 'unavailable'
                   }
                   onClick={() =>
-                    void perform(() =>
-                      api.saveProgress({
-                        currentStep: 'instrument_selection',
-                        sourceId: selectedSourceId,
-                      }),
+                    void perform(
+                      () =>
+                        api.saveProgress({
+                          currentStep: 'instrument_selection',
+                          sourceId: selectedSourceId,
+                        }),
+                      (recovered) =>
+                        recovered.currentStep === 'instrument_selection',
                     )
                   }
                 >
@@ -488,11 +507,15 @@ function OnboardingWizard({
                     busy || (state.source?.id ?? selectedSourceId).length === 0
                   }
                   onClick={() =>
-                    void perform(() =>
-                      api.synchronize({
-                        sourceId: state.source?.id ?? selectedSourceId,
-                        symbol: instrument.symbol,
-                      }),
+                    void perform(
+                      () =>
+                        api.synchronize({
+                          sourceId: state.source?.id ?? selectedSourceId,
+                          symbol: instrument.symbol,
+                        }),
+                      (recovered) =>
+                        recovered.currentStep === 'synchronization' &&
+                        recovered.sync?.status === 'verified',
                     )
                   }
                 >

@@ -176,7 +176,7 @@ it('recovers persisted progress when a slow desktop request times out after comm
     },
   });
   const recovered = onboardingState('synchronization', {
-    revision: 4,
+    revision: 5,
     source: {
       id: 'baostock',
       label: 'BaoStock',
@@ -185,11 +185,23 @@ it('recovers persisted progress when a slow desktop request times out after comm
       dataCutoff: null,
     },
   });
+  const synchronizing = onboardingState('synchronization', {
+    revision: 4,
+    source: recovered.source,
+    sync: {
+      status: 'idle',
+      providerId: null,
+      manifestRecordId: null,
+      datasetVersion: null,
+      dataCutoff: null,
+      rowCount: 0,
+    },
+  });
   const client = api(initial);
   vi.mocked(client.getState)
     .mockResolvedValueOnce(initial)
-    .mockResolvedValueOnce(initial)
-    .mockResolvedValueOnce(initial)
+    .mockResolvedValueOnce(synchronizing)
+    .mockResolvedValueOnce(synchronizing)
     .mockResolvedValueOnce(recovered);
   vi.mocked(client.synchronize).mockRejectedValueOnce(
     new Error('desktop proxy timed out after the sidecar committed'),
