@@ -365,6 +365,9 @@ function OnboardingWizard({
 
   const selectedSource =
     sources.find((source) => source.id === selectedSourceId) ?? null;
+  const dataPreparationRetrying = pendingAction === 'data-retry';
+  const dataPreparationNeedsRetry =
+    state.error !== null || actionError || dataPreparationRetrying;
 
   return (
     <main className="onboarding-shell">
@@ -455,7 +458,11 @@ function OnboardingWizard({
                   type="button"
                   pending={
                     pendingAction ===
-                    (state.error === null ? 'data-continue' : 'retry')
+                    (state.error !== null
+                      ? 'retry'
+                      : dataPreparationNeedsRetry
+                        ? 'data-retry'
+                        : 'data-continue')
                   }
                   disabled={
                     busy ||
@@ -469,7 +476,7 @@ function OnboardingWizard({
                       return;
                     }
                     void perform(
-                      'data-continue',
+                      actionError ? 'data-retry' : 'data-continue',
                       () =>
                         api.saveProgress({
                           currentStep: 'instrument_selection',
@@ -480,7 +487,7 @@ function OnboardingWizard({
                     );
                   }}
                 >
-                  {state.error === null ? '继续' : '重试'}
+                  {dataPreparationNeedsRetry ? '重试' : '继续'}
                 </AsyncActionButton>
                 <AsyncActionButton
                   className="secondary"

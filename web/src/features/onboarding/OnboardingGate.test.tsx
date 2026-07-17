@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 
@@ -504,6 +504,46 @@ it('keeps data-source failure actions outside the error and retries from the pri
   expect(within(alert).queryByRole('button')).toBeNull();
   await user.click(screen.getByRole('button', { name: '重试' }));
   expect(client.runAction).toHaveBeenCalledWith('retry');
+});
+
+it('turns an exhausted data-source request into a retry without changing its action', async () => {
+  const initial = onboardingState('data_preparation');
+  const client = api(initial);
+  vi.mocked(client.saveProgress).mockRejectedValue(
+    new Error('desktop request failed'),
+  );
+  vi.mocked(client.getState).mockResolvedValue(initial);
+  const user = userEvent.setup();
+  renderGate(client);
+  const continueButton = await screen.findByRole('button', { name: '继续' });
+  await waitFor(() => expect(continueButton).toBeEnabled());
+  const timeout = vi
+    .spyOn(window, 'setTimeout')
+    .mockImplementation((handler) => {
+      if (typeof handler === 'function') handler();
+      return 1 as unknown as ReturnType<typeof window.setTimeout>;
+    });
+  try {
+    await act(async () => {
+      await user.click(continueButton);
+      for (let turn = 0; turn < 100; turn += 1) await Promise.resolve();
+    });
+    expect(client.getState).toHaveBeenCalledTimes(31);
+    const retryButton = screen.getByRole('button', { name: '重试' });
+    expect(retryButton).toBeEnabled();
+    expect(screen.getByRole('alert')).toHaveTextContent('操作失败，请重试。');
+    expect(client.saveProgress).toHaveBeenCalledOnce();
+
+    await act(async () => {
+      await user.click(retryButton);
+      for (let turn = 0; turn < 100; turn += 1) await Promise.resolve();
+    });
+
+    expect(client.saveProgress).toHaveBeenCalledTimes(2);
+    expect(client.runAction).not.toHaveBeenCalledWith('retry');
+  } finally {
+    timeout.mockRestore();
+  }
 });
 
 it('uses concise labels without a decorative hero glyph or redundant data hints', async () => {
