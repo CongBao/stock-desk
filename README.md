@@ -53,6 +53,11 @@ MACD/参数化自定义公式、单股/股票池、日线/周线/60 分钟的 12
 [故障排查](docs/troubleshooting.md)、[备份与恢复](docs/backup-and-restore.md)和
 [免责声明](docs/disclaimer.md)。
 
+开发者在已安装项目依赖、Rust 和 Xcode 命令行工具的 Mac 上可运行
+`pnpm desktop:test:macos:full`，并通过真实物理点击完成本地完整产品测试。脱敏证据写入
+被 Git 忽略的 `test-results/macos-full-product`；测试结束后无残留进程或临时产品数据。
+该门禁仅用于开发反馈，正式发布仍仅支持 Windows，不发布 macOS 安装包。
+
 ## 安全与范围
 
 Stock Desk 是研究软件，不构成投资建议。数据可能延迟、不完整、经过复权或受许可限制；

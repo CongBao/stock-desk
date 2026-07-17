@@ -52,6 +52,12 @@ Repository references: [architecture](docs/architecture.md), [configuration](doc
 [troubleshooting](docs/troubleshooting.md), [backup and restore](docs/backup-and-restore.md), and the
 [disclaimer](docs/disclaimer.md).
 
+On a Mac with project dependencies, Rust, and Xcode command-line tools installed, developers can run
+`pnpm desktop:test:macos:full` and complete the local full-product test with real physical clicks.
+Sanitized evidence is written to the Git-ignored `test-results/macos-full-product`.
+The test leaves no process or temporary product-data residue. This gate is for development feedback only:
+releases remain Windows-only, and Stock Desk does not publish a macOS installer.
+
 ## Safety and scope
 
 Stock Desk is research software, not investment advice. Data may be delayed, incomplete, adjusted,

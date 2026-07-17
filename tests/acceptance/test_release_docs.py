@@ -153,6 +153,38 @@ def test_bilingual_readme_baseline_contains_verified_installation_and_use() -> N
     assert (PROJECT_ROOT / "tests/acceptance/test_installed_distribution.py").is_file()
 
 
+def test_macos_full_product_gate_is_documented_as_development_only() -> None:
+    english, chinese = _readmes()
+    acceptance = (PROJECT_ROOT / "docs/acceptance.md").read_text(encoding="utf-8")
+    design = (
+        PROJECT_ROOT / "docs/design/2026-07-17-macos-full-product-local-test.md"
+    ).read_text(encoding="utf-8")
+
+    for document in (english, chinese, acceptance, design):
+        assert "desktop:test:macos:full" in document
+        assert "test-results/macos-full-product" in document
+        assert "Windows" in document
+        assert "macOS" in document
+
+    assert "不发布 macOS 安装包" in chinese
+    assert "真实物理点击" in chinese
+    assert "测试结束后无残留进程或临时产品数据" in chinese
+    assert "does not publish a macOS installer" in english
+    assert "real physical clicks" in english
+    assert "leaves no process or temporary product-data residue" in english
+
+    assert "七步真实产品旅程" in acceptance
+    assert "seven-action real product journey" in acceptance
+    assert "仅供开发" in acceptance
+    assert "development-only" in acceptance
+    assert "不替代 Windows" in acceptance
+    assert "does not replace Windows" in acceptance
+
+    assert "开发机" in design
+    assert "真实物理点击" in design
+    assert "不发布 macOS 安装包" in design
+
+
 def test_v11_stable_docs_disclose_the_unsigned_windows_boundary() -> None:
     english, chinese = _readmes()
     signing = (PROJECT_ROOT / "docs/code-signing-policy.md").read_text(encoding="utf-8")
