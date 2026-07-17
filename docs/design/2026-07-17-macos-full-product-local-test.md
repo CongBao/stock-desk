@@ -1,0 +1,65 @@
+# macOS 本地完整产品测试设计
+
+## 目标
+
+在开发 Mac 上临时构建并运行真实 Stock Desk Tauri `.app` 与原生 Python
+sidecar，使用隔离数据完成首次向导、真实行情、公式和回测的完整产品旅程，
+让大部分产品问题在提交 Windows CI 前获得快速反馈。
+
+该能力只用于开发测试。它不增加 macOS 正式发布、DMG、签名、公证、自动更新或
+用户支持承诺，也不替代 Windows NSIS、WebView2、权限、卸载和真实 Win10 普通
+用户验收。
+
+## 方案
+
+采用“原生 sidecar + 临时 Tauri app + 隔离状态 + 可验证旅程”的方案：
+
+1. 将现有 PyInstaller sidecar 规格参数化，以当前 Rust host target triple 生成
+   `stock-desk-sidecar-aarch64-apple-darwin` 等原生测试二进制；Windows 产物名称和
+   发布链保持不变。
+2. 新增显式传入的 `tauri.macos-test.conf.json`，只为本地测试声明 macOS
+   `externalBin` 和 `.app` bundle；基础配置与 Windows 发布配置不增加 macOS 发布
+   target。
+3. macOS debug 测试宿主通过受限测试环境变量使用临时数据根。Windows release
+   build 忽略该覆盖，测试不得读取或修改日常 Stock Desk 用户数据。
+4. 扩展现有 `scripts/macos_tauri_smoke.py` 的职责边界：保留原生窗口与物理点击
+   证明，新增独立的完整产品旅程驱动和证据，避免把一个脚本变成同时负责构建、
+   产品断言和证据解析的单体。
+5. 无论成功或失败，测试都优雅停止 sidecar，并以 PID/进程树检查作为异常清理
+   兜底；删除临时 PyInstaller、Cargo、应用注册、测试数据和截图中间物，只保留
+   忽略目录下的最终脱敏证据。
+
+## 完整旅程
+
+本地门禁必须在真实 Tauri/WKWebView 窗口内验证：
+
+1. 全新隔离数据根启动并进入四步首次向导。
+2. 初始化免 Token 真实数据源，接受默认 `上证指数 (000001.SS)`，显示可追溯
+   的真实日线 K 线。
+3. 搜索并选择一只普通 A 股，确认证券身份、来源和 K 线更新。
+4. 打开 Formula Studio，执行并保存通达信兼容 MACD 公式，验证副图或信号结果。
+5. 使用 MACD 金叉买入、死叉卖出运行一次历史回测，确认产生非空、可追溯报告。
+6. 关闭窗口、取消退出、再次关闭并确认退出，确认 sidecar 和所有后代进程退出。
+
+真实免费数据源不可用时门禁必须失败并保留可操作的脱敏诊断，不得回退到演示
+数据后宣称完整产品旅程通过。
+
+## 测试结构
+
+- Python 单元测试验证 target triple、sidecar 文件名、测试配置合并、数据根限制、
+  旅程证据 schema 和清理边界。
+- Rust 测试验证测试数据根只在非 Windows debug 测试宿主生效，正式 Windows
+  路径不受影响。
+- macOS 构建冒烟验证原生 sidecar 能启动并通过版本、来源修订、存储和健康握手。
+- 真实窗口旅程由 Codex Computer Use 执行系统级点击；可稳定观测的 WebView
+  状态由辅助观察器验证，证据明确记录 macOS/WKWebView，不能标记为 Windows
+  验收。
+
+## 完成标准
+
+- 一条本地命令可以从干净提交构建临时原生 sidecar 和 `.app`，完成完整旅程并
+  输出绑定 source SHA/tree 的证据。
+- 默认指数、普通 A 股、真实 K 线、MACD 公式、MACD 回测和优雅退出全部成功。
+- 测试结束后无 Stock Desk host、sidecar、Worker、临时 Cargo/PyInstaller 和测试
+  数据残留。
+- Windows sidecar 名称、NSIS 配置、CI/release 资产与发布范围不发生变化。
