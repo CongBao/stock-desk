@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+from types import SimpleNamespace
 
 import pytest
 
@@ -18,7 +19,12 @@ from scripts.macos_product_journey import (
     validate_operator_evidence,
     validate_visual_analysis,
 )
-from scripts import macos_full_product_test, macos_tauri_support
+from scripts import (
+    macos_full_product_test,
+    macos_product_journey,
+    macos_sidecar,
+    macos_tauri_support,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -1315,3 +1321,1198 @@ def test_full_product_cli_accepts_pnpm_argument_separator() -> None:
         macos_full_product_test.main(["--", "--help"])
 
     assert captured.value.code == 0
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        (lambda value: value.update(schema_version="v2"), "schema version"),
+        (lambda value: value.update(app_identifier="example.invalid"), "identifier"),
+        (lambda value: value.update(driver="script"), "driver"),
+        (lambda value: value.update(host_pid=True), "identity"),
+        (lambda value: value.update(sidecar_pid=4242), "identity"),
+        (lambda value: value.update(providers=[]), "provider"),
+        (lambda value: value.update(providers=["akshare", "akshare"]), "provider"),
+        (lambda value: value.update(providers=[True]), "provider"),
+        (lambda value: value.update(symbols="000001.SS"), "symbol.*shape"),
+        (lambda value: value.update(symbols=["000001.SS"]), "symbol set"),
+        (lambda value: value.update(symbols=["000001.SS", True]), "symbol set"),
+        (lambda value: value.update(kline_cutoff=20260716), "K-line"),
+        (lambda value: value.update(kline_cutoff="not-a-date"), "K-line"),
+    ],
+)
+def test_evidence_schema_mutations_fail_closed(
+    mutation: object, message: str
+) -> None:
+    payload = valid_payload()
+    assert callable(mutation)
+    mutation(payload)
+
+    with pytest.raises(MacOSJourneyError, match=message):
+        validate_operator_evidence(payload, identity=IDENTITY)
+
+
+@pytest.mark.parametrize(
+    ("recognized_text", "luminance", "message"),
+    [
+        ("行情工作区", 0.9, "text.*shape"),
+        ([], 0.9, "text is invalid"),
+        ([""], 0.9, "text is invalid"),
+        ([True], 0.9, "text is invalid"),
+        (["x" * 513], 0.9, "text is invalid"),
+        (["行情工作区"], True, "luminance"),
+        (["行情工作区"], "0.9", "luminance"),
+        (["行情工作区"], -0.1, "luminance"),
+        (["行情工作区"], 1.1, "luminance"),
+    ],
+)
+def test_visual_analysis_rejects_malformed_text_and_luminance(
+    recognized_text: object, luminance: object, message: str
+) -> None:
+    evidence = validate_operator_evidence(valid_payload(), identity=IDENTITY)
+    state = next(
+        item
+        for item in evidence.visual_states
+        if (item.page, item.theme, item.layout) == ("market", "light", "normal")
+    )
+
+    with pytest.raises(MacOSJourneyError, match=message):
+        validate_visual_analysis(
+            {"recognized_text": recognized_text, "median_luminance": luminance},
+            state=state,
+        )
+
+
+def test_visual_analysis_accepts_dark_theme_and_normalizes_marker_spacing() -> None:
+    evidence = validate_operator_evidence(valid_payload(), identity=IDENTITY)
+    state = next(
+        item
+        for item in evidence.visual_states
+        if (item.page, item.theme, item.layout) == ("market", "dark", "normal")
+    )
+
+    assert validate_visual_analysis(
+        {"recognized_text": ["行情  工作区"], "median_luminance": 0.1},
+        state=state,
+    )["theme"] == "dark"
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("extra", True, "shape"),
+        ("name", "../escape.png", "name"),
+        ("name", "journey.txt", "format"),
+        ("sha256", "invalid", "digest"),
+        ("size", True, "size"),
+        ("size", 1_023, "size"),
+        ("width", True, "viewport"),
+        ("width", 639, "viewport"),
+        ("height", 2_161, "viewport"),
+    ],
+)
+def test_screenshot_schema_mutations_fail_closed(
+    field: str, value: object, message: str
+) -> None:
+    payload = valid_payload()
+    screenshots = payload["screenshots"]
+    assert isinstance(screenshots, list)
+    screenshot = screenshots[0]
+    assert isinstance(screenshot, dict)
+    screenshot[field] = value
+
+    with pytest.raises(MacOSJourneyError, match=message):
+        validate_operator_evidence(payload, identity=IDENTITY)
+
+
+def test_duplicate_screenshot_and_action_bindings_fail_closed() -> None:
+    payload = valid_payload()
+    screenshots = payload["screenshots"]
+    assert isinstance(screenshots, list)
+    first = screenshots[0]
+    second = screenshots[1]
+    assert isinstance(first, dict) and isinstance(second, dict)
+    second["sha256"] = first["sha256"]
+    with pytest.raises(MacOSJourneyError, match="screenshot is duplicated"):
+        validate_operator_evidence(payload, identity=IDENTITY)
+
+    payload = valid_payload()
+    actions = payload["actions"]
+    assert isinstance(actions, list)
+    first_action = actions[0]
+    second_action = actions[1]
+    assert isinstance(first_action, dict) and isinstance(second_action, dict)
+    second_action["screenshot_sha256"] = first_action["screenshot_sha256"]
+    with pytest.raises(MacOSJourneyError, match="action screenshots.*unique"):
+        validate_operator_evidence(payload, identity=IDENTITY)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("extra", True, "shape"),
+        ("observed", False, "observed"),
+        ("input_method", "script", "input method"),
+        ("physical_mouse_click", False, "physical click"),
+    ],
+)
+def test_action_schema_mutations_fail_closed(
+    field: str, value: object, message: str
+) -> None:
+    payload = valid_payload()
+    actions = payload["actions"]
+    assert isinstance(actions, list)
+    action = actions[0]
+    assert isinstance(action, dict)
+    action[field] = value
+
+    with pytest.raises(MacOSJourneyError, match=message):
+        validate_operator_evidence(payload, identity=IDENTITY)
+
+
+def test_visual_state_schema_and_screenshot_binding_fail_closed() -> None:
+    payload = valid_payload()
+    states = payload["visual_states"]
+    assert isinstance(states, list)
+    first = states[0]
+    assert isinstance(first, dict)
+    first["extra"] = True
+    with pytest.raises(MacOSJourneyError, match="visual state shape"):
+        validate_operator_evidence(payload, identity=IDENTITY)
+
+    payload = valid_payload()
+    states = payload["visual_states"]
+    assert isinstance(states, list)
+    first = states[0]
+    assert isinstance(first, dict)
+    first["screenshot_sha256"] = "f" * 64
+    with pytest.raises(MacOSJourneyError, match="visual state screenshot is unbound"):
+        validate_operator_evidence(payload, identity=IDENTITY)
+
+
+@pytest.mark.parametrize(
+    ("statement", "message"),
+    [
+        ("DELETE FROM market_dataset WHERE symbol = '600519.SH'", "daily bars"),
+        (
+            "UPDATE market_dataset SET row_count = 0 WHERE symbol = '600519.SH'",
+            "daily bars",
+        ),
+        (
+            "UPDATE market_dataset SET data_cutoff = '' WHERE symbol = '600519.SH'",
+            "daily bars",
+        ),
+        (
+            "UPDATE market_dataset SET data_cutoff = '2026-07-15' "
+            "WHERE symbol = '600519.SH'",
+            "cutoff",
+        ),
+        (
+            "DELETE FROM market_routing_manifest WHERE symbol = '600519.SH'",
+            "routing manifest",
+        ),
+        ("DELETE FROM instrument_dataset_item", "ordinary A-share"),
+        ("DELETE FROM backtest_run", "backtest run"),
+        ("UPDATE backtest_run SET snapshot_json = 'not-json'", "snapshot"),
+        (
+            "UPDATE backtest_run SET snapshot_json = "
+            "json_set(snapshot_json, '$.symbol_inputs', 'invalid')",
+            "evidence pin",
+        ),
+        (
+            "UPDATE backtest_run SET snapshot_json = "
+            "json_set(snapshot_json, '$.symbol_inputs', json('[]'))",
+            "evidence pin",
+        ),
+        (
+            "UPDATE backtest_run SET snapshot_json = replace("
+            "snapshot_json, 'status-manifest-1', '')",
+            "manifest identity",
+        ),
+        (
+            "UPDATE execution_status_routing_manifest SET manifest_record_id = "
+            "'different-manifest'",
+            "status manifest is missing",
+        ),
+    ],
+)
+def test_isolated_state_additional_fail_closed_branches(
+    tmp_path: Path, statement: str, message: str
+) -> None:
+    database = _isolated_database(tmp_path)
+    with sqlite3.connect(database) as connection:
+        connection.execute(statement)
+    evidence = validate_operator_evidence(valid_payload(), identity=IDENTITY)
+
+    with pytest.raises(MacOSJourneyError, match=message):
+        validate_isolated_product_state(tmp_path, evidence)
+
+
+def test_isolated_state_rejects_unsafe_or_broken_database(tmp_path: Path) -> None:
+    evidence = validate_operator_evidence(valid_payload(), identity=IDENTITY)
+    with pytest.raises(MacOSJourneyError, match="missing or unsafe"):
+        validate_isolated_product_state(tmp_path, evidence)
+
+    database = _isolated_database(tmp_path)
+    with sqlite3.connect(database) as connection:
+        connection.execute("DROP TABLE market_dataset")
+    with pytest.raises(MacOSJourneyError, match="database validation failed"):
+        validate_isolated_product_state(tmp_path, evidence)
+
+
+def _harness_context(tmp_path: Path) -> macos_full_product_test.HarnessContext:
+    root = tmp_path / "harness"
+    root.mkdir()
+    return macos_full_product_test.HarnessContext(
+        macos_full_product_test.HarnessPaths.create(root),
+        tmp_path / "output",
+    )
+
+
+def test_macos_preflight_and_source_identity_are_fail_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(macos_full_product_test.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(
+        macos_full_product_test.shutil, "which", lambda command: f"/bin/{command}"
+    )
+    monkeypatch.setattr(
+        macos_tauri_support, "screen_is_locked", lambda: False
+    )
+    macos_full_product_test._preflight()
+
+    expected = ("a" * 40, "b" * 40)
+    monkeypatch.setattr(
+        macos_tauri_support,
+        "require_clean_source_identity",
+        lambda root, supplied: (assert_root(root), supplied)[1],
+    )
+    assert macos_full_product_test._source_identity(expected) == expected
+
+    monkeypatch.setattr(macos_full_product_test.platform, "system", lambda: "Linux")
+    with pytest.raises(
+        macos_full_product_test.MacOSFullProductError, match="requires Darwin"
+    ):
+        macos_full_product_test._preflight()
+
+
+def assert_root(root: Path) -> tuple[str, str]:
+    assert root == ROOT
+    return ("a" * 40, "b" * 40)
+
+
+def test_macos_preflight_rejects_missing_command_and_locked_screen(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(macos_full_product_test.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(
+        macos_full_product_test.shutil,
+        "which",
+        lambda command: None if command == "pnpm" else f"/bin/{command}",
+    )
+    with pytest.raises(
+        macos_full_product_test.MacOSFullProductError, match="missing: pnpm"
+    ):
+        macos_full_product_test._preflight()
+
+    monkeypatch.setattr(
+        macos_full_product_test.shutil, "which", lambda command: f"/bin/{command}"
+    )
+    monkeypatch.setattr(macos_tauri_support, "screen_is_locked", lambda: True)
+    with pytest.raises(
+        macos_full_product_test.MacOSFullProductError, match="unlock the Mac"
+    ):
+        macos_full_product_test._preflight()
+
+
+def test_build_application_assembles_disposable_bundle_with_bound_revision(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    context = _harness_context(tmp_path)
+    artifact = tmp_path / "built-sidecar"
+    artifact.write_bytes(b"sidecar")
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(macos_sidecar, "host_target_triple", lambda: "test-target")
+    monkeypatch.setattr(
+        macos_sidecar, "sidecar_filename", lambda target: f"sidecar-{target}"
+    )
+    monkeypatch.setattr(
+        macos_sidecar, "build_native_sidecar", lambda *_args, **_kwargs: artifact
+    )
+    monkeypatch.setattr(macos_tauri_support, "copy_exclusive", lambda *_args: None)
+
+    def run(command: object, **kwargs: object) -> object:
+        captured["command"] = command
+        captured.update(kwargs)
+        built_app = (
+            context.paths.cargo / "debug" / "bundle" / "macos" / "Stock Desk.app"
+        )
+        host = built_app / "Contents" / "MacOS" / "stock-desk-desktop"
+        host.parent.mkdir(parents=True)
+        host.write_bytes(b"host")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(macos_full_product_test.subprocess, "run", run)
+
+    macos_full_product_test._build_application(context, 120, "a" * 40)
+
+    assert context.paths.host_path.read_bytes() == b"host"
+    assert context.sidecar_copy is not None
+    assert captured["timeout"] == 120
+    environment = captured["env"]
+    assert isinstance(environment, dict)
+    assert environment["STOCK_DESK_SOURCE_REVISION"] == "a" * 40
+
+
+@pytest.mark.parametrize("returncode", [1, 0])
+def test_build_application_rejects_failed_or_missing_bundle(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, returncode: int
+) -> None:
+    context = _harness_context(tmp_path)
+    artifact = tmp_path / "built-sidecar"
+    artifact.write_bytes(b"sidecar")
+    monkeypatch.setattr(macos_sidecar, "host_target_triple", lambda: "test-target")
+    monkeypatch.setattr(
+        macos_sidecar, "sidecar_filename", lambda target: f"sidecar-{target}"
+    )
+    monkeypatch.setattr(
+        macos_sidecar, "build_native_sidecar", lambda *_args, **_kwargs: artifact
+    )
+    monkeypatch.setattr(macos_tauri_support, "copy_exclusive", lambda *_args: None)
+    monkeypatch.setattr(
+        macos_full_product_test.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=returncode),
+    )
+
+    with pytest.raises(
+        macos_full_product_test.MacOSFullProductError, match="app build failed"
+    ):
+        macos_full_product_test._build_application(context, 120, "a" * 40)
+
+
+def test_build_application_rejects_bundle_without_host(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    context = _harness_context(tmp_path)
+    artifact = tmp_path / "built-sidecar"
+    artifact.write_bytes(b"sidecar")
+    monkeypatch.setattr(macos_sidecar, "host_target_triple", lambda: "test-target")
+    monkeypatch.setattr(
+        macos_sidecar, "sidecar_filename", lambda target: f"sidecar-{target}"
+    )
+    monkeypatch.setattr(
+        macos_sidecar, "build_native_sidecar", lambda *_args, **_kwargs: artifact
+    )
+    monkeypatch.setattr(macos_tauri_support, "copy_exclusive", lambda *_args: None)
+
+    def run(*_args: object, **_kwargs: object) -> object:
+        (context.paths.cargo / "debug" / "bundle" / "macos" / "Stock Desk.app").mkdir(
+            parents=True
+        )
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(macos_full_product_test.subprocess, "run", run)
+    with pytest.raises(
+        macos_full_product_test.MacOSFullProductError, match="host executable"
+    ):
+        macos_full_product_test._build_application(context, 120, "a" * 40)
+
+
+@pytest.mark.parametrize("returncode,create_binary", [(0, True), (1, False), (0, False)])
+def test_visual_analyzer_build_requires_successful_compiler_output(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    returncode: int,
+    create_binary: bool,
+) -> None:
+    context = _harness_context(tmp_path)
+
+    def run(*_args: object, **_kwargs: object) -> object:
+        if create_binary:
+            context.paths.visual_analyzer.write_bytes(b"analyzer")
+        return SimpleNamespace(returncode=returncode)
+
+    monkeypatch.setattr(macos_full_product_test.subprocess, "run", run)
+    if returncode == 0 and create_binary:
+        macos_full_product_test._build_visual_analyzer(context)
+        assert context.paths.visual_analyzer.is_file()
+    else:
+        with pytest.raises(
+            macos_full_product_test.MacOSFullProductError, match="analyzer build failed"
+        ):
+            macos_full_product_test._build_visual_analyzer(context)
+
+
+@pytest.mark.parametrize(
+    ("returncode", "stdout", "message"),
+    [
+        (1, "{}", "analysis failed"),
+        (0, "x" * 262_145, "analysis failed"),
+        (0, "not-json", "analysis is invalid"),
+    ],
+)
+def test_screenshot_analyzer_rejects_failed_oversized_or_invalid_output(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    returncode: int,
+    stdout: str,
+    message: str,
+) -> None:
+    monkeypatch.setattr(
+        macos_full_product_test.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=returncode, stdout=stdout
+        ),
+    )
+    with pytest.raises(MacOSJourneyError, match=message):
+        macos_full_product_test._analyze_screenshot(
+            tmp_path / "analyzer", tmp_path / "image.png"
+        )
+
+    if returncode == 0 and stdout == "not-json":
+        monkeypatch.setattr(
+            macos_full_product_test.subprocess,
+            "run",
+            lambda *_args, **_kwargs: SimpleNamespace(
+                returncode=0, stdout='{"recognized_text": [], "median_luminance": 0.9}'
+            ),
+        )
+        assert isinstance(
+            macos_full_product_test._analyze_screenshot(
+                tmp_path / "analyzer", tmp_path / "image.png"
+            ),
+            dict,
+        )
+
+
+class _FakeTree:
+    def __init__(self, sidecar_pid: int | None = None) -> None:
+        self.pid = sidecar_pid
+        self.calls: list[str] = []
+
+    def observe(self) -> tuple[object, ...]:
+        self.calls.append("observe")
+        return ()
+
+    def sidecar_pid(self) -> int | None:
+        return self.pid
+
+    def verified_sidecar_pid(self, pid: int) -> bool:
+        return pid == self.pid
+
+    def verify_absent(self) -> None:
+        self.calls.append("verify-absent")
+
+    def terminate(self) -> None:
+        self.calls.append("terminate")
+
+
+def _monotonic(monkeypatch: pytest.MonkeyPatch, *values: float) -> None:
+    iterator = iter(values)
+    monkeypatch.setattr(macos_full_product_test.time, "monotonic", lambda: next(iterator))
+    monkeypatch.setattr(macos_full_product_test.time, "sleep", lambda _seconds: None)
+
+
+def test_sidecar_wait_requires_tree_and_accepts_verified_child(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    context = _harness_context(tmp_path)
+    with pytest.raises(
+        macos_full_product_test.MacOSFullProductError, match="not initialized"
+    ):
+        macos_full_product_test._wait_for_sidecar_child(context, 1)
+
+    tree = _FakeTree(4244)
+    context.process_tree = tree  # type: ignore[assignment]
+    _monotonic(monkeypatch, 0, 0.1)
+    assert macos_full_product_test._wait_for_sidecar_child(context, 1) == 4244
+    assert tree.calls == ["observe"]
+
+
+def test_sidecar_wait_rejects_early_host_exit_and_timeout(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    context = _harness_context(tmp_path)
+    context.process_tree = _FakeTree()  # type: ignore[assignment]
+    context.host_process = SimpleNamespace(poll=lambda: 1)
+    _monotonic(monkeypatch, 0, 0.1)
+    with pytest.raises(
+        macos_full_product_test.MacOSFullProductError, match="exited before sidecar"
+    ):
+        macos_full_product_test._wait_for_sidecar_child(context, 1)
+
+    context.host_process = None
+    _monotonic(monkeypatch, 0, 2)
+    with pytest.raises(
+        macos_full_product_test.MacOSFullProductError, match="timed out"
+    ):
+        macos_full_product_test._wait_for_sidecar_child(context, 1)
+
+
+def test_ready_wait_rejects_missing_tree_invalid_record_and_missing_host(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    context = _harness_context(tmp_path)
+    with pytest.raises(
+        macos_full_product_test.MacOSFullProductError, match="tree is unavailable"
+    ):
+        macos_full_product_test._wait_for_ready_state(context, 1)
+
+    tree = _FakeTree(4244)
+    context.process_tree = tree  # type: ignore[assignment]
+    record = context.paths.data_root / "runtime" / "runtime.json"
+    record.parent.mkdir(parents=True)
+    record.write_text("not-json", encoding="utf-8")
+    _monotonic(monkeypatch, 0, 0.1, 2)
+    with pytest.raises(
+        macos_full_product_test.MacOSFullProductError, match="timed out waiting"
+    ):
+        macos_full_product_test._wait_for_ready_state(context, 1)
+
+    record.write_text(
+        json.dumps({"pid": 4244, "host": "127.0.0.1", "port": 8765}),
+        encoding="utf-8",
+    )
+    _monotonic(monkeypatch, 0, 0.1)
+    with pytest.raises(
+        macos_full_product_test.MacOSFullProductError, match="host process is unavailable"
+    ):
+        macos_full_product_test._wait_for_ready_state(context, 1)
+
+
+def test_operator_evidence_wait_rejects_timeout_size_and_invalid_json(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    tree = _FakeTree()
+    evidence_path = tmp_path / "operator-evidence.json"
+    _monotonic(monkeypatch, 0, 2)
+    with pytest.raises(MacOSJourneyError, match="timed out"):
+        macos_full_product_test._await_operator_evidence(
+            evidence_path,
+            IDENTITY,
+            1,
+            process_tree=tree,  # type: ignore[arg-type]
+            visual_analyzer=tmp_path / "analyzer",
+        )
+
+    evidence_path.write_bytes(b"x" * 1_048_577)
+    _monotonic(monkeypatch, 0, 0.1)
+    with pytest.raises(MacOSJourneyError, match="unexpectedly large"):
+        macos_full_product_test._await_operator_evidence(
+            evidence_path,
+            IDENTITY,
+            1,
+            process_tree=tree,  # type: ignore[arg-type]
+            visual_analyzer=tmp_path / "analyzer",
+        )
+
+    evidence_path.write_text("not-json", encoding="utf-8")
+    _monotonic(monkeypatch, 0, 0.1)
+    with pytest.raises(MacOSJourneyError, match="not valid JSON"):
+        macos_full_product_test._await_operator_evidence(
+            evidence_path,
+            IDENTITY,
+            1,
+            process_tree=tree,  # type: ignore[arg-type]
+            visual_analyzer=tmp_path / "analyzer",
+        )
+
+
+def _single_screenshot_evidence(
+    screenshot_path: Path,
+    *,
+    size: int | None = None,
+    digest: str | None = None,
+    visual_states: tuple[object, ...] = (),
+) -> object:
+    screenshot = SimpleNamespace(
+        name=screenshot_path.name,
+        size=screenshot_path.stat().st_size if size is None else size,
+        sha256=(
+            macos_tauri_support.sha256_file(screenshot_path)
+            if digest is None
+            else digest
+        ),
+        width=1366,
+        height=768,
+    )
+    return SimpleNamespace(screenshots=(screenshot,), visual_states=visual_states)
+
+
+def test_operator_evidence_wait_rejects_missing_and_mismatched_screenshot(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    evidence_path = tmp_path / "operator-evidence.json"
+    evidence_path.write_text("{}", encoding="utf-8")
+    missing = tmp_path / "missing.png"
+    fake = SimpleNamespace(
+        screenshots=(
+            SimpleNamespace(
+                name=missing.name,
+                size=24,
+                sha256="a" * 64,
+                width=1366,
+                height=768,
+            ),
+        ),
+        visual_states=(),
+    )
+    monkeypatch.setattr(
+        macos_full_product_test, "validate_operator_evidence", lambda *_args: fake
+    )
+    with pytest.raises(MacOSJourneyError, match="missing or unsafe"):
+        macos_full_product_test._await_operator_evidence(
+            evidence_path,
+            IDENTITY,
+            1,
+            process_tree=_FakeTree(),  # type: ignore[arg-type]
+            visual_analyzer=tmp_path / "analyzer",
+        )
+
+    screenshot = tmp_path / "image.png"
+    screenshot.write_bytes(
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
+        + (1366).to_bytes(4, "big")
+        + (768).to_bytes(4, "big")
+    )
+    fake = _single_screenshot_evidence(screenshot, digest="b" * 64)
+    monkeypatch.setattr(
+        macos_full_product_test, "validate_operator_evidence", lambda *_args: fake
+    )
+    with pytest.raises(MacOSJourneyError, match="identity does not match"):
+        macos_full_product_test._await_operator_evidence(
+            evidence_path,
+            IDENTITY,
+            1,
+            process_tree=_FakeTree(),  # type: ignore[arg-type]
+            visual_analyzer=tmp_path / "analyzer",
+        )
+
+
+def test_operator_evidence_wait_runs_visual_analyzer_for_bound_png(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    evidence_path = tmp_path / "operator-evidence.json"
+    evidence_path.write_text("{}", encoding="utf-8")
+    screenshot = tmp_path / "image.png"
+    screenshot.write_bytes(
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
+        + (1366).to_bytes(4, "big")
+        + (768).to_bytes(4, "big")
+    )
+    digest = macos_tauri_support.sha256_file(screenshot)
+    state = SimpleNamespace(
+        screenshot_sha256=digest, page_marker="行情工作区", theme="light"
+    )
+    fake = _single_screenshot_evidence(screenshot, visual_states=(state,))
+    calls: list[str] = []
+    monkeypatch.setattr(
+        macos_full_product_test, "validate_operator_evidence", lambda *_args: fake
+    )
+    monkeypatch.setattr(
+        macos_full_product_test,
+        "_analyze_screenshot",
+        lambda *_args: {"recognized_text": ["行情工作区"], "median_luminance": 0.9},
+    )
+    monkeypatch.setattr(
+        macos_full_product_test,
+        "validate_visual_analysis",
+        lambda *_args, **_kwargs: calls.append("validated"),
+    )
+
+    assert (
+        macos_full_product_test._await_operator_evidence(
+            evidence_path,
+            IDENTITY,
+            1,
+            process_tree=_FakeTree(),  # type: ignore[arg-type]
+            visual_analyzer=tmp_path / "analyzer",
+        )
+        is fake
+    )
+    assert calls == ["validated"]
+
+
+@pytest.mark.parametrize(
+    ("poll_result", "message"),
+    [(None, "timed out"), (2, "did not exit gracefully")],
+)
+def test_graceful_exit_rejects_timeout_and_nonzero_status(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    poll_result: int | None,
+    message: str,
+) -> None:
+    context = _harness_context(tmp_path)
+    context.process_tree = _FakeTree()  # type: ignore[assignment]
+    context.host_process = SimpleNamespace(poll=lambda: poll_result)
+    if poll_result is None:
+        _monotonic(monkeypatch, 0, 0.1, 2)
+    else:
+        _monotonic(monkeypatch, 0, 0.1)
+    with pytest.raises(macos_full_product_test.MacOSFullProductError, match=message):
+        macos_full_product_test._wait_for_graceful_exit(context, 1)
+
+
+def test_graceful_exit_requires_identity_and_verifies_absence(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    context = _harness_context(tmp_path)
+    with pytest.raises(
+        macos_full_product_test.MacOSFullProductError, match="identity is incomplete"
+    ):
+        macos_full_product_test._wait_for_graceful_exit(context, 1)
+
+    tree = _FakeTree()
+    context.process_tree = tree  # type: ignore[assignment]
+    context.host_process = SimpleNamespace(poll=lambda: 0)
+    _monotonic(monkeypatch, 0, 0.1)
+    macos_full_product_test._wait_for_graceful_exit(context, 1)
+    assert tree.calls == ["observe", "verify-absent"]
+
+
+def test_cleanup_terminates_only_supplied_fake_tree_and_removes_temp_root(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    context = _harness_context(tmp_path)
+    tree = _FakeTree()
+    context.process_tree = tree  # type: ignore[assignment]
+    sidecar_copy = context.paths.temporary_root / "sidecar-copy"
+    sidecar_copy.write_bytes(b"sidecar")
+    context.sidecar_copy = sidecar_copy
+    calls: list[Path] = []
+    monkeypatch.setattr(
+        macos_tauri_support, "unregister_bundle", lambda path: calls.append(path)
+    )
+
+    macos_full_product_test._cleanup(context)
+
+    assert tree.calls == ["terminate"]
+    assert calls == [context.paths.app_path]
+    assert not context.paths.temporary_root.exists()
+
+
+def test_cleanup_aggregates_all_failures_and_residuals(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    context = _harness_context(tmp_path)
+
+    class FailingTree(_FakeTree):
+        def terminate(self) -> None:
+            raise RuntimeError("terminate failed")
+
+    class FailingSidecar:
+        def unlink(self, *, missing_ok: bool) -> None:
+            assert missing_ok is True
+            raise OSError("unlink failed")
+
+        def exists(self) -> bool:
+            return True
+
+    context.process_tree = FailingTree()  # type: ignore[assignment]
+    context.sidecar_copy = FailingSidecar()  # type: ignore[assignment]
+    monkeypatch.setattr(
+        macos_tauri_support,
+        "unregister_bundle",
+        lambda _path: (_ for _ in ()).throw(OSError("unregister failed")),
+    )
+    monkeypatch.setattr(
+        macos_full_product_test.shutil,
+        "rmtree",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("rmtree failed")),
+    )
+
+    with pytest.raises(
+        macos_full_product_test.MacOSFullProductError, match="cleanup failed"
+    ) as captured:
+        macos_full_product_test._cleanup(context)
+
+    details = str(captured.value)
+    assert "terminate failed" in details
+    assert "unregister failed" in details
+    assert "unlink failed" in details
+    assert "rmtree failed" in details
+    assert "sidecar remains" in details
+    assert "root remains" in details
+
+
+def test_operator_intermediate_cleanup_handles_png_directory_and_missing_output(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "output"
+    output.mkdir()
+    png_directory = output / "forged.png"
+    png_directory.mkdir()
+    (png_directory / "payload").write_text("x", encoding="utf-8")
+
+    macos_full_product_test._remove_operator_intermediates(output)
+    macos_full_product_test._remove_operator_intermediates(tmp_path / "missing")
+
+    assert not png_directory.exists()
+
+
+def test_full_product_timeout_and_cli_success_are_validated_before_harness_use(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(
+        macos_full_product_test.MacOSFullProductError, match="between 60 and 1800"
+    ):
+        macos_full_product_test.run_full_product_test(tmp_path / "output", 59)
+
+    report = {"schema_version": "test-report"}
+    monkeypatch.setattr(
+        macos_full_product_test, "run_full_product_test", lambda *_args: report
+    )
+    assert (
+        macos_full_product_test.main(
+            ["--output", os.fspath(tmp_path / "output"), "--timeout-seconds", "60"]
+        )
+        == 0
+    )
+    assert json.loads(capsys.readouterr().out) == report
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"source_sha": "invalid"},
+        {"source_tree": "invalid"},
+        {"session_nonce": "unsafe nonce"},
+        {"host_pid": True},
+        {"sidecar_pid": 1},
+        {"sidecar_pid": 4242},
+    ],
+)
+def test_journey_identity_rejects_invalid_revision_nonce_and_processes(
+    kwargs: dict[str, object],
+) -> None:
+    values: dict[str, object] = {
+        "source_sha": "a" * 40,
+        "source_tree": "b" * 40,
+        "session_nonce": "nonce",
+        "host_pid": 4242,
+        "sidecar_pid": 4243,
+    }
+    values.update(kwargs)
+    with pytest.raises(MacOSJourneyError, match="journey identity"):
+        JourneyIdentity(**values)  # type: ignore[arg-type]
+
+
+def test_evidence_rejects_non_string_keys_and_incomplete_sequences() -> None:
+    with pytest.raises(MacOSJourneyError, match="top-level shape"):
+        validate_operator_evidence({1: "invalid"}, identity=IDENTITY)
+
+    payload = valid_payload()
+    screenshots = payload["screenshots"]
+    assert isinstance(screenshots, list)
+    screenshots.pop()
+    with pytest.raises(MacOSJourneyError, match="screenshot set is incomplete"):
+        validate_operator_evidence(payload, identity=IDENTITY)
+
+    payload = valid_payload()
+    actions = payload["actions"]
+    assert isinstance(actions, list)
+    actions.pop()
+    with pytest.raises(MacOSJourneyError, match="action sequence"):
+        validate_operator_evidence(payload, identity=IDENTITY)
+
+
+def test_evidence_rejects_duplicate_visual_hash_and_unreferenced_png() -> None:
+    payload = valid_payload()
+    states = payload["visual_states"]
+    assert isinstance(states, list)
+    first = states[0]
+    same_viewport = states[2]
+    assert isinstance(first, dict) and isinstance(same_viewport, dict)
+    same_viewport["screenshot_sha256"] = first["screenshot_sha256"]
+    with pytest.raises(MacOSJourneyError, match="state screenshots.*unique"):
+        validate_operator_evidence(payload, identity=IDENTITY)
+
+    payload = valid_payload()
+    actions = payload["actions"]
+    states = payload["visual_states"]
+    assert isinstance(actions, list) and isinstance(states, list)
+    last_action = actions[-1]
+    replacement_state = states[6]
+    assert isinstance(last_action, dict) and isinstance(replacement_state, dict)
+    last_action["screenshot_sha256"] = replacement_state["screenshot_sha256"]
+    with pytest.raises(MacOSJourneyError, match="screenshot set is not fully bound"):
+        validate_operator_evidence(payload, identity=IDENTITY)
+
+
+@pytest.mark.parametrize(
+    ("statement", "message"),
+    [
+        (
+            "UPDATE market_routing_manifest SET manifest_json = 1 "
+            "WHERE symbol = '600519.SH'",
+            "routing manifest is invalid",
+        ),
+        (
+            "UPDATE market_routing_manifest SET manifest_json = '[]' "
+            "WHERE symbol = '600519.SH'",
+            "routing manifest is invalid",
+        ),
+        (
+            "UPDATE backtest_run SET snapshot_json = replace("
+            "snapshot_json, 'basic_no_price_limits', 'authoritative')",
+            "not BaoStock basic evidence",
+        ),
+    ],
+)
+def test_isolated_state_rejects_non_object_json_and_overclaimed_status(
+    tmp_path: Path, statement: str, message: str
+) -> None:
+    database = _isolated_database(tmp_path)
+    with sqlite3.connect(database) as connection:
+        connection.execute(statement)
+    evidence = validate_operator_evidence(valid_payload(), identity=IDENTITY)
+    with pytest.raises(MacOSJourneyError, match=message):
+        validate_isolated_product_state(tmp_path, evidence)
+
+
+def test_isolated_state_allows_older_index_cutoff_when_stock_matches(
+    tmp_path: Path,
+) -> None:
+    database = _isolated_database(tmp_path)
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE market_dataset SET data_cutoff = '2026-07-15' "
+            "WHERE symbol = '000001.SS'"
+        )
+    evidence = validate_operator_evidence(valid_payload(), identity=IDENTITY)
+    assert validate_isolated_product_state(tmp_path, evidence)["daily_bar_rows"] == 4
+
+
+def test_sidecar_wait_retries_while_host_is_alive(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    context = _harness_context(tmp_path)
+
+    class DelayedTree(_FakeTree):
+        def sidecar_pid(self) -> int | None:
+            self.calls.append("sidecar")
+            return 4244 if self.calls.count("sidecar") == 2 else None
+
+    tree = DelayedTree()
+    context.process_tree = tree  # type: ignore[assignment]
+    context.host_process = SimpleNamespace(poll=lambda: None)
+    _monotonic(monkeypatch, 0, 0.1, 0.2)
+
+    assert macos_full_product_test._wait_for_sidecar_child(context, 1) == 4244
+
+
+def test_operator_evidence_rejects_screenshot_outside_output(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    evidence_path = tmp_path / "output" / "operator-evidence.json"
+    evidence_path.parent.mkdir()
+    evidence_path.write_text("{}", encoding="utf-8")
+    outside = tmp_path / "outside.png"
+    outside.write_bytes(b"x" * 24)
+    fake = SimpleNamespace(
+        screenshots=(
+            SimpleNamespace(
+                name=os.fspath(outside),
+                size=24,
+                sha256="a" * 64,
+                width=1366,
+                height=768,
+            ),
+        ),
+        visual_states=(),
+    )
+    monkeypatch.setattr(
+        macos_full_product_test, "validate_operator_evidence", lambda *_args: fake
+    )
+    with pytest.raises(MacOSJourneyError, match="escaped output"):
+        macos_full_product_test._await_operator_evidence(
+            evidence_path,
+            IDENTITY,
+            1,
+            process_tree=_FakeTree(),  # type: ignore[arg-type]
+            visual_analyzer=tmp_path / "analyzer",
+        )
+
+
+def test_cleanup_tolerates_already_removed_temporary_root(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    context = _harness_context(tmp_path)
+    monkeypatch.setattr(macos_tauri_support, "unregister_bundle", lambda _path: None)
+    macos_full_product_test.shutil.rmtree(context.paths.temporary_root)
+
+    macos_full_product_test._cleanup(context)
+
+
+def test_full_product_rejects_missing_process_tree_after_launch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    output, _calls = _orchestration_fakes(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        macos_full_product_test,
+        "_launch_application",
+        lambda *_args, **_kwargs: _HostProcess(),
+    )
+    try:
+        with pytest.raises(
+            macos_full_product_test.MacOSFullProductError,
+            match="process tree is unavailable",
+        ):
+            macos_full_product_test.run_full_product_test(output, 300)
+    finally:
+        macos_full_product_test.shutil.rmtree(output, ignore_errors=True)
+
+
+def test_full_product_preserves_primary_error_and_notes_cleanup_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    output, _calls = _orchestration_fakes(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        macos_full_product_test,
+        "_build_visual_analyzer",
+        lambda _context: (_ for _ in ()).throw(RuntimeError("primary failed")),
+    )
+    monkeypatch.setattr(
+        macos_full_product_test,
+        "_cleanup",
+        lambda _context: (_ for _ in ()).throw(RuntimeError("cleanup failed")),
+    )
+    try:
+        with pytest.raises(RuntimeError, match="primary failed") as captured:
+            macos_full_product_test.run_full_product_test(output, 300)
+        assert any("cleanup also failed" in note for note in captured.value.__notes__)
+    finally:
+        macos_full_product_test.shutil.rmtree(output, ignore_errors=True)
+        macos_full_product_test.shutil.rmtree(
+            tmp_path / "stock-desk-full-product", ignore_errors=True
+        )
+
+
+def test_isolated_json_object_rejects_non_string_input() -> None:
+    with pytest.raises(MacOSJourneyError, match="routing manifest is invalid"):
+        macos_product_journey._json_object(1, "routing manifest")
+
+
+def test_full_product_rejects_incomplete_evidence_after_cleanup(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    output, _calls = _orchestration_fakes(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        macos_full_product_test, "_await_operator_evidence", lambda *_args, **_kwargs: None
+    )
+    try:
+        with pytest.raises(
+            macos_full_product_test.MacOSFullProductError, match="evidence is incomplete"
+        ):
+            macos_full_product_test.run_full_product_test(output, 300)
+    finally:
+        macos_full_product_test.shutil.rmtree(output, ignore_errors=True)
+
+
+def test_full_product_rejects_temporary_root_left_by_cleanup(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    output, _calls = _orchestration_fakes(monkeypatch, tmp_path)
+    temporary_root = tmp_path / "stock-desk-full-product"
+    monkeypatch.setattr(macos_full_product_test, "_cleanup", lambda _context: None)
+    try:
+        with pytest.raises(
+            macos_full_product_test.MacOSFullProductError,
+            match="temporary full-product root remains",
+        ):
+            macos_full_product_test.run_full_product_test(output, 300)
+    finally:
+        macos_full_product_test.shutil.rmtree(output, ignore_errors=True)
+        macos_full_product_test.shutil.rmtree(temporary_root, ignore_errors=True)
+
+
+def test_primary_failure_notes_operator_intermediate_cleanup_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    output, _calls = _orchestration_fakes(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        macos_full_product_test,
+        "_build_visual_analyzer",
+        lambda _context: (_ for _ in ()).throw(RuntimeError("primary failed")),
+    )
+    monkeypatch.setattr(
+        macos_full_product_test,
+        "_remove_operator_intermediates",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("purge failed")),
+    )
+    try:
+        with pytest.raises(RuntimeError, match="primary failed") as captured:
+            macos_full_product_test.run_full_product_test(output, 300)
+        assert any(
+            "operator evidence cleanup also failed" in note
+            for note in captured.value.__notes__
+        )
+    finally:
+        macos_full_product_test.shutil.rmtree(output, ignore_errors=True)
+
+
+def test_final_report_failure_notes_evidence_and_report_cleanup_failures(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    output, _calls = _orchestration_fakes(monkeypatch, tmp_path)
+    original_write = macos_tauri_support.atomic_write_json
+    original_unlink = Path.unlink
+
+    def write(path: Path, payload: object) -> None:
+        if path.name == "macos-full-product.json":
+            raise OSError("report write failed")
+        original_write(path, payload)
+
+    def unlink(path: Path, *, missing_ok: bool = False) -> None:
+        if path.name == "macos-full-product.json":
+            raise OSError("report cleanup failed")
+        original_unlink(path, missing_ok=missing_ok)
+
+    monkeypatch.setattr(macos_tauri_support, "atomic_write_json", write)
+    monkeypatch.setattr(
+        macos_full_product_test,
+        "_remove_operator_intermediates",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("evidence cleanup failed")),
+    )
+    monkeypatch.setattr(Path, "unlink", unlink)
+    try:
+        with pytest.raises(OSError, match="report write failed") as captured:
+            macos_full_product_test.run_full_product_test(output, 300)
+        notes = captured.value.__notes__
+        assert any("operator evidence cleanup also failed" in note for note in notes)
+        assert any("success report cleanup also failed" in note for note in notes)
+    finally:
+        macos_full_product_test.shutil.rmtree(output, ignore_errors=True)
+
+
+def test_final_preservation_failure_notes_fallback_cleanup_failures(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    output, _calls = _orchestration_fakes(monkeypatch, tmp_path)
+    original_unlink = Path.unlink
+
+    def remove(_path: Path, preserve: frozenset[str] = frozenset()) -> None:
+        if preserve:
+            raise OSError("preservation failed")
+        raise OSError("fallback purge failed")
+
+    def unlink(path: Path, *, missing_ok: bool = False) -> None:
+        if path.name == "macos-full-product.json":
+            raise OSError("report cleanup failed")
+        original_unlink(path, missing_ok=missing_ok)
+
+    monkeypatch.setattr(
+        macos_full_product_test, "_remove_operator_intermediates", remove
+    )
+    monkeypatch.setattr(Path, "unlink", unlink)
+    try:
+        with pytest.raises(OSError, match="preservation failed") as captured:
+            macos_full_product_test.run_full_product_test(output, 300)
+        notes = captured.value.__notes__
+        assert any("operator evidence cleanup also failed" in note for note in notes)
+        assert any("success report cleanup also failed" in note for note in notes)
+    finally:
+        macos_full_product_test.shutil.rmtree(output, ignore_errors=True)
