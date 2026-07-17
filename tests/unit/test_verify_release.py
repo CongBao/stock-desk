@@ -1544,6 +1544,7 @@ def test_release_leak_scanner_rejects_cross_platform_paths_and_provider_tokens(
         b"Use OPENAI_API_KEY as the environment variable name.",
         b"TUSHARE_TOKEN=secret",
         b"/home/example/private/session",
+        b"/Users/alice/private.db",
         b"/Users/operator/worktree",
         b"/Users/" + b"Bao/synthetic-redaction-fixture",
         b"C:\\Users\\owner\\AppData\\Local",

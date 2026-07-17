@@ -7,6 +7,10 @@ import type {
   BacktestReportApi,
   BacktestTrade,
 } from './backtestApi';
+import {
+  basicExecutionStatusWarning,
+  executionStatusEvidenceLabel,
+} from './executionStatusEvidence';
 
 const eventLabels: Record<BacktestOrderEvent['eventType'], string> = {
   IgnoredSignal: '信号已忽略',
@@ -137,6 +141,9 @@ export function TradeReplay({
         <span>固定 SignalSeries：{replay.formula.signalSeriesId}</span>
       </header>
       <MarketChart bars={replay.bars} formula={formula} />
+      {replay.warnings.includes('basic_execution_status') ? (
+        <p className="warning-text">{basicExecutionStatusWarning}</p>
+      ) : null}
       {replay.period === '1w' ? (
         <p className="partial-result-note">
           周线信号保持周线坐标；日线成交证据在下方单独披露，不伪装为周线时间点。
@@ -222,6 +229,12 @@ export function TradeReplay({
         </ol>
       </section>
       <dl className="replay-identities">
+        <div>
+          <dt>成交状态证据</dt>
+          <dd>
+            {executionStatusEvidenceLabel(replay.executionStatusEvidenceLevel)}
+          </dd>
+        </div>
         <div>
           <dt>信号行情</dt>
           <dd>{replay.provenance.signal.manifestRecordId}</dd>

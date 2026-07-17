@@ -371,6 +371,8 @@ export function BacktestWizard({
       const submission = await api.create(intent(draft));
       if (!mountedRef.current) return;
       const warningLabels: Readonly<Record<string, string>> = {
+        basic_execution_status:
+          '基础成交假设：未校验历史涨跌停，结果可能高估可成交机会。',
         partial_data: '部分证券数据不足，已按服务端冻结的可运行范围创建任务。',
         snapshot_changed: '数据版本已更新，服务端已冻结新的不可变快照。',
       };

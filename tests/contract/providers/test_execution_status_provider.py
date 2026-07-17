@@ -12,11 +12,13 @@ from stock_desk.backtest.execution import (
 )
 
 from stock_desk.market.execution_status import (
+    ExecutionStatusEvidenceLevel,
     ExecutionStatusQuery,
     ExecutionStatusSnapshot,
     SuspensionState,
 )
 from stock_desk.market.providers.tushare import TushareProvider
+from stock_desk.market.providers.execution_status import ExecutionStatusFailure
 from stock_desk.market.types import (
     CapabilityState,
     Exchange,
@@ -101,6 +103,7 @@ def test_tushare_materializes_authoritative_execution_status() -> None:
     )
 
     assert isinstance(result, ExecutionStatusSnapshot)
+    assert result.evidence_level is ExecutionStatusEvidenceLevel.AUTHORITATIVE
     assert tuple(item.suspension_state for item in result.days) == (
         SuspensionState.NORMAL,
         SuspensionState.SUSPENDED,
@@ -121,13 +124,13 @@ def test_tushare_materializes_authoritative_execution_status() -> None:
     ]
 
 
-def test_only_tushare_truthfully_advertises_execution_status(
+def test_only_providers_with_explicit_execution_evidence_advertise_status(
     provider_case: ProviderCase,
 ) -> None:
     provider, _client = provider_case.build()
     report = provider.capabilities()
 
-    if provider_case.source is ProviderId.TUSHARE:
+    if provider_case.source in {ProviderId.TUSHARE, ProviderId.BAOSTOCK}:
         assert MarketCapability.EXECUTION_STATUS in report.capabilities
     else:
         assert MarketCapability.EXECUTION_STATUS not in report.capabilities
@@ -137,6 +140,98 @@ def test_only_tushare_truthfully_advertises_execution_status(
             if item.capability is MarketCapability.EXECUTION_STATUS
         )
         assert gap.state is CapabilityState.UNSUPPORTED
+
+
+def test_baostock_materializes_basic_status_without_price_limit_claims(
+    provider_case: ProviderCase,
+) -> None:
+    if provider_case.source is not ProviderId.BAOSTOCK:
+        return
+    provider, client = provider_case.build()
+    assert isinstance(client.fixture["calendar"], list)
+    client.fixture["calendar"] = client.fixture["calendar"][:2]
+
+    result = provider.fetch_execution_status(
+        ExecutionStatusQuery(
+            symbol="600000.SH",
+            exchange=Exchange.SH,
+            start=date(2024, 7, 1),
+            end=date(2024, 7, 3),
+        )
+    )
+
+    assert isinstance(result, ExecutionStatusSnapshot)
+    assert result.evidence_level is ExecutionStatusEvidenceLevel.BASIC_NO_PRICE_LIMITS
+    assert tuple(item.suspension_state for item in result.days) == (
+        SuspensionState.NORMAL,
+        SuspensionState.SUSPENDED,
+    )
+    assert all(item.raw_upper_limit is None for item in result.days)
+    assert all(item.raw_lower_limit is None for item in result.days)
+    assert all(not item.buy_blocked_at_open for item in result.eligibility)
+    assert all(not item.sell_blocked_at_open for item in result.eligibility)
+
+
+def test_baostock_never_infers_suspension_from_missing_bar(
+    provider_case: ProviderCase,
+) -> None:
+    if provider_case.source is not ProviderId.BAOSTOCK:
+        return
+    provider, client = provider_case.build()
+    assert isinstance(client.fixture["calendar"], list)
+    client.fixture["calendar"] = client.fixture["calendar"][:2]
+    assert isinstance(client.fixture["bars"], dict)
+    client.fixture["bars"]["1d"] = client.fixture["bars"]["1d"][1:]
+
+    result = provider.fetch_execution_status(
+        ExecutionStatusQuery(
+            symbol="600000.SH",
+            exchange=Exchange.SH,
+            start=date(2024, 7, 1),
+            end=date(2024, 7, 3),
+        )
+    )
+
+    assert isinstance(result, ExecutionStatusFailure)
+
+
+def test_baostock_basic_status_supports_weekly_and_60m_backtests(
+    provider_case: ProviderCase,
+) -> None:
+    if provider_case.source is not ProviderId.BAOSTOCK:
+        return
+    weekly_provider, weekly_client = provider_case.build()
+    assert isinstance(weekly_client.fixture["calendar"], list)
+    weekly_client.fixture["calendar"] = weekly_client.fixture["calendar"][:2]
+    minute_provider, minute_client = provider_case.build()
+    assert isinstance(minute_client.fixture["calendar"], list)
+    minute_client.fixture["calendar"] = minute_client.fixture["calendar"][:1]
+
+    weekly = weekly_provider.fetch_execution_status(
+        ExecutionStatusQuery(
+            symbol="600000.SH",
+            exchange=Exchange.SH,
+            start=date(2024, 7, 1),
+            end=date(2024, 7, 3),
+            period=Period.WEEK,
+        )
+    )
+    minute = minute_provider.fetch_execution_status(
+        ExecutionStatusQuery(
+            symbol="600000.SH",
+            exchange=Exchange.SH,
+            start=date(2024, 7, 1),
+            end=date(2024, 7, 2),
+            period=Period.MIN60,
+        )
+    )
+
+    assert isinstance(weekly, ExecutionStatusSnapshot)
+    assert isinstance(minute, ExecutionStatusSnapshot)
+    assert weekly.evidence_level is ExecutionStatusEvidenceLevel.BASIC_NO_PRICE_LIMITS
+    assert minute.evidence_level is ExecutionStatusEvidenceLevel.BASIC_NO_PRICE_LIMITS
+    assert len(weekly.eligibility) == 2
+    assert len(minute.eligibility) == 4
 
 
 def test_tushare_materializes_60m_eligibility_at_exact_fill_timestamps() -> None:

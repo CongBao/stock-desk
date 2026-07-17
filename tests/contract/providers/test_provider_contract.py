@@ -151,13 +151,12 @@ def test_provider_implements_protocol_and_truthful_static_capabilities(
         assert report.capabilities == frozenset(
             {
                 MarketCapability.BARS,
+                MarketCapability.EXECUTION_STATUS,
                 MarketCapability.INSTRUMENTS,
                 MarketCapability.TRADING_CALENDAR,
             }
         )
-        assert {gap.capability for gap in report.gaps} == {
-            MarketCapability.EXECUTION_STATUS
-        }
+        assert report.gaps == ()
     assert client.calls == []
 
 

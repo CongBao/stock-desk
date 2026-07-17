@@ -29,11 +29,13 @@ Each data category has an independent ordered list:
 | 60-minute bars | Tushare → BaoStock → Eastmoney |
 | Instruments | Tushare → AKShare → BaoStock → Eastmoney |
 | Trading calendar | Tushare → BaoStock → Eastmoney |
-| Backtest execution status | Tushare |
+| Backtest execution status | Tushare → BaoStock |
 
 Stock Desk tries the next provider only when the current provider is unavailable, denied, unsupported, missing coverage, or returns no usable data. It does not splice providers together within one requested series. A saved list must be non-empty, contain no duplicates or unknown names, and retain at least one currently implemented source for its category. Settings are written atomically as one canonical JSON document, so readers see either the old complete order or the new complete order.
 
-Execution status is routed and cached independently from price bars. Tushare is the only authoritative v1 source because it combines a complete exchange calendar with explicit historical suspension and daily price-limit datasets. AKShare, BaoStock, local TDX, and Eastmoney report this capability as unsupported; they never infer tradability from a missing bar or approximate historical board/ST/IPO limits. A local TDX or fallback price series may therefore be paired with a Tushare execution-status snapshot, and both routing manifests remain pinned for replay.
+Execution status is routed and cached independently from price bars. Tushare provides the strict `authoritative` grade by combining a complete exchange calendar with explicit historical suspension and daily price-limit datasets. BaoStock provides the fallback `basic_no_price_limits` grade from its explicit calendar and `tradestatus` field. The basic grade still enforces trading days, suspension, T+1, exact next-period opening time, and open-price availability, but deliberately does not claim or apply historical upper/lower price-limit evidence. It never infers tradability from zero volume, a missing bar, or approximate board/ST/IPO rules. AKShare, local TDX, and Eastmoney remain unsupported for execution status.
+
+The evidence grade and limitation code are frozen into the status dataset, backtest snapshot, preflight response, report, replay provenance, and exports. A basic run remains usable but displays `basic_execution_status` throughout: its result may overestimate fill opportunities because historical price limits were not checked. A mixed pool reports `mixed`; strict Tushare-only runs report `authoritative` and do not show the basic warning. Price and status sources may differ, and every routing manifest remains pinned for replay.
 
 Eastmoney is intentionally shown as a reserved fallback but its Stage 1 adapter is not implemented. Its connection test therefore reports `unsupported` rather than implying live coverage.
 
@@ -63,7 +65,7 @@ For Compose, set `STOCK_DESK_TDX_HOST_PATH` to the host directory containing `vi
 
 ## Connection diagnostics
 
-Execution-status diagnostics exercise the Tushare calendar, suspension, limit, and raw-open permissions independently. Missing permission or incomplete evidence is actionable and fail-closed; it is never shown as tradable.
+Execution-status diagnostics exercise the Tushare calendar, suspension, limit, and raw-open permissions independently. BaoStock diagnostics verify SDK session initialization, calendar access, and explicit `tradestatus`/raw-open coverage while declaring that price-limit evidence is absent. Missing permission, unknown suspension state, or incomplete evidence is actionable and fail-closed; it is never shown as tradable.
 
 “Test connection” constructs the real provider adapter. Tushare runs independent bounded historical probes for daily, weekly, and 60-minute bars, instruments, and one trading-calendar day, so a calendar success cannot mask a denied bar entitlement. Its successful calendar batch must contain exactly one unique SH row for every natural date in the requested half-open window. BaoStock performs login/logout and TDX performs filesystem preflight through their adapters; providers that expose a close operation are always closed. AKShare is capability-only because its SDK does not offer a comparable session probe; Eastmoney honestly reports unsupported. Every generic capability report must match both the requested source and provider identity. Non-available reports become one coherent fixed failure only when a matching validated gap supports their state; otherwise they fall back to provider unavailable. The result is a point-in-time preflight, not a guarantee that a later download will succeed.
 

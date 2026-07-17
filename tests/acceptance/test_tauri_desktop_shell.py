@@ -142,7 +142,7 @@ def test_frozen_sidecar_is_a_dedicated_binary_without_browser_assets() -> None:
     )
 
     assert '"stock_desk" / "sidecar.py"' in sidecar_spec
-    assert 'name=sidecar_name' in sidecar_spec
+    assert "name=sidecar_name" in sidecar_spec
     assert '"stock-desk-sidecar-x86_64-pc-windows-msvc"' in sidecar_spec
     assert "web-dist" not in sidecar_spec
     assert '"stock_desk" / "desktop.py"' not in sidecar_spec

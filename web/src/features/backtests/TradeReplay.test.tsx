@@ -89,6 +89,7 @@ function replay(): BacktestReplay {
   return {
     adjustment: 'qfq',
     bars: [bar],
+    executionStatusEvidenceLevel: 'authoritative',
     executionEvidence: [{ bar, filledAt: trade.entryFillAt, side: 'buy' }],
     fillMarkers: [
       {
@@ -122,6 +123,7 @@ function replay(): BacktestReplay {
     symbol: trade.symbol,
     trade,
     tradeOrdinal: trade.ordinal,
+    warnings: [],
   };
 }
 
@@ -148,6 +150,30 @@ it('forces the pinned formula into a subchart and repeats fill evidence outside 
   expect(screen.getByText('执行受阻')).toBeVisible();
   expect(screen.getByText('委托成交')).toBeVisible();
   expect(screen.getByText(/limit_up/u)).toBeVisible();
+});
+
+it('keeps the basic execution limitation visible in pinned replay', async () => {
+  const api = {
+    getReplay: vi.fn().mockResolvedValue({
+      ...replay(),
+      executionStatusEvidenceLevel: 'basic_no_price_limits',
+      warnings: ['basic_execution_status'],
+    }),
+  } as unknown as BacktestReportApi;
+  render(
+    <TradeReplay
+      api={api}
+      runId="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+      trade={trade}
+    />,
+  );
+
+  expect(
+    await screen.findByText(/基础成交假设：停牌依据 BaoStock tradestatus/u),
+  ).toBeVisible();
+  expect(screen.getByText('成交状态证据').nextElementSibling).toHaveTextContent(
+    '基础（未校验历史涨跌停）',
+  );
 });
 
 it('renders cancelled and unfilled lifecycle evidence as accessible text', async () => {

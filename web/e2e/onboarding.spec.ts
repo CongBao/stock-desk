@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 
 function canonicalDigest(value: unknown): string {
   const sort = (item: unknown): unknown => {
@@ -268,4 +269,114 @@ test('readonly demo notice stays in flow without covering controls at 200% equiv
     });
   });
   expect(overlaps).toEqual([]);
+});
+
+test('onboarding ready page retains visual evidence across themes and widths', async ({
+  page,
+}, testInfo) => {
+  test.setTimeout(60_000);
+  const digest = `sha256:${'b'.repeat(64)}`;
+  const readyState = {
+    schema_version: 1,
+    revision: 4,
+    current_step: 'synchronization',
+    status: 'in_progress',
+    source: {
+      id: 'baostock',
+      label: 'BaoStock',
+      catalog_manifest_record_id: digest,
+      catalog_dataset_version: digest,
+      data_cutoff: '2026-07-17T07:00:00Z',
+    },
+    instrument: {
+      symbol: '000001.SS',
+      name: '上证指数',
+      exchange: 'SH',
+      instrument_kind: 'index',
+    },
+    sync: {
+      status: 'verified',
+      provider_id: 'baostock',
+      manifest_record_id: digest,
+      dataset_version: digest,
+      data_cutoff: '2026-07-17T07:00:00Z',
+      row_count: 240,
+    },
+    error: null,
+    demo_mode: false,
+  };
+  await page.route('**/api/v1/onboarding/**', async (route) => {
+    await route.fulfill({ json: readyState });
+  });
+  await page.goto('/market');
+  await expect(page.getByText('可以开始使用了')).toBeVisible();
+
+  const themes = [
+    { preference: 'light', resolved: 'light' },
+    { preference: 'dark', resolved: 'dark' },
+    { preference: 'system', resolved: 'light' },
+    { preference: 'system', resolved: 'dark' },
+  ] as const;
+  const viewports = [
+    { height: 900, label: 'normal', width: 1440 },
+    { height: 700, label: 'narrow', width: 900 },
+  ] as const;
+
+  for (const theme of themes) {
+    if (theme.preference === 'system') {
+      await page.emulateMedia({ colorScheme: theme.resolved });
+    }
+    await page
+      .getByRole('combobox', { name: '界面主题' })
+      .selectOption(theme.preference);
+    await expect(page.locator('html')).toHaveAttribute(
+      'data-theme',
+      theme.resolved,
+    );
+
+    for (const viewport of viewports) {
+      await page.setViewportSize(viewport);
+      const layout = await page.evaluate(() => ({
+        cardBackground: getComputedStyle(
+          document.querySelector('.onboarding-card') as Element,
+        ).backgroundColor,
+        clientWidth: document.documentElement.clientWidth,
+        scrollWidth: document.documentElement.scrollWidth,
+        summaryBackground: getComputedStyle(
+          document.querySelector('.onboarding-ready-summary dl div') as Element,
+        ).backgroundColor,
+      }));
+      expect(layout.scrollWidth).toBeLessThanOrEqual(layout.clientWidth + 1);
+      if (theme.resolved === 'light') {
+        expect(layout.cardBackground).toBe('rgb(255, 255, 255)');
+        expect(layout.summaryBackground).toBe('rgb(237, 242, 248)');
+      } else {
+        expect(layout.cardBackground).toBe('rgba(12, 26, 43, 0.97)');
+        expect(layout.summaryBackground).toBe('rgba(7, 17, 31, 0.55)');
+      }
+      await expect(
+        page.getByRole('heading', { name: '可以开始使用了' }),
+      ).toHaveCSS('outline-style', 'none');
+      await page.evaluate(async () => {
+        await document.fonts.ready;
+        await new Promise<void>((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+        );
+      });
+      const name = `onboarding-${theme.preference}-${theme.resolved}-${viewport.label}`;
+      const directory = join(
+        process.cwd(),
+        'test-results',
+        'page-visual-matrix',
+      );
+      const output = join(directory, `${name}.png`);
+      await mkdir(directory, { recursive: true });
+      await page.screenshot({
+        animations: 'disabled',
+        caret: 'hide',
+        path: output,
+      });
+      await testInfo.attach(name, { contentType: 'image/png', path: output });
+    }
+  }
 });

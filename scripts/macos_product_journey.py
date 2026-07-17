@@ -23,7 +23,39 @@ EXPECTED_ACTIONS = (
     "titlebar-close-cancel",
     "titlebar-close-confirm-exit",
 )
-_SCHEMA_VERSION = "stock-desk-macos-full-product-operator-v1"
+EXPECTED_VISUAL_STATES = tuple(
+    (page, theme, layout)
+    for page in (
+        "onboarding",
+        "market",
+        "formulas",
+        "backtests",
+        "analysis",
+        "tasks",
+        "settings",
+    )
+    for theme in ("light", "dark")
+    for layout in ("normal", "narrow")
+)
+EXPECTED_PAGE_ROUTES = {
+    "onboarding": "/market",
+    "market": "/market",
+    "formulas": "/formulas",
+    "backtests": "/backtests/{backtest_run_id}",
+    "analysis": "/analysis",
+    "tasks": "/tasks",
+    "settings": "/settings",
+}
+EXPECTED_PAGE_MARKERS = {
+    "onboarding": "可以开始使用了",
+    "market": "行情工作区",
+    "formulas": "公式工作台",
+    "backtests": "回测运行",
+    "analysis": "新建分析",
+    "tasks": "刷新任务",
+    "settings": "数据源连接",
+}
+_SCHEMA_VERSION = "stock-desk-macos-full-product-operator-v3"
 _REAL_PROVIDERS = frozenset({"akshare", "baostock", "tushare"})
 _HEX_40 = re.compile(r"[0-9a-f]{40}\Z")
 _HEX_64 = re.compile(r"[0-9a-f]{64}\Z")
@@ -61,6 +93,8 @@ class JourneyScreenshot:
     name: str
     sha256: str
     size: int
+    width: int
+    height: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,6 +103,28 @@ class JourneyAction:
     observed: bool
     input_method: str
     physical_mouse_click: bool
+    screenshot_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class JourneyVisualState:
+    page: str
+    route: str
+    page_marker: str
+    observed: bool
+    navigation_action: str
+    navigation_input_method: str
+    navigation_physical_mouse_click: bool
+    theme: str
+    theme_action: str
+    theme_input_method: str
+    theme_physical_mouse_click: bool
+    layout: str
+    layout_action: str
+    layout_input_method: str
+    layout_physical_mouse_input: bool
+    viewport_width: int
+    viewport_height: int
     screenshot_sha256: str
 
 
@@ -94,12 +150,15 @@ class JourneyEvidence:
     backtest_run_id: str
     backtest_report_id: str
     screenshots: tuple[JourneyScreenshot, ...]
+    visual_states: tuple[JourneyVisualState, ...]
     actions: tuple[JourneyAction, ...]
 
 
 _TOP_LEVEL_FIELDS = frozenset(JourneyEvidence.__dataclass_fields__)
 _ACTION_FIELDS = frozenset(JourneyAction.__dataclass_fields__)
 _SCREENSHOT_FIELDS = frozenset(JourneyScreenshot.__dataclass_fields__)
+_VISUAL_STATE_FIELDS = frozenset(JourneyVisualState.__dataclass_fields__)
+_VISUAL_ANALYSIS_FIELDS = frozenset({"recognized_text", "median_luminance"})
 
 
 def _positive_pid(value: object) -> bool:
@@ -124,9 +183,43 @@ def _sequence(value: object, label: str) -> Sequence[object]:
     return value
 
 
+def validate_visual_analysis(
+    value: object, *, state: JourneyVisualState
+) -> dict[str, object]:
+    """Bind independently recognized screenshot content to one declared state."""
+
+    analysis = _mapping(value, "visual analysis")
+    if set(analysis) != _VISUAL_ANALYSIS_FIELDS:
+        raise MacOSJourneyError("operator visual analysis shape is invalid")
+    raw_text = _sequence(analysis["recognized_text"], "visual analysis text")
+    if not 1 <= len(raw_text) <= 256 or any(
+        not isinstance(item, str) or not item or len(item) > 512 for item in raw_text
+    ):
+        raise MacOSJourneyError("operator visual analysis text is invalid")
+    recognized_text = tuple(item for item in raw_text if isinstance(item, str))
+    normalized_text = "".join(re.sub(r"\s+", "", item) for item in recognized_text)
+    normalized_marker = re.sub(r"\s+", "", state.page_marker)
+    if normalized_marker not in normalized_text:
+        raise MacOSJourneyError("operator screenshot page marker is missing")
+    luminance = analysis["median_luminance"]
+    if not isinstance(luminance, (int, float)) or isinstance(luminance, bool):
+        raise MacOSJourneyError("operator screenshot luminance is invalid")
+    if not 0 <= float(luminance) <= 1:
+        raise MacOSJourneyError("operator screenshot luminance is invalid")
+    if float(luminance) >= 0.65:
+        resolved_theme = "light"
+    elif float(luminance) <= 0.35:
+        resolved_theme = "dark"
+    else:
+        raise MacOSJourneyError("operator screenshot luminance is ambiguous")
+    if resolved_theme != state.theme:
+        raise MacOSJourneyError("operator screenshot theme does not match state")
+    return {"recognized_text": recognized_text, "theme": resolved_theme}
+
+
 def _validate_screenshots(value: object) -> tuple[JourneyScreenshot, ...]:
     records = _sequence(value, "screenshot")
-    if len(records) != len(EXPECTED_ACTIONS):
+    if len(records) != len(EXPECTED_VISUAL_STATES) + 2:
         raise MacOSJourneyError("operator evidence screenshot set is incomplete")
     screenshots: list[JourneyScreenshot] = []
     seen_hashes: set[str] = set()
@@ -137,6 +230,8 @@ def _validate_screenshots(value: object) -> tuple[JourneyScreenshot, ...]:
         name = item["name"]
         digest = item["sha256"]
         size = item["size"]
+        width = item["width"]
+        height = item["height"]
         if not isinstance(name, str) or not _SAFE_NAME.fullmatch(name):
             raise MacOSJourneyError("operator evidence screenshot name is invalid")
         if not name.lower().endswith(".png"):
@@ -145,11 +240,134 @@ def _validate_screenshots(value: object) -> tuple[JourneyScreenshot, ...]:
             raise MacOSJourneyError("operator evidence screenshot digest is invalid")
         if type(size) is not int or size < 1_024:
             raise MacOSJourneyError("operator evidence screenshot size is invalid")
+        if (
+            type(width) is not int
+            or type(height) is not int
+            or not 640 <= width <= 4096
+            or not 480 <= height <= 2160
+        ):
+            raise MacOSJourneyError("operator evidence screenshot viewport is invalid")
         if digest in seen_hashes:
             raise MacOSJourneyError("operator evidence screenshot is duplicated")
         seen_hashes.add(digest)
-        screenshots.append(JourneyScreenshot(name=name, sha256=digest, size=size))
+        screenshots.append(
+            JourneyScreenshot(
+                name=name,
+                sha256=digest,
+                size=size,
+                width=width,
+                height=height,
+            )
+        )
     return tuple(screenshots)
+
+
+def _validate_visual_states(
+    value: object,
+    screenshots_by_hash: Mapping[str, JourneyScreenshot],
+    backtest_run_id: str,
+) -> tuple[JourneyVisualState, ...]:
+    records = _sequence(value, "visual state")
+    if len(records) != len(EXPECTED_VISUAL_STATES):
+        raise MacOSJourneyError("operator evidence visual state set is incomplete")
+    states: list[JourneyVisualState] = []
+    for raw, expected in zip(records, EXPECTED_VISUAL_STATES, strict=True):
+        item = _mapping(raw, "visual state")
+        if set(item) != _VISUAL_STATE_FIELDS:
+            raise MacOSJourneyError("operator evidence visual state shape is invalid")
+        observed = (item["page"], item["theme"], item["layout"])
+        if observed != expected:
+            raise MacOSJourneyError(
+                "operator evidence visual state sequence is invalid"
+            )
+        page, theme, layout = expected
+        expected_route = EXPECTED_PAGE_ROUTES[page].format(
+            backtest_run_id=backtest_run_id
+        )
+        if item["route"] != expected_route:
+            raise MacOSJourneyError("operator evidence visual state route is invalid")
+        if item["page_marker"] != EXPECTED_PAGE_MARKERS[page]:
+            raise MacOSJourneyError("operator evidence visual state marker is invalid")
+        if item["observed"] is not True:
+            raise MacOSJourneyError("operator evidence visual state was not observed")
+        expected_navigation_action = (
+            "launch-onboarding" if page == "onboarding" else f"click-navigation-{page}"
+        )
+        expected_navigation_method = (
+            "native-launch" if page == "onboarding" else "sky.click"
+        )
+        expected_navigation_click = page != "onboarding"
+        if (
+            item["navigation_action"] != expected_navigation_action
+            or item["navigation_input_method"] != expected_navigation_method
+            or item["navigation_physical_mouse_click"] is not expected_navigation_click
+        ):
+            raise MacOSJourneyError(
+                "operator evidence visual state navigation is invalid"
+            )
+        if (
+            item["theme_action"] != f"click-theme-{theme}"
+            or item["theme_input_method"] != "sky.click"
+            or item["theme_physical_mouse_click"] is not True
+        ):
+            raise MacOSJourneyError("operator evidence visual state theme is invalid")
+        if (
+            item["layout_action"] != f"drag-window-{layout}"
+            or item["layout_input_method"] != "sky.drag"
+            or item["layout_physical_mouse_input"] is not True
+        ):
+            raise MacOSJourneyError("operator evidence visual state layout is invalid")
+        viewport_width = item["viewport_width"]
+        viewport_height = item["viewport_height"]
+        if (
+            type(viewport_width) is not int
+            or type(viewport_height) is not int
+            or (layout == "normal" and (viewport_width < 1100 or viewport_height < 700))
+            or (
+                layout == "narrow"
+                and not (800 <= viewport_width <= 960 and 650 <= viewport_height <= 900)
+            )
+        ):
+            raise MacOSJourneyError(
+                "operator evidence visual state viewport is invalid"
+            )
+        screenshot_sha256 = item["screenshot_sha256"]
+        screenshot = screenshots_by_hash.get(screenshot_sha256)
+        if screenshot is None:
+            raise MacOSJourneyError(
+                "operator evidence visual state screenshot is unbound"
+            )
+        if screenshot.width != viewport_width or screenshot.height != viewport_height:
+            raise MacOSJourneyError(
+                "operator evidence visual state viewport does not match screenshot"
+            )
+        states.append(
+            JourneyVisualState(
+                page=page,
+                route=expected_route,
+                page_marker=EXPECTED_PAGE_MARKERS[page],
+                observed=True,
+                navigation_action=expected_navigation_action,
+                navigation_input_method=expected_navigation_method,
+                navigation_physical_mouse_click=expected_navigation_click,
+                theme=theme,
+                theme_action=f"click-theme-{theme}",
+                theme_input_method="sky.click",
+                theme_physical_mouse_click=True,
+                layout=layout,
+                layout_action=f"drag-window-{layout}",
+                layout_input_method="sky.drag",
+                layout_physical_mouse_input=True,
+                viewport_width=viewport_width,
+                viewport_height=viewport_height,
+                screenshot_sha256=screenshot_sha256,
+            )
+        )
+    if len({state.screenshot_sha256 for state in states}) != len(states):
+        raise MacOSJourneyError(
+            "operator evidence visual state screenshots are not unique"
+        )
+    return tuple(states)
 
 
 def _validate_actions(
@@ -212,7 +430,7 @@ def validate_operator_evidence(
         raise MacOSJourneyError("operator evidence must use WKWebView")
     if value["driver"] != "codex-computer-use":
         raise MacOSJourneyError("operator evidence driver is invalid")
-    if value["input_method"] != "codex-computer-use-sky-click":
+    if value["input_method"] != "codex-computer-use-sky":
         raise MacOSJourneyError("operator evidence input method is invalid")
     if value["physical_mouse_click"] is not True:
         raise MacOSJourneyError("operator evidence did not use physical mouse clicks")
@@ -256,9 +474,18 @@ def validate_operator_evidence(
     if backtest_report_id != backtest_run_id:
         raise MacOSJourneyError("operator evidence backtest report identity is invalid")
     screenshots = _validate_screenshots(value["screenshots"])
-    actions = _validate_actions(
-        value["actions"], frozenset(item.sha256 for item in screenshots)
+    screenshots_by_hash = {item.sha256: item for item in screenshots}
+    screenshot_hashes = frozenset(screenshots_by_hash)
+    visual_states = _validate_visual_states(
+        value["visual_states"], screenshots_by_hash, backtest_run_id
     )
+    actions = _validate_actions(value["actions"], screenshot_hashes)
+    referenced_hashes = {
+        *(item.screenshot_sha256 for item in visual_states),
+        *(item.screenshot_sha256 for item in actions),
+    }
+    if referenced_hashes != screenshot_hashes:
+        raise MacOSJourneyError("operator evidence screenshot set is not fully bound")
     return JourneyEvidence(
         schema_version=_SCHEMA_VERSION,
         source_sha=identity.source_sha,
@@ -267,7 +494,7 @@ def validate_operator_evidence(
         app_identifier=APP_IDENTIFIER,
         embedded_webview=EMBEDDED_WEBVIEW,
         driver="codex-computer-use",
-        input_method="codex-computer-use-sky-click",
+        input_method="codex-computer-use-sky",
         physical_mouse_click=True,
         host_pid=identity.host_pid,
         sidecar_pid=identity.sidecar_pid,
@@ -280,6 +507,7 @@ def validate_operator_evidence(
         backtest_run_id=backtest_run_id,
         backtest_report_id=backtest_report_id,
         screenshots=screenshots,
+        visual_states=visual_states,
         actions=actions,
     )
 
@@ -391,9 +619,12 @@ def validate_isolated_product_state(
             if (
                 type(formula["version"]) is not int
                 or formula["version"] < 1
-                or formula["formula_type"] != "indicator"
+                or formula["formula_type"] != "trading"
                 or formula["placement"] != "subchart"
-                or any(token not in formula_source for token in ("DIF", "DEA", "MACD"))
+                or any(
+                    token not in formula_source
+                    for token in ("DIF", "DEA", "MACD", "BUY", "SELL")
+                )
                 or not str(formula["checksum"]).startswith("sha256:")
             ):
                 raise MacOSJourneyError("isolated MACD formula version is invalid")
@@ -415,6 +646,93 @@ def validate_isolated_product_state(
                 or snapshot.get("formula_version_id") != evidence.formula_version_id
             ):
                 raise MacOSJourneyError("isolated backtest evidence is invalid")
+
+            if snapshot.get("execution_rules_version") != "a-share-v2":
+                raise MacOSJourneyError(
+                    "isolated execution-status rule is not the basic evidence rule"
+                )
+            raw_symbol_inputs = snapshot.get("symbol_inputs")
+            if not isinstance(raw_symbol_inputs, list):
+                raise MacOSJourneyError(
+                    "isolated execution-status evidence pin is invalid"
+                )
+            ordinary_inputs = [
+                item
+                for item in raw_symbol_inputs
+                if isinstance(item, Mapping)
+                and item.get("symbol") == evidence.symbols[1]
+            ]
+            if len(ordinary_inputs) != 1:
+                raise MacOSJourneyError(
+                    "isolated execution-status evidence pin is invalid"
+                )
+            status_pin = ordinary_inputs[0]
+            status_manifest_id = _require_safe_id(
+                status_pin.get("execution_status_manifest_record_id"),
+                "isolated execution-status manifest identity",
+            )
+            status_dataset_version = _require_safe_id(
+                status_pin.get("execution_status_dataset_version"),
+                "isolated execution-status dataset identity",
+            )
+            status_route_version = _require_safe_id(
+                status_pin.get("execution_status_route_version"),
+                "isolated execution-status route identity",
+            )
+            status_source = status_pin.get("execution_status_source")
+            execution_status_evidence_level = status_pin.get(
+                "execution_status_evidence_level"
+            )
+            if (
+                status_source != "baostock"
+                or execution_status_evidence_level != "basic_no_price_limits"
+            ):
+                raise MacOSJourneyError(
+                    "isolated execution-status evidence is not BaoStock basic evidence"
+                )
+
+            status_dataset_row = connection.execute(
+                "SELECT source, snapshot_json FROM execution_status_dataset "
+                "WHERE dataset_version = ? AND symbol = ? LIMIT 1",
+                (status_dataset_version, evidence.symbols[1]),
+            ).fetchone()
+            if status_dataset_row is None:
+                raise MacOSJourneyError("isolated execution-status dataset is missing")
+            status_snapshot = _json_object(
+                status_dataset_row["snapshot_json"], "execution-status dataset"
+            )
+            if (
+                status_dataset_row["source"] != status_source
+                or status_snapshot.get("dataset_version") != status_dataset_version
+                or status_snapshot.get("source") != status_source
+                or status_snapshot.get("evidence_level")
+                != execution_status_evidence_level
+            ):
+                raise MacOSJourneyError("isolated execution-status evidence is invalid")
+
+            status_manifest_row = connection.execute(
+                "SELECT dataset_version, route_version, manifest_json "
+                "FROM execution_status_routing_manifest "
+                "WHERE manifest_record_id = ? LIMIT 1",
+                (status_manifest_id,),
+            ).fetchone()
+            if status_manifest_row is None:
+                raise MacOSJourneyError("isolated execution-status manifest is missing")
+            status_manifest = _json_object(
+                status_manifest_row["manifest_json"],
+                "execution-status manifest",
+            )
+            if (
+                status_manifest_row["dataset_version"] != status_dataset_version
+                or status_manifest_row["route_version"] != status_route_version
+                or status_manifest.get("schema_version")
+                != "stock-desk-routing-manifest-v1"
+                or status_manifest.get("selected_source") != status_source
+                or status_manifest.get("upstream_dataset_version")
+                != status_dataset_version
+                or status_manifest.get("route_version") != status_route_version
+            ):
+                raise MacOSJourneyError("isolated execution-status manifest is invalid")
             trade_rows = connection.execute(
                 "SELECT COUNT(*) FROM backtest_trade WHERE run_id = ?",
                 (evidence.backtest_run_id,),
@@ -439,6 +757,8 @@ def validate_isolated_product_state(
         "formula_version_id": evidence.formula_version_id,
         "metric_rows": metric_rows,
         "providers": sorted(providers),
+        "execution_status_evidence_level": execution_status_evidence_level,
+        "execution_status_warning": "basic_execution_status",
         "symbols": list(evidence.symbols),
         "trade_rows": trade_rows,
     }

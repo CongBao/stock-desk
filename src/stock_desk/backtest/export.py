@@ -50,6 +50,8 @@ CSV_COLUMNS = (
     "cost_model_version",
     "sizing_version",
     "warmup_policy_version",
+    "execution_status_evidence_level",
+    "warnings",
     "symbol",
     "ordinal",
     "dimension",
@@ -147,6 +149,8 @@ def _metadata_dict(metadata: BacktestExportMetadata) -> dict[str, object]:
         "cost_model_version": metadata.cost_model_version,
         "sizing_version": metadata.sizing_version,
         "warmup_policy_version": metadata.warmup_policy_version,
+        "execution_status_evidence_level": (metadata.execution_status_evidence_level),
+        "warnings": list(metadata.warnings),
     }
 
 

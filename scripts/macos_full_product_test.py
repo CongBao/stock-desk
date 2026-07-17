@@ -24,11 +24,15 @@ from scripts.macos_product_journey import (
     APP_IDENTIFIER,
     EMBEDDED_WEBVIEW,
     EXPECTED_ACTIONS,
+    EXPECTED_PAGE_MARKERS,
+    EXPECTED_PAGE_ROUTES,
+    EXPECTED_VISUAL_STATES,
     JourneyEvidence,
     JourneyIdentity,
     MacOSJourneyError,
     validate_isolated_product_state,
     validate_operator_evidence,
+    validate_visual_analysis,
 )
 
 
@@ -54,6 +58,7 @@ class HarnessPaths:
     data_root: Path
     build_log: Path
     host_log: Path
+    visual_analyzer: Path
 
     @classmethod
     def create(cls, temporary_root: Path) -> HarnessPaths:
@@ -76,6 +81,7 @@ class HarnessPaths:
             data_root=data_root,
             build_log=temporary_root / "tauri-build.log",
             host_log=temporary_root / "desktop-host.log",
+            visual_analyzer=temporary_root / "macos-visual-analyzer",
         )
 
 
@@ -192,6 +198,42 @@ def _launch_application(
     return process
 
 
+def _build_visual_analyzer(context: HarnessContext) -> None:
+    result = subprocess.run(  # noqa: S603
+        (
+            "swiftc",
+            "-warnings-as-errors",
+            os.fspath(ROOT / "scripts" / "macos_visual_analyzer.swift"),
+            "-o",
+            os.fspath(context.paths.visual_analyzer),
+        ),
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=90,
+    )
+    if result.returncode != 0 or not context.paths.visual_analyzer.is_file():
+        raise MacOSFullProductError("macOS visual analyzer build failed")
+
+
+def _analyze_screenshot(analyzer: Path, screenshot: Path) -> object:
+    result = subprocess.run(  # noqa: S603
+        (os.fspath(analyzer), os.fspath(screenshot)),
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if result.returncode != 0 or len(result.stdout) > 262_144:
+        raise MacOSJourneyError("operator screenshot visual analysis failed")
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise MacOSJourneyError(
+            "operator screenshot visual analysis is invalid"
+        ) from error
+
+
 def _wait_for_sidecar_child(context: HarnessContext, timeout_seconds: int) -> int:
     if context.process_tree is None:
         raise MacOSFullProductError("macOS host process tree was not initialized")
@@ -251,7 +293,7 @@ def _write_interaction_ready(
 ) -> Path:
     evidence_path = output / "operator-evidence.json"
     ready = {
-        "schema_version": "stock-desk-macos-full-product-ready-v1",
+        "schema_version": "stock-desk-macos-full-product-ready-v2",
         "source_sha": identity.source_sha,
         "source_tree": identity.source_tree,
         "session_nonce": identity.session_nonce,
@@ -259,9 +301,41 @@ def _write_interaction_ready(
         "embedded_webview": EMBEDDED_WEBVIEW,
         "host_pid": identity.host_pid,
         "sidecar_pid": identity.sidecar_pid,
-        "input_method": "codex-computer-use-sky-click",
+        "input_method": "codex-computer-use-sky",
         "physical_mouse_click": True,
         "expected_actions": list(EXPECTED_ACTIONS),
+        "expected_visual_states": [
+            {
+                "page": page,
+                "route": EXPECTED_PAGE_ROUTES[page],
+                "page_marker": EXPECTED_PAGE_MARKERS[page],
+                "navigation_action": (
+                    "launch-onboarding"
+                    if page == "onboarding"
+                    else f"click-navigation-{page}"
+                ),
+                "navigation_input_method": (
+                    "native-launch" if page == "onboarding" else "sky.click"
+                ),
+                "theme": theme,
+                "theme_action": f"click-theme-{theme}",
+                "theme_input_method": "sky.click",
+                "layout": layout,
+                "layout_action": f"drag-window-{layout}",
+                "layout_input_method": "sky.drag",
+                "viewport": (
+                    {"minimum_width": 1100, "minimum_height": 700}
+                    if layout == "normal"
+                    else {
+                        "minimum_width": 800,
+                        "maximum_width": 960,
+                        "minimum_height": 650,
+                        "maximum_height": 900,
+                    }
+                ),
+            }
+            for page, theme, layout in EXPECTED_VISUAL_STATES
+        ],
         "operator_evidence_path": os.fspath(evidence_path),
         "screenshot_directory": os.fspath(output),
         "native_window": {
@@ -279,6 +353,7 @@ def _await_operator_evidence(
     timeout_seconds: int,
     *,
     process_tree: macos_tauri_support.VerifiedProcessTree,
+    visual_analyzer: Path,
 ) -> JourneyEvidence:
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
@@ -308,6 +383,30 @@ def _await_operator_evidence(
             or macos_tauri_support.sha256_file(screenshot_path) != screenshot.sha256
         ):
             raise MacOSJourneyError("operator screenshot identity does not match")
+        try:
+            with screenshot_path.open("rb") as payload_file:
+                header = payload_file.read(24)
+        except OSError as error:
+            raise MacOSJourneyError("operator screenshot is unreadable") from error
+        if (
+            len(header) != 24
+            or header[:8] != b"\x89PNG\r\n\x1a\n"
+            or header[12:16] != b"IHDR"
+            or int.from_bytes(header[16:20], "big") != screenshot.width
+            or int.from_bytes(header[20:24], "big") != screenshot.height
+        ):
+            raise MacOSJourneyError("operator screenshot viewport does not match PNG")
+    screenshots_by_hash = {
+        screenshot.sha256: path.parent / screenshot.name
+        for screenshot in evidence.screenshots
+    }
+    for state in evidence.visual_states:
+        validate_visual_analysis(
+            _analyze_screenshot(
+                visual_analyzer, screenshots_by_hash[state.screenshot_sha256]
+            ),
+            state=state,
+        )
     process_tree.observe()
     return evidence
 
@@ -330,13 +429,24 @@ def _wait_for_graceful_exit(context: HarnessContext, timeout_seconds: int) -> No
     context.process_tree.verify_absent()
 
 
-def _remove_operator_intermediates(output: Path) -> None:
+def _remove_operator_intermediates(
+    output: Path, preserve_screenshot_names: frozenset[str] = frozenset()
+) -> None:
     for path in output.iterdir() if output.is_dir() else ():
-        if (
-            path.name in {"interaction-ready.json", "operator-evidence.json"}
-            or path.suffix.lower() == ".png"
-        ):
+        if path.name in {"interaction-ready.json", "operator-evidence.json"}:
             if path.is_file() or path.is_symlink():
+                path.unlink(missing_ok=True)
+        elif path.suffix.lower() == ".png":
+            preserve = (
+                path.name in preserve_screenshot_names
+                and path.is_file()
+                and not path.is_symlink()
+            )
+            if preserve:
+                continue
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path, ignore_errors=False)
+            else:
                 path.unlink(missing_ok=True)
 
 
@@ -360,10 +470,6 @@ def _cleanup(context: HarnessContext) -> None:
         shutil.rmtree(context.paths.temporary_root, ignore_errors=False)
     except FileNotFoundError:
         pass
-    except BaseException as error:
-        errors.append(error)
-    try:
-        _remove_operator_intermediates(context.output)
     except BaseException as error:
         errors.append(error)
     if context.sidecar_copy is not None and context.sidecar_copy.exists():
@@ -429,6 +535,7 @@ def run_full_product_test(output: Path, timeout_seconds: int) -> dict[str, Any]:
     identity: JourneyIdentity | None = None
     try:
         _build_application(context, timeout_seconds, source_sha)
+        _build_visual_analyzer(context)
         _source_identity(source_identity)
         nonce = str(uuid.uuid4())
         host = _launch_application(context, source_sha, source_tree, nonce)
@@ -453,6 +560,7 @@ def run_full_product_test(output: Path, timeout_seconds: int) -> dict[str, Any]:
             identity,
             timeout_seconds,
             process_tree=context.process_tree,
+            visual_analyzer=context.paths.visual_analyzer,
         )
         context.process_tree.observe()
         product_state = validate_isolated_product_state(
@@ -462,43 +570,101 @@ def run_full_product_test(output: Path, timeout_seconds: int) -> dict[str, Any]:
         _wait_for_graceful_exit(context, 20)
     finally:
         active_error = sys.exception()
+        cleanup_error: BaseException | None = None
         try:
             _cleanup(context)
-        except BaseException as cleanup_error:
+        except BaseException as error:
+            cleanup_error = error
+        if active_error is not None or cleanup_error is not None:
+            try:
+                _remove_operator_intermediates(output)
+            except BaseException as evidence_cleanup_error:
+                target = active_error or cleanup_error
+                if target is not None:
+                    target.add_note(
+                        f"operator evidence cleanup also failed: {evidence_cleanup_error}"
+                    )
+        if cleanup_error is not None:
             if active_error is None:
-                raise
+                raise cleanup_error
             active_error.add_note(f"cleanup also failed: {cleanup_error}")
 
-    if evidence is None or product_state is None or window is None or identity is None:
-        raise MacOSFullProductError("macOS full-product evidence is incomplete")
-    if temporary_root.exists():
-        raise MacOSFullProductError("temporary full-product root remains")
-    _source_identity(source_identity)
-    report: dict[str, Any] = {
-        "schema_version": "stock-desk-macos-full-product-v1",
-        "scope": "local-macos-development-test-only",
-        "source_sha": source_sha,
-        "source_tree": source_tree,
-        "source_dirty": False,
-        "app_identifier": APP_IDENTIFIER,
-        "embedded_webview": EMBEDDED_WEBVIEW,
-        "host_pid": identity.host_pid,
-        "sidecar_pid": identity.sidecar_pid,
-        "native_window": {
-            key: window[key]
-            for key in ("title", "layer", "on_screen", "width", "height")
-        },
-        "operator_evidence": asdict(evidence),
-        "isolated_product_state": product_state,
-        "graceful_exit_confirmed": True,
-        "process_cleanup_confirmed": True,
-        "temporary_root_removed": True,
-        "limitations": [
-            "This is a local macOS development gate, not a macOS release asset.",
-            "Windows NSIS and standard-user Windows acceptance remain authoritative.",
-        ],
-    }
-    macos_tauri_support.atomic_write_json(output / "macos-full-product.json", report)
+    report_path = output / "macos-full-product.json"
+    try:
+        if (
+            evidence is None
+            or product_state is None
+            or window is None
+            or identity is None
+        ):
+            raise MacOSFullProductError("macOS full-product evidence is incomplete")
+        if temporary_root.exists():
+            raise MacOSFullProductError("temporary full-product root remains")
+        _source_identity(source_identity)
+        report: dict[str, Any] = {
+            "schema_version": "stock-desk-macos-full-product-v1",
+            "scope": "local-macos-development-test-only",
+            "source_sha": source_sha,
+            "source_tree": source_tree,
+            "source_dirty": False,
+            "app_identifier": APP_IDENTIFIER,
+            "embedded_webview": EMBEDDED_WEBVIEW,
+            "host_pid": identity.host_pid,
+            "sidecar_pid": identity.sidecar_pid,
+            "native_window": {
+                key: window[key]
+                for key in ("title", "layer", "on_screen", "width", "height")
+            },
+            "operator_evidence": asdict(evidence),
+            "isolated_product_state": product_state,
+            "screenshot_content_verified": True,
+            "graceful_exit_confirmed": True,
+            "process_cleanup_confirmed": True,
+            "temporary_root_removed": True,
+            "limitations": [
+                "This is a local macOS development gate, not a macOS release asset.",
+                "Windows NSIS and standard-user Windows acceptance remain authoritative.",
+            ],
+        }
+        macos_tauri_support.atomic_write_json(report_path, report)
+    except BaseException:
+        active_error = sys.exception()
+        try:
+            _remove_operator_intermediates(output)
+        except BaseException as evidence_cleanup_error:
+            if active_error is not None:
+                active_error.add_note(
+                    f"operator evidence cleanup also failed: {evidence_cleanup_error}"
+                )
+        try:
+            report_path.unlink(missing_ok=True)
+        except BaseException as report_cleanup_error:
+            if active_error is not None:
+                active_error.add_note(
+                    f"success report cleanup also failed: {report_cleanup_error}"
+                )
+        raise
+    try:
+        _remove_operator_intermediates(
+            output, frozenset(screenshot.name for screenshot in evidence.screenshots)
+        )
+    except BaseException:
+        active_error = sys.exception()
+        try:
+            _remove_operator_intermediates(output)
+        except BaseException as evidence_cleanup_error:
+            if active_error is not None:
+                active_error.add_note(
+                    f"operator evidence cleanup also failed: {evidence_cleanup_error}"
+                )
+        try:
+            report_path.unlink(missing_ok=True)
+        except BaseException as report_cleanup_error:
+            if active_error is not None:
+                active_error.add_note(
+                    f"success report cleanup also failed: {report_cleanup_error}"
+                )
+        raise
     return report
 
 

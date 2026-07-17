@@ -72,6 +72,8 @@ type BacktestReportPayload = {
   formula_engine_version?: unknown;
   compatibility_version?: unknown;
   backtest_engine_version?: unknown;
+  execution_status_evidence_level?: unknown;
+  warnings?: unknown;
   provenance?: unknown;
   period?: unknown;
   adjustment?: unknown;
@@ -97,6 +99,8 @@ function backtestCorrectness(report: BacktestReportPayload) {
     formula_engine_version: report.formula_engine_version,
     compatibility_version: report.compatibility_version,
     backtest_engine_version: report.backtest_engine_version,
+    execution_status_evidence_level: report.execution_status_evidence_level,
+    warnings: report.warnings,
     provenance: report.provenance,
     period: report.period,
     adjustment: report.adjustment,

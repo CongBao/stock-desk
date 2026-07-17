@@ -388,6 +388,35 @@ def test_preflight_is_explicitly_non_reserving_and_review_complete() -> None:
     assert "run_id" not in body and "task_id" not in body
 
 
+def test_basic_execution_status_grade_and_warning_are_public() -> None:
+    class BasicServices(_ReadServices):
+        def preflight(self, intent: BacktestIntent) -> BacktestPreflight:
+            return replace(
+                super().preflight(intent),
+                execution_status_evidence_level="basic_no_price_limits",
+                warnings=("basic_execution_status",),
+            )
+
+        def report(self, run_id: str) -> BacktestReportSnapshot:
+            return replace(
+                super().report(run_id),
+                execution_status_evidence_level="basic_no_price_limits",
+                warnings=("basic_execution_status",),
+            )
+
+    with TestClient(create_app(backtest_services=BasicServices())) as client:  # type: ignore[arg-type]
+        preflight = client.post("/api/backtests/preflight", json=_request())
+        report = client.get(f"/api/backtests/{RUN_ID}/report")
+
+    assert preflight.status_code == report.status_code == 200
+    assert (
+        preflight.json()["execution_status_evidence_level"] == "basic_no_price_limits"
+    )
+    assert preflight.json()["scope"]["warnings"] == ["basic_execution_status"]
+    assert report.json()["execution_status_evidence_level"] == ("basic_no_price_limits")
+    assert report.json()["warnings"] == ["basic_execution_status"]
+
+
 def test_intent_rejects_inexact_costs_naive_time_unknown_fields_and_bools() -> None:
     services = _ReadServices()
     invalid_requests: list[dict[str, object]] = []
@@ -655,6 +684,8 @@ def test_trade_replay_route_binds_run_symbol_trade_and_cursor_page() -> None:
                 "trade_ordinal": 7,
                 "period": "1d",
                 "adjustment": "none",
+                "execution_status_evidence_level": "basic_no_price_limits",
+                "warnings": ["basic_execution_status"],
                 "bars": [
                     {
                         "symbol": "600000.SH",
@@ -738,6 +769,10 @@ def test_trade_replay_route_binds_run_symbol_trade_and_cursor_page() -> None:
     assert response.json()["run_id"] == RUN_ID
     assert response.json()["symbol"] == "600000.SH"
     assert response.json()["trade_ordinal"] == 7
+    assert response.json()["execution_status_evidence_level"] == (
+        "basic_no_price_limits"
+    )
+    assert response.json()["warnings"] == ["basic_execution_status"]
 
 
 def test_trade_replay_openapi_is_strict_and_bounded() -> None:
@@ -810,6 +845,8 @@ def test_trade_replay_response_rejects_mismatched_fill_evidence() -> None:
             trade_ordinal=0,
             period="1d",
             adjustment="none",
+            execution_status_evidence_level="authoritative",
+            warnings=(),
             bars=(bar,),
             formula=backtest_api.BacktestReplayFormulaResponse(
                 signal_series_id="sha256:" + "c" * 64,

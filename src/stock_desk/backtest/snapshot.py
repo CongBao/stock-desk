@@ -209,6 +209,10 @@ def _validate_status_identity(
         raise ValueError("reopened execution status cutoff does not match snapshot")
     if routed.result.query != reference.execution_status_query:
         raise ValueError("reopened execution status query does not match snapshot")
+    if routed.result.evidence_level is not reference.execution_status_evidence_level:
+        raise ValueError(
+            "reopened execution status evidence level does not match snapshot"
+        )
     local_start = reference.execution_query.start.astimezone(MARKET_TIMEZONE)
     local_end = reference.execution_query.end.astimezone(MARKET_TIMEZONE)
     required_start = local_start.date()

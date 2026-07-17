@@ -62,12 +62,24 @@ Signals are calculated on the selected period. BUY/SELL becomes known only after
 
 The engine models one state machine per stock: flat, pending buy, held, or pending sell. There is at most one position and one pending order. Repeated same-side signals are ignored. Conflicting simultaneous signals are recorded and ignored. An opposite signal cancels a pending order. A blocked order remains pending until an eligible open, an opposite signal, or the range end.
 
-Execution uses the pinned historical status companion rather than inferring tradability from missing prices. It fails closed on unknown status and applies:
+Execution uses the pinned historical status companion rather than inferring tradability from missing prices. It fails closed on unknown status. Every frozen status snapshot declares one evidence grade:
+
+- `authoritative` (Tushare): explicit exchange calendar, suspension, and historical side-specific upper/lower price-limit evidence;
+- `basic_no_price_limits` (BaoStock): explicit exchange calendar and `tradestatus`, without historical price-limit evidence;
+- `mixed` (pool report only): at least one runnable symbol uses the basic grade.
+
+Both strict and basic execution apply:
 
 - A-share T+1 sell eligibility;
 - exchange closure and suspension;
-- the historical side-specific upper limit for buys and lower limit for sells;
 - exact price/open availability for the execution period.
+
+The frozen rule version makes this distinction replayable: fully authoritative
+runs keep `a-share-v1`, while any basic or mixed run uses `a-share-v2`. A
+snapshot whose evidence grade and rule version disagree is rejected rather than
+silently changing its fill semantics.
+
+Only `authoritative` execution additionally blocks buys at the historical upper limit and sells at the historical lower limit. Basic execution never approximates those limits from board, ST, IPO, volume, price movement, or missing bars. Preflight, report, replay provenance, and exports keep a visible `basic_execution_status` warning because this limitation can overestimate fill opportunities; it does not require an extra confirmation click.
 
 Weekly charts keep weekly signals on weekly coordinates. Their exact daily fill bar is disclosed separately in replay rather than being drawn at a false weekly timestamp.
 
@@ -106,4 +118,4 @@ Selecting a trade opens a pinned K-line main chart and formula subchart, plus th
 
 ## Known limitations
 
-V1 intentionally does not model order-book depth, latency, partial fills, cash availability, dividends, financing, short selling, shared portfolio capital, broker-specific fees, or live trading. Adjustment choice is fixed per run; price comparisons and returns use that frozen convention. Historical results and estimated win rate are descriptive samples, not investment advice or a guarantee of future performance.
+V1 intentionally does not model order-book depth, latency, partial fills, cash availability, dividends, financing, short selling, shared portfolio capital, broker-specific fees, or live trading. Adjustment choice is fixed per run; price comparisons and returns use that frozen convention. BaoStock basic execution does not check historical price limits and may therefore overestimate fill opportunities; use Tushare authoritative status when strict price-limit evidence is required. Historical results and estimated win rate are descriptive samples, not investment advice or a guarantee of future performance.

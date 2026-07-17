@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 from collections.abc import Hashable
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Protocol, Self, cast
 
 from stock_desk.market.providers.base import (
     CalendarFetchOutcome,
     Clock,
     InstrumentFetchOutcome,
+    ProviderBatch,
+    ProviderBatchFailure,
+    ProviderClientError,
     ProviderInvalidResponse,
     ProviderNoData,
     ProviderOperation,
@@ -44,7 +47,14 @@ from stock_desk.market.providers.sdk import (
     required_sdk_callable,
     validate_sdk_chunk_rows,
 )
-from stock_desk.market.execution_status import ExecutionStatusQuery
+from stock_desk.market.execution_status import (
+    ExecutionStatusDay,
+    ExecutionStatusEvidenceLevel,
+    ExecutionStatusQuery,
+    RawExecutionOpen,
+    SuspensionState,
+    materialize_execution_status,
+)
 from stock_desk.market.providers.execution_status import (
     ExecutionStatusFailure,
     ExecutionStatusFetchOutcome,
@@ -54,7 +64,6 @@ from stock_desk.market.types import (
     Bar,
     BarFetchOutcome,
     BarQuery,
-    CapabilityGap,
     CapabilityReport,
     CapabilityState,
     Exchange,
@@ -276,6 +285,7 @@ class BaoStockProvider:
             capabilities=frozenset(
                 {
                     MarketCapability.BARS,
+                    MarketCapability.EXECUTION_STATUS,
                     MarketCapability.INSTRUMENTS,
                     MarketCapability.TRADING_CALENDAR,
                 }
@@ -284,25 +294,194 @@ class BaoStockProvider:
             available_adjustments=frozenset(Adjustment),
             markets=frozenset({Exchange.SH, Exchange.SZ}),
             data_cutoff=None,
-            gaps=(
-                CapabilityGap(
-                    capability=MarketCapability.EXECUTION_STATUS,
-                    state=CapabilityState.UNSUPPORTED,
-                    reason=FailureReason.UNSUPPORTED,
-                    detail="BaoStock does not prove historical price-limit evidence",
-                ),
-            ),
+            gaps=(),
         )
 
     def fetch_execution_status(
         self, query: ExecutionStatusQuery
     ) -> ExecutionStatusFetchOutcome:
-        return ExecutionStatusFailure(
-            query=query,
-            source=self.name,
-            reason=FailureReason.UNSUPPORTED,
-            detail="provider does not support authoritative execution status",
-        )
+        """Materialize explicit calendar/tradestatus evidence without limit claims."""
+        try:
+            calendar = self.fetch_calendar(query.exchange, query.start, query.end)
+            if isinstance(calendar, ProviderBatchFailure):
+                return ExecutionStatusFailure(
+                    query=query,
+                    source=self.name,
+                    reason=calendar.reason,
+                    detail=calendar.detail,
+                )
+            if not isinstance(calendar, ProviderBatch):
+                raise ProviderInvalidResponse()
+
+            provider_code = f"{query.exchange.value.lower()}.{query.symbol[:6]}"
+            local_start = datetime.combine(
+                query.start, time.min, tzinfo=MARKET_TIMEZONE
+            )
+            local_end = datetime.combine(query.end, time.min, tzinfo=MARKET_TIMEZONE)
+            coverage_start = local_start.astimezone(timezone.utc)
+            coverage_end = local_end.astimezone(timezone.utc)
+            daily_query = BarQuery(
+                symbol=query.symbol,
+                instrument_kind=InstrumentKind.STOCK,
+                period=Period.DAY,
+                adjustment=Adjustment.NONE,
+                start=coverage_start,
+                end=coverage_end,
+            )
+            daily_response = self._client.query_history_k_data_plus(
+                code=provider_code,
+                fields="date,code,open,tradestatus",
+                start_date=query.start.isoformat(),
+                end_date=(query.end - timedelta(days=1)).isoformat(),
+                frequency="d",
+                adjustflag=_ADJUSTMENTS[Adjustment.NONE],
+                _coverage_start=coverage_start,
+                _coverage_end=coverage_end,
+            )
+            daily_table = validated_bar_table(daily_response, daily_query)
+            daily_rows = records_from_table(
+                daily_table,
+                required=frozenset({"date", "code", "open", "tradestatus"}),
+            )
+            explicit_status: dict[date, tuple[SuspensionState, object]] = {}
+            for row in daily_rows:
+                if row["code"] != provider_code:
+                    raise ProviderInvalidResponse()
+                day = parse_date(row["date"])
+                if day in explicit_status:
+                    raise ProviderInvalidResponse()
+                status = self._trading_status(row["tradestatus"])
+                if status is TradingStatus.UNKNOWN:
+                    raise ProviderInvalidResponse()
+                explicit_status[day] = (
+                    SuspensionState.NORMAL
+                    if status is TradingStatus.NORMAL
+                    else SuspensionState.SUSPENDED,
+                    row["open"],
+                )
+
+            status_days: list[ExecutionStatusDay] = []
+            open_days: set[date] = set()
+            for trading_day in calendar.items:
+                if not isinstance(trading_day, TradingDay):
+                    raise ProviderInvalidResponse()
+                if not trading_day.is_open:
+                    status_days.append(
+                        ExecutionStatusDay(
+                            day=trading_day.day,
+                            exchange=query.exchange,
+                            is_exchange_open=False,
+                            suspension_state=SuspensionState.NOT_APPLICABLE,
+                            raw_upper_limit=None,
+                            raw_lower_limit=None,
+                        )
+                    )
+                    continue
+                evidence = explicit_status.get(trading_day.day)
+                if evidence is None:
+                    # Missing bars are never interpreted as suspension evidence.
+                    raise ProviderInvalidResponse()
+                open_days.add(trading_day.day)
+                status_days.append(
+                    ExecutionStatusDay(
+                        day=trading_day.day,
+                        exchange=query.exchange,
+                        is_exchange_open=True,
+                        suspension_state=evidence[0],
+                        raw_upper_limit=None,
+                        raw_lower_limit=None,
+                    )
+                )
+
+            raw_opens: list[RawExecutionOpen] = []
+            if query.period is Period.MIN60:
+                raw_query = BarQuery(
+                    symbol=query.symbol,
+                    instrument_kind=InstrumentKind.STOCK,
+                    period=Period.MIN60,
+                    adjustment=Adjustment.NONE,
+                    start=coverage_start,
+                    end=coverage_end,
+                )
+                raw_response = self._client.query_history_k_data_plus(
+                    code=provider_code,
+                    fields="date,time,code,open",
+                    start_date=query.start.isoformat(),
+                    end_date=(query.end - timedelta(days=1)).isoformat(),
+                    frequency="60",
+                    adjustflag=_ADJUSTMENTS[Adjustment.NONE],
+                    _coverage_start=coverage_start,
+                    _coverage_end=coverage_end,
+                )
+                raw_table = validated_bar_table(raw_response, raw_query)
+                raw_rows = records_from_table(
+                    raw_table,
+                    required=frozenset({"date", "time", "code", "open"}),
+                )
+                for row in raw_rows:
+                    if row["code"] != provider_code:
+                        raise ProviderInvalidResponse()
+                    timestamp, _endpoint = period_bounds(
+                        row["time"], Period.MIN60, compact_minute=True
+                    )
+                    day = timestamp.astimezone(MARKET_TIMEZONE).date()
+                    evidence = explicit_status.get(day)
+                    if day not in open_days or evidence is None:
+                        raise ProviderInvalidResponse()
+                    if evidence[0] is SuspensionState.SUSPENDED:
+                        continue
+                    raw_opens.append(
+                        RawExecutionOpen(
+                            timestamp=timestamp,
+                            trading_day=day,
+                            raw_open=decimal_price(row["open"], Adjustment.NONE),
+                        )
+                    )
+            else:
+                for day, (status_state, raw_open) in explicit_status.items():
+                    if (
+                        day not in open_days
+                        or status_state is SuspensionState.SUSPENDED
+                    ):
+                        continue
+                    raw_opens.append(
+                        RawExecutionOpen(
+                            timestamp=datetime.combine(
+                                day, time(9, 30), tzinfo=MARKET_TIMEZONE
+                            ),
+                            trading_day=day,
+                            raw_open=decimal_price(raw_open, Adjustment.NONE),
+                        )
+                    )
+
+            observed_at = aware_now(self._clock)
+            cutoff = min(calendar.provenance.data_cutoff, observed_at)
+            return materialize_execution_status(
+                query=query,
+                days=tuple(status_days),
+                raw_opens=tuple(raw_opens),
+                source=self.name,
+                fetched_at=observed_at,
+                data_cutoff=cutoff,
+                evidence_level=ExecutionStatusEvidenceLevel.BASIC_NO_PRICE_LIMITS,
+            )
+        except Exception as error:
+            reason = (
+                error.reason
+                if isinstance(error, ProviderClientError)
+                else FailureReason.INVALID_RESPONSE
+            )
+            detail = (
+                error.safe_detail
+                if isinstance(error, ProviderClientError)
+                else "provider response is invalid"
+            )
+            return ExecutionStatusFailure(
+                query=query,
+                source=self.name,
+                reason=reason,
+                detail=detail,
+            )
 
     def fetch_bars(self, query: BarQuery) -> BarFetchOutcome:
         if query.instrument_kind is InstrumentKind.INDEX:

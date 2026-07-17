@@ -13,6 +13,7 @@ from stock_desk.market.partitions import (
 from stock_desk.market.execution_status import (
     ExecutionEligibility,
     ExecutionStatusDay,
+    ExecutionStatusEvidenceLevel,
     ExecutionStatusQuery,
     ExecutionStatusSnapshot,
     SuspensionState,
@@ -60,6 +61,7 @@ __all__ = [
     "Exchange",
     "ExecutionEligibility",
     "ExecutionStatusDay",
+    "ExecutionStatusEvidenceLevel",
     "ExecutionStatusQuery",
     "ExecutionStatusSnapshot",
     "FailureReason",

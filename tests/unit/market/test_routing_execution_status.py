@@ -126,3 +126,10 @@ def test_execution_status_routes_independently_from_bar_priority() -> None:
     assert outcome.manifest.attempts[0].decision is RoutingDecision.CAPABILITY_SKIP
     assert router.priorities().daily_bars == (ProviderId.AKSHARE,)
     assert outcome.result.source is ProviderId.TUSHARE
+
+
+def test_default_execution_status_routes_authoritative_then_basic_fallback() -> None:
+    assert SourcePriorities().execution_status == (
+        ProviderId.TUSHARE,
+        ProviderId.BAOSTOCK,
+    )

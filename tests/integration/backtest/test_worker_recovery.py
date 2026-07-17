@@ -23,6 +23,7 @@ from stock_desk.formula.repository import FormulaRepository
 from stock_desk.formula.service import FormulaService
 from stock_desk.market.execution_status import (
     ExecutionStatusDay,
+    ExecutionStatusEvidenceLevel,
     ExecutionStatusQuery,
     RawExecutionOpen,
     SuspensionState,
@@ -62,6 +63,7 @@ def _complete_status(
     end: date,
     *,
     symbol: str = "600000.SH",
+    basic: bool = False,
 ) -> RoutedExecutionStatusSuccess:
     exchange = Exchange(symbol.rsplit(".", maxsplit=1)[1])
     query = ExecutionStatusQuery(
@@ -77,8 +79,8 @@ def _complete_status(
             exchange=exchange,
             is_exchange_open=True,
             suspension_state=SuspensionState.NORMAL,
-            raw_upper_limit=Decimal("20"),
-            raw_lower_limit=Decimal("1"),
+            raw_upper_limit=None if basic else Decimal("20"),
+            raw_lower_limit=None if basic else Decimal("1"),
         )
         for offset in range((end - start).days)
     )
@@ -91,20 +93,26 @@ def _complete_status(
         for day in days
     )
     fetched_at = datetime(2024, 1, 10, tzinfo=SHANGHAI)
+    status_source = ProviderId.BAOSTOCK if basic else ProviderId.TUSHARE
     result = materialize_execution_status(
         query=query,
         days=days,
         raw_opens=raw,
-        source=ProviderId.TUSHARE,
+        source=status_source,
         fetched_at=fetched_at,
         data_cutoff=fetched_at,
+        evidence_level=(
+            ExecutionStatusEvidenceLevel.BASIC_NO_PRICE_LIMITS
+            if basic
+            else ExecutionStatusEvidenceLevel.AUTHORITATIVE
+        ),
     )
     manifest = make_routing_manifest(
         category=MarketCapability.EXECUTION_STATUS,
         request=ExecutionStatusRoutingRequest(query=query),
-        priority=(ProviderId.TUSHARE,),
+        priority=(status_source,),
         attempts=(),
-        selected_source=ProviderId.TUSHARE,
+        selected_source=status_source,
         upstream_dataset_version=result.dataset_version,
         upstream_fetched_at=result.fetched_at,
         upstream_data_cutoff=result.data_cutoff,
@@ -113,9 +121,11 @@ def _complete_status(
     return RoutedExecutionStatusSuccess(result=result, manifest=manifest)
 
 
+@pytest.mark.parametrize("basic", [False, True], ids=["authoritative", "basic"])
 def test_worker_executes_pinned_single_run_and_persists_open_trade(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    basic: bool,
 ) -> None:
     url = f"sqlite:///{tmp_path / 'worker.db'}"
     migrate(url)
@@ -146,11 +156,12 @@ def test_worker_executes_pinned_single_run_and_persists_open_trade(
                 adjustment=Adjustment.NONE,
             )
         )
-        status.write(_complete_status(date(2024, 1, 2), date(2024, 1, 7)))
+        status.write(_complete_status(date(2024, 1, 2), date(2024, 1, 7), basic=basic))
         version = formulas.create(
             "简单策略", "trading", SIMPLE, {}, placement="subchart"
         )
         submitted = service.submit(_intent(version.id))
+        assert submitted.warnings == (("basic_execution_status",) if basic else ())
         runner = PoolBacktestRunner(
             engine=engine,
             tasks=tasks,
@@ -208,6 +219,9 @@ def test_worker_executes_pinned_single_run_and_persists_open_trade(
         assert run.processed == 1
         assert run.failed == 0
         assert run.result_hash is not None
+        assert run.snapshot.execution_rules_version == (
+            "a-share-v2" if basic else "a-share-v1"
+        )
         assert repository.count_trades(run.id, realized=False) == 1
         assert run.symbols[0].signal_series_id is not None
         assert finish_heartbeats > 0

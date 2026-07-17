@@ -5,7 +5,7 @@ export const settingsResponse = {
     minute_bars: ['tushare', 'baostock', 'eastmoney'],
     instruments: ['tushare', 'akshare', 'baostock', 'eastmoney'],
     trading_calendar: ['tushare', 'baostock', 'eastmoney'],
-    execution_status: ['tushare'],
+    execution_status: ['tushare', 'baostock'],
     fundamentals: ['tushare', 'akshare'],
     announcements: ['tushare', 'akshare'],
     news: ['akshare'],

@@ -79,7 +79,10 @@ class SourcePriorities(BaseModel):
         ProviderId.TUSHARE,
         ProviderId.BAOSTOCK,
     )
-    execution_status: tuple[ProviderId, ...] = (ProviderId.TUSHARE,)
+    execution_status: tuple[ProviderId, ...] = (
+        ProviderId.TUSHARE,
+        ProviderId.BAOSTOCK,
+    )
 
     @model_validator(mode="after")
     def validate_unique_categories(self) -> Self:

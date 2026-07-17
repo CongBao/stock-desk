@@ -72,3 +72,57 @@ test('market terminal preserves navy structure and rise-fall colors with three a
     '下跌（绿）',
   );
 });
+
+test('light market uses readable semantic surfaces for navigation and dense panels', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 960 });
+  await page.goto('/market');
+  await page.getByRole('combobox', { name: '界面主题' }).selectOption('light');
+
+  const search = page.getByRole('combobox', { name: '搜索证券' });
+  await search.fill('600000');
+  await expect(page.locator('.stock-search-popover')).toBeVisible();
+
+  const surfaces = await page.evaluate(() => {
+    const background = (selector: string) => {
+      const element = document.querySelector(selector);
+      if (!(element instanceof HTMLElement)) {
+        throw new Error(`missing visual surface: ${selector}`);
+      }
+      return getComputedStyle(element).backgroundColor;
+    };
+    return {
+      brand: background('.brand-mark'),
+      commandBar: background('.market-command-bar'),
+      instrumentRail: background('.market-instrument-rail'),
+      marketHero: background('.market-search-hero'),
+      navigation: background('.navigation-rail'),
+      navigationIcon: background('.nav-icon'),
+      operations: background('.market-operations'),
+      popover: background('.stock-search-popover'),
+      quickActions: background('.market-quick-actions'),
+    };
+  });
+
+  expect(surfaces).toEqual({
+    brand: 'rgb(7, 89, 133)',
+    commandBar: 'rgb(255, 255, 255)',
+    instrumentRail: 'rgb(255, 255, 255)',
+    marketHero: 'rgb(255, 255, 255)',
+    navigation: 'rgb(255, 255, 255)',
+    navigationIcon: 'rgb(237, 242, 248)',
+    operations: 'rgb(255, 255, 255)',
+    popover: 'rgb(255, 255, 255)',
+    quickActions: 'rgb(255, 255, 255)',
+  });
+
+  await expect(page.locator('.brand-mark')).toHaveCSS(
+    'color',
+    'rgb(255, 255, 255)',
+  );
+  await expect(page.locator('.market-search-hero > div > p')).toHaveCSS(
+    'color',
+    'rgb(52, 64, 84)',
+  );
+});

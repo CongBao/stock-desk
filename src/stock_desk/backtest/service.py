@@ -30,10 +30,12 @@ from stock_desk.backtest.public_data import public_payload
 from stock_desk.backtest.snapshot import freeze_request, reopen_symbol_input
 from stock_desk.backtest.events import OrderFilled
 from stock_desk.backtest.types import (
+    BASIC_EXECUTION_RULES_VERSION,
     BacktestSnapshot,
     FrozenSymbolGap,
     GapReason,
     PinnedMarketRef,
+    execution_status_evidence_summary,
 )
 from stock_desk.formula.service import FormulaBacktestPreflight, FormulaService
 from stock_desk.market.calendar import MARKET_TIMEZONE
@@ -131,6 +133,9 @@ class BacktestPreflight:
     sell_tax_bps: Decimal
     slippage_bps: Decimal
     disclaimer: str
+    execution_status_evidence_level: Literal[
+        "authoritative", "basic_no_price_limits", "mixed"
+    ] = "authoritative"
 
 
 @dataclass(frozen=True, slots=True)
@@ -488,6 +493,7 @@ class BacktestService:
         public_trade = public_payload(_trade_payload(trade))
         if not isinstance(public_trade, dict):
             raise BacktestRepositoryError("backtest trade payload is invalid")
+        evidence_level, warnings = execution_status_evidence_summary((reference,))
         return {
             "run_id": run_id,
             "snapshot_id": record.snapshot.snapshot_id,
@@ -496,6 +502,8 @@ class BacktestService:
             "trade_ordinal": trade_ordinal,
             "period": record.snapshot.period.value,
             "adjustment": record.snapshot.adjustment.value,
+            "execution_status_evidence_level": evidence_level,
+            "warnings": list(warnings),
             "bars": [bar.model_dump(mode="json") for bar in selected],
             "formula": {
                 "signal_series_id": series.signal_series_id,
@@ -600,11 +608,13 @@ class BacktestService:
     def _snapshot_warnings(
         inputs: tuple[PinnedMarketRef | FrozenSymbolGap, ...],
     ) -> tuple[str, ...]:
-        return (
-            ("partial_pool_gaps",)
-            if any(isinstance(item, FrozenSymbolGap) for item in inputs)
-            else ()
-        )
+        return execution_status_evidence_summary(inputs)[1]
+
+    @staticmethod
+    def _execution_status_evidence_level(
+        inputs: tuple[PinnedMarketRef | FrozenSymbolGap, ...],
+    ) -> Literal["authoritative", "basic_no_price_limits", "mixed"]:
+        return execution_status_evidence_summary(inputs)[0]
 
     def _prepare(self, intent: BacktestIntent, *, persist: bool) -> _PreparedBacktest:
         if not isinstance(intent, BacktestIntent):
@@ -793,6 +803,7 @@ class BacktestService:
                         execution_status_source=status.source,
                         execution_status_data_cutoff=status.data_cutoff,
                         execution_status_query=status.query,
+                        execution_status_evidence_level=status.evidence_level,
                     )
                 )
             runnable_count = sum(isinstance(item, PinnedMarketRef) for item in inputs)
@@ -800,6 +811,7 @@ class BacktestService:
                 raise BacktestSubmissionError("single symbol data is incomplete")
             if runnable_count == 0:
                 raise BacktestSubmissionError("pool has no runnable symbols")
+            evidence_level, _warnings = execution_status_evidence_summary(tuple(inputs))
             snapshot = freeze_request(
                 BacktestRequest(
                     scope_kind=intent.scope_kind,
@@ -823,6 +835,11 @@ class BacktestService:
                     sell_tax_bps=intent.sell_tax_bps,
                     slippage_bps=intent.slippage_bps,
                     backtest_engine_version=BACKTEST_ENGINE_VERSION,
+                    execution_rules_version=(
+                        "a-share-v1"
+                        if evidence_level == "authoritative"
+                        else BASIC_EXECUTION_RULES_VERSION
+                    ),
                 )
             )
             if persist:
@@ -904,6 +921,9 @@ class BacktestService:
             sell_tax_bps=snapshot.sell_tax_bps,
             slippage_bps=snapshot.slippage_bps,
             disclaimer="independent trade samples, not portfolio return",
+            execution_status_evidence_level=(
+                self._execution_status_evidence_level(snapshot.symbol_inputs)
+            ),
         )
 
     def submit(self, intent: BacktestIntent) -> SubmittedBacktest:

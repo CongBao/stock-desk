@@ -36,6 +36,7 @@ function validPreflight() {
   return {
     preview_snapshot_id: `sha256:${'a'.repeat(64)}`,
     reservation: false,
+    execution_status_evidence_level: 'basic_no_price_limits',
     formula: {
       formula_id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
       formula_version_id: intent.formulaVersionId,
@@ -57,7 +58,7 @@ function validPreflight() {
       gap_count: 0,
       gap_sample: [],
       gaps_truncated: false,
-      warnings: [],
+      warnings: ['basic_execution_status'],
     },
     period: '1d',
     adjustment: 'qfq',
@@ -70,7 +71,7 @@ function validPreflight() {
     },
     coverage: { signal: 1, execution: 1, status: 1 },
     rules: {
-      execution_rules_version: 'a-share-v1',
+      execution_rules_version: 'a-share-v2',
       cost_model_version: 'a-share-cost-v1',
       sizing_version: 'fixed-lot-v1',
     },
@@ -114,6 +115,7 @@ it('serializes exact decimal strings and aware timestamps without coercion', asy
       response({
         preview_snapshot_id: `sha256:${'a'.repeat(64)}`,
         reservation: false,
+        execution_status_evidence_level: 'authoritative',
         formula: {
           formula_id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
           formula_version_id: intent.formulaVersionId,
@@ -184,6 +186,7 @@ it('serializes exact decimal strings and aware timestamps without coercion', asy
   });
   expect(result.scope.runnable).toBe(1);
   expect(result.costs.commissionBps).toBe('2.5');
+  expect(result.executionStatusEvidenceLevel).toBe('authoritative');
 });
 
 it('uses an append cursor for the live log tail', async () => {
@@ -214,6 +217,29 @@ it('uses an append cursor for the live log tail', async () => {
         : requested?.url;
   expect(requestedUrl).toContain('after_cursor=tail-6');
   expect(page.afterCursor).toBe('tail-7');
+});
+
+it.each([
+  ['unknown warning', ['unknown_warning']],
+  ['duplicate warning', ['basic_execution_status', 'basic_execution_status']],
+])('rejects %s in a backtest submission', async (_label, warnings) => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(() =>
+      Promise.resolve(
+        response({
+          run_id: '11111111-1111-1111-1111-111111111111',
+          task_id: '22222222-2222-2222-2222-222222222222',
+          snapshot_id: `sha256:${'a'.repeat(64)}`,
+          warnings,
+        }),
+      ),
+    ),
+  );
+
+  await expect(createBacktestApi().create(intent)).rejects.toMatchObject({
+    name: 'BacktestProtocolError',
+  });
 });
 
 it.each([
@@ -258,6 +284,49 @@ it('rejects inconsistent server-authoritative coverage before review', async () 
     name: 'BacktestProtocolError',
   });
 });
+
+it.each([
+  { scope: { ...validPreflight().scope, warnings: [] } },
+  {
+    scope: {
+      ...validPreflight().scope,
+      warnings: ['partial_pool_gaps', 'basic_execution_status'],
+    },
+  },
+  {
+    scope: {
+      ...validPreflight().scope,
+      gap_count: 1,
+      gap_sample: [
+        { symbol: '600001.SH', reasons: ['missing_signal_coverage'] },
+      ],
+      warnings: ['basic_execution_status'],
+    },
+  },
+  {
+    rules: { ...validPreflight().rules, execution_rules_version: 'a-share-v1' },
+  },
+  {
+    scope: {
+      ...validPreflight().scope,
+      warnings: ['basic_execution_status', 'basic_execution_status'],
+    },
+  },
+  { scope: { ...validPreflight().scope, warnings: ['unknown_warning'] } },
+])(
+  'rejects inconsistent execution-status disclosure before review: %j',
+  async (change) => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() =>
+        Promise.resolve(response({ ...validPreflight(), ...change })),
+      ),
+    );
+    await expect(createBacktestApi().preflight(intent)).rejects.toMatchObject({
+      name: 'BacktestProtocolError',
+    });
+  },
+);
 
 it.each([
   { status: 'invented' },
@@ -414,6 +483,8 @@ function validReport() {
     formula_engine_version: 'formula-engine-v1',
     compatibility_version: 'tdx-v1',
     backtest_engine_version: 'backtest-engine-v1',
+    execution_status_evidence_level: 'basic_no_price_limits',
+    warnings: ['partial_pool_gaps', 'basic_execution_status'],
     formula_parameters: [
       { name: 'FAST', kind: 'integer', value: '12' },
       { name: 'SLOW', kind: 'integer', value: '26' },
@@ -439,7 +510,7 @@ function validReport() {
       sell_tax_bps: '5',
       slippage_bps: '1',
     },
-    execution_rules_version: 'a-share-v1',
+    execution_rules_version: 'a-share-v2',
     cost_model_version: 'a-share-cost-v1',
     sizing_version: 'fixed-lot-v1',
     warmup_policy_version: 'formula-warmup-v1',
@@ -515,6 +586,11 @@ it('strictly decodes a conclusion-first report bound to the requested run', asyn
   expect(report.metrics?.winRate).toBe('0.5');
   expect(report.metrics?.histogram).toHaveLength(9);
   expect(report.provenance.gapCount).toBe(1);
+  expect(report.executionStatusEvidenceLevel).toBe('basic_no_price_limits');
+  expect(report.warnings).toEqual([
+    'partial_pool_gaps',
+    'basic_execution_status',
+  ]);
 });
 
 it('accepts the exact empty-realized metric semantics', async () => {
@@ -608,6 +684,14 @@ it.each([
     },
   },
   { provenance: { ...validReport().provenance, gap_count: 2 } },
+  { warnings: ['basic_execution_status'] },
+  {
+    provenance: { ...validReport().provenance, gap_count: 0 },
+    warnings: ['partial_pool_gaps', 'basic_execution_status'],
+  },
+  { warnings: ['basic_execution_status', 'basic_execution_status'] },
+  { warnings: ['unknown_warning'] },
+  { execution_rules_version: 'a-share-v1' },
   { outcomes: { ...validReport().outcomes, succeeded: 8 } },
   { outcomes: { ...validReport().outcomes, unprocessed: 1 } },
   { outcomes: { ...validReport().outcomes, failed: 1 } },
@@ -860,6 +944,8 @@ function pinnedIdentity(manifestRecordId: string, suffix: string) {
 
 function validReplay() {
   return {
+    execution_status_evidence_level: 'basic_no_price_limits',
+    warnings: ['basic_execution_status'],
     run_id: '11111111-1111-1111-1111-111111111111',
     snapshot_id: `sha256:${'a'.repeat(64)}`,
     result_hash: `sha256:${'c'.repeat(64)}`,
@@ -974,6 +1060,8 @@ it('decodes only the requested pinned trade replay and never calls market bars',
   expect(replay.formula.signalSeriesId).toBe(signalSeriesId);
   expect(replay.bars[0]?.priceText.open).toBe('10');
   expect(replay.trade.symbol).toBe('600000.SH');
+  expect(replay.executionStatusEvidenceLevel).toBe('basic_no_price_limits');
+  expect(replay.warnings).toEqual(['basic_execution_status']);
   const url = requestUrl(fetchMock.mock.calls[0]?.[0]);
   expect(url).toContain(
     '/backtests/11111111-1111-1111-1111-111111111111/trades/600000.SH/0/replay',
@@ -1054,6 +1142,11 @@ it.each([
       },
     ],
   },
+  { execution_status_evidence_level: 'mixed' },
+  { warnings: ['partial_pool_gaps', 'basic_execution_status'] },
+  { warnings: [] },
+  { warnings: ['basic_execution_status', 'basic_execution_status'] },
+  { warnings: ['unknown_warning'] },
 ])('rejects replay identity drift: %j', async (change) => {
   vi.stubGlobal(
     'fetch',

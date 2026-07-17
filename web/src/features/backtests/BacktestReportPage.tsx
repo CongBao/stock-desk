@@ -14,6 +14,10 @@ import { GroupedMetrics } from './GroupedMetrics';
 import { ReportOverview } from './ReportOverview';
 import { TradeTable } from './TradeTable';
 import { TradeReplay } from './TradeReplay';
+import {
+  basicExecutionStatusWarning,
+  executionStatusEvidenceLabel,
+} from './executionStatusEvidence';
 
 const tabs = [
   ['overview', '结论概览'],
@@ -283,6 +287,9 @@ function ReportMetadata({ report }: { readonly report: BacktestReport }) {
     >
       <h4 id="report-metadata-title">固定快照与执行口径</h4>
       <p className="backtest-disclaimer">{report.disclaimer}</p>
+      {report.warnings.includes('basic_execution_status') ? (
+        <p className="warning-text">{basicExecutionStatusWarning}</p>
+      ) : null}
       <dl>
         <div>
           <dt>快照</dt>
@@ -335,6 +342,12 @@ function ReportMetadata({ report }: { readonly report: BacktestReport }) {
         <div>
           <dt>执行规则</dt>
           <dd>{report.executionRulesVersion}</dd>
+        </div>
+        <div>
+          <dt>成交状态证据</dt>
+          <dd>
+            {executionStatusEvidenceLabel(report.executionStatusEvidenceLevel)}
+          </dd>
         </div>
         <div>
           <dt>成本 / 仓位</dt>

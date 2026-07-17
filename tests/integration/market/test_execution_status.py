@@ -129,8 +129,8 @@ def test_materialization_uses_raw_open_once_and_freezes_side_specific_blocks() -
     assert snapshot.dataset_version.startswith("sha256:")
 
 
-def test_open_day_with_unknown_suspension_or_missing_limits_is_rejected() -> None:
-    with pytest.raises(ValidationError, match="complete suspension and limit evidence"):
+def test_open_day_with_unknown_suspension_is_rejected() -> None:
+    with pytest.raises(ValidationError, match="explicit suspension evidence"):
         ExecutionStatusDay(
             day=date(2026, 1, 5),
             exchange=Exchange.SH,

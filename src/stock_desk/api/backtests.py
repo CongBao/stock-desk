@@ -388,6 +388,10 @@ class BacktestReportResponse(_BacktestDTO):
     metrics: dict[str, object]
     disclaimer: str
     outcomes: BacktestOutcomeResponse
+    execution_status_evidence_level: Literal[
+        "authoritative", "basic_no_price_limits", "mixed"
+    ]
+    warnings: tuple[str, ...]
 
     @model_validator(mode="after")
     def validate_outcomes(self) -> BacktestReportResponse:
@@ -441,6 +445,8 @@ class BacktestReportResponse(_BacktestDTO):
             metrics=dict(item.metrics),
             disclaimer=item.disclaimer,
             outcomes=BacktestOutcomeResponse.from_snapshot(item.outcomes),
+            execution_status_evidence_level=(item.execution_status_evidence_level),
+            warnings=item.warnings,
         )
 
 
@@ -574,6 +580,10 @@ class BacktestReplayResponse(_BacktestDTO):
     trade_ordinal: Annotated[StrictInt, Field(ge=0)]
     period: Literal["1d", "1w", "60m"]
     adjustment: Literal["none", "qfq", "hfq"]
+    execution_status_evidence_level: Literal[
+        "authoritative", "basic_no_price_limits", "mixed"
+    ]
+    warnings: Annotated[tuple[str, ...], Field(max_length=2)]
     bars: Annotated[tuple[BacktestReplayBarResponse, ...], Field(max_length=500)]
     formula: BacktestReplayFormulaResponse
     trade: Annotated[dict[str, object], Field(max_length=64)]
@@ -734,6 +744,9 @@ class BacktestPreflightResponse(_BacktestDTO):
     costs: BacktestPreflightCostsResponse
     estimated_workload: BacktestPreflightWorkloadResponse
     disclaimer: str
+    execution_status_evidence_level: Literal[
+        "authoritative", "basic_no_price_limits", "mixed"
+    ]
 
     @classmethod
     def from_snapshot(cls, item: BacktestPreflight) -> BacktestPreflightResponse:
@@ -803,6 +816,7 @@ class BacktestPreflightResponse(_BacktestDTO):
                 formula_rows=item.estimated_formula_rows,
             ),
             disclaimer=item.disclaimer,
+            execution_status_evidence_level=(item.execution_status_evidence_level),
         )
 
 

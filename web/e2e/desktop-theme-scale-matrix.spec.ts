@@ -1,7 +1,9 @@
 /// <reference lib="dom" />
 
 import AxeBuilder from '@axe-core/playwright';
-import type { Locator, Page } from '@playwright/test';
+import type { Locator, Page, TestInfo } from '@playwright/test';
+import { mkdir } from 'node:fs/promises';
+import { join } from 'node:path';
 
 import { expect, test } from './fixtures';
 import { mockCompletedGuidance } from './guidanceMocks';
@@ -618,6 +620,199 @@ async function expectNoSeriousAccessibilityViolation(page: Page) {
   ).toEqual([]);
 }
 
+const visualSurfaceSelectors: Readonly<
+  Record<CoreRoute['path'], readonly string[]>
+> = {
+  '/market': [
+    '.market-search-hero',
+    '.market-instrument-rail',
+    '.market-command-bar',
+    '.market-chart-card',
+    '.market-operations',
+    '.market-quick-actions',
+  ],
+  '/formulas': [
+    '.formula-library',
+    '.formula-editor-panel',
+    '.formula-preview-panel',
+  ],
+  '/backtests': ['.report-overview', '.report-tab-panel', '.report-metadata'],
+  '/analysis': ['.analysis-conclusion'],
+  '/tasks': [
+    '.task-metrics > div',
+    '.task-filters',
+    '.task-recent-panel',
+    '.task-detail-panel',
+  ],
+  '/settings': [
+    '.source-overview',
+    '.source-card',
+    '.priority-settings',
+    '.settings-save-bar',
+  ],
+};
+
+async function expectReadableVisualTokens(
+  page: Page,
+  route: CoreRoute,
+  resolvedTheme: ResolvedTheme,
+) {
+  const result = await page.evaluate(
+    ({ selectors, theme }) => {
+      type Color = { a: number; b: number; g: number; r: number };
+      const parse = (value: string): Color => {
+        const channels = value.match(/[\d.]+/gu)?.map(Number) ?? [];
+        if (channels.length < 3) throw new Error(`unsupported color: ${value}`);
+        return {
+          r: channels[0] ?? 0,
+          g: channels[1] ?? 0,
+          b: channels[2] ?? 0,
+          a: channels[3] ?? 1,
+        };
+      };
+      const resolve = (value: string) => {
+        const probe = document.createElement('span');
+        probe.style.color = value;
+        document.body.append(probe);
+        const color = parse(getComputedStyle(probe).color);
+        probe.remove();
+        return color;
+      };
+      const composite = (front: Color, back: Color): Color => ({
+        r: front.r * front.a + back.r * (1 - front.a),
+        g: front.g * front.a + back.g * (1 - front.a),
+        b: front.b * front.a + back.b * (1 - front.a),
+        a: 1,
+      });
+      const luminance = (color: Color) => {
+        const channel = (value: number) => {
+          const normalized = value / 255;
+          return normalized <= 0.04045
+            ? normalized / 12.92
+            : ((normalized + 0.055) / 1.055) ** 2.4;
+        };
+        return (
+          0.2126 * channel(color.r) +
+          0.7152 * channel(color.g) +
+          0.0722 * channel(color.b)
+        );
+      };
+      const contrast = (first: Color, second: Color) => {
+        const brighter = Math.max(luminance(first), luminance(second));
+        const darker = Math.min(luminance(first), luminance(second));
+        return (brighter + 0.05) / (darker + 0.05);
+      };
+      const root = getComputedStyle(document.documentElement);
+      const base = resolve(root.getPropertyValue('--surface-0').trim());
+      const surface = resolve(root.getPropertyValue('--surface-1').trim());
+      const tokenContrasts = [
+        '--text-primary',
+        '--text-secondary',
+        '--text-muted',
+        '--accent',
+        '--status-error-text',
+        '--status-success-text',
+        '--status-warning-text',
+      ].map((token) => ({
+        contrast: contrast(
+          resolve(root.getPropertyValue(token).trim()),
+          surface,
+        ),
+        token,
+      }));
+      const surfaceLuminances = selectors.map((selector) => {
+        const element = Array.from(document.querySelectorAll(selector)).find(
+          (candidate) => {
+            if (!(candidate instanceof HTMLElement)) return false;
+            const box = candidate.getBoundingClientRect();
+            const style = getComputedStyle(candidate);
+            return (
+              style.display !== 'none' &&
+              style.visibility !== 'hidden' &&
+              box.width > 0 &&
+              box.height > 0
+            );
+          },
+        );
+        if (!(element instanceof HTMLElement)) {
+          throw new Error(`missing visible visual surface: ${selector}`);
+        }
+        const background = parse(getComputedStyle(element).backgroundColor);
+        return {
+          alpha: background.a,
+          luminance: luminance(composite(background, base)),
+          selector,
+        };
+      });
+      return { surfaceLuminances, theme, tokenContrasts };
+    },
+    { selectors: visualSurfaceSelectors[route.path], theme: resolvedTheme },
+  );
+
+  for (const item of result.tokenContrasts) {
+    expect(
+      item.contrast,
+      `${route.path} ${resolvedTheme}: ${item.token} contrast is below 4.5:1`,
+    ).toBeGreaterThanOrEqual(4.5);
+  }
+  for (const item of result.surfaceLuminances) {
+    expect(
+      item.alpha,
+      `${route.path} ${resolvedTheme}: ${item.selector} has no readable surface`,
+    ).toBeGreaterThanOrEqual(0.7);
+    if (resolvedTheme === 'light') {
+      expect(
+        item.luminance,
+        `${route.path} light: ${item.selector} stayed dark`,
+      ).toBeGreaterThanOrEqual(0.7);
+    } else {
+      expect(
+        item.luminance,
+        `${route.path} dark: ${item.selector} became light`,
+      ).toBeLessThanOrEqual(0.08);
+    }
+  }
+}
+
+async function attachPageVisualEvidence(
+  page: Page,
+  testInfo: TestInfo,
+  name: string,
+) {
+  await page.addStyleTag({
+    content:
+      '*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important}',
+  });
+  await page.evaluate(async () => {
+    window.scrollTo({ left: 0, top: 0 });
+    for (const element of Array.from(document.querySelectorAll('*'))) {
+      if (element instanceof HTMLElement) {
+        if (element.scrollWidth > element.clientWidth) element.scrollLeft = 0;
+        if (element.scrollHeight > element.clientHeight) element.scrollTop = 0;
+      }
+    }
+    await document.fonts.ready;
+    await new Promise<void>((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+    );
+  });
+  const output = join(
+    process.cwd(),
+    'test-results',
+    'page-visual-matrix',
+    `${name}.png`,
+  );
+  await mkdir(join(process.cwd(), 'test-results', 'page-visual-matrix'), {
+    recursive: true,
+  });
+  await page.screenshot({
+    animations: 'disabled',
+    caret: 'hide',
+    path: output,
+  });
+  await testInfo.attach(name, { contentType: 'image/png', path: output });
+}
+
 const demoInstrumentName = 'Stock Desk Synthetic Alpha (CC0 Demo) 600000.SH';
 const demoFormulaName = 'Stock Desk Demo MACD (CC0 synthetic)';
 const denseStart = '2024-02-10';
@@ -767,7 +962,7 @@ for (const route of coreRoutes) {
   for (const theme of ['light', 'dark'] as const) {
     test(`${route.label} ${theme} remains usable through the 100-200 percent effective viewport matrix`, async ({
       page,
-    }) => {
+    }, testInfo) => {
       test.setTimeout(90_000);
       await page.goto(route.path);
       await expect(
@@ -793,6 +988,14 @@ for (const route of coreRoutes) {
         await expectDenseRegionsReachable(page, route);
         if (route.path === '/analysis')
           await expectAnalysisDrawersAtCurrentScale(page);
+        if (scale.percent === 100 || scale.percent === 150) {
+          await expectReadableVisualTokens(page, route, theme);
+          await attachPageVisualEvidence(
+            page,
+            testInfo,
+            `${route.path.slice(1)}-${theme}-${String(scale.width)}x${String(scale.height)}`,
+          );
+        }
         if (scale.percent === 100 || scale.percent === 200) {
           await expectNoSeriousAccessibilityViolation(page);
         }
@@ -817,7 +1020,7 @@ for (const route of coreRoutes) {
 
   test(`${route.label} System follows both color schemes without restart through the 100-200 percent effective viewport matrix`, async ({
     page,
-  }) => {
+  }, testInfo) => {
     test.setTimeout(120_000);
     await page.goto(route.path);
     await expect(
@@ -841,6 +1044,14 @@ for (const route of coreRoutes) {
         await expectDenseRegionsReachable(page, route);
         if (route.path === '/analysis')
           await expectAnalysisDrawersAtCurrentScale(page);
+        if (scale.percent === 100 || scale.percent === 150) {
+          await expectReadableVisualTokens(page, route, scheme);
+          await attachPageVisualEvidence(
+            page,
+            testInfo,
+            `${route.path.slice(1)}-system-${scheme}-${String(scale.width)}x${String(scale.height)}`,
+          );
+        }
         if (scale.percent === 100 || scale.percent === 200)
           await expectNoSeriousAccessibilityViolation(page);
       }

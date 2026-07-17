@@ -169,7 +169,7 @@ const usableProviders: Readonly<
   minute_bars: new Set(['tushare', 'baostock']),
   instruments: new Set(['tushare', 'akshare', 'baostock']),
   trading_calendar: new Set(['tushare', 'baostock']),
-  execution_status: new Set(['tushare']),
+  execution_status: new Set(['tushare', 'baostock']),
   fundamentals: new Set(['tushare', 'akshare']),
   announcements: new Set(['tushare', 'akshare']),
   news: new Set(['akshare']),

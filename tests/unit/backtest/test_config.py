@@ -11,9 +11,17 @@ import pytest
 from stock_desk.backtest.config import BacktestRequest
 from stock_desk.backtest.repository import _provenance_summary
 from stock_desk.backtest.snapshot import freeze_request
-from stock_desk.backtest.types import FrozenSymbolGap, GapReason, PinnedMarketRef
+from stock_desk.backtest.types import (
+    FrozenSymbolGap,
+    GapReason,
+    PinnedMarketRef,
+    execution_status_evidence_summary,
+)
 from stock_desk.formula.signal_series import NormalizedParameter
-from stock_desk.market.execution_status import ExecutionStatusQuery
+from stock_desk.market.execution_status import (
+    ExecutionStatusEvidenceLevel,
+    ExecutionStatusQuery,
+)
 from stock_desk.market.types import (
     Adjustment,
     BarQuery,
@@ -174,6 +182,51 @@ def test_freeze_is_stable_immutable_and_normalizes_decimal_identity() -> None:
         original.quantity_shares = 2_000
     with pytest.raises(TypeError, match="does not accept update"):
         original.model_copy(update={"quantity_shares": 2_000})
+
+
+def test_execution_status_evidence_summary_is_frozen_from_pins() -> None:
+    authoritative = _pinned()
+    basic = _replace_pinned(
+        _pinned("000001.SZ"),
+        execution_status_evidence_level=(
+            ExecutionStatusEvidenceLevel.BASIC_NO_PRICE_LIMITS
+        ),
+    )
+
+    assert execution_status_evidence_summary((authoritative,)) == (
+        "authoritative",
+        (),
+    )
+    assert execution_status_evidence_summary((basic,)) == (
+        "basic_no_price_limits",
+        ("basic_execution_status",),
+    )
+    assert execution_status_evidence_summary(
+        (authoritative, basic, _gap("000002.SZ"))
+    ) == (
+        "mixed",
+        ("partial_pool_gaps", "basic_execution_status"),
+    )
+
+
+def test_execution_status_evidence_summary_rejects_empty_runnable_pool() -> None:
+    with pytest.raises(ValueError, match="runnable execution-status evidence"):
+        execution_status_evidence_summary((_gap(),))
+
+
+def test_basic_execution_evidence_requires_v2_rules_identity() -> None:
+    basic = _replace_pinned(
+        _pinned(),
+        execution_status_evidence_level=(
+            ExecutionStatusEvidenceLevel.BASIC_NO_PRICE_LIMITS
+        ),
+    )
+
+    with pytest.raises(ValidationError, match="execution rules version"):
+        _request(
+            symbol_inputs=(basic,),
+            execution_rules_version="a-share-v1",
+        )
 
 
 def test_report_provenance_keeps_published_stock_identity_and_binds_kind() -> None:

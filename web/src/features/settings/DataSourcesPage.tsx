@@ -17,7 +17,8 @@ const sourceMetadata = [
     id: 'tushare',
     name: 'Tushare',
     kind: '主数据源',
-    description: '覆盖行情、证券目录和交易日历；需要服务端安全保存 Token。',
+    description:
+      '覆盖行情、证券目录、交易日历和严格回测状态（含历史涨跌停证据）；需要服务端安全保存 Token。',
   },
   {
     id: 'akshare',
@@ -29,7 +30,8 @@ const sourceMetadata = [
     id: 'baostock',
     name: 'BaoStock',
     kind: '备用数据源',
-    description: '无需用户凭证，可用于行情、证券目录和交易日历。',
+    description:
+      '无需用户凭证，可用于行情、证券目录、交易日历和基础回测状态；明确校验停牌，但不包含历史涨跌停证据。',
   },
   {
     id: 'tdx_local',

@@ -39,6 +39,7 @@ function report(realizedCount = 2): BacktestReport {
       slippageBps: '1',
     },
     disclaimer,
+    executionStatusEvidenceLevel: 'authoritative',
     executionRulesVersion: 'a-share-v1',
     formulaChecksum: `sha256:${'d'.repeat(64)}`,
     formulaEngineVersion: 'formula-engine-v1',
@@ -130,6 +131,7 @@ function report(realizedCount = 2): BacktestReport {
     },
     quantityShares: 1000,
     sizingVersion: 'fixed-lot-v1',
+    warnings: [],
     warmupPolicyVersion: 'formula-warmup-v1',
   };
 }
@@ -193,6 +195,28 @@ it('shows conclusions before lazily loaded trade details without portfolio claim
   expect(screen.getByText('样本可靠性')).toBeVisible();
   expect(screen.getAllByText(disclaimer).length).toBeGreaterThan(1);
   expect(screen.queryByText(/权益曲线|组合收益|下单/u)).not.toBeInTheDocument();
+});
+
+it('keeps the basic execution limitation visible in the immutable report', () => {
+  render(
+    <BacktestReportPage
+      api={api()}
+      report={{
+        ...report(),
+        executionStatusEvidenceLevel: 'basic_no_price_limits',
+        warnings: ['basic_execution_status'],
+      }}
+    />,
+  );
+
+  expect(
+    screen.getByText(/基础成交假设：停牌依据 BaoStock tradestatus/u),
+  ).toHaveTextContent(
+    '未校验历史涨跌停。T+1、交易日和下一周期开盘仍按规则处理，结果可能高估可成交机会。',
+  );
+  expect(screen.getByText('成交状态证据').nextElementSibling).toHaveTextContent(
+    '基础（未校验历史涨跌停）',
+  );
 });
 
 it('shows every required realized and open-trade metric as separate server values', async () => {

@@ -17,6 +17,7 @@ from stock_desk.formula.repository import FormulaRepository
 from stock_desk.formula.service import FormulaPreviewValidationError, FormulaService
 from stock_desk.market.execution_status import (
     ExecutionStatusDay,
+    ExecutionStatusEvidenceLevel,
     ExecutionStatusQuery,
     SuspensionState,
     materialize_execution_status,
@@ -49,7 +50,9 @@ MACD = (
 )
 
 
-def _status(symbol: str, start: date, end: date) -> RoutedExecutionStatusSuccess:
+def _status(
+    symbol: str, start: date, end: date, *, basic: bool = False
+) -> RoutedExecutionStatusSuccess:
     query = ExecutionStatusQuery(
         symbol=symbol,
         exchange=Exchange.SH,
@@ -63,8 +66,8 @@ def _status(symbol: str, start: date, end: date) -> RoutedExecutionStatusSuccess
             exchange=Exchange.SH,
             is_exchange_open=True,
             suspension_state=SuspensionState.NORMAL,
-            raw_upper_limit=Decimal("20"),
-            raw_lower_limit=Decimal("1"),
+            raw_upper_limit=None if basic else Decimal("20"),
+            raw_lower_limit=None if basic else Decimal("1"),
         )
         for offset in range((end - start).days)
     )
@@ -73,16 +76,22 @@ def _status(symbol: str, start: date, end: date) -> RoutedExecutionStatusSuccess
         query=query,
         days=days,
         raw_opens=(),
-        source=ProviderId.TUSHARE,
+        source=ProviderId.BAOSTOCK if basic else ProviderId.TUSHARE,
         fetched_at=fetched_at,
         data_cutoff=fetched_at,
+        evidence_level=(
+            ExecutionStatusEvidenceLevel.BASIC_NO_PRICE_LIMITS
+            if basic
+            else ExecutionStatusEvidenceLevel.AUTHORITATIVE
+        ),
     )
+    status_source = ProviderId.BAOSTOCK if basic else ProviderId.TUSHARE
     manifest = make_routing_manifest(
         category=MarketCapability.EXECUTION_STATUS,
         request=ExecutionStatusRoutingRequest(query=query),
-        priority=(ProviderId.TUSHARE,),
+        priority=(status_source,),
         attempts=(),
-        selected_source=ProviderId.TUSHARE,
+        selected_source=status_source,
         upstream_dataset_version=result.dataset_version,
         upstream_fetched_at=result.fetched_at,
         upstream_data_cutoff=result.data_cutoff,
@@ -143,8 +152,15 @@ def test_single_submit_freezes_catalog_refs_and_enqueues_bounded_task_atomically
             adjustment=Adjustment.NONE,
         )
         market.write(bars)
-        statuses.write(_status("600000.SH", date(2024, 1, 2), date(2024, 1, 7)))
+        statuses.write(
+            _status("600000.SH", date(2024, 1, 2), date(2024, 1, 7), basic=True)
+        )
         version = formulas.create("MACD", "trading", MACD, {}, placement="subchart")
+
+        preflight = service.preflight(_intent(version.id))
+        assert preflight.execution_status_evidence_level == "basic_no_price_limits"
+        assert preflight.warnings == ("basic_execution_status",)
+        assert preflight.execution_rules_version == "a-share-v2"
 
         monkeypatch.setattr(
             market,
@@ -154,6 +170,7 @@ def test_single_submit_freezes_catalog_refs_and_enqueues_bounded_task_atomically
             ),
         )
         submitted = service.submit(_intent(version.id))
+        assert submitted.warnings == ("basic_execution_status",)
 
         task = tasks.get(submitted.task_id)
         assert task.payload == {
@@ -166,6 +183,7 @@ def test_single_submit_freezes_catalog_refs_and_enqueues_bounded_task_atomically
         assert run.processed == 0
         assert run.failed == 0
         assert run.symbols[0].reference.signal_manifest_record_id
+        assert run.snapshot.execution_rules_version == "a-share-v2"
     finally:
         engine.dispose()
 

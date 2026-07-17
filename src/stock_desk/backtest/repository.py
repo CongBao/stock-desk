@@ -6,7 +6,7 @@ from base64 import urlsafe_b64decode, urlsafe_b64encode
 import hashlib
 import json
 from collections.abc import Iterator, Mapping, Sequence
-from typing import Any, Generic, TypeVar, cast
+from typing import Any, Generic, Literal, TypeVar, cast
 
 from sqlalchemy import (
     Engine,
@@ -39,6 +39,7 @@ from stock_desk.backtest.types import (
     BacktestSnapshot,
     FrozenSymbolGap,
     PinnedMarketRef,
+    execution_status_evidence_summary,
 )
 from stock_desk.market.provenance import bar_query_identity_payload
 from stock_desk.storage.database import (
@@ -163,6 +164,10 @@ class BacktestReportSnapshot:
     metrics: Mapping[str, object]
     disclaimer: str
     outcomes: BacktestOutcomeSnapshot
+    execution_status_evidence_level: Literal[
+        "authoritative", "basic_no_price_limits", "mixed"
+    ] = "authoritative"
+    warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,6 +210,10 @@ class BacktestExportMetadata:
     cost_model_version: str
     sizing_version: str
     warmup_policy_version: str
+    execution_status_evidence_level: Literal[
+        "authoritative", "basic_no_price_limits", "mixed"
+    ] = "authoritative"
+    warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -773,6 +782,9 @@ class BacktestRepository:
             status_sources,
             provenance_digest,
         ) = _provenance_summary(snapshot)
+        evidence_level, warnings = execution_status_evidence_summary(
+            snapshot.symbol_inputs
+        )
         outcomes = BacktestOutcomeSnapshot(
             total=overview.total,
             succeeded=int(outcome_row[0] or 0),
@@ -831,6 +843,8 @@ class BacktestRepository:
             ),
             disclaimer="independent trade samples, not portfolio return",
             outcomes=outcomes,
+            execution_status_evidence_level=evidence_level,
+            warnings=warnings,
         )
 
     def get_replay_record(
@@ -1041,6 +1055,9 @@ class BacktestRepository:
                 status_sources,
                 provenance_digest,
             ) = _provenance_summary(snapshot)
+            evidence_level, warnings = execution_status_evidence_summary(
+                snapshot.symbol_inputs
+            )
             yield BacktestExportMetadata(
                 run_id=cast(str, run["id"]),
                 snapshot_id=cast(str, run["snapshot_id"]),
@@ -1071,6 +1088,8 @@ class BacktestRepository:
                 cost_model_version=snapshot.cost_model_version,
                 sizing_version="fixed-lot-v1",
                 warmup_policy_version=snapshot.warmup_policy_version,
+                execution_status_evidence_level=evidence_level,
+                warnings=warnings,
             )
             result = connection.execute(self._export_statement(run_id, section))
             while True:

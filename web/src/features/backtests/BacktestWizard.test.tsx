@@ -65,6 +65,7 @@ const preflight: BacktestPreflight = {
   },
   coverage: { execution: 2, signal: 2, status: 2 },
   disclaimer: '每只股票独立模拟，不代表组合收益',
+  executionStatusEvidenceLevel: 'authoritative',
   estimatedWorkload: { formulaRows: 500, runnableSymbols: 2, symbols: 3 },
   formula: {
     compatibilityVersion: 'tdx-v1',
@@ -149,6 +150,44 @@ it('shows next-open and independent-pool semantics before submit', async () => {
   await user.click(screen.getByRole('button', { name: '5. 复核' }));
   expect(screen.getByText(/收盘确认，下一对应周期开盘尝试成交/u)).toBeVisible();
   expect(screen.getByText(/每只股票独立模拟，不代表组合收益/u)).toBeVisible();
+});
+
+it('keeps the BaoStock basic execution assumption visible after preflight', async () => {
+  const user = userEvent.setup();
+  const client = api();
+  vi.mocked(client.preflight).mockResolvedValue({
+    ...preflight,
+    executionStatusEvidenceLevel: 'basic_no_price_limits',
+    scope: {
+      ...preflight.scope,
+      gapCount: 0,
+      gapSample: [],
+      kind: 'single',
+      poolId: null,
+      revisionOrSnapshotId: null,
+      runnable: 1,
+      symbol: '600000.SH',
+      total: 1,
+      warnings: ['basic_execution_status'],
+    },
+  });
+  render(
+    <BacktestWizard
+      api={client}
+      formulaChoices={formulaChoices}
+      initialState={completeState}
+    />,
+  );
+
+  await user.click(screen.getByRole('button', { name: '5. 复核' }));
+  await user.click(screen.getByRole('button', { name: '运行预检' }));
+
+  expect(
+    await screen.findByText(/基础成交假设：停牌依据 BaoStock tradestatus/u),
+  ).toHaveTextContent(
+    '未校验历史涨跌停。T+1、交易日和下一周期开盘仍按规则处理，结果可能高估可成交机会。',
+  );
+  expect(screen.getByRole('button', { name: '提交回测' })).toBeEnabled();
 });
 
 it('collects immutable formula scope period dates and costs and discloses T+1 suspension price limits and pool semantics', async () => {

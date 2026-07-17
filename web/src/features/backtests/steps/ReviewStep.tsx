@@ -2,6 +2,10 @@ import { useEffect, useRef } from 'react';
 
 import type { BacktestPreflight } from '../backtestApi';
 import type { BacktestDraft } from '../backtestDraft';
+import {
+  basicExecutionStatusWarning,
+  executionStatusEvidenceLabel,
+} from '../executionStatusEvidence';
 import { RemediationLinks } from '../RemediationLinks';
 
 const periodLabels = { '1d': '日线', '1w': '周线', '60m': '60 分钟' } as const;
@@ -18,6 +22,7 @@ const gapLabels: Readonly<Record<string, string>> = {
   corrupt_data: '本地数据校验失败',
 };
 const warningLabels: Readonly<Record<string, string>> = {
+  basic_execution_status: basicExecutionStatusWarning,
   partial_pool_gaps:
     '部分证券数据不足；仅可运行证券会进入回测，缺口将保留为冻结结果。',
   partial_data: '部分证券数据覆盖不足，请核对可运行数量与缺口样例。',
@@ -156,6 +161,14 @@ export function ReviewStep({
             <div>
               <dt>执行规则</dt>
               <dd>收盘信号后下一对应周期开盘尝试成交</dd>
+            </div>
+            <div>
+              <dt>成交状态证据</dt>
+              <dd>
+                {executionStatusEvidenceLabel(
+                  preflight.executionStatusEvidenceLevel,
+                )}
+              </dd>
             </div>
             <div>
               <dt>成本规则</dt>

@@ -5,6 +5,7 @@ import {
 } from '../../shared/api/client';
 import type { MarketAdjustment, MarketPeriod } from '../market/marketStore';
 import type { MarketBar } from '../market/marketApi';
+import type { ExecutionStatusEvidenceLevel } from './executionStatusEvidence';
 
 export class BacktestProtocolError extends Error {
   constructor(readonly path: string) {
@@ -135,6 +136,8 @@ export type BacktestReport = {
   readonly formulaEngineVersion: string;
   readonly compatibilityVersion: string;
   readonly backtestEngineVersion: string;
+  readonly executionStatusEvidenceLevel: ExecutionStatusEvidenceLevel;
+  readonly warnings: readonly string[];
   readonly formulaParameters: readonly {
     readonly name: string;
     readonly kind: 'integer' | 'number';
@@ -292,6 +295,8 @@ export type BacktestReplay = {
   readonly runId: string;
   readonly snapshotId: string;
   readonly resultHash: string | null;
+  readonly executionStatusEvidenceLevel: ExecutionStatusEvidenceLevel;
+  readonly warnings: readonly string[];
   readonly symbol: string;
   readonly tradeOrdinal: number;
   readonly period: MarketPeriod;
@@ -379,6 +384,7 @@ export type BacktestReportApi = {
 export type BacktestPreflight = {
   readonly previewSnapshotId: string;
   readonly reservation: false;
+  readonly executionStatusEvidenceLevel: ExecutionStatusEvidenceLevel;
   readonly formula: {
     readonly formulaId: string;
     readonly formulaVersionId: string;
@@ -573,6 +579,78 @@ function enumeration(
   return result;
 }
 
+const executionEvidenceLevels = new Set([
+  'authoritative',
+  'basic_no_price_limits',
+  'mixed',
+]);
+const executionDisclosureWarnings = new Set([
+  'partial_pool_gaps',
+  'basic_execution_status',
+]);
+
+function decodeExecutionStatusDisclosure(options: {
+  readonly evidenceValue: JsonValue | undefined;
+  readonly warningsValue: JsonValue | undefined;
+  readonly evidencePath: string;
+  readonly warningsPath: string;
+  readonly rulesValue?: JsonValue | undefined;
+  readonly rulesPath?: string;
+  readonly allowMixed?: boolean;
+  readonly gapCount?: number;
+  readonly allowPartialPoolGaps?: boolean;
+}) {
+  const evidenceLevel = enumeration(
+    options.evidenceValue,
+    executionEvidenceLevels,
+    options.evidencePath,
+  ) as ExecutionStatusEvidenceLevel;
+  if (options.allowMixed === false && evidenceLevel === 'mixed') {
+    throw new BacktestProtocolError(options.evidencePath);
+  }
+  const warnings = array(options.warningsValue, options.warningsPath, 2).map(
+    (warning, index) =>
+      enumeration(
+        warning,
+        executionDisclosureWarnings,
+        `${options.warningsPath}[${String(index)}]`,
+      ),
+  );
+  if (new Set(warnings).size !== warnings.length) {
+    throw new BacktestProtocolError(options.warningsPath);
+  }
+  const hasPartialPoolGaps = warnings.includes('partial_pool_gaps');
+  if (
+    options.allowPartialPoolGaps === false
+      ? hasPartialPoolGaps
+      : options.gapCount !== undefined &&
+        hasPartialPoolGaps !== options.gapCount > 0
+  ) {
+    throw new BacktestProtocolError(options.warningsPath);
+  }
+  const hasBasicWarning = warnings.includes('basic_execution_status');
+  if (
+    hasBasicWarning !==
+    (evidenceLevel === 'basic_no_price_limits' || evidenceLevel === 'mixed')
+  ) {
+    throw new BacktestProtocolError(options.warningsPath);
+  }
+  const rulesVersion =
+    options.rulesPath === undefined
+      ? null
+      : enumeration(
+          options.rulesValue,
+          new Set(['a-share-v1', 'a-share-v2']),
+          options.rulesPath,
+        );
+  const expectedRules =
+    evidenceLevel === 'authoritative' ? 'a-share-v1' : 'a-share-v2';
+  if (rulesVersion !== null && rulesVersion !== expectedRules) {
+    throw new BacktestProtocolError(options.rulesPath ?? options.evidencePath);
+  }
+  return { evidenceLevel, rulesVersion, warnings } as const;
+}
+
 function decimal(value: JsonValue | undefined, path: string) {
   const result = text(value, path, 64);
   if (!/^(?:0|[1-9][0-9]*)(?:\.[0-9]*[1-9])?$/u.test(result)) {
@@ -683,13 +761,21 @@ function decodeSubmission(
   const runId = identity(item['run_id'], '$.run_id');
   if (expectedRunId !== undefined && runId !== expectedRunId)
     throw new BacktestProtocolError('$.run_id');
+  const warnings = array(item['warnings'], '$.warnings', 2).map(
+    (warning, index) =>
+      enumeration(
+        warning,
+        executionDisclosureWarnings,
+        `$.warnings[${String(index)}]`,
+      ),
+  );
+  if (new Set(warnings).size !== warnings.length)
+    throw new BacktestProtocolError('$.warnings');
   return {
     runId,
     taskId: identity(item['task_id'], '$.task_id'),
     snapshotId: digest(item['snapshot_id'], '$.snapshot_id'),
-    warnings: array(item['warnings'], '$.warnings').map((value, index) =>
-      text(value, `$.warnings[${String(index)}]`, 1024),
-    ),
+    warnings,
   };
 }
 
@@ -824,12 +910,24 @@ function decodePreflight(value: JsonValue | undefined): BacktestPreflight {
     )
   )
     throw new BacktestProtocolError('$.costs');
+  const executionDisclosure = decodeExecutionStatusDisclosure({
+    evidenceValue: root['execution_status_evidence_level'],
+    warningsValue: scope['warnings'],
+    evidencePath: '$.execution_status_evidence_level',
+    warningsPath: '$.scope.warnings',
+    rulesValue: rules['execution_rules_version'],
+    rulesPath: '$.rules.execution_rules_version',
+    gapCount,
+  });
+  if (executionDisclosure.rulesVersion === null)
+    throw new BacktestProtocolError('$.rules.execution_rules_version');
   return {
     previewSnapshotId: digest(
       root['preview_snapshot_id'],
       '$.preview_snapshot_id',
     ),
     reservation: false,
+    executionStatusEvidenceLevel: executionDisclosure.evidenceLevel,
     formula: {
       formulaId: identity(formula['formula_id'], '$.formula.formula_id'),
       formulaVersionId: identity(
@@ -887,10 +985,7 @@ function decodePreflight(value: JsonValue | undefined): BacktestPreflight {
       gapCount,
       gapSample,
       gapsTruncated,
-      warnings: array(scope['warnings'], '$.scope.warnings').map(
-        (entry, index) =>
-          text(entry, `$.scope.warnings[${String(index)}]`, 1024),
-      ),
+      warnings: executionDisclosure.warnings,
     },
     period,
     adjustment,
@@ -913,10 +1008,7 @@ function decodePreflight(value: JsonValue | undefined): BacktestPreflight {
       status: statusCoverage,
     },
     rules: {
-      executionRulesVersion: text(
-        rules['execution_rules_version'],
-        '$.rules.execution_rules_version',
-      ),
+      executionRulesVersion: executionDisclosure.rulesVersion,
       costModelVersion: text(
         rules['cost_model_version'],
         '$.rules.cost_model_version',
@@ -1362,6 +1454,17 @@ function decodeReport(
   const disclaimer = text(root['disclaimer'], '$.disclaimer', 2048);
   if (disclaimer !== reportLabel)
     throw new BacktestProtocolError('$.disclaimer');
+  const executionDisclosure = decodeExecutionStatusDisclosure({
+    evidenceValue: root['execution_status_evidence_level'],
+    warningsValue: root['warnings'],
+    evidencePath: '$.execution_status_evidence_level',
+    warningsPath: '$.warnings',
+    rulesValue: root['execution_rules_version'],
+    rulesPath: '$.execution_rules_version',
+    gapCount,
+  });
+  if (executionDisclosure.rulesVersion === null)
+    throw new BacktestProtocolError('$.execution_rules_version');
   return {
     overview,
     formulaVersionId: identity(
@@ -1381,6 +1484,8 @@ function decodeReport(
       root['backtest_engine_version'],
       '$.backtest_engine_version',
     ),
+    executionStatusEvidenceLevel: executionDisclosure.evidenceLevel,
+    warnings: executionDisclosure.warnings,
     formulaParameters: array(
       root['formula_parameters'],
       '$.formula_parameters',
@@ -1433,10 +1538,7 @@ function decodeReport(
       sellTaxBps: decimal(costs['sell_tax_bps'], '$.costs.sell_tax_bps'),
       slippageBps: decimal(costs['slippage_bps'], '$.costs.slippage_bps'),
     },
-    executionRulesVersion: text(
-      root['execution_rules_version'],
-      '$.execution_rules_version',
-    ),
+    executionRulesVersion: executionDisclosure.rulesVersion,
     costModelVersion: text(root['cost_model_version'], '$.cost_model_version'),
     sizingVersion: text(root['sizing_version'], '$.sizing_version'),
     warmupPolicyVersion: text(
@@ -2246,6 +2348,14 @@ function decodeReplay(
     )
   )
     throw new BacktestProtocolError('$.execution_evidence');
+  const executionDisclosure = decodeExecutionStatusDisclosure({
+    evidenceValue: root['execution_status_evidence_level'],
+    warningsValue: root['warnings'],
+    evidencePath: '$.execution_status_evidence_level',
+    warningsPath: '$.warnings',
+    allowMixed: false,
+    allowPartialPoolGaps: false,
+  });
   return {
     runId,
     snapshotId: digest(root['snapshot_id'], '$.snapshot_id'),
@@ -2253,6 +2363,8 @@ function decodeReplay(
       root['result_hash'] === null
         ? null
         : digest(root['result_hash'], '$.result_hash'),
+    executionStatusEvidenceLevel: executionDisclosure.evidenceLevel,
+    warnings: executionDisclosure.warnings,
     symbol: symbolValue,
     tradeOrdinal,
     period,

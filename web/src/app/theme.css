@@ -33,9 +33,25 @@
   --status-error-text: #fecaca;
   --status-error-border: rgb(248 113 113 / 62%);
   --status-error-surface: rgb(127 29 29 / 28%);
+  --status-success-text: #86efac;
+  --status-warning-text: #ffe1ad;
+  --status-warning-border: rgb(255 181 71 / 45%);
+  --status-warning-surface: rgb(89 54 9 / 38%);
   --focus-ring: #38bdf8;
   --scrim: rgb(2 8 18 / 72%);
   --panel-translucent: rgb(9 21 36 / 88%);
+  --navigation-rail-surface: rgb(7 17 31 / 96%);
+  --brand-tile-surface: var(--accent);
+  --icon-tile-surface: rgb(12 26 43 / 70%);
+  --market-hero-surface: rgb(12 26 43 / 84%);
+  --market-panel-surface: rgb(12 26 43 / 78%);
+  --onboarding-card-surface: rgb(12 26 43 / 97%);
+  --subtle-gradient-start: rgb(20 42 67 / 34%);
+  --subtle-gradient-end: rgb(7 17 31 / 18%);
+  --popover-surface: #091727;
+  --quick-action-surface: rgb(7 17 31 / 55%);
+  --terminal-grid-line: rgb(30 53 80 / 18%);
+  --terminal-grid-line-soft: rgb(30 53 80 / 14%);
   --shadow-color: rgb(0 0 0 / 45%);
   --rail-width: 232px;
   --collapsed-rail-width: 80px;
@@ -64,9 +80,25 @@
   --status-error-text: #8a1c13;
   --status-error-border: #d92d20;
   --status-error-surface: #fff1f0;
+  --status-success-text: #05603a;
+  --status-warning-text: #7a2e0e;
+  --status-warning-border: #b54708;
+  --status-warning-surface: #fff7ed;
   --focus-ring: #0369a1;
   --scrim: rgb(23 32 51 / 42%);
   --panel-translucent: rgb(255 255 255 / 94%);
+  --navigation-rail-surface: var(--surface-1);
+  --brand-tile-surface: var(--accent);
+  --icon-tile-surface: var(--surface-2);
+  --market-hero-surface: var(--surface-1);
+  --market-panel-surface: var(--surface-1);
+  --onboarding-card-surface: var(--surface-1);
+  --subtle-gradient-start: rgb(226 234 244 / 64%);
+  --subtle-gradient-end: rgb(255 255 255 / 0%);
+  --popover-surface: var(--surface-1);
+  --quick-action-surface: var(--surface-2);
+  --terminal-grid-line: rgb(170 184 202 / 38%);
+  --terminal-grid-line-soft: rgb(170 184 202 / 26%);
   --shadow-color: rgb(23 32 51 / 18%);
 }
 
@@ -229,7 +261,7 @@ a {
   height: 100vh;
   padding: 26px 18px 20px;
   border-right: 1px solid var(--border);
-  background: rgba(7, 17, 31, 0.96);
+  background: var(--navigation-rail-surface);
 }
 
 .brand-lockup {
@@ -244,12 +276,10 @@ a {
   flex: 0 0 38px;
   height: 38px;
   place-items: center;
-  border: 1px solid rgba(56, 189, 248, 0.42);
+  border: 1px solid var(--accent);
   border-radius: 9px;
-  color: var(--accent);
-  background:
-    linear-gradient(135deg, rgba(56, 189, 248, 0.17), rgba(56, 189, 248, 0.02)),
-    var(--surface-1);
+  color: var(--on-accent);
+  background: var(--brand-tile-surface);
   font-size: 11px;
   font-weight: 850;
   letter-spacing: 0.1em;
@@ -261,6 +291,12 @@ a {
 .navigation-toggle svg {
   width: 20px;
   height: 20px;
+}
+
+.brand-mark svg {
+  width: 22px;
+  height: 22px;
+  stroke-width: 2.2;
 }
 
 .brand-lockup h1 {
@@ -392,7 +428,7 @@ a {
   border: 1px solid var(--border);
   border-radius: 6px;
   color: var(--text-muted);
-  background: rgba(12, 26, 43, 0.7);
+  background: var(--icon-tile-surface);
 }
 
 .nav-link.active .nav-icon {
@@ -531,16 +567,16 @@ a {
 }
 
 .worker-scope {
-  color: #fbbf24;
+  color: var(--status-warning-text);
 }
 
 .worker-scope[data-state='running'] {
-  color: #86efac;
+  color: var(--status-success-text);
 }
 
 .worker-scope[data-state='api_offline'],
 .worker-scope[data-state='unavailable'] {
-  color: #fca5a5;
+  color: var(--status-error-text);
 }
 
 .worker-last-seen {
@@ -829,7 +865,7 @@ a {
   overscroll-behavior: contain;
   border: 1px solid var(--border-strong);
   border-radius: 18px;
-  background: rgba(12, 26, 43, 0.97);
+  background: var(--onboarding-card-surface);
   box-shadow: 0 32px 96px rgba(0, 0, 0, 0.48);
   scrollbar-gutter: stable;
 }
@@ -868,7 +904,7 @@ a {
   padding: 7px 10px;
   border: 1px solid rgba(34, 197, 94, 0.3);
   border-radius: 999px;
-  color: #86efac;
+  color: var(--status-success-text);
   background: rgba(34, 197, 94, 0.08);
   font-size: 12px;
 }
@@ -943,6 +979,10 @@ a {
   letter-spacing: -0.035em;
 }
 
+.onboarding-content h1[tabindex='-1']:focus-visible {
+  outline: none;
+}
+
 .onboarding-lead {
   max-width: 58ch;
   margin: 0 0 24px;
@@ -965,7 +1005,7 @@ a {
 
 .onboarding-success-icon {
   border-color: rgba(34, 197, 94, 0.4);
-  color: #86efac;
+  color: var(--status-success-text);
   background: rgba(34, 197, 94, 0.1);
 }
 
@@ -980,7 +1020,7 @@ a {
 
 .onboarding-benefits li::before {
   margin-right: 10px;
-  color: #86efac;
+  color: var(--status-success-text);
   content: '✓';
 }
 
@@ -1192,7 +1232,7 @@ a {
   min-width: 0;
   padding: 10px;
   border-radius: 8px;
-  background: rgba(7, 17, 31, 0.55);
+  background: var(--quick-action-surface);
 }
 
 .onboarding-ready-summary dt {
@@ -1368,7 +1408,7 @@ a {
   padding: 7px 10px;
   border: 1px solid rgba(245, 158, 11, 0.35);
   border-radius: 999px;
-  color: #fbbf24;
+  color: var(--status-warning-text);
   background: rgba(245, 158, 11, 0.07);
   font-size: 11px;
   font-weight: 750;
@@ -1393,7 +1433,7 @@ a {
   padding: 8px 12px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: rgba(12, 26, 43, 0.65);
+  background: var(--market-panel-surface);
 }
 
 .instrument-placeholder {
@@ -1422,7 +1462,7 @@ a {
   border: 1px solid var(--border);
   border-radius: 5px;
   color: var(--text-secondary);
-  background: rgba(7, 17, 31, 0.55);
+  background: var(--quick-action-surface);
   font-size: 11px;
   font-weight: 640;
 }
@@ -1432,8 +1472,8 @@ a {
   border: 1px solid var(--border);
   border-radius: 9px;
   background:
-    linear-gradient(180deg, rgba(20, 42, 67, 0.18), transparent 32%),
-    rgba(12, 26, 43, 0.72);
+    linear-gradient(180deg, var(--subtle-gradient-start), transparent 32%),
+    var(--market-panel-surface);
   box-shadow: 0 12px 36px rgba(0, 0, 0, 0.12);
 }
 
@@ -1972,7 +2012,7 @@ a {
   border-radius: 10px;
   background:
     linear-gradient(135deg, rgba(56, 189, 248, 0.035), transparent 45%),
-    rgba(12, 26, 43, 0.65);
+    var(--market-panel-surface);
 }
 
 .roadmap-visual {
@@ -1983,8 +2023,8 @@ a {
   overflow: hidden;
   border-right: 1px solid var(--border);
   background-image:
-    linear-gradient(rgba(30, 53, 80, 0.18) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(30, 53, 80, 0.18) 1px, transparent 1px);
+    linear-gradient(var(--terminal-grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--terminal-grid-line) 1px, transparent 1px);
   background-size: 42px 42px;
 }
 
@@ -2014,7 +2054,7 @@ a {
   border: 1px solid rgba(56, 189, 248, 0.4);
   border-radius: 16px;
   color: var(--accent);
-  background: rgba(7, 17, 31, 0.86);
+  background: var(--surface-2);
   font-size: 22px;
   box-shadow: 0 0 60px rgba(56, 189, 248, 0.13);
 }
@@ -2055,7 +2095,7 @@ a {
   border: 1px solid var(--border);
   border-radius: 7px;
   color: var(--text-muted);
-  background: rgba(7, 17, 31, 0.45);
+  background: var(--quick-action-surface);
   font-size: 11px;
 }
 
@@ -2074,7 +2114,7 @@ a {
   border-radius: 10px;
   background:
     linear-gradient(135deg, rgba(56, 189, 248, 0.05), transparent 52%),
-    rgba(12, 26, 43, 0.65);
+    var(--market-panel-surface);
 }
 
 .not-found-code {
@@ -2148,7 +2188,7 @@ a {
   border-radius: 10px;
   background:
     linear-gradient(110deg, rgba(56, 189, 248, 0.1), transparent 48%),
-    rgba(12, 26, 43, 0.84);
+    var(--market-hero-surface);
   box-shadow: 0 14px 34px rgba(0, 0, 0, 0.12);
 }
 
@@ -2208,7 +2248,7 @@ a {
   overflow: hidden;
   border: 1px solid var(--border);
   border-radius: 9px;
-  background: rgba(12, 26, 43, 0.78);
+  background: var(--market-panel-surface);
   box-shadow: 0 12px 30px rgba(0, 0, 0, 0.1);
 }
 
@@ -2385,7 +2425,7 @@ a {
 .cache-miss-guidance {
   border: 1px solid var(--border);
   border-radius: 9px;
-  background: rgba(12, 26, 43, 0.78);
+  background: var(--market-panel-surface);
   box-shadow: 0 12px 30px rgba(0, 0, 0, 0.1);
 }
 
@@ -2438,7 +2478,7 @@ a {
   overflow: hidden;
   border: 1px solid var(--border-strong);
   border-radius: 8px;
-  background: #091727;
+  background: var(--popover-surface);
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.42);
 }
 
@@ -2971,8 +3011,8 @@ a {
   min-height: 128px;
   padding: 13px;
   background-image:
-    linear-gradient(rgba(30, 53, 80, 0.18) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(30, 53, 80, 0.14) 1px, transparent 1px);
+    linear-gradient(var(--terminal-grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--terminal-grid-line-soft) 1px, transparent 1px);
   background-size:
     100% 50%,
     12.5% 100%;
@@ -3234,7 +3274,7 @@ a {
   padding: 7px 9px;
   border: 1px solid var(--border);
   border-radius: 6px;
-  background: rgba(7, 17, 31, 0.55);
+  background: var(--quick-action-surface);
 }
 
 /* Data-source settings workspace */
@@ -3332,7 +3372,11 @@ a {
   border: 1px solid var(--border);
   border-radius: 9px;
   background:
-    linear-gradient(180deg, rgba(20, 42, 67, 0.34), rgba(7, 17, 31, 0.18)),
+    linear-gradient(
+      180deg,
+      var(--subtle-gradient-start),
+      var(--subtle-gradient-end)
+    ),
     var(--surface-1);
 }
 
@@ -3460,7 +3504,7 @@ a {
 }
 
 .source-inline-error {
-  color: #fca5a5 !important;
+  color: var(--status-error-text) !important;
 }
 
 .source-diagnostic {
@@ -3832,8 +3876,8 @@ a {
   padding: 10px 12px;
   border: 1px solid rgba(239, 68, 68, 0.35);
   border-radius: 8px;
-  color: #fca5a5;
-  background: rgba(239, 68, 68, 0.08);
+  color: var(--status-error-text);
+  background: var(--status-error-surface);
   font-size: 11px;
 }
 
@@ -3902,14 +3946,14 @@ a {
 .preview-revision-badge[data-ready='true'],
 .formula-validation-state[data-state='valid'] {
   border-color: rgba(34, 197, 94, 0.4);
-  color: #86efac;
+  color: var(--status-success-text);
   background: rgba(34, 197, 94, 0.08);
 }
 
 .formula-validation-state[data-state='invalid'] {
   border-color: rgba(239, 68, 68, 0.4);
-  color: #fca5a5;
-  background: rgba(239, 68, 68, 0.08);
+  color: var(--status-error-text);
+  background: var(--status-error-surface);
 }
 
 .formula-library-search {
@@ -4142,7 +4186,7 @@ a {
 }
 
 .formula-diagnostic-panel li {
-  color: #fca5a5;
+  color: var(--status-error-text);
   font-size: 9px;
 }
 
@@ -5844,10 +5888,10 @@ a {
 .task-cancel-error {
   margin: 0 0 12px;
   padding: 11px 13px;
-  border: 1px solid rgba(255, 181, 71, 0.45);
+  border: 1px solid var(--status-warning-border);
   border-radius: 8px;
-  color: #ffe1ad;
-  background: rgba(89, 54, 9, 0.38);
+  color: var(--status-warning-text);
+  background: var(--status-warning-surface);
 }
 
 .task-action-status {
@@ -5868,7 +5912,9 @@ a {
   padding: 14px;
   border: 1px solid var(--border);
   border-radius: 9px;
-  background: linear-gradient(145deg, var(--surface-2), var(--surface-1));
+  background:
+    linear-gradient(145deg, var(--surface-2), var(--surface-1)),
+    var(--surface-1);
 }
 
 .task-metrics span,

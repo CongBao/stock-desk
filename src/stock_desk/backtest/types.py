@@ -19,7 +19,10 @@ from pydantic import (
 from stock_desk.formula.context import MAX_PARAMETERS
 from stock_desk.formula.signal_series import NormalizedParameter
 from stock_desk.market.provenance import Sha256Digest
-from stock_desk.market.execution_status import ExecutionStatusQuery
+from stock_desk.market.execution_status import (
+    ExecutionStatusEvidenceLevel,
+    ExecutionStatusQuery,
+)
 from stock_desk.market.types import (
     Adjustment,
     BarQuery,
@@ -34,6 +37,7 @@ SNAPSHOT_SCHEMA_VERSION: Literal["backtest-snapshot-v1"] = "backtest-snapshot-v1
 WARMUP_POLICY_VERSION: Literal["formula-warmup-v1"] = "formula-warmup-v1"
 COST_MODEL_VERSION: Literal["a-share-cost-v1"] = "a-share-cost-v1"
 EXECUTION_RULES_VERSION: Literal["a-share-v1"] = "a-share-v1"
+BASIC_EXECUTION_RULES_VERSION: Literal["a-share-v2"] = "a-share-v2"
 MAX_BACKTEST_SYMBOLS = 10_000
 MAX_QUANTITY_SHARES = 100_000_000
 
@@ -46,6 +50,9 @@ GapReason = Literal[
     "missing_execution_data",
     "missing_execution_status",
     "corrupt_data",
+]
+ExecutionStatusEvidenceSummary = Literal[
+    "authoritative", "basic_no_price_limits", "mixed"
 ]
 
 
@@ -124,6 +131,10 @@ class PinnedMarketRef(_FrozenBacktestContract):
     execution_status_source: ProviderId
     execution_status_data_cutoff: UtcDatetime
     execution_status_query: ExecutionStatusQuery
+    execution_status_evidence_level: ExecutionStatusEvidenceLevel = Field(
+        default=ExecutionStatusEvidenceLevel.AUTHORITATIVE,
+        exclude_if=lambda value: value is ExecutionStatusEvidenceLevel.AUTHORITATIVE,
+    )
 
     @model_validator(mode="after")
     def validate_queries(self) -> Self:
@@ -154,6 +165,26 @@ class FrozenSymbolGap(_FrozenBacktestContract):
         ):
             raise ValueError("frozen symbol gap queries must match its symbol")
         return self
+
+
+def execution_status_evidence_summary(
+    inputs: tuple[PinnedMarketRef | FrozenSymbolGap, ...],
+) -> tuple[ExecutionStatusEvidenceSummary, tuple[str, ...]]:
+    runnable = tuple(item for item in inputs if isinstance(item, PinnedMarketRef))
+    if not runnable:
+        raise ValueError("runnable execution-status evidence is required")
+    levels = {item.execution_status_evidence_level for item in runnable}
+    level: ExecutionStatusEvidenceSummary
+    if len(levels) > 1:
+        level = "mixed"
+    else:
+        level = next(iter(levels)).value
+    warnings: list[str] = []
+    if any(isinstance(item, FrozenSymbolGap) for item in inputs):
+        warnings.append("partial_pool_gaps")
+    if ExecutionStatusEvidenceLevel.BASIC_NO_PRICE_LIMITS in levels:
+        warnings.append("basic_execution_status")
+    return level, tuple(warnings)
 
 
 class _BacktestInputs(BaseModel):
@@ -193,7 +224,9 @@ class _BacktestInputs(BaseModel):
     slippage_bps: Decimal
     cost_model_version: Literal["a-share-cost-v1"] = COST_MODEL_VERSION
     backtest_engine_version: BoundedIdentity
-    execution_rules_version: Literal["a-share-v1"] = EXECUTION_RULES_VERSION
+    execution_rules_version: Literal["a-share-v1", "a-share-v2"] = (
+        EXECUTION_RULES_VERSION
+    )
 
     @field_validator(
         "commission_bps",
@@ -271,6 +304,21 @@ class _BacktestInputs(BaseModel):
             )
         ):
             raise ValueError("basis points cannot exceed 10000")
+
+        runnable = tuple(
+            item for item in self.symbol_inputs if isinstance(item, PinnedMarketRef)
+        )
+        if runnable:
+            evidence_level = execution_status_evidence_summary(self.symbol_inputs)[0]
+            expected_rules = (
+                EXECUTION_RULES_VERSION
+                if evidence_level == "authoritative"
+                else BASIC_EXECUTION_RULES_VERSION
+            )
+            if self.execution_rules_version != expected_rules:
+                raise ValueError(
+                    "execution rules version must match status evidence level"
+                )
 
         for item in self.symbol_inputs:
             if (

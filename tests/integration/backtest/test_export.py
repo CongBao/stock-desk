@@ -34,6 +34,7 @@ from stock_desk.backtest.snapshot import freeze_request
 from stock_desk.formula.repository import FormulaRepository
 from stock_desk.formula.service import FormulaPreviewValidationError, FormulaService
 from stock_desk.market.execution_status_lake import ExecutionStatusLake
+from stock_desk.market.execution_status import ExecutionStatusEvidenceLevel
 from stock_desk.market.instruments import InstrumentRepository
 from stock_desk.market.lake import MarketLake
 from stock_desk.market.pools import PoolRepository
@@ -44,7 +45,7 @@ from stock_desk.tasks.repository import TaskRepository
 from tests.integration.backtest.test_single_run import MACD, _intent, _status
 from tests.integration.market.lake_test_helpers import routed_daily_bars
 from tests.integration.market.task6_test_helpers import instrument, routed_instruments
-from tests.unit.backtest.test_config import _pinned, _request
+from tests.unit.backtest.test_config import _pinned, _replace_pinned, _request
 
 
 RUN_ID = "11111111-1111-1111-1111-111111111111"
@@ -53,14 +54,28 @@ FINISHED = datetime(2024, 2, 3, 4, 5, 6, 123456, tzinfo=timezone.utc)
 
 
 def _completed_repository(
-    tmp_path: Path, *, complete: bool = True
+    tmp_path: Path, *, complete: bool = True, basic: bool = False
 ) -> BacktestRepository:
     url = f"sqlite:///{tmp_path / 'export.db'}"
     migrate(url)
     engine = create_engine_for_url(url)
     repository = BacktestRepository(engine)
     tasks = TaskRepository(engine)
-    snapshot = freeze_request(_request())
+    snapshot = freeze_request(
+        _request(
+            symbol_inputs=(
+                _replace_pinned(
+                    _pinned(),
+                    execution_status_evidence_level=(
+                        ExecutionStatusEvidenceLevel.BASIC_NO_PRICE_LIMITS
+                    ),
+                ),
+            )
+            if basic
+            else (_pinned(),),
+            execution_rules_version="a-share-v2" if basic else "a-share-v1",
+        )
+    )
     with engine.begin() as connection:
         tasks.enqueue_in_transaction(
             connection,
@@ -241,6 +256,20 @@ def test_csv_export_has_metadata_null_and_spreadsheet_safe_text(tmp_path: Path) 
     assert all(row["record_type"] == "data" for row in rows[1:])
     assert all(row["key"].startswith("'") for row in rows[1:])
     assert "independent trade samples, not portfolio return" in text
+
+
+def test_basic_export_carries_frozen_evidence_grade_and_warning(
+    tmp_path: Path,
+) -> None:
+    repository = _completed_repository(tmp_path, basic=True)
+
+    payload = json.loads(_bytes(repository, "trades", "json"))
+
+    assert payload["metadata"]["execution_status_evidence_level"] == (
+        "basic_no_price_limits"
+    )
+    assert payload["metadata"]["warnings"] == ["basic_execution_status"]
+    assert payload["metadata"]["execution_rules_version"] == "a-share-v2"
 
 
 def test_every_export_section_drops_private_failure_and_log_detail(

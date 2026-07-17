@@ -92,7 +92,9 @@ PRE_PUBLISH_EVIDENCE_GATE = GateCommand(
 
 _RELEASE_SCAN_CHUNK_SIZE = 64 * 1024
 _RELEASE_SCAN_OVERLAP = 4096
-_SYNTHETIC_HOME_USERS = frozenset({"example", "owner", "operator", "user", "username"})
+_SYNTHETIC_HOME_USERS = frozenset(
+    {"alice", "example", "owner", "operator", "user", "username"}
+)
 _CASE_SENSITIVE_SYNTHETIC_HOME_USERS = frozenset({"Bao"})
 _POSIX_HOME_PATH = re.compile(
     rb"/(?:home|" + rb"Users)/(?P<user>(?!\[\^)[^/'\"\x00-\x1f\x7f]{1,512})/"

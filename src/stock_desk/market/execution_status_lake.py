@@ -12,6 +12,7 @@ from sqlalchemy import func, insert, select
 from sqlalchemy.engine import Connection, Engine
 
 from stock_desk.market.execution_status import (
+    ExecutionStatusEvidenceLevel,
     ExecutionStatusQuery,
     ExecutionStatusSnapshot,
 )
@@ -46,6 +47,9 @@ class CatalogExecutionStatusPin:
     source: ProviderId
     data_cutoff: datetime
     query: ExecutionStatusQuery
+    evidence_level: ExecutionStatusEvidenceLevel = (
+        ExecutionStatusEvidenceLevel.AUTHORITATIVE
+    )
 
 
 def execution_status_manifest_record_id(manifest: RoutingManifest) -> str:
@@ -129,6 +133,7 @@ class ExecutionStatusLake:
                     ExecutionStatusDataset.period,
                     ExecutionStatusDataset.query_start,
                     ExecutionStatusDataset.query_end,
+                    ExecutionStatusDataset.snapshot_json,
                     rank,
                 )
                 .join(
@@ -163,9 +168,14 @@ class ExecutionStatusLake:
                 manifest = RoutingManifest.model_validate_json(
                     json.dumps(row["manifest_json"], allow_nan=False)
                 )
+                snapshot = ExecutionStatusSnapshot.model_validate_json(
+                    json.dumps(row["snapshot_json"], allow_nan=False)
+                )
                 wanted = expected[symbol]
                 if (
                     query.exchange is not wanted.exchange
+                    or snapshot.query != query
+                    or snapshot.dataset_version != row["dataset_version"]
                     or execution_status_manifest_record_id(manifest)
                     != row["manifest_record_id"]
                     or manifest.upstream_dataset_version != row["dataset_version"]
@@ -179,6 +189,7 @@ class ExecutionStatusLake:
                     source=manifest.selected_source,
                     data_cutoff=manifest.upstream_data_cutoff,
                     query=query,
+                    evidence_level=snapshot.evidence_level,
                 )
         return result
 

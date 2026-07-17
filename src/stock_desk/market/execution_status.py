@@ -29,6 +29,11 @@ class SuspensionState(StrEnum):
     NOT_APPLICABLE = "not_applicable"
 
 
+class ExecutionStatusEvidenceLevel(StrEnum):
+    AUTHORITATIVE = "authoritative"
+    BASIC_NO_PRICE_LIMITS = "basic_no_price_limits"
+
+
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 
@@ -65,18 +70,24 @@ class ExecutionStatusDay(_FrozenExecutionModel):
     @model_validator(mode="after")
     def validate_evidence(self) -> Self:
         if self.is_exchange_open:
-            if (
-                self.suspension_state
-                not in {SuspensionState.NORMAL, SuspensionState.SUSPENDED}
-                or self.raw_upper_limit is None
-                or self.raw_lower_limit is None
-                or self.raw_upper_limit <= 0
-                or self.raw_lower_limit <= 0
-                or self.raw_lower_limit > self.raw_upper_limit
-            ):
-                raise ValueError(
-                    "open day requires complete suspension and limit evidence"
-                )
+            if self.suspension_state not in {
+                SuspensionState.NORMAL,
+                SuspensionState.SUSPENDED,
+            }:
+                raise ValueError("open day requires explicit suspension evidence")
+            has_upper = self.raw_upper_limit is not None
+            has_lower = self.raw_lower_limit is not None
+            if has_upper != has_lower:
+                raise ValueError("price-limit evidence must be complete or absent")
+            if has_upper:
+                assert self.raw_upper_limit is not None
+                assert self.raw_lower_limit is not None
+                if (
+                    self.raw_upper_limit <= 0
+                    or self.raw_lower_limit <= 0
+                    or self.raw_lower_limit > self.raw_upper_limit
+                ):
+                    raise ValueError("price-limit evidence is invalid")
         elif (
             self.suspension_state is not SuspensionState.NOT_APPLICABLE
             or self.raw_upper_limit is not None
@@ -117,6 +128,9 @@ class ExecutionStatusSnapshot(_FrozenExecutionModel):
     days: tuple[ExecutionStatusDay, ...]
     eligibility: tuple[ExecutionEligibility, ...]
     source: ProviderId
+    evidence_level: ExecutionStatusEvidenceLevel = (
+        ExecutionStatusEvidenceLevel.AUTHORITATIVE
+    )
     fetched_at: UtcDatetime
     data_cutoff: UtcDatetime
     dataset_version: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
@@ -131,6 +145,26 @@ class ExecutionStatusSnapshot(_FrozenExecutionModel):
             raise ValueError("execution status must cover every natural date")
         if any(item.exchange is not self.query.exchange for item in self.days):
             raise ValueError("execution status day exchange must match query")
+        open_days = tuple(item for item in self.days if item.is_exchange_open)
+        if self.evidence_level is ExecutionStatusEvidenceLevel.AUTHORITATIVE:
+            if any(
+                item.raw_upper_limit is None or item.raw_lower_limit is None
+                for item in open_days
+            ):
+                raise ValueError("authoritative status requires price-limit evidence")
+        elif any(
+            item.raw_upper_limit is not None or item.raw_lower_limit is not None
+            for item in open_days
+        ):
+            raise ValueError("basic status must not claim price-limit evidence")
+        if (
+            self.evidence_level is ExecutionStatusEvidenceLevel.BASIC_NO_PRICE_LIMITS
+            and any(
+                item.buy_blocked_at_open or item.sell_blocked_at_open
+                for item in self.eligibility
+            )
+        ):
+            raise ValueError("basic status must not claim price-limit blocking")
         if self.data_cutoff > self.fetched_at:
             raise ValueError("execution-status cutoff cannot follow fetch time")
         previous: datetime | None = None
@@ -145,6 +179,7 @@ class ExecutionStatusSnapshot(_FrozenExecutionModel):
             days=self.days,
             eligibility=self.eligibility,
             source=self.source,
+            evidence_level=self.evidence_level,
             data_cutoff=self.data_cutoff,
         )
         if self.dataset_version != expected_version:
@@ -167,6 +202,7 @@ def _dataset_version(
     days: tuple[ExecutionStatusDay, ...],
     eligibility: tuple[ExecutionEligibility, ...],
     source: ProviderId,
+    evidence_level: ExecutionStatusEvidenceLevel,
     data_cutoff: datetime,
 ) -> str:
     payload = {
@@ -187,6 +223,10 @@ def _dataset_version(
         ],
         "eligibility": [item.model_dump(mode="json") for item in eligibility],
     }
+    # Preserve validation of existing authoritative v1 snapshots while making
+    # the weaker evidence grade part of every basic dataset identity.
+    if evidence_level is not ExecutionStatusEvidenceLevel.AUTHORITATIVE:
+        payload["evidence_level"] = evidence_level.value
     encoded = json.dumps(
         payload,
         ensure_ascii=True,
@@ -205,6 +245,9 @@ def materialize_execution_status(
     source: ProviderId,
     fetched_at: datetime,
     data_cutoff: datetime,
+    evidence_level: ExecutionStatusEvidenceLevel = (
+        ExecutionStatusEvidenceLevel.AUTHORITATIVE
+    ),
 ) -> ExecutionStatusSnapshot:
     """Join unadjusted opens to raw limits once, before adjusted fills are used."""
     validated_days = tuple(days)
@@ -218,16 +261,25 @@ def materialize_execution_status(
         if not status.is_exchange_open:
             raise ValueError("raw open cannot be joined to a closed exchange day")
         raw_days.add(raw_open.trading_day)
-        assert status.raw_upper_limit is not None
-        assert status.raw_lower_limit is not None
+        has_price_limits = (
+            status.raw_upper_limit is not None and status.raw_lower_limit is not None
+        )
         eligibility.append(
             ExecutionEligibility(
                 timestamp=raw_open.timestamp,
                 trading_day=raw_open.trading_day,
                 is_exchange_open=True,
                 suspension_state=status.suspension_state,
-                buy_blocked_at_open=raw_open.raw_open >= status.raw_upper_limit,
-                sell_blocked_at_open=raw_open.raw_open <= status.raw_lower_limit,
+                buy_blocked_at_open=(
+                    raw_open.raw_open >= status.raw_upper_limit
+                    if has_price_limits and status.raw_upper_limit is not None
+                    else False
+                ),
+                sell_blocked_at_open=(
+                    raw_open.raw_open <= status.raw_lower_limit
+                    if has_price_limits and status.raw_lower_limit is not None
+                    else False
+                ),
                 evidence_complete=True,
             )
         )
@@ -260,6 +312,7 @@ def materialize_execution_status(
         days=validated_days,
         eligibility=frozen_eligibility,
         source=source,
+        evidence_level=evidence_level,
         fetched_at=canonical_fetched,
         data_cutoff=canonical_cutoff,
         dataset_version=_dataset_version(
@@ -267,6 +320,7 @@ def materialize_execution_status(
             days=validated_days,
             eligibility=frozen_eligibility,
             source=source,
+            evidence_level=evidence_level,
             data_cutoff=canonical_cutoff,
         ),
     )
@@ -274,6 +328,7 @@ def materialize_execution_status(
 
 __all__ = [
     "ExecutionEligibility",
+    "ExecutionStatusEvidenceLevel",
     "ExecutionStatusDay",
     "ExecutionStatusQuery",
     "ExecutionStatusSnapshot",

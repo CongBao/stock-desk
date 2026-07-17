@@ -106,7 +106,10 @@ class SourcePriorities(_SettingsModel):
         ProviderId.BAOSTOCK,
         ProviderId.EASTMONEY,
     )
-    execution_status: tuple[ProviderId, ...] = (ProviderId.TUSHARE,)
+    execution_status: tuple[ProviderId, ...] = (
+        ProviderId.TUSHARE,
+        ProviderId.BAOSTOCK,
+    )
     fundamentals: tuple[ProviderId, ...] = (
         ProviderId.TUSHARE,
         ProviderId.AKSHARE,
@@ -169,7 +172,7 @@ class SourcePriorities(_SettingsModel):
                 {ProviderId.TUSHARE, ProviderId.AKSHARE, ProviderId.BAOSTOCK}
             ),
             "trading_calendar": frozenset({ProviderId.TUSHARE, ProviderId.BAOSTOCK}),
-            "execution_status": frozenset({ProviderId.TUSHARE}),
+            "execution_status": frozenset({ProviderId.TUSHARE, ProviderId.BAOSTOCK}),
             "fundamentals": supported_research_sources(
                 ResearchSectionKind.FUNDAMENTALS
             ),
@@ -224,7 +227,7 @@ class _LegacyV1SourcePriorities(_SettingsModel):
                 {ProviderId.TUSHARE, ProviderId.AKSHARE, ProviderId.BAOSTOCK}
             ),
             "trading_calendar": frozenset({ProviderId.TUSHARE, ProviderId.BAOSTOCK}),
-            "execution_status": frozenset({ProviderId.TUSHARE}),
+            "execution_status": frozenset({ProviderId.TUSHARE, ProviderId.BAOSTOCK}),
         }
         for field_name, usable_sources in usable.items():
             configured = cast(tuple[ProviderId, ...], getattr(self, field_name))

@@ -209,9 +209,7 @@ it('recovers persisted progress when a slow desktop request times out after comm
   const user = userEvent.setup();
   renderGate(client);
 
-  await user.click(
-    await screen.findByRole('button', { name: '准备并继续' }),
-  );
+  await user.click(await screen.findByRole('button', { name: '准备并继续' }));
 
   expect(
     await screen.findByRole(
