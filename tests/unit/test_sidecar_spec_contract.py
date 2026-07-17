@@ -75,6 +75,13 @@ def test_sidecar_module_filter_keeps_runtime_and_provider_modules() -> None:
     assert include("stock_desk.analysis.providers.deepseek")
 
 
+def test_sidecar_collects_akshare_index_decoder_runtime() -> None:
+    source = SPEC.read_text(encoding="utf-8")
+
+    assert '"py_mini_racer"' in source
+    assert "collect_all(optional_runtime)" in source
+
+
 def test_sidecar_module_filter_rejects_legacy_browser_modules_and_descendants() -> None:
     include = _module_filter(_spec_tree())
 

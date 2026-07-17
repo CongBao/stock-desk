@@ -56,6 +56,15 @@ for optional_provider in ("akshare", "baostock", "tushare"):
     binaries += provider_binaries
     hiddenimports += provider_hiddenimports
 
+for optional_runtime in ("py_mini_racer",):
+    if importlib.util.find_spec(optional_runtime) is None:
+        continue
+    runtime_assets = collect_all(optional_runtime)
+    runtime_datas, runtime_binaries, runtime_hiddenimports = runtime_assets
+    datas += runtime_datas
+    binaries += runtime_binaries
+    hiddenimports += runtime_hiddenimports
+
 sidecar_name = os.environ.get(
     "STOCK_DESK_PYINSTALLER_SIDECAR_NAME",
     "stock-desk-sidecar-x86_64-pc-windows-msvc",
