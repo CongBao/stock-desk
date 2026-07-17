@@ -1,5 +1,5 @@
 use std::{
-    ffi::OsStr,
+    ffi::{OsStr, OsString},
     fmt,
     path::{Component, Path, PathBuf},
 };
@@ -57,11 +57,22 @@ pub(crate) fn resolve_local_data_root(
     Ok(override_root)
 }
 
+#[cfg(all(debug_assertions, not(windows)))]
+fn macos_test_data_root_override() -> Option<OsString> {
+    std::env::var_os("STOCK_DESK_MACOS_TEST_DATA_ROOT")
+}
+
+#[cfg(not(all(debug_assertions, not(windows))))]
+fn macos_test_data_root_override() -> Option<OsString> {
+    None
+}
+
 pub(crate) fn setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     let default_root = app.path().local_data_dir()?;
+    let override_root = macos_test_data_root_override();
     let local_data_root = resolve_local_data_root(
         default_root,
-        std::env::var_os("STOCK_DESK_MACOS_TEST_DATA_ROOT").as_deref(),
+        override_root.as_deref(),
         cfg!(all(debug_assertions, not(windows))),
     )?;
     app.manage(LocalDataRoot(local_data_root));

@@ -40,6 +40,28 @@ def test_macos_test_data_root_is_resolved_once_and_shared_by_all_host_state() ->
     )
 
 
+def test_macos_test_data_root_env_read_is_compiled_only_with_authority() -> None:
+    data_root = (
+        macos_sidecar.ROOT / "src-tauri" / "src" / "data_root.rs"
+    ).read_text(encoding="utf-8")
+
+    assert (
+        "#[cfg(all(debug_assertions, not(windows)))]\n"
+        "fn macos_test_data_root_override() -> Option<OsString> {\n"
+        '    std::env::var_os("STOCK_DESK_MACOS_TEST_DATA_ROOT")\n'
+        "}"
+    ) in data_root
+    assert (
+        "#[cfg(not(all(debug_assertions, not(windows))))]\n"
+        "fn macos_test_data_root_override() -> Option<OsString> {\n"
+        "    None\n"
+        "}"
+    ) in data_root
+    setup = data_root[data_root.index("pub(crate) fn setup"):]
+    assert "let override_root = macos_test_data_root_override();" in setup
+    assert "std::env::var_os" not in setup
+
+
 def test_non_windows_debug_lifecycle_releases_without_windows_enforcement() -> None:
     app = (
         macos_sidecar.ROOT / "src-tauri" / "src" / "app.rs"
