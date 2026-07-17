@@ -155,6 +155,24 @@ def test_macos_tauri_smoke_runs_a_real_native_window_and_cleans_up() -> None:
     assert '"tauri", "dev"' not in source
 
 
+def test_macos_tauri_smoke_keeps_abnormal_cleanup_owned_by_the_harness() -> None:
+    smoke = (ROOT / "scripts" / "macos_tauri_smoke.py").read_text(
+        encoding="utf-8"
+    )
+    exit_source = (ROOT / "src-tauri" / "src" / "exit.rs").read_text(
+        encoding="utf-8"
+    )
+
+    graceful_wait = smoke.index("_wait_for_host_exit(host_path, 10)")
+    cleanup_boundary = smoke.index("finally:", graceful_wait)
+    abnormal_cleanup = smoke.index("_cleanup_resources(", cleanup_boundary)
+    assert graceful_wait < cleanup_boundary < abnormal_cleanup
+    assert "_stop_host(host_path)" in smoke
+    assert "WindowsJob" not in smoke
+    assert "fn accepted_shutdown_commits_when_the_sidecar_terminates" in exit_source
+    assert "machine.terminated(9, Some(0)), ExitEffect::Exit" in exit_source
+
+
 def test_macos_tauri_smoke_rejects_destructive_output_paths() -> None:
     accepted = ROOT / "test-results" / "macos-tauri-smoke-test"
     assert macos_tauri_smoke._validated_output(accepted) == accepted.resolve()

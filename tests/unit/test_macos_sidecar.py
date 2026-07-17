@@ -10,6 +10,51 @@ from scripts import macos_sidecar
 from scripts.macos_sidecar import MacOSSidecarError, sidecar_filename
 
 
+def test_macos_test_data_root_is_resolved_once_and_shared_by_all_host_state() -> None:
+    rust_root = macos_sidecar.ROOT / "src-tauri" / "src"
+    data_root = (rust_root / "data_root.rs").read_text(encoding="utf-8")
+    main = (rust_root / "main.rs").read_text(encoding="utf-8")
+    app = (rust_root / "app.rs").read_text(encoding="utf-8")
+    diagnostics = (rust_root / "diagnostics.rs").read_text(encoding="utf-8")
+    updater = (rust_root / "updater.rs").read_text(encoding="utf-8")
+    sidecar = (rust_root / "sidecar.rs").read_text(encoding="utf-8")
+
+    override_readers = {
+        path.name
+        for path in rust_root.glob("*.rs")
+        if "STOCK_DESK_MACOS_TEST_DATA_ROOT"
+        in path.read_text(encoding="utf-8")
+    }
+    assert override_readers == {"data_root.rs"}
+    assert data_root.count("STOCK_DESK_MACOS_TEST_DATA_ROOT") == 1
+    assert "cfg!(all(debug_assertions, not(windows)))" in data_root
+    for logging_api in ("println!", "eprintln!", "log::", "tracing::"):
+        assert logging_api not in data_root
+    assert "data_root::setup(app)?" in main
+    for consumer in (app, diagnostics, updater):
+        assert "LocalDataRoot" in consumer
+        assert "local_data_dir()" not in consumer
+    assert "STOCK_DESK_MACOS_TEST_DATA_ROOT" not in sidecar
+    assert "STOCK_DESK_MACOS_TEST_DATA_ROOT" not in "\n".join(
+        line for line in sidecar.splitlines() if "environment" in line
+    )
+
+
+def test_non_windows_debug_lifecycle_releases_without_windows_enforcement() -> None:
+    app = (
+        macos_sidecar.ROOT / "src-tauri" / "src" / "app.rs"
+    ).read_text(encoding="utf-8")
+    test_start = app.index(
+        "fn non_windows_test_host_releases_gate_without_claiming_job_protection"
+    )
+    test_end = app.index("#[test]", test_start)
+    contract = app[test_start:test_end]
+
+    assert "protect_and_release_sidecar(&job, child, false)" in contract
+    assert '["write_gate"]' in contract
+    assert "assign" not in contract
+
+
 def test_sidecar_filename_accepts_only_supported_macos_host_targets() -> None:
     assert sidecar_filename("aarch64-apple-darwin") == (
         "stock-desk-sidecar-aarch64-apple-darwin"

@@ -6,7 +6,8 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tauri::Manager;
+
+use crate::data_root::LocalDataRoot;
 
 const MAX_DIAGNOSTIC_BYTES: usize = 256 * 1024;
 const HOST_DIAGNOSTIC_NAME: &str = "stock-desk-host-diagnostic.json";
@@ -225,12 +226,11 @@ pub fn desktop_validate_diagnostics(snapshot: Value) -> Result<String, String> {
 }
 
 #[tauri::command]
-pub fn desktop_open_diagnostics(app: tauri::AppHandle) -> Result<(), String> {
-    let local_data_root = app
-        .path()
-        .local_data_dir()
-        .map_err(|_| "desktop_diagnostics_unavailable".to_owned())?;
+pub fn desktop_open_diagnostics(
+    local_data_root: tauri::State<'_, LocalDataRoot>,
+) -> Result<(), String> {
     let diagnostics = local_data_root
+        .path()
         .join("Stock Desk")
         .join("v1.1")
         .join("diagnostics");

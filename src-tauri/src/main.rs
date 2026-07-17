@@ -3,6 +3,7 @@
 use tauri::Manager;
 
 mod app;
+mod data_root;
 mod diagnostics;
 mod exit;
 mod proxy;
@@ -94,6 +95,7 @@ fn main() {
             updater::desktop_confirm_update
         ])
         .setup(|app| {
+            data_root::setup(app)?;
             exit::setup(app);
             updater::setup(app);
             app::setup(app)?;

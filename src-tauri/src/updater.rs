@@ -20,6 +20,7 @@ use sha2::{Digest, Sha256};
 use tauri::{App, AppHandle, Emitter, Manager};
 use url::Url;
 
+use crate::data_root::LocalDataRoot;
 use crate::updater_journal::{
     self, PendingInstall, StartupReconcile, FAILED_INSTALL_FILE, INSTALLED_WATERMARK_FILE,
     PENDING_INSTALL_FILE,
@@ -630,14 +631,17 @@ fn failed_install_is_unresolved(
 }
 
 pub fn setup(app: &mut App) {
-    let paths = app.path().local_data_dir().ok().map(|root| {
-        let updater = root.join("Stock Desk").join("v1.1").join("updater");
-        UpdaterPaths {
-            installed_watermark: updater.join(INSTALLED_WATERMARK_FILE),
-            pending_install: updater.join(PENDING_INSTALL_FILE),
-            failed_install: updater.join(FAILED_INSTALL_FILE),
-            staging_directory: updater.join("staging"),
-        }
+    let updater = app
+        .state::<LocalDataRoot>()
+        .path()
+        .join("Stock Desk")
+        .join("v1.1")
+        .join("updater");
+    let paths = Some(UpdaterPaths {
+        installed_watermark: updater.join(INSTALLED_WATERMARK_FILE),
+        pending_install: updater.join(PENDING_INSTALL_FILE),
+        failed_install: updater.join(FAILED_INSTALL_FILE),
+        staging_directory: updater.join("staging"),
     });
     let config = runtime_config().expect("source-bound updater configuration must be valid");
     let controller = DesktopUpdateController::new(config, paths);

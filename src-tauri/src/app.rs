@@ -16,7 +16,10 @@ use tauri_plugin_shell::{
     ShellExt,
 };
 
-use crate::{exit::DesktopExitController, sidecar::SidecarAuthority, windows_job::WindowsJob};
+use crate::{
+    data_root::LocalDataRoot, exit::DesktopExitController, sidecar::SidecarAuthority,
+    windows_job::WindowsJob,
+};
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(45);
 const BOOTSTRAP_RELEASE_BYTE: &[u8] = b"\x01";
@@ -602,7 +605,7 @@ impl Handshake {
 }
 
 pub fn setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
-    let local_data_root = app.path().local_data_dir()?;
+    let local_data_root = app.state::<LocalDataRoot>().path().to_path_buf();
     // Finish all fallible host-only initialization before the gated process is
     // spawned. No error may strand a released child outside managed runtime.
     let client = build_proxy_client()?;
