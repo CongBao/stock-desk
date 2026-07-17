@@ -188,6 +188,8 @@ it('recovers persisted progress when a slow desktop request times out after comm
   const client = api(initial);
   vi.mocked(client.getState)
     .mockResolvedValueOnce(initial)
+    .mockResolvedValueOnce(initial)
+    .mockResolvedValueOnce(initial)
     .mockResolvedValueOnce(recovered);
   vi.mocked(client.synchronize).mockRejectedValueOnce(
     new Error('desktop proxy timed out after the sidecar committed'),
@@ -200,10 +202,14 @@ it('recovers persisted progress when a slow desktop request times out after comm
   );
 
   expect(
-    await screen.findByRole('heading', { name: '可以开始使用了' }),
+    await screen.findByRole(
+      'heading',
+      { name: '可以开始使用了' },
+      { timeout: 4_000 },
+    ),
   ).toBeVisible();
   expect(screen.queryByText('操作失败，请重试。')).toBeNull();
-  expect(client.getState).toHaveBeenCalledTimes(2);
+  expect(client.getState).toHaveBeenCalledTimes(4);
 });
 
 it('resumes from a persisted step without replaying welcome', async () => {

@@ -241,6 +241,29 @@ type WizardProps = {
   readonly onAdvanced: (state: OnboardingState) => void;
 };
 
+const PROGRESS_RECOVERY_ATTEMPTS = 30;
+const PROGRESS_RECOVERY_INTERVAL_MS = 1_000;
+
+async function recoverAdvancedProgress(
+  api: OnboardingApi,
+  revision: number,
+): Promise<OnboardingState | null> {
+  for (let attempt = 0; attempt < PROGRESS_RECOVERY_ATTEMPTS; attempt += 1) {
+    try {
+      const recovered = await api.getState();
+      if (recovered.revision > revision) return recovered;
+    } catch {
+      // The desktop sidecar may still be completing the original request.
+    }
+    if (attempt + 1 < PROGRESS_RECOVERY_ATTEMPTS) {
+      await new Promise<void>((resolve) =>
+        window.setTimeout(resolve, PROGRESS_RECOVERY_INTERVAL_MS),
+      );
+    }
+  }
+  return null;
+}
+
 function OnboardingWizard({
   api,
   initialState,
@@ -292,15 +315,11 @@ function OnboardingWizard({
       try {
         setState(await operation());
       } catch {
-        try {
-          const recovered = await api.getState();
-          if (recovered.revision > state.revision) {
-            setState(recovered);
-          } else {
-            setActionError(true);
-          }
-        } catch {
+        const recovered = await recoverAdvancedProgress(api, state.revision);
+        if (recovered === null) {
           setActionError(true);
+        } else {
+          setState(recovered);
         }
       } finally {
         setBusy(false);
