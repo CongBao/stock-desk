@@ -992,7 +992,6 @@ a {
   line-height: 1.7;
 }
 
-.onboarding-hero-icon,
 .onboarding-success-icon {
   display: grid;
   width: 56px;
@@ -1031,6 +1030,29 @@ a {
   flex-wrap: wrap;
   gap: 10px;
   margin-top: 28px;
+}
+
+.async-action-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.async-action-spinner {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  border: 2px solid currentcolor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: async-action-spin 0.7s linear infinite;
+}
+
+@keyframes async-action-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .onboarding-actions button,
@@ -6782,6 +6804,10 @@ a {
     transition-delay: 0ms !important;
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
+  }
+
+  .async-action-spinner {
+    animation: none;
   }
 }
 
