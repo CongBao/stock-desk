@@ -438,6 +438,73 @@ def test_context_creation_canonicalizes_mkdtemp_symlink_ancestors_before_use(
     assert alias_parent.is_symlink()
 
 
+def test_context_creation_removes_raw_root_when_canonicalization_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    raw_root = tmp_path / "raw-mkdtemp-root"
+    raw_root.mkdir()
+    monkeypatch.setattr(
+        macos_full_product_test.tempfile,
+        "mkdtemp",
+        lambda **_kwargs: os.fspath(raw_root),
+    )
+    original_resolve = Path.resolve
+
+    def fail_raw_resolve(path: Path, *, strict: bool = False) -> Path:
+        if path == raw_root:
+            raise RuntimeError("canonicalization failed")
+        return original_resolve(path, strict=strict)
+
+    monkeypatch.setattr(macos_full_product_test.Path, "resolve", fail_raw_resolve)
+
+    with pytest.raises(RuntimeError, match="canonicalization failed"):
+        macos_full_product_test._create_context(tmp_path / "output")
+
+    assert not raw_root.exists()
+
+
+@pytest.mark.parametrize("cleanup_mode", ["raises", "leaves-residual"])
+def test_context_creation_preserves_resolve_error_and_notes_raw_cleanup_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    cleanup_mode: str,
+) -> None:
+    raw_root = tmp_path / "unclean-raw-mkdtemp-root"
+    raw_root.mkdir()
+    monkeypatch.setattr(
+        macos_full_product_test.tempfile,
+        "mkdtemp",
+        lambda **_kwargs: os.fspath(raw_root),
+    )
+    original_resolve = Path.resolve
+
+    def fail_raw_resolve(path: Path, *, strict: bool = False) -> Path:
+        if path == raw_root:
+            raise RuntimeError("canonicalization failed")
+        return original_resolve(path, strict=strict)
+
+    monkeypatch.setattr(macos_full_product_test.Path, "resolve", fail_raw_resolve)
+    if cleanup_mode == "raises":
+        monkeypatch.setattr(
+            macos_full_product_test.shutil,
+            "rmtree",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("remove failed")),
+        )
+    else:
+        monkeypatch.setattr(
+            macos_full_product_test.shutil,
+            "rmtree",
+            lambda *_args, **_kwargs: None,
+        )
+
+    with pytest.raises(RuntimeError, match="canonicalization failed") as captured:
+        macos_full_product_test._create_context(tmp_path / "output")
+
+    notes = getattr(captured.value, "__notes__", [])
+    assert any("context cleanup failed" in note for note in notes)
+    assert any("temporary root remains" in note for note in notes)
+
+
 @pytest.mark.parametrize("cleanup_mode", ["raises", "leaves-residual"])
 def test_context_creation_preserves_original_error_and_notes_cleanup_failure(
     monkeypatch: pytest.MonkeyPatch,
