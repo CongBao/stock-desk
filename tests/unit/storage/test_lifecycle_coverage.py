@@ -32,7 +32,9 @@ def test_service_directory_rejects_unsafe_permissions(tmp_path: Path) -> None:
         lifecycle._service_directory(tmp_path)
 
 
-def test_restore_lock_translates_timeout(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_restore_lock_translates_timeout(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     class BusyLock:
         def __init__(self, path: Path, *, timeout: float) -> None:
             assert path == tmp_path / ".stock-desk-restore.lock"

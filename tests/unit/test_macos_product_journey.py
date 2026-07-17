@@ -1365,9 +1365,7 @@ def test_full_product_cli_accepts_pnpm_argument_separator() -> None:
         (lambda value: value.update(kline_cutoff="not-a-date"), "K-line"),
     ],
 )
-def test_evidence_schema_mutations_fail_closed(
-    mutation: object, message: str
-) -> None:
+def test_evidence_schema_mutations_fail_closed(mutation: object, message: str) -> None:
     payload = valid_payload()
     assert callable(mutation)
     mutation(payload)
@@ -1415,10 +1413,13 @@ def test_visual_analysis_accepts_dark_theme_and_normalizes_marker_spacing() -> N
         if (item.page, item.theme, item.layout) == ("market", "dark", "normal")
     )
 
-    assert validate_visual_analysis(
-        {"recognized_text": ["行情  工作区"], "median_luminance": 0.1},
-        state=state,
-    )["theme"] == "dark"
+    assert (
+        validate_visual_analysis(
+            {"recognized_text": ["行情  工作区"], "median_luminance": 0.1},
+            state=state,
+        )["theme"]
+        == "dark"
+    )
 
 
 @pytest.mark.parametrize(
@@ -1600,9 +1601,7 @@ def test_macos_preflight_and_source_identity_are_fail_closed(
     monkeypatch.setattr(
         macos_full_product_test.shutil, "which", lambda command: f"/bin/{command}"
     )
-    monkeypatch.setattr(
-        macos_tauri_support, "screen_is_locked", lambda: False
-    )
+    monkeypatch.setattr(macos_tauri_support, "screen_is_locked", lambda: False)
     macos_full_product_test._preflight()
 
     expected = ("a" * 40, "b" * 40)
@@ -1743,7 +1742,9 @@ def test_build_application_rejects_bundle_without_host(
         macos_full_product_test._build_application(context, 120, "a" * 40)
 
 
-@pytest.mark.parametrize("returncode,create_binary", [(0, True), (1, False), (0, False)])
+@pytest.mark.parametrize(
+    "returncode,create_binary", [(0, True), (1, False), (0, False)]
+)
 def test_visual_analyzer_build_requires_successful_compiler_output(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1786,9 +1787,7 @@ def test_screenshot_analyzer_rejects_failed_oversized_or_invalid_output(
     monkeypatch.setattr(
         macos_full_product_test.subprocess,
         "run",
-        lambda *_args, **_kwargs: SimpleNamespace(
-            returncode=returncode, stdout=stdout
-        ),
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=returncode, stdout=stdout),
     )
     with pytest.raises(MacOSJourneyError, match=message):
         macos_full_product_test._analyze_screenshot(
@@ -1835,7 +1834,9 @@ class _FakeTree:
 
 def _monotonic(monkeypatch: pytest.MonkeyPatch, *values: float) -> None:
     iterator = iter(values)
-    monkeypatch.setattr(macos_full_product_test.time, "monotonic", lambda: next(iterator))
+    monkeypatch.setattr(
+        macos_full_product_test.time, "monotonic", lambda: next(iterator)
+    )
     monkeypatch.setattr(macos_full_product_test.time, "sleep", lambda _seconds: None)
 
 
@@ -1901,7 +1902,8 @@ def test_ready_wait_rejects_missing_tree_invalid_record_and_missing_host(
     )
     _monotonic(monkeypatch, 0, 0.1)
     with pytest.raises(
-        macos_full_product_test.MacOSFullProductError, match="host process is unavailable"
+        macos_full_product_test.MacOSFullProductError,
+        match="host process is unavailable",
     ):
         macos_full_product_test._wait_for_ready_state(context, 1)
 
@@ -2425,11 +2427,14 @@ def test_full_product_rejects_incomplete_evidence_after_cleanup(
 ) -> None:
     output, _calls = _orchestration_fakes(monkeypatch, tmp_path)
     monkeypatch.setattr(
-        macos_full_product_test, "_await_operator_evidence", lambda *_args, **_kwargs: None
+        macos_full_product_test,
+        "_await_operator_evidence",
+        lambda *_args, **_kwargs: None,
     )
     try:
         with pytest.raises(
-            macos_full_product_test.MacOSFullProductError, match="evidence is incomplete"
+            macos_full_product_test.MacOSFullProductError,
+            match="evidence is incomplete",
         ):
             macos_full_product_test.run_full_product_test(output, 300)
     finally:
@@ -2499,7 +2504,9 @@ def test_final_report_failure_notes_evidence_and_report_cleanup_failures(
     monkeypatch.setattr(
         macos_full_product_test,
         "_remove_operator_intermediates",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("evidence cleanup failed")),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            OSError("evidence cleanup failed")
+        ),
     )
     monkeypatch.setattr(Path, "unlink", unlink)
     try:
