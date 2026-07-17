@@ -152,6 +152,39 @@ it('retries a previously verified install without checking or downloading again'
   expect(checkForUpdates).not.toHaveBeenCalled();
 });
 
+it('keeps the verified-install retry label stable while the request is pending', async () => {
+  const user = userEvent.setup();
+  const pending = deferred<void>();
+  const confirmUpdate = vi.fn(() => pending.promise);
+  const desktopAdapter = adapter({
+    confirmUpdate,
+    getUpdateState: vi.fn(() =>
+      Promise.resolve({
+        state: 'ready_to_install',
+        current_version: '1.1.0',
+        version: '1.2.0',
+      }),
+    ),
+  });
+  render(<DesktopUpdateNotice bridge={createDesktopBridge(desktopAdapter)} />);
+
+  const retry = await screen.findByRole('button', {
+    name: '重新尝试安装',
+  });
+  await user.click(retry);
+  expect(retry).toHaveAttribute('aria-busy', 'true');
+  expect(retry).toHaveTextContent('重新尝试安装');
+  expect(screen.getAllByTestId('async-action-spinner')).toHaveLength(1);
+  await user.click(retry);
+  expect(confirmUpdate).toHaveBeenCalledOnce();
+
+  await act(async () => {
+    pending.resolve();
+    await pending.promise;
+  });
+  await waitFor(() => expect(retry).not.toHaveAttribute('aria-busy'));
+});
+
 it('keeps a host-retained verified installer retryable after a failed handoff', async () => {
   const user = userEvent.setup();
   const ready = {

@@ -3,6 +3,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import { ApiError, type JsonValue } from '../../shared/api/client';
+import { AsyncActionButton } from '../../shared/components/AsyncActionButton';
 import { ModalDialog } from '../../shared/ModalDialog';
 import { marketApi, type MarketApi } from './marketApi';
 import type { MarketInstrumentSelection } from './marketStore';
@@ -853,13 +854,14 @@ export function MarketOperationsPanel({
             编辑当前股票池
           </button>
         ) : null}
-        <button
+        <AsyncActionButton
           type="button"
+          pending={createCatalog.isPending}
           disabled={createCatalog.isPending || activeNonterminal}
           onClick={() => createCatalog.mutate()}
         >
           更新证券目录
-        </button>
+        </AsyncActionButton>
       </div>
 
       {poolDialogOpen ? (
@@ -978,20 +980,19 @@ export function MarketOperationsPanel({
             </ol>
             <p
               ref={createStatusRef}
-              className="pool-mutation-status"
+              className="pool-mutation-status visually-hidden"
               role="status"
               tabIndex={-1}
-            >
-              {createBusy ? '正在创建股票池，请稍候。' : ''}
-            </p>
+            />
             {createIssue !== null ? (
               <p role="alert">
                 股票池创建失败，请检查成员。
                 {poolIssueText(createIssue) ?? ''}
               </p>
             ) : null}
-            <button
+            <AsyncActionButton
               type="button"
+              pending={createBusy}
               disabled={
                 createBusy ||
                 poolName.trim().length === 0 ||
@@ -999,8 +1000,8 @@ export function MarketOperationsPanel({
               }
               onClick={submitCreatePool}
             >
-              {createBusy ? '正在创建…' : '创建股票池'}
-            </button>
+              创建股票池
+            </AsyncActionButton>
             <button type="button" onClick={requestCreateClose}>
               取消
             </button>
@@ -1168,20 +1169,19 @@ export function MarketOperationsPanel({
             ) : null}
             <p
               ref={editStatusRef}
-              className="pool-mutation-status"
+              className="pool-mutation-status visually-hidden"
               role="status"
               tabIndex={-1}
-            >
-              {editBusy ? '正在保存股票池，请稍候。' : ''}
-            </p>
+            />
             {editIssue !== null ? (
               <p role="alert">
                 股票池保存失败，请检查成员。
                 {poolIssueText(editIssue) ?? ''}
               </p>
             ) : null}
-            <button
+            <AsyncActionButton
               type="button"
+              pending={editBusy}
               disabled={
                 editBusy ||
                 deletePool.isPending ||
@@ -1190,8 +1190,8 @@ export function MarketOperationsPanel({
               }
               onClick={submitUpdatePool}
             >
-              {editBusy ? '正在保存…' : '保存股票池'}
-            </button>
+              保存股票池
+            </AsyncActionButton>
             <button
               type="button"
               disabled={editBusy || deletePool.isPending}
@@ -1238,12 +1238,10 @@ export function MarketOperationsPanel({
               </p>
               <p
                 ref={deleteStatusRef}
-                className="pool-mutation-status"
+                className="pool-mutation-status visually-hidden"
                 role="status"
                 tabIndex={-1}
-              >
-                {deletePool.isPending ? '正在删除股票池，请稍候。' : ''}
-              </p>
+              />
               {deleteIssue !== null ? (
                 <p role="alert">
                   股票池删除失败，请重试或返回编辑。
@@ -1258,13 +1256,14 @@ export function MarketOperationsPanel({
               >
                 保留股票池
               </button>
-              <button
+              <AsyncActionButton
                 type="button"
+                pending={deletePool.isPending}
                 disabled={deletePool.isPending}
                 onClick={submitDeletePool}
               >
                 确认删除
-              </button>
+              </AsyncActionButton>
             </section>
           ) : null}
         </ModalDialog>
@@ -1314,13 +1313,14 @@ export function MarketOperationsPanel({
       <p>
         {period} · {adjustment} · {scopeSymbols.length} 只证券
       </p>
-      <button
+      <AsyncActionButton
         type="button"
+        pending={createUpdate.isPending}
         disabled={rangeInvalid || createUpdate.isPending || activeNonterminal}
         onClick={() => createUpdate.mutate()}
       >
         启动更新
-      </button>
+      </AsyncActionButton>
       {backtestHref === null ? null : (
         <Link className="secondary-action" to={backtestHref}>
           回测当前股票
@@ -1373,16 +1373,17 @@ export function MarketOperationsPanel({
             </p>
           ) : null}
           {visibleTask.cancelRequested && !terminal.has(visibleTask.status) ? (
-            <span>已请求取消，等待 Worker 确认</span>
+            <span>已请求取消，等待后台任务确认</span>
           ) : null}
           {!terminal.has(visibleTask.status) ? (
-            <button
+            <AsyncActionButton
               type="button"
+              pending={cancel.isPending}
               disabled={cancel.isPending}
               onClick={() => cancel.mutate()}
             >
               取消更新
-            </button>
+            </AsyncActionButton>
           ) : null}
           {items.data !== undefined ? (
             <ul aria-label="逐证券更新结果">
@@ -1418,13 +1419,14 @@ export function MarketOperationsPanel({
             onChange={(event) => setScheduleTime(event.currentTarget.value)}
           />
         </label>
-        <button
+        <AsyncActionButton
           type="button"
+          pending={schedule.isPending}
           disabled={rangeInvalid || schedule.isPending}
           onClick={() => schedule.mutate()}
         >
           保存每日计划
-        </button>
+        </AsyncActionButton>
         <p>计划保存的是当前证券列表快照，后续修改股票池不会静默改变范围。</p>
         {(schedule.data ?? savedSchedule.data) !== undefined ? (
           <p role="status">

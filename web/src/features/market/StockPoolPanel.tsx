@@ -1,6 +1,7 @@
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 
+import { AsyncActionButton } from '../../shared/components/AsyncActionButton';
 import { marketApi, type MarketApi, type MarketPoolDetail } from './marketApi';
 import type { MarketInstrumentSelection } from './marketStore';
 
@@ -232,14 +233,15 @@ export function StockPoolPanel({
       )}
 
       {pools.hasNextPage ? (
-        <button
+        <AsyncActionButton
           className="pool-more"
           type="button"
+          pending={pools.isFetchingNextPage}
           disabled={pools.isFetchingNextPage}
           onClick={() => void pools.fetchNextPage()}
         >
-          {pools.isFetchingNextPage ? '正在加载…' : '加载更多股票池'}
-        </button>
+          加载更多股票池
+        </AsyncActionButton>
       ) : null}
 
       {activePoolId === null ? (

@@ -1,4 +1,5 @@
 import { render, screen } from '@testing-library/react';
+import { createRef } from 'react';
 
 import { AsyncActionButton } from './AsyncActionButton';
 
@@ -31,4 +32,16 @@ it('does not present an ordinary disabled button as busy', () => {
   expect(button).toBeDisabled();
   expect(button).not.toHaveAttribute('aria-busy');
   expect(screen.queryByTestId('async-action-spinner')).toBeNull();
+});
+
+it('forwards the native button ref for focus restoration', () => {
+  const ref = createRef<HTMLButtonElement>();
+  render(
+    <AsyncActionButton ref={ref} pending={false}>
+      返回
+    </AsyncActionButton>,
+  );
+
+  ref.current?.focus();
+  expect(screen.getByRole('button', { name: '返回' })).toHaveFocus();
 });

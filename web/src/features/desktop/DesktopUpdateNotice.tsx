@@ -5,6 +5,7 @@ import type {
   DesktopUpdateState,
   TauriDesktopBridge,
 } from '../../app/desktopBridge';
+import { AsyncActionButton } from '../../shared/components/AsyncActionButton';
 import { ModalDialog } from '../../shared/ModalDialog';
 
 function progressLabel(state: DesktopUpdateState): string | null {
@@ -59,9 +60,14 @@ function UpdateConfirmation({
         >
           暂不安装
         </button>
-        <button type="button" disabled={pending} onClick={onConfirm}>
-          {pending ? '正在请求…' : '确认下载并安装'}
-        </button>
+        <AsyncActionButton
+          type="button"
+          pending={pending}
+          disabled={pending}
+          onClick={onConfirm}
+        >
+          确认下载并安装
+        </AsyncActionButton>
       </div>
     </ModalDialog>
   );
@@ -265,13 +271,14 @@ function TauriDesktopUpdateNotice({
               <p>{state.notes ?? '包含安全性与稳定性改进。'}</p>
             </div>
             <div className="desktop-update-actions">
-              <button
+              <AsyncActionButton
                 type="button"
+                pending={actionPending}
                 disabled={actionPending}
                 onClick={() => void dismiss()}
               >
                 稍后提醒
-              </button>
+              </AsyncActionButton>
               <button
                 ref={installTriggerRef}
                 type="button"
@@ -289,14 +296,15 @@ function TauriDesktopUpdateNotice({
               <p>安装尚未启动；当前版本和本地数据保持不变。</p>
             </div>
             <div className="desktop-update-actions">
-              <button
+              <AsyncActionButton
                 ref={installTriggerRef}
                 type="button"
+                pending={actionPending}
                 disabled={actionPending}
                 onClick={() => void retryVerifiedInstall()}
               >
-                {actionPending ? '正在请求…' : '重新尝试安装'}
-              </button>
+                重新尝试安装
+              </AsyncActionButton>
             </div>
           </>
         ) : state.state === 'failed' ? (
@@ -321,21 +329,23 @@ function TauriDesktopUpdateNotice({
                 关闭通知
               </button>
               {state.canRetry ? (
-                <button
+                <AsyncActionButton
                   type="button"
+                  pending={actionPending}
                   disabled={actionPending}
                   onClick={() => void retry()}
                 >
                   重新检查
-                </button>
+                </AsyncActionButton>
               ) : (
-                <button
+                <AsyncActionButton
                   type="button"
+                  pending={actionPending}
                   disabled={actionPending}
                   onClick={() => void openDiagnostics()}
                 >
                   打开诊断
-                </button>
+                </AsyncActionButton>
               )}
             </div>
           </>

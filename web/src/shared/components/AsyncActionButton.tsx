@@ -1,4 +1,4 @@
-import type { ButtonHTMLAttributes, ReactNode } from 'react';
+import { forwardRef, type ButtonHTMLAttributes, type ReactNode } from 'react';
 
 type AsyncActionButtonProps = Omit<
   ButtonHTMLAttributes<HTMLButtonElement>,
@@ -8,16 +8,17 @@ type AsyncActionButtonProps = Omit<
   readonly children: ReactNode;
 };
 
-export function AsyncActionButton({
-  pending,
-  disabled,
-  children,
-  className,
-  ...props
-}: AsyncActionButtonProps) {
+export const AsyncActionButton = forwardRef<
+  HTMLButtonElement,
+  AsyncActionButtonProps
+>(function AsyncActionButton(
+  { pending, disabled, children, className, ...props },
+  ref,
+) {
   return (
     <button
       {...props}
+      ref={ref}
       className={['async-action-button', className].filter(Boolean).join(' ')}
       disabled={disabled === true || pending}
       aria-busy={pending || undefined}
@@ -32,4 +33,4 @@ export function AsyncActionButton({
       <span>{children}</span>
     </button>
   );
-}
+});

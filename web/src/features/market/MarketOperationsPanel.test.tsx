@@ -190,8 +190,12 @@ it('keeps an in-flight create in one locked dialog session', async () => {
     expect.objectContaining({ signal: expect.any(AbortSignal) as unknown }),
   );
   const status = screen.getByRole('status');
-  expect(status).toHaveTextContent('正在创建股票池');
+  expect(status).toHaveClass('visually-hidden');
+  expect(status).toBeEmptyDOMElement();
   expect(status).toHaveFocus();
+  expect(submit).toHaveAttribute('aria-busy', 'true');
+  expect(submit).toHaveTextContent('创建股票池');
+  expect(screen.getAllByTestId('async-action-spinner')).toHaveLength(1);
   expect(submit).toBeDisabled();
 
   await user.click(screen.getByRole('button', { name: '取消' }));
@@ -243,8 +247,12 @@ it('keeps an in-flight update in one locked dialog session', async () => {
     expect.objectContaining({ signal: expect.any(AbortSignal) as unknown }),
   );
   const status = screen.getByRole('status');
-  expect(status).toHaveTextContent('正在保存股票池');
+  expect(status).toHaveClass('visually-hidden');
+  expect(status).toBeEmptyDOMElement();
   expect(status).toHaveFocus();
+  expect(submit).toHaveAttribute('aria-busy', 'true');
+  expect(submit).toHaveTextContent('保存股票池');
+  expect(screen.getAllByTestId('async-action-spinner')).toHaveLength(1);
   expect(submit).toBeDisabled();
 
   await user.click(screen.getByRole('button', { name: '取消' }));
@@ -524,10 +532,15 @@ it('locks a pending delete, reports failure, and allows a safe retry', async () 
   await waitFor(() => expect(deletePool).toHaveBeenCalledTimes(1));
 
   const status = screen.getByRole('status');
-  expect(status).toHaveTextContent('正在删除股票池');
+  expect(status).toHaveClass('visually-hidden');
+  expect(status).toBeEmptyDOMElement();
   expect(status).toHaveFocus();
   expect(screen.getByRole('button', { name: '保留股票池' })).toBeDisabled();
-  expect(screen.getByRole('button', { name: '确认删除' })).toBeDisabled();
+  const confirmDelete = screen.getByRole('button', { name: '确认删除' });
+  expect(confirmDelete).toHaveAttribute('aria-busy', 'true');
+  expect(confirmDelete).toHaveTextContent('确认删除');
+  expect(screen.getAllByTestId('async-action-spinner')).toHaveLength(1);
+  expect(confirmDelete).toBeDisabled();
 
   await user.keyboard('{Escape}');
   expect(

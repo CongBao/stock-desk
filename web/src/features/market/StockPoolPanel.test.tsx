@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { PropsWithChildren } from 'react';
 
@@ -84,6 +84,14 @@ const detail = {
   ],
 } as const satisfies MarketPoolDetail;
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
 it('uses shared theme tokens for pool rows, members, and kind labels', () => {
   const poolStyles = theme.slice(
     theme.indexOf('.pool-list button,'),
@@ -159,6 +167,44 @@ it('labels preset/custom pools and selects a member from pool detail', async () 
     name: '浦发银行',
     instrumentKind: 'stock',
   });
+});
+
+it('keeps the load-more label stable while fetching another pool page', async () => {
+  const user = userEvent.setup();
+  const pending = deferred<MarketPoolPage>();
+  const firstPage = { ...page, nextCursor: 'next-page' };
+  const getPools = vi
+    .fn()
+    .mockResolvedValueOnce(firstPage)
+    .mockImplementationOnce(() => pending.promise);
+
+  render(
+    <StockPoolPanel
+      api={{ getPools } as unknown as MarketApi}
+      onSelectInstrument={vi.fn()}
+      onSelectPool={vi.fn()}
+      selectedPoolId={null}
+    />,
+    { wrapper },
+  );
+
+  const loadMore = await screen.findByRole('button', {
+    name: '加载更多股票池',
+  });
+  await user.click(loadMore);
+  expect(loadMore).toHaveAttribute('aria-busy', 'true');
+  expect(loadMore).toHaveTextContent('加载更多股票池');
+  expect(screen.getAllByTestId('async-action-spinner')).toHaveLength(1);
+
+  await act(async () => {
+    pending.resolve({ items: [], nextCursor: null });
+    await pending.promise;
+  });
+  await waitFor(() =>
+    expect(
+      screen.queryByRole('button', { name: '加载更多股票池' }),
+    ).not.toBeInTheDocument(),
+  );
 });
 
 function members(count: number, prefix = '测试证券') {
