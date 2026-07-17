@@ -165,6 +165,47 @@ it('completes first run in four primary clicks and opens the default market', as
   });
 });
 
+it('recovers persisted progress when a slow desktop request times out after commit', async () => {
+  const initial = onboardingState('instrument_selection', {
+    source: {
+      id: 'akshare',
+      label: 'AKShare',
+      catalogManifestRecordId: digest,
+      catalogDatasetVersion: digest,
+      dataCutoff: null,
+    },
+  });
+  const recovered = onboardingState('synchronization', {
+    revision: 4,
+    source: {
+      id: 'baostock',
+      label: 'BaoStock',
+      catalogManifestRecordId: digest,
+      catalogDatasetVersion: digest,
+      dataCutoff: null,
+    },
+  });
+  const client = api(initial);
+  vi.mocked(client.getState)
+    .mockResolvedValueOnce(initial)
+    .mockResolvedValueOnce(recovered);
+  vi.mocked(client.synchronize).mockRejectedValueOnce(
+    new Error('desktop proxy timed out after the sidecar committed'),
+  );
+  const user = userEvent.setup();
+  renderGate(client);
+
+  await user.click(
+    await screen.findByRole('button', { name: '准备并继续' }),
+  );
+
+  expect(
+    await screen.findByRole('heading', { name: '可以开始使用了' }),
+  ).toBeVisible();
+  expect(screen.queryByText('操作失败，请重试。')).toBeNull();
+  expect(client.getState).toHaveBeenCalledTimes(2);
+});
+
 it('resumes from a persisted step without replaying welcome', async () => {
   renderGate(
     api(

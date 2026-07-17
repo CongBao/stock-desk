@@ -292,12 +292,21 @@ function OnboardingWizard({
       try {
         setState(await operation());
       } catch {
-        setActionError(true);
+        try {
+          const recovered = await api.getState();
+          if (recovered.revision > state.revision) {
+            setState(recovered);
+          } else {
+            setActionError(true);
+          }
+        } catch {
+          setActionError(true);
+        }
       } finally {
         setBusy(false);
       }
     },
-    [],
+    [api, state.revision],
   );
 
   async function runAction(action: OnboardingAction) {
