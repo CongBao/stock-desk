@@ -9,10 +9,63 @@ from typing import Any
 
 import pytest
 
-from scripts import macos_tauri_smoke
+from scripts import macos_tauri_smoke, macos_tauri_support
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_shared_macos_support_tracks_and_stops_only_verified_process_tree(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    host = tmp_path / "Stock Desk.app" / "Contents" / "MacOS" / "stock-desk-desktop"
+    sidecar = host.parent / "stock-desk-sidecar"
+    rows = {
+        42: macos_tauri_support.ProcessInfo(42, 1, os.fspath(host)),
+        43: macos_tauri_support.ProcessInfo(43, 42, os.fspath(sidecar)),
+        44: macos_tauri_support.ProcessInfo(
+            44, 43, f"{sidecar} --multiprocessing-fork"
+        ),
+        99: macos_tauri_support.ProcessInfo(99, 1, "/usr/bin/unrelated"),
+    }
+    monkeypatch.setattr(macos_tauri_support, "process_table", lambda: rows.copy())
+    signals: list[tuple[int, int]] = []
+
+    def kill(pid: int, sent_signal: int) -> None:
+        signals.append((pid, sent_signal))
+        rows.pop(pid, None)
+
+    monkeypatch.setattr(macos_tauri_support.os, "kill", kill)
+    tree = macos_tauri_support.VerifiedProcessTree(
+        root_pid=42,
+        host_path=host,
+        allowed_root=tmp_path,
+    )
+
+    tree.observe()
+    assert tree.sidecar_pid() == 43
+    tree.terminate(timeout_seconds=1)
+
+    assert [pid for pid, _sent_signal in signals] == [44, 43, 42]
+    assert 99 in rows
+
+
+def test_shared_macos_support_ignores_pid_reuse_and_out_of_root_descendants(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    host = tmp_path / "Stock Desk.app" / "Contents" / "MacOS" / "stock-desk-desktop"
+    rows = {
+        42: macos_tauri_support.ProcessInfo(42, 1, os.fspath(host)),
+        43: macos_tauri_support.ProcessInfo(43, 42, "/usr/bin/not-stock-desk"),
+    }
+    monkeypatch.setattr(macos_tauri_support, "process_table", lambda: rows.copy())
+    tree = macos_tauri_support.VerifiedProcessTree(42, host, tmp_path)
+
+    tree.observe()
+    assert tree.sidecar_pid() is None
+    rows[42] = macos_tauri_support.ProcessInfo(42, 1, "/usr/bin/reused")
+
+    tree.verify_absent()
 
 
 def _operator_action_records() -> list[dict[str, object]]:
@@ -156,12 +209,8 @@ def test_macos_tauri_smoke_runs_a_real_native_window_and_cleans_up() -> None:
 
 
 def test_macos_tauri_smoke_keeps_abnormal_cleanup_owned_by_the_harness() -> None:
-    smoke = (ROOT / "scripts" / "macos_tauri_smoke.py").read_text(
-        encoding="utf-8"
-    )
-    exit_source = (ROOT / "src-tauri" / "src" / "exit.rs").read_text(
-        encoding="utf-8"
-    )
+    smoke = (ROOT / "scripts" / "macos_tauri_smoke.py").read_text(encoding="utf-8")
+    exit_source = (ROOT / "src-tauri" / "src" / "exit.rs").read_text(encoding="utf-8")
 
     graceful_wait = smoke.index("_wait_for_host_exit(host_path, 10)")
     cleanup_boundary = smoke.index("finally:", graceful_wait)
