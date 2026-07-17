@@ -42,6 +42,10 @@ it('shows stock-desk name version and repository in about information', async ()
     </QueryClientProvider>,
   );
 
+  expect(screen.getByRole('img', { name: 'Stock Desk' })).toHaveAttribute(
+    'src',
+    '/brand-icon.svg',
+  );
   await user.click(screen.getByRole('button', { name: '关于 stock-desk' }));
 
   const about = screen.getByRole('dialog', { name: '关于 stock-desk' });

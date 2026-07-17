@@ -35,6 +35,7 @@ import { useSystemStatus } from '../shared/api/useSystemStatus';
 import type { WorkerState } from '../shared/api/useSystemStatus';
 import { ContextPanel } from './ContextPanel';
 import { AppIcon } from './AppIcon';
+import { BrandIcon } from './BrandIcon';
 import { NotFoundPage } from './NotFoundPage';
 import { RouteEffects } from './RouteEffects';
 import { appRoutes } from './routes';
@@ -99,8 +100,8 @@ function NavigationRail({
   return (
     <div className="navigation-rail">
       <div className="brand-lockup">
-        <span className="brand-mark" aria-hidden="true">
-          <AppIcon name="market" />
+        <span className="brand-mark">
+          <BrandIcon />
         </span>
         <div>
           {collapsed ? null : <h1>stock-desk</h1>}

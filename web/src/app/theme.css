@@ -278,27 +278,19 @@ a {
   flex: 0 0 38px;
   height: 38px;
   place-items: center;
-  border: 1px solid var(--accent);
   border-radius: 9px;
-  color: var(--on-accent);
-  background: var(--brand-tile-surface);
-  font-size: 11px;
-  font-weight: 850;
-  letter-spacing: 0.1em;
-  box-shadow: inset 0 0 22px rgba(56, 189, 248, 0.05);
 }
 
-.brand-mark svg,
+.brand-mark img,
 .nav-icon svg,
 .navigation-toggle svg {
   width: 20px;
   height: 20px;
 }
 
-.brand-mark svg {
-  width: 22px;
-  height: 22px;
-  stroke-width: 2.2;
+.brand-mark img {
+  width: 38px;
+  height: 38px;
 }
 
 .brand-lockup h1 {
