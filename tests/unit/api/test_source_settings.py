@@ -89,7 +89,7 @@ DEFAULT_PRIORITIES = {
     "minute_bars": ["tushare", "baostock", "eastmoney"],
     "instruments": ["tushare", "akshare", "baostock", "eastmoney"],
     "trading_calendar": ["tushare", "baostock", "eastmoney"],
-    "execution_status": ["tushare", "baostock"],
+    "execution_status": ["tushare", "baostock", "akshare"],
     "fundamentals": ["tushare", "akshare"],
     "announcements": ["tushare", "akshare"],
     "news": ["akshare"],

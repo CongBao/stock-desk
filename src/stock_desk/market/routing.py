@@ -82,6 +82,7 @@ class SourcePriorities(BaseModel):
     execution_status: tuple[ProviderId, ...] = (
         ProviderId.TUSHARE,
         ProviderId.BAOSTOCK,
+        ProviderId.AKSHARE,
     )
 
     @model_validator(mode="after")

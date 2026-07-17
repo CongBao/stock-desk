@@ -132,4 +132,5 @@ def test_default_execution_status_routes_authoritative_then_basic_fallback() -> 
     assert SourcePriorities().execution_status == (
         ProviderId.TUSHARE,
         ProviderId.BAOSTOCK,
+        ProviderId.AKSHARE,
     )

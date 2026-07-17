@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-from collections.abc import Hashable
-from datetime import date, datetime
+from collections.abc import Callable, Hashable
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Protocol, Self, cast
 
 from stock_desk.market.providers.base import (
     CalendarFetchOutcome,
     Clock,
     InstrumentFetchOutcome,
+    ProviderClientError,
     ProviderInvalidResponse,
     ProviderNoData,
     ProviderOperation,
@@ -40,7 +41,14 @@ from stock_desk.market.providers.sdk import (
     required_sdk_callable,
     validate_sdk_chunk_rows,
 )
-from stock_desk.market.execution_status import ExecutionStatusQuery
+from stock_desk.market.execution_status import (
+    ExecutionStatusDay,
+    ExecutionStatusEvidenceLevel,
+    ExecutionStatusQuery,
+    RawExecutionOpen,
+    SuspensionState,
+    materialize_execution_status,
+)
 from stock_desk.market.providers.execution_status import (
     ExecutionStatusFailure,
     ExecutionStatusFetchOutcome,
@@ -68,6 +76,8 @@ from stock_desk.market.types import (
 class AkShareClient(Protocol):
     def stock_zh_a_hist(self, **kwargs: object) -> object: ...
 
+    def stock_zh_a_daily(self, **kwargs: object) -> object: ...
+
     def stock_zh_a_hist_min_em(self, **kwargs: object) -> object: ...
 
     def stock_info_a_code_name(self) -> object: ...
@@ -75,6 +85,8 @@ class AkShareClient(Protocol):
     def stock_zh_index_spot_sina(self) -> object: ...
 
     def stock_zh_index_daily(self, **kwargs: object) -> object: ...
+
+    def tool_trade_date_hist_sina(self) -> object: ...
 
 
 class AkShareSdkFacade:
@@ -94,9 +106,59 @@ class AkShareSdkFacade:
         period = _SDK_PERIODS.get(raw_period)
         if period is None:
             raise ProviderUnavailable()
+        try:
+            return self._complete_stock_rows(
+                fetch=required_sdk_callable(self._module, "stock_zh_a_hist"),
+                kwargs=kwargs,
+                coverage_start=coverage_start,
+                coverage_end=coverage_end,
+                period=period,
+                temporal_identity=_sdk_temporal_identity,
+            )
+        except Exception:
+            if period is not Period.DAY:
+                raise
+            raw_symbol = kwargs.get("symbol")
+            if not isinstance(raw_symbol, str):
+                raise ProviderUnavailable()
+            exchange = _stock_exchange(raw_symbol)
+            if exchange not in {Exchange.SH, Exchange.SZ}:
+                raise ProviderUnsupported()
+            return self.stock_zh_a_daily(
+                symbol=f"{exchange.value.lower()}{raw_symbol}",
+                adjust=kwargs.get("adjust", ""),
+                _coverage_start=coverage_start,
+                _coverage_end=coverage_end,
+            )
+
+    def stock_zh_a_daily(self, **kwargs: object) -> object:
+        coverage_start = kwargs.pop("_coverage_start", None)
+        coverage_end = kwargs.pop("_coverage_end", None)
+        if not isinstance(coverage_start, datetime) or not isinstance(
+            coverage_end, datetime
+        ):
+            raise ProviderUnavailable()
+        return self._complete_stock_rows(
+            fetch=required_sdk_callable(self._module, "stock_zh_a_daily"),
+            kwargs=kwargs,
+            coverage_start=coverage_start,
+            coverage_end=coverage_end,
+            period=Period.DAY,
+            temporal_identity=_sdk_sina_temporal_identity,
+        )
+
+    @staticmethod
+    def _complete_stock_rows(
+        *,
+        fetch: Callable[..., object],
+        kwargs: dict[str, object],
+        coverage_start: datetime,
+        coverage_end: datetime,
+        period: Period,
+        temporal_identity: Callable[[dict[str, object]], tuple[date, Hashable]],
+    ) -> object:
         chunks: list[tuple[dict[str, object], ...]] = []
         seen_identities: set[Hashable] = set()
-        fetch = required_sdk_callable(self._module, "stock_zh_a_hist")
         for chunk_start, chunk_end in inclusive_date_chunks(
             coverage_start,
             coverage_end,
@@ -117,7 +179,7 @@ class AkShareSdkFacade:
                 chunk_rows,
                 chunk_start=chunk_start,
                 chunk_end=chunk_end,
-                temporal_identity=_sdk_temporal_identity,
+                temporal_identity=temporal_identity,
                 seen_identities=seen_identities,
             )
             chunks.append(chunk_rows)
@@ -177,11 +239,17 @@ class AkShareSdkFacade:
             coverage_end=coverage_end,
         )
 
+    def tool_trade_date_hist_sina(self) -> object:
+        return call_sdk(
+            required_sdk_callable(self._module, "tool_trade_date_hist_sina")
+        )
+
 
 _PERIODS = {Period.DAY: "daily", Period.WEEK: "weekly"}
 _SDK_PERIODS = {value: key for key, value in _PERIODS.items()}
 _SDK_BAR_ROW_LIMIT = 1_000_000
 _BAR_COLUMNS = frozenset({"日期", "股票代码", "开盘", "最高", "最低", "收盘", "成交量"})
+_SINA_BAR_COLUMNS = frozenset({"date", "open", "high", "low", "close", "volume"})
 _INDEX_BAR_COLUMNS = frozenset({"date", "open", "high", "low", "close", "volume"})
 _B_SHARE_PREFIXES = ("200", "900")
 
@@ -194,6 +262,13 @@ def _sdk_temporal_identity(row: dict[str, object]) -> tuple[date, Hashable]:
 
 
 def _sdk_index_temporal_identity(row: dict[str, object]) -> tuple[date, Hashable]:
+    raw_day = parse_date(row["date"])
+    if raw_day.weekday() > 4:
+        raise ProviderInvalidResponse()
+    return raw_day, raw_day
+
+
+def _sdk_sina_temporal_identity(row: dict[str, object]) -> tuple[date, Hashable]:
     raw_day = parse_date(row["date"])
     if raw_day.weekday() > 4:
         raise ProviderInvalidResponse()
@@ -221,8 +296,10 @@ class AkShareProvider:
     def from_sdk(cls, *, clock: Clock) -> Self:
         module = import_optional_sdk("akshare")
         required_sdk_callable(module, "stock_zh_a_hist")
+        required_sdk_callable(module, "stock_zh_a_daily")
         required_sdk_callable(module, "stock_zh_index_daily")
         required_sdk_callable(module, "stock_zh_index_spot_sina")
+        required_sdk_callable(module, "tool_trade_date_hist_sina")
         return cls(client=AkShareSdkFacade(module=module), clock=clock)
 
     def capabilities(self) -> CapabilityReport:
@@ -230,19 +307,17 @@ class AkShareProvider:
             source=self.name,
             state=CapabilityState.AVAILABLE,
             capabilities=frozenset(
-                {MarketCapability.BARS, MarketCapability.INSTRUMENTS}
+                {
+                    MarketCapability.BARS,
+                    MarketCapability.EXECUTION_STATUS,
+                    MarketCapability.INSTRUMENTS,
+                }
             ),
             available_periods=frozenset({Period.DAY, Period.WEEK}),
             available_adjustments=frozenset(Adjustment),
             markets=frozenset(Exchange),
             data_cutoff=None,
             gaps=(
-                CapabilityGap(
-                    capability=MarketCapability.EXECUTION_STATUS,
-                    state=CapabilityState.UNSUPPORTED,
-                    reason=FailureReason.UNSUPPORTED,
-                    detail="AKShare does not prove historical suspension and limits",
-                ),
                 CapabilityGap(
                     capability=MarketCapability.TRADING_CALENDAR,
                     state=CapabilityState.UNSUPPORTED,
@@ -255,12 +330,125 @@ class AkShareProvider:
     def fetch_execution_status(
         self, query: ExecutionStatusQuery
     ) -> ExecutionStatusFetchOutcome:
-        return ExecutionStatusFailure(
-            query=query,
-            source=self.name,
-            reason=FailureReason.UNSUPPORTED,
-            detail="provider does not support authoritative execution status",
-        )
+        if query.period is Period.MIN60 or query.exchange is Exchange.BJ:
+            return ExecutionStatusFailure(
+                query=query,
+                source=self.name,
+                reason=FailureReason.UNSUPPORTED,
+                detail="provider does not support this execution-status request",
+            )
+        try:
+            calendar_rows = records_from_table(
+                self._client.tool_trade_date_hist_sina(),
+                required=frozenset({"trade_date"}),
+            )
+            all_trade_days = tuple(
+                parse_date(row["trade_date"]) for row in calendar_rows
+            )
+            require_unique(all_trade_days)
+            if (
+                not all_trade_days
+                or min(all_trade_days) > query.start
+                or max(all_trade_days) < query.end - timedelta(days=1)
+            ):
+                raise ProviderInvalidResponse()
+            open_days = frozenset(
+                day for day in all_trade_days if query.start <= day < query.end
+            )
+            if not open_days:
+                raise ProviderNoData()
+
+            coverage_start = datetime.combine(
+                query.start, time.min, tzinfo=MARKET_TIMEZONE
+            ).astimezone(timezone.utc)
+            coverage_end = datetime.combine(
+                query.end, time.min, tzinfo=MARKET_TIMEZONE
+            ).astimezone(timezone.utc)
+            response = self._client.stock_zh_a_daily(
+                symbol=f"{query.exchange.value.lower()}{query.symbol[:6]}",
+                adjust="",
+                _coverage_start=coverage_start,
+                _coverage_end=coverage_end,
+            )
+            table = validated_bar_table(
+                response,
+                BarQuery(
+                    symbol=query.symbol,
+                    instrument_kind=InstrumentKind.STOCK,
+                    period=Period.DAY,
+                    adjustment=Adjustment.NONE,
+                    start=coverage_start,
+                    end=coverage_end,
+                ),
+            )
+            rows = records_from_table(table, required=_SINA_BAR_COLUMNS)
+            raw_opens_by_day: dict[date, object] = {}
+            for row in rows:
+                day = parse_date(row["date"])
+                if (
+                    day in raw_opens_by_day
+                    or share_volume(row["volume"], lot_size=1) <= 0
+                ):
+                    raise ProviderInvalidResponse()
+                raw_opens_by_day[day] = row["open"]
+            if frozenset(raw_opens_by_day) != open_days:
+                raise ProviderInvalidResponse()
+
+            days = tuple(
+                ExecutionStatusDay(
+                    day=day,
+                    exchange=query.exchange,
+                    is_exchange_open=day in open_days,
+                    suspension_state=(
+                        SuspensionState.NORMAL
+                        if day in open_days
+                        else SuspensionState.NOT_APPLICABLE
+                    ),
+                    raw_upper_limit=None,
+                    raw_lower_limit=None,
+                )
+                for offset in range((query.end - query.start).days)
+                for day in (query.start + timedelta(days=offset),)
+            )
+            raw_opens = tuple(
+                RawExecutionOpen(
+                    timestamp=datetime.combine(
+                        day, time(9, 30), tzinfo=MARKET_TIMEZONE
+                    ),
+                    trading_day=day,
+                    raw_open=decimal_price(raw_opens_by_day[day], Adjustment.NONE),
+                )
+                for day in sorted(open_days)
+            )
+            observed_at = aware_now(self._clock)
+            return materialize_execution_status(
+                query=query,
+                days=days,
+                raw_opens=raw_opens,
+                source=self.name,
+                fetched_at=observed_at,
+                data_cutoff=min(
+                    period_bounds(max(open_days), Period.DAY)[1], observed_at
+                ),
+                evidence_level=ExecutionStatusEvidenceLevel.BASIC_NO_PRICE_LIMITS,
+            )
+        except Exception as error:
+            reason = (
+                error.reason
+                if isinstance(error, ProviderClientError)
+                else FailureReason.INVALID_RESPONSE
+            )
+            detail = (
+                error.safe_detail
+                if isinstance(error, ProviderClientError)
+                else "provider response is invalid"
+            )
+            return ExecutionStatusFailure(
+                query=query,
+                source=self.name,
+                reason=reason,
+                detail=detail,
+            )
 
     def fetch_bars(self, query: BarQuery) -> BarFetchOutcome:
         if query.instrument_kind is InstrumentKind.INDEX:
@@ -295,12 +483,24 @@ class AkShareProvider:
                 _coverage_end=query.end,
             )
             table = validated_bar_table(response, query)
-            rows = records_from_table(table, required=_BAR_COLUMNS)
+            rows = records_from_table(table, required=frozenset())
+            if not rows:
+                raise ProviderNoData()
+            uses_primary_schema = all(_BAR_COLUMNS.issubset(row) for row in rows)
+            uses_sina_schema = all(_SINA_BAR_COLUMNS.issubset(row) for row in rows)
+            if uses_primary_schema == uses_sina_schema:
+                raise ProviderInvalidResponse()
             normalized: list[tuple[Bar, datetime]] = []
             for row in rows:
-                if row["股票代码"] != query.symbol[:6]:
+                if uses_primary_schema and row["股票代码"] != query.symbol[:6]:
                     raise ValueError
-                timestamp, endpoint = period_bounds(row["日期"], query.period)
+                date_field = "日期" if uses_primary_schema else "date"
+                timestamp, endpoint = period_bounds(row[date_field], query.period)
+                open_field = "开盘" if uses_primary_schema else "open"
+                high_field = "最高" if uses_primary_schema else "high"
+                low_field = "最低" if uses_primary_schema else "low"
+                close_field = "收盘" if uses_primary_schema else "close"
+                volume_field = "成交量" if uses_primary_schema else "volume"
                 normalized.append(
                     (
                         Bar(
@@ -308,11 +508,14 @@ class AkShareProvider:
                             timestamp=timestamp,
                             period=query.period,
                             adjustment=query.adjustment,
-                            open=decimal_price(row["开盘"], query.adjustment),
-                            high=decimal_price(row["最高"], query.adjustment),
-                            low=decimal_price(row["最低"], query.adjustment),
-                            close=decimal_price(row["收盘"], query.adjustment),
-                            volume=share_volume(row["成交量"], lot_size=100),
+                            open=decimal_price(row[open_field], query.adjustment),
+                            high=decimal_price(row[high_field], query.adjustment),
+                            low=decimal_price(row[low_field], query.adjustment),
+                            close=decimal_price(row[close_field], query.adjustment),
+                            volume=share_volume(
+                                row[volume_field],
+                                lot_size=100 if uses_primary_schema else 1,
+                            ),
                             status=TradingStatus.UNKNOWN,
                         ),
                         endpoint,

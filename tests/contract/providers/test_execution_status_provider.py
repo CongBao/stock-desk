@@ -130,7 +130,11 @@ def test_only_providers_with_explicit_execution_evidence_advertise_status(
     provider, _client = provider_case.build()
     report = provider.capabilities()
 
-    if provider_case.source in {ProviderId.TUSHARE, ProviderId.BAOSTOCK}:
+    if provider_case.source in {
+        ProviderId.TUSHARE,
+        ProviderId.AKSHARE,
+        ProviderId.BAOSTOCK,
+    }:
         assert MarketCapability.EXECUTION_STATUS in report.capabilities
     else:
         assert MarketCapability.EXECUTION_STATUS not in report.capabilities

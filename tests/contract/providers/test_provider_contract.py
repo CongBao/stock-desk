@@ -132,9 +132,13 @@ def test_provider_implements_protocol_and_truthful_static_capabilities(
     assert report.data_cutoff is None
     if provider_case.source is ProviderId.AKSHARE:
         assert report.capabilities == frozenset(
-            {MarketCapability.BARS, MarketCapability.INSTRUMENTS}
+            {
+                MarketCapability.BARS,
+                MarketCapability.EXECUTION_STATUS,
+                MarketCapability.INSTRUMENTS,
+            }
         )
-        assert len(report.gaps) == 2
+        assert len(report.gaps) == 1
         gap = next(
             item
             for item in report.gaps

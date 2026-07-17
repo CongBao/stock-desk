@@ -568,6 +568,30 @@ def test_isolated_state_independently_confirms_product_evidence(tmp_path: Path) 
     }
 
 
+def test_isolated_state_accepts_akshare_basic_execution_evidence(
+    tmp_path: Path,
+) -> None:
+    database = _isolated_database(tmp_path)
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE execution_status_dataset SET source = 'akshare', "
+            "snapshot_json = replace(snapshot_json, 'baostock', 'akshare')"
+        )
+        connection.execute(
+            "UPDATE execution_status_routing_manifest SET manifest_json = "
+            "replace(manifest_json, 'baostock', 'akshare')"
+        )
+        connection.execute(
+            "UPDATE backtest_run SET snapshot_json = "
+            "replace(snapshot_json, 'baostock', 'akshare')"
+        )
+    evidence = validate_operator_evidence(valid_payload(), identity=IDENTITY)
+
+    result = validate_isolated_product_state(tmp_path, evidence)
+
+    assert result["execution_status_evidence_level"] == "basic_no_price_limits"
+
+
 def test_isolated_state_rejects_report_identity_not_bound_to_persisted_run(
     tmp_path: Path,
 ) -> None:
@@ -2258,7 +2282,7 @@ def test_evidence_rejects_duplicate_visual_hash_and_unreferenced_png() -> None:
         (
             "UPDATE backtest_run SET snapshot_json = replace("
             "snapshot_json, 'basic_no_price_limits', 'authoritative')",
-            "not BaoStock basic evidence",
+            "not verified basic evidence",
         ),
     ],
 )

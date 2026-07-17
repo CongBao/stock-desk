@@ -684,11 +684,11 @@ def validate_isolated_product_state(
                 "execution_status_evidence_level"
             )
             if (
-                status_source != "baostock"
+                status_source not in {"baostock", "akshare"}
                 or execution_status_evidence_level != "basic_no_price_limits"
             ):
                 raise MacOSJourneyError(
-                    "isolated execution-status evidence is not BaoStock basic evidence"
+                    "isolated execution-status evidence is not verified basic evidence"
                 )
 
             status_dataset_row = connection.execute(

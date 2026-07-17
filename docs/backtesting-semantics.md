@@ -66,6 +66,7 @@ Execution uses the pinned historical status companion rather than inferring trad
 
 - `authoritative` (Tushare): explicit exchange calendar, suspension, and historical side-specific upper/lower price-limit evidence;
 - `basic_no_price_limits` (BaoStock): explicit exchange calendar and `tradestatus`, without historical price-limit evidence;
+- `basic_no_price_limits` (AKShare, daily/weekly fallback): Sina trade dates plus exactly one positive-volume unadjusted daily row for every declared open day; any gap rejects the entire status snapshot rather than inferring a suspension;
 - `mixed` (pool report only): at least one runnable symbol uses the basic grade.
 
 Both strict and basic execution apply:
@@ -118,4 +119,4 @@ Selecting a trade opens a pinned K-line main chart and formula subchart, plus th
 
 ## Known limitations
 
-V1 intentionally does not model order-book depth, latency, partial fills, cash availability, dividends, financing, short selling, shared portfolio capital, broker-specific fees, or live trading. Adjustment choice is fixed per run; price comparisons and returns use that frozen convention. BaoStock basic execution does not check historical price limits and may therefore overestimate fill opportunities; use Tushare authoritative status when strict price-limit evidence is required. Historical results and estimated win rate are descriptive samples, not investment advice or a guarantee of future performance.
+V1 intentionally does not model order-book depth, latency, partial fills, cash availability, dividends, financing, short selling, shared portfolio capital, broker-specific fees, or live trading. Adjustment choice is fixed per run; price comparisons and returns use that frozen convention. BaoStock and AKShare basic execution do not check historical price limits and may therefore overestimate fill opportunities; AKShare also rejects ranges containing a missing open-day stock row instead of classifying the missing day as a suspension. Use Tushare authoritative status when strict price-limit evidence is required. Historical results and estimated win rate are descriptive samples, not investment advice or a guarantee of future performance.

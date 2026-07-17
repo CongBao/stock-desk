@@ -12,6 +12,12 @@ import pytest
 from requests.exceptions import Timeout as RequestsTimeout
 from urllib3.exceptions import TimeoutError as Urllib3Timeout
 
+from stock_desk.market.execution_status import (
+    ExecutionStatusEvidenceLevel,
+    ExecutionStatusQuery,
+    ExecutionStatusSnapshot,
+    SuspensionState,
+)
 from stock_desk.market.providers.akshare import AkShareProvider
 from stock_desk.market.providers.baostock import BaoStockProvider
 from stock_desk.market.providers.base import (
@@ -22,6 +28,7 @@ from stock_desk.market.providers.base import (
     ProviderUnavailable,
 )
 from stock_desk.market.providers.sdk import inclusive_date_chunks
+from stock_desk.market.providers.execution_status import ExecutionStatusFailure
 from stock_desk.market.providers.tushare import TushareProvider
 from stock_desk.market.types import (
     Adjustment,
@@ -32,6 +39,7 @@ from stock_desk.market.types import (
     FailureReason,
     InstrumentKind,
     Period,
+    ProviderId,
 )
 from tests.contract.providers.conftest import (
     FETCHED_AT,
@@ -139,18 +147,44 @@ class FakeAkShareModule:
         self,
         *,
         chunk_rows: list[list[dict[str, object]]] | None = None,
+        bar_error: Exception | None = None,
+        daily_rows: list[dict[str, object]] | None = None,
+        trade_dates: list[dict[str, object]] | None = None,
     ) -> None:
         self.fixture = load_fixture("akshare")
         self.bar_calls: list[dict[str, object]] = []
+        self.daily_calls: list[dict[str, object]] = []
         self.index_bar_calls: list[dict[str, object]] = []
+        self.trade_date_calls = 0
         self.chunk_rows = chunk_rows
+        self.bar_error = bar_error
+        self.daily_rows = daily_rows
+        self.trade_dates = trade_dates
 
     def stock_zh_a_hist(self, **kwargs: object) -> object:
         self.bar_calls.append(kwargs)
+        if self.bar_error is not None:
+            raise self.bar_error
         if self.chunk_rows is not None:
             return self.chunk_rows[len(self.bar_calls) - 1]
         key = {"daily": "1d", "weekly": "1w"}[str(kwargs["period"])]
         return self.fixture["bars"][key]
+
+    def stock_zh_a_daily(self, **kwargs: object) -> object:
+        self.daily_calls.append(kwargs)
+        if self.daily_rows is not None:
+            return self.daily_rows
+        return [
+            {
+                "date": row["日期"],
+                "open": row["开盘"],
+                "high": row["最高"],
+                "low": row["最低"],
+                "close": row["收盘"],
+                "volume": int(str(row["成交量"])) * 100,
+            }
+            for row in self.fixture["bars"]["1d"]
+        ]
 
     def stock_info_a_code_name(self) -> object:
         return self.fixture["instruments"]
@@ -163,7 +197,8 @@ class FakeAkShareModule:
         return self.fixture["index_bars"]
 
     def tool_trade_date_hist_sina(self) -> object:
-        return self.fixture["calendar"]
+        self.trade_date_calls += 1
+        return self.trade_dates or self.fixture["calendar"]
 
 
 class FakeBaoStockModule:
@@ -332,6 +367,146 @@ def test_akshare_sdk_facade_uses_explicit_index_endpoint_and_provider_code(
     assert isinstance(outcome, BarResult)
     assert module.index_bar_calls == [{"symbol": "sh000001"}]
     assert module.bar_calls == []
+
+
+def test_akshare_daily_bars_fall_back_to_sina_with_share_volume(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = FakeAkShareModule(
+        bar_error=ConnectionError("eastmoney unavailable"),
+        daily_rows=[
+            {
+                "date": "2024-07-01",
+                "open": "10.00",
+                "high": "10.50",
+                "low": "9.90",
+                "close": "10.20",
+                "volume": "1234",
+            },
+            {
+                "date": "2024-07-02",
+                "open": "10.20",
+                "high": "10.80",
+                "low": "10.10",
+                "close": "10.60",
+                "volume": "5678",
+            },
+        ],
+    )
+    install_fake_module(monkeypatch, "akshare", module)
+    provider = AkShareProvider.from_sdk(clock=lambda: FETCHED_AT)
+
+    outcome = provider.fetch_bars(bar_query())
+
+    assert isinstance(outcome, BarResult)
+    assert tuple(item.volume for item in outcome.bars) == (1234, 5678)
+    assert module.daily_calls == [
+        {
+            "symbol": "sh600000",
+            "start_date": "20240701",
+            "end_date": "20240702",
+            "adjust": "",
+        }
+    ]
+
+
+def test_akshare_weekly_bars_do_not_use_daily_sina_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = FakeAkShareModule(bar_error=ConnectionError("eastmoney unavailable"))
+    install_fake_module(monkeypatch, "akshare", module)
+    provider = AkShareProvider.from_sdk(clock=lambda: FETCHED_AT)
+
+    outcome = provider.fetch_bars(bar_query(period=Period.WEEK))
+
+    assert isinstance(outcome, BarFailure)
+    assert module.daily_calls == []
+
+
+def test_akshare_materializes_basic_status_only_from_complete_sina_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = FakeAkShareModule(
+        daily_rows=[
+            {
+                "date": "2024-07-01",
+                "open": "10.00",
+                "high": "10.50",
+                "low": "9.90",
+                "close": "10.20",
+                "volume": "1234",
+            },
+            {
+                "date": "2024-07-02",
+                "open": "10.20",
+                "high": "10.80",
+                "low": "10.10",
+                "close": "10.60",
+                "volume": "5678",
+            },
+        ],
+        trade_dates=[
+            {"trade_date": "2024-07-01"},
+            {"trade_date": "2024-07-02"},
+        ],
+    )
+    install_fake_module(monkeypatch, "akshare", module)
+    provider = AkShareProvider.from_sdk(clock=lambda: FETCHED_AT)
+
+    outcome = provider.fetch_execution_status(
+        ExecutionStatusQuery(
+            symbol="600000.SH",
+            exchange=Exchange.SH,
+            start=date(2024, 7, 1),
+            end=date(2024, 7, 3),
+        )
+    )
+
+    assert isinstance(outcome, ExecutionStatusSnapshot)
+    assert outcome.source is ProviderId.AKSHARE
+    assert outcome.evidence_level is ExecutionStatusEvidenceLevel.BASIC_NO_PRICE_LIMITS
+    assert tuple(item.suspension_state for item in outcome.days) == (
+        SuspensionState.NORMAL,
+        SuspensionState.NORMAL,
+    )
+    assert len(outcome.eligibility) == 2
+    assert all(item.evidence_complete for item in outcome.eligibility)
+    assert module.trade_date_calls == 1
+
+
+def test_akshare_basic_status_fails_closed_when_open_day_has_no_stock_bar(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = FakeAkShareModule(
+        daily_rows=[
+            {
+                "date": "2024-07-01",
+                "open": "10.00",
+                "high": "10.50",
+                "low": "9.90",
+                "close": "10.20",
+                "volume": "1234",
+            }
+        ],
+        trade_dates=[
+            {"trade_date": "2024-07-01"},
+            {"trade_date": "2024-07-02"},
+        ],
+    )
+    install_fake_module(monkeypatch, "akshare", module)
+    provider = AkShareProvider.from_sdk(clock=lambda: FETCHED_AT)
+
+    outcome = provider.fetch_execution_status(
+        ExecutionStatusQuery(
+            symbol="600000.SH",
+            exchange=Exchange.SH,
+            start=date(2024, 7, 1),
+            end=date(2024, 7, 3),
+        )
+    )
+
+    assert isinstance(outcome, ExecutionStatusFailure)
+    assert outcome.reason is FailureReason.INVALID_RESPONSE
 
 
 @pytest.mark.parametrize(
@@ -693,6 +868,8 @@ def test_real_requests_timeout_maps_to_typed_provider_outcome(
             "bars": "stock_zh_a_hist",
             "instruments": "stock_info_a_code_name",
         }[operation]
+        if operation == "bars":
+            monkeypatch.setattr(module, "stock_zh_a_daily", raising(error))
     else:
         module = FakeBaoStockModule()
         install_fake_module(monkeypatch, "baostock", module)
