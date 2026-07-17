@@ -66,6 +66,12 @@ def test_shared_macos_support_validates_runtime_reported_inner_sidecar(
         45: macos_tauri_support.ProcessInfo(
             45, 44, "worker-start", f"{sidecar} --multiprocessing-fork"
         ),
+        46: macos_tauri_support.ProcessInfo(
+            46,
+            44,
+            "resource-tracker-start",
+            f"{sidecar} -B -S -I -c from multiprocessing.resource_tracker import main",
+        ),
     }
     monkeypatch.setattr(macos_tauri_support, "process_table", lambda: rows.copy())
     tree = macos_tauri_support.VerifiedProcessTree(42, host, tmp_path)
@@ -73,7 +79,10 @@ def test_shared_macos_support_validates_runtime_reported_inner_sidecar(
     tree.observe()
 
     assert tree.sidecar_pid() == 43
+    assert tree.verified_sidecar_pid(43) is False
     assert tree.verified_sidecar_pid(44) is True
+    assert tree.verified_sidecar_pid(45) is False
+    assert tree.verified_sidecar_pid(46) is False
 
 
 def test_shared_macos_support_rejects_unknown_reused_or_non_sidecar_runtime_pid(
@@ -103,9 +112,37 @@ def test_shared_macos_support_rejects_unknown_reused_or_non_sidecar_runtime_pid(
     assert tree.verified_sidecar_pid(47) is False
     assert tree.verified_sidecar_pid(48) is False
 
+    rows[43] = macos_tauri_support.ProcessInfo(
+        43, 42, "reused-outer-start", os.fspath(sidecar)
+    )
+
+    assert tree.verified_sidecar_pid(44) is False
+
+    rows[43] = macos_tauri_support.ProcessInfo(
+        43, 42, "outer-start", os.fspath(sidecar)
+    )
     rows[44] = macos_tauri_support.ProcessInfo(
         44, 43, "reused-inner-start", os.fspath(sidecar)
     )
+
+    assert tree.verified_sidecar_pid(44) is False
+
+
+def test_shared_macos_support_rejects_sidecar_path_used_as_an_argument(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    host = tmp_path / "Stock Desk.app" / "Contents" / "MacOS" / "stock-desk-desktop"
+    sidecar = host.parent / "stock-desk-sidecar"
+    helper = host.parent / "stock-desk-helper"
+    misleading_command = f"{helper} {sidecar}"
+    rows = {
+        42: macos_tauri_support.ProcessInfo(42, 1, "host-start", os.fspath(host)),
+        43: macos_tauri_support.ProcessInfo(43, 42, "outer-start", misleading_command),
+        44: macos_tauri_support.ProcessInfo(44, 43, "inner-start", misleading_command),
+    }
+    monkeypatch.setattr(macos_tauri_support, "process_table", lambda: rows.copy())
+    tree = macos_tauri_support.VerifiedProcessTree(42, host, tmp_path)
+    tree.observe()
 
     assert tree.verified_sidecar_pid(44) is False
 

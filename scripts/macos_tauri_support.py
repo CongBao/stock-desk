@@ -66,6 +66,10 @@ class VerifiedProcessTree:
         self._allowed_roots = frozenset(
             {os.fspath(allowed_root), os.path.realpath(allowed_root)}
         )
+        sidecar_path = host_path.with_name("stock-desk-sidecar")
+        self._sidecar_commands = frozenset(
+            {os.fspath(sidecar_path), os.path.realpath(sidecar_path)}
+        )
         self._known: dict[int, tuple[str, str, int]] = {}
 
     def _inside_allowed_root(self, command: str) -> bool:
@@ -125,36 +129,44 @@ class VerifiedProcessTree:
             return None
         return min(candidates)[1]
 
-    def _command_executable_is_sidecar(self, command: str) -> bool:
-        marker = f"{os.sep}stock-desk-sidecar"
-        marker_start = command.find(marker)
-        while marker_start >= 0:
-            executable_end = marker_start + len(marker)
-            if executable_end == len(command) or command[executable_end].isspace():
-                executable = command[:executable_end]
-                real_executable = os.path.realpath(executable)
-                for root in self._allowed_roots:
-                    for candidate in (executable, real_executable):
-                        try:
-                            if os.path.commonpath((root, candidate)) == root:
-                                return True
-                        except ValueError:
-                            continue
-            marker_start = command.find(marker, marker_start + 1)
-        return False
+    def _exact_sidecar_executable(self, command: str) -> str | None:
+        if command not in self._sidecar_commands:
+            return None
+        real_executable = os.path.realpath(command)
+        for root in self._allowed_roots:
+            for candidate in (command, real_executable):
+                try:
+                    if os.path.commonpath((root, candidate)) == root:
+                        return command
+                except ValueError:
+                    continue
+        return None
 
     def verified_sidecar_pid(self, pid: int) -> bool:
         """Validate one runtime-reported sidecar PID against its live identity."""
 
         known = self._known.get(pid)
-        if pid == self._root_pid or known is None:
+        if pid == self._root_pid or known is None or known[2] < 2:
             return False
-        current = process_table().get(pid)
+        rows = process_table()
+        current = rows.get(pid)
+        if (
+            current is None
+            or current.start_time != known[0]
+            or current.command != known[1]
+            or self._exact_sidecar_executable(current.command) is None
+        ):
+            return False
+        parent = rows.get(current.parent_pid)
+        parent_known = self._known.get(current.parent_pid)
         return (
-            current is not None
-            and current.start_time == known[0]
-            and current.command == known[1]
-            and self._command_executable_is_sidecar(current.command)
+            parent is not None
+            and parent_known is not None
+            and parent_known[2] == known[2] - 1
+            and parent.start_time == parent_known[0]
+            and parent.command == parent_known[1]
+            and parent.command == current.command
+            and self._exact_sidecar_executable(parent.command) is not None
         )
 
     def terminate(self, timeout_seconds: int = 10) -> None:
