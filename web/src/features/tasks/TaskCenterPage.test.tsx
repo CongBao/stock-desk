@@ -15,6 +15,14 @@ const TASK_ID = '11111111-1111-4111-8111-111111111111';
 const SECOND_ID = '22222222-2222-4222-8222-222222222222';
 const RUN_ID = '33333333-3333-4333-8333-333333333333';
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
 function task(overrides: Partial<TaskView> = {}): TaskView {
   return {
     id: TASK_ID,
@@ -193,7 +201,7 @@ it('renders all-time metrics and a safe selected pool-backtest view', async () =
   );
   expect(await screen.findByText('已处理回测标的')).toBeVisible();
   expect(document.body.textContent).not.toMatch(
-    /PAYLOAD|RESULT|ERROR|SENTINEL/u,
+    /PAYLOAD|RESULT|ERROR|SENTINEL|安全任务摘要|安全事件时间线/u,
   );
 });
 
@@ -367,6 +375,29 @@ it('keeps stale tasks visible when a refresh is partially degraded', async () =>
   expect(screen.getByRole('button', { name: /股票池回测/u })).toBeVisible();
 });
 
+it('keeps manual refresh on one stable busy button and coalesces duplicate clicks', async () => {
+  const user = userEvent.setup();
+  const pending = deferred<readonly TaskView[]>();
+  const client = api();
+  vi.mocked(client.listTasks)
+    .mockResolvedValueOnce([task()])
+    .mockReturnValueOnce(pending.promise);
+  renderPage(client);
+  await screen.findByRole('button', { name: /股票池回测/u });
+
+  const refreshButton = screen.getByRole('button', { name: '刷新任务' });
+  await user.click(refreshButton);
+  expect(refreshButton).toHaveAttribute('aria-busy', 'true');
+  expect(refreshButton).toHaveTextContent('刷新任务');
+  expect(refreshButton).toBeDisabled();
+  expect(screen.getAllByTestId('async-action-spinner')).toHaveLength(1);
+  await user.click(refreshButton);
+  expect(client.listTasks).toHaveBeenCalledTimes(2);
+
+  pending.resolve([task()]);
+  await waitFor(() => expect(refreshButton).not.toHaveAttribute('aria-busy'));
+});
+
 it('shows unavailable instead of empty when the first task load fails', async () => {
   const client = api({
     listTasks: vi.fn(() => Promise.reject(new TaskApiError('storage'))),
@@ -420,9 +451,10 @@ it('never shows a previous task timeline under a newly selected task', async () 
   });
   renderPage(client);
   expect(await screen.findByText('已处理回测标的')).toBeVisible();
-  expect(
-    screen.getByRole('list', { name: '安全事件时间线列表' }),
-  ).toHaveAttribute('tabindex', '0');
+  expect(screen.getByRole('list', { name: '任务记录列表' })).toHaveAttribute(
+    'tabindex',
+    '0',
+  );
 
   await userEvent.click(screen.getByRole('button', { name: /智能分析/u }));
 
@@ -535,14 +567,21 @@ it('aborts in-flight requests on unmount', async () => {
 
 it('cancels queued or running work once and reflects idempotent request state', async () => {
   const user = userEvent.setup();
-  const client = api();
+  const pending = deferred<TaskView>();
+  const client = api({
+    cancelTask: vi.fn(() => pending.promise),
+  });
   renderPage(client);
   const cancel = await screen.findByRole('button', { name: '取消任务' });
 
   await user.click(cancel);
+  expect(cancel).toHaveAttribute('aria-busy', 'true');
+  expect(cancel).toHaveTextContent('取消任务');
+  expect(screen.getAllByTestId('async-action-spinner')).toHaveLength(1);
   await user.click(cancel);
 
   expect(client.cancelTask).toHaveBeenCalledTimes(1);
+  pending.resolve(task({ status: 'running', cancelRequested: true }));
   expect(
     await screen.findByRole('button', { name: '已请求取消' }),
   ).toBeVisible();

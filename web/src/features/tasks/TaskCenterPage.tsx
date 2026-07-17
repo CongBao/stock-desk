@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import { ActionableState } from '../../shared/ActionableState';
+import { AsyncActionButton } from '../../shared/components/AsyncActionButton';
 import {
   TaskApiError,
   taskApi as defaultTaskApi,
@@ -79,6 +80,7 @@ export function TaskCenterPage({
   const [isLoading, setIsLoading] = useState(true);
   const [hasLoadedTasks, setHasLoadedTasks] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [manualRefreshPending, setManualRefreshPending] = useState(false);
   const [listError, setListError] = useState<string | null>(null);
   const [metricsError, setMetricsError] = useState<string | null>(null);
   const [eventsError, setEventsError] = useState<string | null>(null);
@@ -250,6 +252,15 @@ export function TaskCenterPage({
     refreshPromiseRef.current = promise;
     return promise;
   }, [api, reconcileUnknownCancellation]);
+
+  async function refreshFromButton() {
+    setManualRefreshPending(true);
+    try {
+      await refresh();
+    } finally {
+      if (mountedRef.current) setManualRefreshPending(false);
+    }
+  }
 
   useEffect(() => {
     mountedRef.current = true;
@@ -424,16 +435,17 @@ export function TaskCenterPage({
           <h2 data-page-heading tabIndex={-1}>
             任务中心
           </h2>
-          <p>查看最近 100 项任务的安全进度、生命周期与取消状态。</p>
+          <p>查看最近 100 项任务的进度、状态和取消结果。</p>
         </div>
-        <button
+        <AsyncActionButton
           type="button"
           data-guidance-target="tasks-refresh"
-          onClick={() => void refresh()}
+          pending={manualRefreshPending}
+          onClick={() => void refreshFromButton()}
           disabled={isRefreshing}
         >
-          {isRefreshing ? '刷新中…' : '刷新任务'}
-        </button>
+          刷新任务
+        </AsyncActionButton>
       </header>
 
       <p
@@ -591,7 +603,7 @@ export function TaskCenterPage({
               <>
                 <header>
                   <div>
-                    <span className="page-kicker">安全任务摘要</span>
+                    <span className="page-kicker">任务详情</span>
                     <h3 id="task-detail-title">
                       {selectedTask.presentation.label}
                     </h3>
@@ -672,8 +684,9 @@ export function TaskCenterPage({
                     </Link>
                   ) : null}
                   {activeStatuses.has(selectedTask.status) ? (
-                    <button
+                    <AsyncActionButton
                       type="button"
+                      pending={cancelPending}
                       onClick={() => void cancelSelected()}
                       disabled={
                         cancelPending ||
@@ -681,26 +694,22 @@ export function TaskCenterPage({
                         cancelUnknownId === selectedTask.id
                       }
                     >
-                      {selectedTask.cancelRequested
-                        ? '已请求取消'
-                        : cancelPending
-                          ? '正在取消…'
-                          : '取消任务'}
-                    </button>
+                      {selectedTask.cancelRequested ? '已请求取消' : '取消任务'}
+                    </AsyncActionButton>
                   ) : null}
                 </div>
                 <section
                   className="task-timeline"
                   aria-labelledby="task-timeline-title"
                 >
-                  <h4 id="task-timeline-title">安全事件时间线</h4>
+                  <h4 id="task-timeline-title">任务记录</h4>
                   {events.length === 0 ? (
                     <p>暂无可显示事件。</p>
                   ) : (
                     // The list owns the scroll viewport. It must itself be
                     // focusable so keyboard users can scroll all events.
                     // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex
-                    <ol tabIndex={0} aria-label="安全事件时间线列表">
+                    <ol tabIndex={0} aria-label="任务记录列表">
                       {events.map((event) => (
                         <li key={event.id} data-level={event.level}>
                           <div>

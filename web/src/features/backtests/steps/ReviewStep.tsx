@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 
+import { AsyncActionButton } from '../../../shared/components/AsyncActionButton';
 import type { BacktestPreflight } from '../backtestApi';
 import type { BacktestDraft } from '../backtestDraft';
 import {
@@ -23,8 +24,7 @@ const gapLabels: Readonly<Record<string, string>> = {
 };
 const warningLabels: Readonly<Record<string, string>> = {
   basic_execution_status: basicExecutionStatusWarning,
-  partial_pool_gaps:
-    '部分证券数据不足；仅可运行证券会进入回测，缺口将保留为冻结结果。',
+  partial_pool_gaps: '部分证券数据不足；只回测数据完整的证券，并保留缺口记录。',
   partial_data: '部分证券数据覆盖不足，请核对可运行数量与缺口样例。',
 };
 
@@ -97,14 +97,15 @@ export function ReviewStep({
           </dd>
         </div>
       </dl>
-      <button
+      <AsyncActionButton
         type="button"
         className="primary-action"
+        pending={busy}
         disabled={busy}
         onClick={onPreflight}
       >
-        {busy ? '预检中…' : '运行预检'}
-      </button>
+        运行预检
+      </AsyncActionButton>
       {preflight === null ? (
         <p className="review-empty">
           预检会重新核对公式、数据覆盖和执行规则，不会创建任务。
@@ -113,7 +114,7 @@ export function ReviewStep({
         <div
           ref={resultRef}
           className="preflight-result"
-          aria-label="服务端预检结果"
+          aria-label="预检结果"
           aria-live="polite"
           role="status"
           tabIndex={-1}
@@ -204,7 +205,7 @@ export function ReviewStep({
               preflight.scope.warnings.map(
                 (warning) =>
                   warningLabels[warning] ??
-                  '服务端提示存在数据覆盖差异，请核对冻结范围与缺口样例。',
+                  '数据覆盖存在差异，请核对可运行范围与缺口样例。',
               ),
             ),
           ].map((warning) => (
@@ -221,12 +222,12 @@ export function ReviewStep({
                 onChange={(event) => onPartialConfirmed(event.target.checked)}
               />
               我确认本次仅回测 {preflight.scope.runnable}{' '}
-              只可运行证券，缺口证券保留为冻结结果
+              只可运行证券，并保留缺口记录
             </label>
           ) : null}
           {preflight.scope.runnable === 0 ? <RemediationLinks /> : null}
           <details>
-            <summary>不可变证据版本</summary>
+            <summary>本次回测版本</summary>
             <dl>
               <div>
                 <dt>公式版本</dt>

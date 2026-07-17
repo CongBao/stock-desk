@@ -10,6 +10,7 @@ import {
 import { Link, useLocation, useParams } from 'react-router-dom';
 
 import { ApiError } from '../../shared/api/client';
+import { AsyncActionButton } from '../../shared/components/AsyncActionButton';
 import {
   BacktestProtocolError,
   backtestApi,
@@ -302,6 +303,7 @@ export function BacktestRunPage({
       await api.cancel(runId, { signal: controller.signal });
       if (controller.signal.aborted) return;
       setCancelRequested(true);
+      setCancelling(false);
     } catch {
       if (cancelController.current?.signal.aborted) return;
       cancelLock.current = false;
@@ -341,14 +343,15 @@ export function BacktestRunPage({
         <>
           <RunProgress run={run} />
           {!terminal ? (
-            <button
+            <AsyncActionButton
               type="button"
               className="danger-action"
-              disabled={cancelling}
+              pending={cancelling}
+              disabled={cancelling || cancelRequested}
               onClick={() => void cancel()}
             >
-              {cancelling ? '正在取消…' : '取消回测'}
-            </button>
+              取消回测
+            </AsyncActionButton>
           ) : null}
           {cancelRequested || run.status === 'cancelled' ? (
             <p className="partial-result-note">

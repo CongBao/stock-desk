@@ -39,8 +39,12 @@ it('aborts and clears search busy state when the query changes, then ignores sta
   );
 
   await user.type(screen.getByLabelText('证券'), '浦发');
-  await user.click(screen.getByRole('button', { name: '搜索证券' }));
-  expect(screen.getByRole('button', { name: '搜索中…' })).toBeDisabled();
+  const searchButton = screen.getByRole('button', { name: '搜索证券' });
+  await user.click(searchButton);
+  expect(searchButton).toHaveAttribute('aria-busy', 'true');
+  expect(searchButton).toHaveTextContent('搜索证券');
+  expect(searchButton).toBeDisabled();
+  expect(screen.getAllByTestId('async-action-spinner')).toHaveLength(1);
   await user.clear(screen.getByLabelText('证券'));
   await user.type(screen.getByLabelText('证券'), '平安');
   expect(screen.getByRole('button', { name: '搜索证券' })).toBeEnabled();

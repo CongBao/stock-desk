@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
+import { AsyncActionButton } from '../../shared/components/AsyncActionButton';
 import {
   marketApi,
   type MarketApi,
@@ -373,16 +374,16 @@ export function BacktestWizard({
       const warningLabels: Readonly<Record<string, string>> = {
         basic_execution_status:
           '基础成交假设：未校验历史涨跌停，结果可能高估可成交机会。',
-        partial_data: '部分证券数据不足，已按服务端冻结的可运行范围创建任务。',
-        snapshot_changed: '数据版本已更新，服务端已冻结新的不可变快照。',
+        partial_data: '部分证券数据不足，已按可运行范围创建任务。',
+        snapshot_changed: '数据版本已更新，已按最新数据创建任务。',
       };
       const notice = submission.warnings.map(
         (warning) =>
           warningLabels[warning] ??
-          '服务端返回了回测范围提示，请在运行详情中核对冻结证据。',
+          '回测范围有提示，请在运行详情中核对本次回测记录。',
       );
       if (submission.snapshotId !== preflight.previewSnapshotId)
-        notice.push('提交时数据已更新，服务端已重新校验并冻结新的不可变快照。');
+        notice.push('提交时数据已更新，已重新校验并使用最新数据。');
       onSubmitted?.(submission, notice);
     } catch {
       if (!mountedRef.current) return;
@@ -553,9 +554,10 @@ export function BacktestWizard({
               >
                 下一步
               </button>
-              <button
+              <AsyncActionButton
                 type="button"
                 className="primary-action"
+                pending={submitting}
                 disabled={
                   submitting ||
                   preflight === null ||
@@ -565,8 +567,8 @@ export function BacktestWizard({
                 }
                 onClick={() => void submit()}
               >
-                {submitting ? '提交中…' : '提交回测'}
-              </button>
+                提交回测
+              </AsyncActionButton>
             </div>
           </div>
           <aside className="backtest-review-panel" aria-label="当前配置摘要">
@@ -597,7 +599,7 @@ export function BacktestWizard({
                 </dd>
               </div>
             </dl>
-            <p>任何配置修改都会使服务端预检失效。</p>
+            <p>修改配置后需重新预检。</p>
           </aside>
         </div>
       </fieldset>

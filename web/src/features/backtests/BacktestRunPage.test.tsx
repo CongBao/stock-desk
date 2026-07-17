@@ -28,6 +28,14 @@ const running: BacktestOverview = {
 
 const testPollDelays = [1, 2, 4, 5] as const;
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
 function renderRun(api: BacktestApi) {
   return render(
     <MemoryRouter initialEntries={[`/backtests/${running.runId}`]}>
@@ -133,12 +141,14 @@ it('backs off at 500ms, 1s, 2s, then caps at 5s', () => {
 
 it('offers cancellation once and preserves the partial-result shell', async () => {
   const user = userEvent.setup();
-  const cancel = vi.fn().mockResolvedValue({
+  const pending = deferred<Awaited<ReturnType<BacktestApi['cancel']>>>();
+  const cancel = vi.fn().mockReturnValue(pending.promise);
+  const cancelled = {
     runId: running.runId,
     snapshotId: running.snapshotId,
     taskId: running.taskId,
     warnings: [],
-  });
+  };
   const api = {
     cancel,
     create: vi.fn(),
@@ -153,8 +163,14 @@ it('offers cancellation once and preserves the partial-result shell', async () =
 
   const cancelButton = await screen.findByRole('button', { name: '取消回测' });
   await user.click(cancelButton);
-  await user.dblClick(screen.getByRole('button', { name: '正在取消…' }));
-  await waitFor(() => expect(cancel).toHaveBeenCalledTimes(1));
+  expect(cancelButton).toHaveAttribute('aria-busy', 'true');
+  expect(cancelButton).toHaveTextContent('取消回测');
+  expect(cancelButton).toBeDisabled();
+  expect(screen.getAllByTestId('async-action-spinner')).toHaveLength(1);
+  await user.dblClick(cancelButton);
+  expect(cancel).toHaveBeenCalledTimes(1);
+  pending.resolve(cancelled);
+  await waitFor(() => expect(cancelButton).not.toHaveAttribute('aria-busy'));
   expect(screen.getByText(/已保留的部分结果/u)).toBeVisible();
 });
 

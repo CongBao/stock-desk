@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useInRouterContext } from 'react-router-dom';
 
+import { AsyncActionButton } from '../../../shared/components/AsyncActionButton';
 import type {
   MarketApi,
   MarketInstrument,
@@ -158,14 +159,15 @@ export function ScopeStep({
               }}
             />
           </label>
-          <button
+          <AsyncActionButton
             type="button"
             className="secondary-action"
+            pending={searching}
             disabled={query.trim() === '' || searching}
             onClick={() => void search()}
           >
-            {searching ? '搜索中…' : '搜索证券'}
-          </button>
+            搜索证券
+          </AsyncActionButton>
           {searchError ? (
             <p role="alert">证券搜索暂时不可用，请稍后重试。</p>
           ) : searched && matches.length === 0 ? (

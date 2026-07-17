@@ -285,7 +285,7 @@ function ReportMetadata({ report }: { readonly report: BacktestReport }) {
       className="report-metadata"
       aria-labelledby="report-metadata-title"
     >
-      <h4 id="report-metadata-title">固定快照与执行口径</h4>
+      <h4 id="report-metadata-title">回测数据与计算规则</h4>
       <p className="backtest-disclaimer">{report.disclaimer}</p>
       {report.warnings.includes('basic_execution_status') ? (
         <p className="warning-text">{basicExecutionStatusWarning}</p>

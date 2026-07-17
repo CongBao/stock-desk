@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 import theme from '../../app/theme.css?raw';
@@ -193,6 +193,9 @@ it('shows conclusions before lazily loaded trade details without portfolio claim
     winRate.compareDocumentPosition(trades) & Node.DOCUMENT_POSITION_FOLLOWING,
   ).toBeTruthy();
   expect(screen.getByText('样本可靠性')).toBeVisible();
+  expect(
+    screen.getByRole('heading', { name: '回测数据与计算规则' }),
+  ).toBeVisible();
   expect(screen.getAllByText(disclaimer).length).toBeGreaterThan(1);
   expect(screen.queryByText(/权益曲线|组合收益|下单/u)).not.toBeInTheDocument();
 });
@@ -416,10 +419,14 @@ it('does not show the previous run report while a reused route loads a new run',
 
   expect(screen.getByText(/正在读取固定回测报告/u)).toBeVisible();
   expect(screen.queryByText(first.overview.snapshotId)).not.toBeInTheDocument();
-  resolveSecond?.({
-    ...first,
-    overview: { ...first.overview, runId: secondRun },
+  await act(async () => {
+    resolveSecond?.({
+      ...first,
+      overview: { ...first.overview, runId: secondRun },
+    });
+    await Promise.resolve();
   });
+  expect(await screen.findByText(first.overview.snapshotId)).toBeVisible();
 });
 
 it('shows a bounded report-load error without stale conclusions', async () => {

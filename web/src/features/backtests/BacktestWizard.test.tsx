@@ -329,7 +329,10 @@ it('invalidates server review after every edit and prevents duplicate submit', a
   await user.click(screen.getByRole('button', { name: '5. 复核' }));
   await user.click(screen.getByRole('button', { name: '运行预检' }));
   expect(await screen.findByText('可运行 2 / 3')).toBeVisible();
-  expect(screen.getByRole('status', { name: '服务端预检结果' })).toHaveFocus();
+  expect(screen.getByRole('status', { name: '预检结果' })).toHaveFocus();
+  expect(document.body.textContent).not.toMatch(
+    /服务端预检|冻结结果|不可变证据/u,
+  );
   expect(screen.getByText('缺口 1')).toBeVisible();
   expect(screen.getByText('000001.SZ · 缺少所选区间数据')).toBeVisible();
   await user.click(screen.getByRole('checkbox', { name: /我确认本次仅回测/u }));
@@ -422,8 +425,12 @@ it('fences an in-flight preflight when any input changes', async () => {
     />,
   );
   await user.click(screen.getByRole('button', { name: '5. 复核' }));
-  await user.click(screen.getByRole('button', { name: '运行预检' }));
-  expect(screen.getByRole('button', { name: '预检中…' })).toBeDisabled();
+  const preflightButton = screen.getByRole('button', { name: '运行预检' });
+  await user.click(preflightButton);
+  expect(preflightButton).toHaveAttribute('aria-busy', 'true');
+  expect(preflightButton).toHaveTextContent('运行预检');
+  expect(preflightButton).toBeDisabled();
+  expect(screen.getAllByTestId('async-action-spinner')).toHaveLength(1);
   await user.click(screen.getByRole('button', { name: '4. 成本' }));
   await user.clear(screen.getByLabelText('滑点（基点）'));
   await user.type(screen.getByLabelText('滑点（基点）'), '2');
@@ -505,7 +512,11 @@ it('freezes every wizard control while an already-sent create request settles', 
 
   expect(screen.getByRole('button', { name: '4. 成本' })).toBeDisabled();
   expect(screen.getByRole('button', { name: '上一步' })).toBeDisabled();
-  expect(screen.getByRole('button', { name: '提交中…' })).toBeDisabled();
+  const submitButton = screen.getByRole('button', { name: '提交回测' });
+  expect(submitButton).toHaveAttribute('aria-busy', 'true');
+  expect(submitButton).toHaveTextContent('提交回测');
+  expect(submitButton).toBeDisabled();
+  expect(screen.getAllByTestId('async-action-spinner')).toHaveLength(1);
   await user.click(screen.getByRole('button', { name: '4. 成本' }));
   expect(screen.getByRole('heading', { name: '5. 复核' })).toBeVisible();
 
