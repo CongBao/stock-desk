@@ -125,6 +125,38 @@ class VerifiedProcessTree:
             return None
         return min(candidates)[1]
 
+    def _command_executable_is_sidecar(self, command: str) -> bool:
+        marker = f"{os.sep}stock-desk-sidecar"
+        marker_start = command.find(marker)
+        while marker_start >= 0:
+            executable_end = marker_start + len(marker)
+            if executable_end == len(command) or command[executable_end].isspace():
+                executable = command[:executable_end]
+                real_executable = os.path.realpath(executable)
+                for root in self._allowed_roots:
+                    for candidate in (executable, real_executable):
+                        try:
+                            if os.path.commonpath((root, candidate)) == root:
+                                return True
+                        except ValueError:
+                            continue
+            marker_start = command.find(marker, marker_start + 1)
+        return False
+
+    def verified_sidecar_pid(self, pid: int) -> bool:
+        """Validate one runtime-reported sidecar PID against its live identity."""
+
+        known = self._known.get(pid)
+        if pid == self._root_pid or known is None:
+            return False
+        current = process_table().get(pid)
+        return (
+            current is not None
+            and current.start_time == known[0]
+            and current.command == known[1]
+            and self._command_executable_is_sidecar(current.command)
+        )
+
     def terminate(self, timeout_seconds: int = 10) -> None:
         try:
             self.observe()

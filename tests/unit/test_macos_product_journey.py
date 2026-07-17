@@ -16,7 +16,7 @@ from scripts.macos_product_journey import (
     validate_isolated_product_state,
     validate_operator_evidence,
 )
-from scripts import macos_full_product_test
+from scripts import macos_full_product_test, macos_tauri_support
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -336,6 +336,58 @@ class _HostProcess:
     pid = 4242
 
 
+def test_ready_state_uses_verified_runtime_inner_pid_not_outer_or_worker(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    temporary_root = tmp_path / "harness"
+    temporary_root.mkdir()
+    paths = macos_full_product_test.HarnessPaths.create(temporary_root)
+    sidecar = paths.host_path.parent / "stock-desk-sidecar"
+    rows = {
+        4242: macos_tauri_support.ProcessInfo(
+            4242, 1, "host-start", os.fspath(paths.host_path)
+        ),
+        4243: macos_tauri_support.ProcessInfo(
+            4243, 4242, "outer-start", os.fspath(sidecar)
+        ),
+        4244: macos_tauri_support.ProcessInfo(
+            4244, 4243, "inner-start", os.fspath(sidecar)
+        ),
+        4245: macos_tauri_support.ProcessInfo(
+            4245, 4244, "worker-start", f"{sidecar} --multiprocessing-fork"
+        ),
+    }
+    monkeypatch.setattr(macos_tauri_support, "process_table", lambda: rows.copy())
+    context = macos_full_product_test.HarnessContext(paths, tmp_path / "output")
+    context.host_process = _HostProcess()
+    context.process_tree = macos_tauri_support.VerifiedProcessTree(
+        4242, paths.host_path, temporary_root
+    )
+    runtime_record = paths.data_root / "runtime" / "runtime.json"
+    runtime_record.parent.mkdir(parents=True)
+    runtime_record.write_text(
+        json.dumps({"pid": 4244, "host": "127.0.0.1", "port": 8765}),
+        encoding="utf-8",
+    )
+    window = {
+        "title": "Stock Desk",
+        "layer": 0,
+        "on_screen": True,
+        "width": 1280,
+        "height": 800,
+    }
+    monkeypatch.setattr(
+        macos_tauri_support, "observe_native_window", lambda *_args: window
+    )
+
+    service_pid, observed_window = macos_full_product_test._wait_for_ready_state(
+        context, 1
+    )
+
+    assert service_pid == 4244
+    assert observed_window == window
+
+
 def test_harness_separates_local_data_root_from_v11_product_root(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -626,13 +678,16 @@ def _orchestration_fakes(
     monkeypatch.setattr(
         macos_full_product_test,
         "_wait_for_ready_state",
-        lambda *_args, **_kwargs: {
-            "title": "Stock Desk",
-            "on_screen": True,
-            "layer": 0,
-            "width": 1280,
-            "height": 800,
-        },
+        lambda *_args, **_kwargs: (
+            4244,
+            {
+                "title": "Stock Desk",
+                "on_screen": True,
+                "layer": 0,
+                "width": 1280,
+                "height": 800,
+            },
+        ),
     )
 
     def evidence(
@@ -646,7 +701,7 @@ def _orchestration_fakes(
         ready = json.loads((output / "interaction-ready.json").read_text())
         assert ready["session_nonce"] == identity.session_nonce
         assert ready["host_pid"] == 4242
-        assert ready["sidecar_pid"] == 4243
+        assert ready["sidecar_pid"] == 4244
         assert ready["expected_actions"] == list(EXPECTED_ACTIONS)
         calls.append(("evidence", path, timeout_seconds))
         payload = valid_payload()

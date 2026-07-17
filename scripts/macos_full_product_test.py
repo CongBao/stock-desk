@@ -208,11 +208,15 @@ def _wait_for_sidecar_child(context: HarnessContext, timeout_seconds: int) -> in
 
 
 def _wait_for_ready_state(
-    context: HarnessContext, sidecar_pid: int, timeout_seconds: int
-) -> dict[str, Any]:
+    context: HarnessContext, timeout_seconds: int
+) -> tuple[int, dict[str, Any]]:
+    if context.process_tree is None:
+        raise MacOSFullProductError("macOS process tree is unavailable")
     runtime_record = context.paths.data_root / "runtime" / "runtime.json"
     deadline = time.monotonic() + timeout_seconds
+    service_pid: int | None = None
     while time.monotonic() < deadline:
+        context.process_tree.observe()
         if runtime_record.is_file() and not runtime_record.is_symlink():
             try:
                 payload = json.loads(runtime_record.read_text(encoding="utf-8"))
@@ -220,20 +224,25 @@ def _wait_for_ready_state(
                 payload = None
             if (
                 isinstance(payload, dict)
-                and payload.get("pid") == sidecar_pid
+                and type(payload.get("pid")) is int
+                and context.process_tree.verified_sidecar_pid(payload["pid"])
                 and payload.get("host") == "127.0.0.1"
                 and type(payload.get("port")) is int
             ):
+                service_pid = payload["pid"]
                 break
         time.sleep(0.1)
     else:
         raise MacOSFullProductError("timed out waiting for ready sidecar state")
-    if context.host_process is None:
+    if context.host_process is None or service_pid is None:
         raise MacOSFullProductError("macOS host process is unavailable")
-    return macos_tauri_support.observe_native_window(
-        context.paths.temporary_root,
-        context.host_process.pid,
-        min(timeout_seconds, 60),
+    return (
+        service_pid,
+        macos_tauri_support.observe_native_window(
+            context.paths.temporary_root,
+            context.host_process.pid,
+            min(timeout_seconds, 60),
+        ),
     )
 
 
@@ -423,8 +432,8 @@ def run_full_product_test(output: Path, timeout_seconds: int) -> dict[str, Any]:
         _source_identity(source_identity)
         nonce = str(uuid.uuid4())
         host = _launch_application(context, source_sha, source_tree, nonce)
-        sidecar_pid = _wait_for_sidecar_child(context, min(timeout_seconds, 60))
-        window = _wait_for_ready_state(context, sidecar_pid, min(timeout_seconds, 60))
+        _wait_for_sidecar_child(context, min(timeout_seconds, 60))
+        sidecar_pid, window = _wait_for_ready_state(context, min(timeout_seconds, 60))
         identity = JourneyIdentity(
             source_sha=source_sha,
             source_tree=source_tree,

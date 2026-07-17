@@ -54,6 +54,62 @@ def test_shared_macos_support_tracks_and_stops_only_verified_process_tree(
     assert 99 in rows
 
 
+def test_shared_macos_support_validates_runtime_reported_inner_sidecar(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    host = tmp_path / "Stock Desk.app" / "Contents" / "MacOS" / "stock-desk-desktop"
+    sidecar = host.parent / "stock-desk-sidecar"
+    rows = {
+        42: macos_tauri_support.ProcessInfo(42, 1, "host-start", os.fspath(host)),
+        43: macos_tauri_support.ProcessInfo(43, 42, "outer-start", os.fspath(sidecar)),
+        44: macos_tauri_support.ProcessInfo(44, 43, "inner-start", os.fspath(sidecar)),
+        45: macos_tauri_support.ProcessInfo(
+            45, 44, "worker-start", f"{sidecar} --multiprocessing-fork"
+        ),
+    }
+    monkeypatch.setattr(macos_tauri_support, "process_table", lambda: rows.copy())
+    tree = macos_tauri_support.VerifiedProcessTree(42, host, tmp_path)
+
+    tree.observe()
+
+    assert tree.sidecar_pid() == 43
+    assert tree.verified_sidecar_pid(44) is True
+
+
+def test_shared_macos_support_rejects_unknown_reused_or_non_sidecar_runtime_pid(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    host = tmp_path / "Stock Desk.app" / "Contents" / "MacOS" / "stock-desk-desktop"
+    sidecar = host.parent / "stock-desk-sidecar"
+    helper = host.parent / "stock-desk-helper"
+    rows = {
+        42: macos_tauri_support.ProcessInfo(42, 1, "host-start", os.fspath(host)),
+        43: macos_tauri_support.ProcessInfo(43, 42, "outer-start", os.fspath(sidecar)),
+        44: macos_tauri_support.ProcessInfo(44, 43, "inner-start", os.fspath(sidecar)),
+        46: macos_tauri_support.ProcessInfo(46, 44, "helper-start", os.fspath(helper)),
+        47: macos_tauri_support.ProcessInfo(
+            47, 44, "python-start", f"/usr/bin/python {sidecar}"
+        ),
+        48: macos_tauri_support.ProcessInfo(
+            48, 44, "relative-start", f"python {sidecar}"
+        ),
+    }
+    monkeypatch.setattr(macos_tauri_support, "process_table", lambda: rows.copy())
+    tree = macos_tauri_support.VerifiedProcessTree(42, host, tmp_path)
+    tree.observe()
+
+    assert tree.verified_sidecar_pid(99) is False
+    assert tree.verified_sidecar_pid(46) is False
+    assert tree.verified_sidecar_pid(47) is False
+    assert tree.verified_sidecar_pid(48) is False
+
+    rows[44] = macos_tauri_support.ProcessInfo(
+        44, 43, "reused-inner-start", os.fspath(sidecar)
+    )
+
+    assert tree.verified_sidecar_pid(44) is False
+
+
 def test_shared_macos_support_ignores_same_command_pid_reuse(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
