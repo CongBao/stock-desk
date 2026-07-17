@@ -7,6 +7,7 @@ import {
   useState,
 } from 'react';
 
+import { AsyncActionButton } from '../../shared/components/AsyncActionButton';
 import { safeUserMessage } from '../../shared/safeUserMessage';
 import type {
   AnalysisApi,
@@ -223,17 +224,19 @@ export function AnalysisRunPanel({
             }}
           />
         </label>
-        <button
+        <AsyncActionButton
           type="button"
           className="analysis-secondary-button"
+          pending={busy === 'preflight'}
           disabled={busy !== null || !/^[0-9]{6}\.(SH|SZ|BJ)$/u.test(symbol)}
           onClick={() => void runPreflight()}
         >
-          {busy === 'preflight' ? '正在预检…' : '运行预检'}
-        </button>
-        <button
+          运行预检
+        </AsyncActionButton>
+        <AsyncActionButton
           type="button"
           className="analysis-primary-button"
+          pending={busy === 'start'}
           disabled={
             busy !== null ||
             preflight === null ||
@@ -243,8 +246,8 @@ export function AnalysisRunPanel({
           }
           onClick={() => void start()}
         >
-          {busy === 'start' ? '正在提交…' : '启动智能分析'}
-        </button>
+          启动智能分析
+        </AsyncActionButton>
       </div>
       {preflight === null ? null : (
         <div className="preflight-diagnostics" aria-label="四类数据预检结果">
@@ -291,7 +294,7 @@ export function AnalysisRunPanel({
       >
         <header>
           <h3 id="analysis-history-title">历史报告</h3>
-          <span>不可变 · 按时间倒序</span>
+          <span>按时间倒序</span>
         </header>
         <div className="analysis-history-scroll" aria-label="历史报告滚动区">
           {history.length === 0 ? (

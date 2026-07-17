@@ -7,6 +7,7 @@ import {
   useState,
 } from 'react';
 
+import { AsyncActionButton } from '../../shared/components/AsyncActionButton';
 import { ModalDialog } from '../../shared/ModalDialog';
 import { safeUserMessage } from '../../shared/safeUserMessage';
 import type {
@@ -313,7 +314,7 @@ export function ModelSettings({
       baselineRef.current = editorSnapshot('deepseek', cleanFields, null);
       setMessage(
         wasEditing
-          ? '后继配置已创建，原配置保持不可变。'
+          ? '后继配置已创建，原配置保持不变。'
           : '模型配置已安全保存，请测试连接后使用。',
       );
     } catch (error) {
@@ -380,7 +381,7 @@ export function ModelSettings({
       timeout: String(item.timeout),
       maxOutput: String(item.maxOutput),
     });
-    setMessage('正在基于不可变配置创建后继版本。');
+    setMessage('正在基于原配置创建后继版本。');
   }
 
   async function disable(item: ModelConfig) {
@@ -632,17 +633,14 @@ export function ModelSettings({
                   />
                 </label>
               </div>
-              <button
+              <AsyncActionButton
                 type="submit"
                 className="analysis-primary-button"
+                pending={saving}
                 disabled={saving}
               >
-                {saving
-                  ? '正在保存…'
-                  : editing === null
-                    ? '保存模型配置'
-                    : '创建后继配置'}
-              </button>
+                {editing === null ? '保存模型配置' : '创建后继配置'}
+              </AsyncActionButton>
             </form>
             <div
               className="saved-models"
@@ -684,9 +682,10 @@ export function ModelSettings({
                           ) : null}
                         </div>
                         <div className="saved-model-actions">
-                          <button
+                          <AsyncActionButton
                             type="button"
                             aria-label={`测试 ${item.displayName} 连接`}
+                            pending={operation === 'test'}
                             disabled={
                               saving ||
                               item.status === 'disabled' ||
@@ -694,8 +693,8 @@ export function ModelSettings({
                             }
                             onClick={() => void testConnection(item)}
                           >
-                            {operation === 'test' ? '测试中…' : '测试连接'}
-                          </button>
+                            测试连接
+                          </AsyncActionButton>
                           <button
                             type="button"
                             aria-label={`编辑 ${item.displayName}`}
@@ -708,9 +707,10 @@ export function ModelSettings({
                           >
                             编辑
                           </button>
-                          <button
+                          <AsyncActionButton
                             type="button"
                             aria-label={`禁用 ${item.displayName}`}
+                            pending={operation === 'disable'}
                             disabled={
                               saving ||
                               item.status === 'disabled' ||
@@ -718,8 +718,8 @@ export function ModelSettings({
                             }
                             onClick={() => requestDisable(item)}
                           >
-                            {operation === 'disable' ? '禁用中…' : '禁用'}
-                          </button>
+                            禁用
+                          </AsyncActionButton>
                         </div>
                       </li>
                     );

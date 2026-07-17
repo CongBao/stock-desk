@@ -76,7 +76,7 @@ export function ProcessRail({ run }: { readonly run: AnalysisDetail | null }) {
                 </div>
                 <div>
                   <dt>历史关系</dt>
-                  <dd>父运行保持不可变</dd>
+                  <dd>父任务保持不变</dd>
                 </div>
               </>
             )}

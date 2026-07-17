@@ -1,3 +1,4 @@
+import { AsyncActionButton } from '../../shared/components/AsyncActionButton';
 import type {
   AnalysisClaim,
   AnalysisDetail,
@@ -84,7 +85,7 @@ export function ConclusionPanel({
         <div className="analysis-welcome">
           <span className="panel-kicker">INTELLIGENT RESEARCH</span>
           <h3>从可复核证据形成研究判断</h3>
-          <p>先运行四类数据预检，再由九阶段流程生成不可变研究报告。</p>
+          <p>先运行四类数据预检，再由九阶段流程生成研究报告。</p>
         </div>
       </section>
     );
@@ -131,7 +132,7 @@ export function ConclusionPanel({
     <article className="analysis-conclusion" aria-label="研究结论">
       <header className="analysis-report-heading">
         <div>
-          <span className="panel-kicker">IMMUTABLE REPORT</span>
+          <span className="panel-kicker">RESEARCH REPORT</span>
           <h3>{run.symbol} 智能分析</h3>
           <p>生成于 {new Date(report.generatedAt).toLocaleString('zh-CN')}</p>
         </div>
@@ -187,16 +188,15 @@ export function ConclusionPanel({
           ))}
           <div className="analysis-retry-actions">
             {report.retryActions.map((retry) => (
-              <button
+              <AsyncActionButton
                 key={retry.stage}
                 type="button"
+                pending={retryingStage === retry.stage}
                 disabled={retryingStage !== null}
                 onClick={() => onRetry(retry.stage)}
               >
-                {retryingStage === retry.stage
-                  ? '正在创建子任务…'
-                  : `重试${stageLabels[retry.stage] ?? retry.stage}模块`}
-              </button>
+                {`重试${stageLabels[retry.stage] ?? retry.stage}模块`}
+              </AsyncActionButton>
             ))}
           </div>
         </section>

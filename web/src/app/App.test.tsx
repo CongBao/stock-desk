@@ -276,7 +276,11 @@ it('shows version unavailable when the desktop identity query fails', async () =
 
 it('offers a keyboard-accessible local diagnostic export with visible status', async () => {
   const user = userEvent.setup();
-  const exportDiagnostics = vi.fn(() => Promise.resolve('saved' as const));
+  let resolveExport!: (value: 'saved') => void;
+  const exportResult = new Promise<'saved'>((resolve) => {
+    resolveExport = resolve;
+  });
+  const exportDiagnostics = vi.fn(() => exportResult);
   const adapter: DesktopAdapter = {
     cancelExit: vi.fn(() => Promise.resolve()),
     checkForUpdates: vi.fn(() =>
@@ -306,7 +310,13 @@ it('offers a keyboard-accessible local diagnostic export with visible status', a
   exportButton.focus();
   await user.keyboard('{Enter}');
 
+  expect(exportButton).toHaveAttribute('aria-busy', 'true');
+  expect(exportButton).toHaveTextContent('导出诊断包');
+  expect(exportButton).toBeDisabled();
+  expect(screen.getAllByTestId('async-action-spinner')).toHaveLength(1);
+  await user.click(exportButton);
   expect(exportDiagnostics).toHaveBeenCalledOnce();
+  resolveExport('saved');
   expect(
     await screen.findByText('诊断包已保存到本机，未上传。'),
   ).toHaveAttribute('role', 'status');
@@ -699,10 +709,10 @@ it('reports a fresh persisted Worker heartbeat in both status surfaces', async (
     screen.getByText('已检测：API / 任务存储', { exact: true }),
   ).toBeInTheDocument();
   expect(
-    screen.getByText('Worker 运行中', { exact: true }),
+    screen.getByText('任务服务运行中', { exact: true }),
   ).toBeInTheDocument();
   expect(
-    screen.getByText('任务 Worker：运行中', { exact: true }),
+    screen.getByText('后台任务：运行中', { exact: true }),
   ).toBeInTheDocument();
 });
 
@@ -715,10 +725,10 @@ it('reports a stale Worker heartbeat as not detected with its last-seen time', a
   renderApp();
 
   expect(
-    await screen.findByText('Worker 未检测', { exact: true }),
+    await screen.findByText('任务服务未检测', { exact: true }),
   ).toBeInTheDocument();
   expect(
-    screen.getByText('任务 Worker：未检测', { exact: true }),
+    screen.getByText('后台任务：未检测', { exact: true }),
   ).toBeInTheDocument();
   expect(screen.getByText(/最近心跳：/u)).toBeInTheDocument();
 });
@@ -741,13 +751,13 @@ it('prioritizes API offline over a cached running Worker heartbeat', async () =>
   renderApp();
 
   expect(
-    await screen.findByText('Worker：API 离线', { exact: true }),
+    await screen.findByText('任务服务：API 离线', { exact: true }),
   ).toBeInTheDocument();
   expect(
-    screen.getByText('任务 Worker：API 离线', { exact: true }),
+    screen.getByText('后台任务：API 离线', { exact: true }),
   ).toBeInTheDocument();
   expect(
-    screen.queryByText('Worker 运行中', { exact: true }),
+    screen.queryByText('任务服务运行中', { exact: true }),
   ).not.toBeInTheDocument();
 });
 
@@ -770,10 +780,10 @@ it('treats a Worker transport failure as API offline before health refresh', asy
   renderApp();
 
   expect(
-    await screen.findByText('Worker：API 离线', { exact: true }),
+    await screen.findByText('任务服务：API 离线', { exact: true }),
   ).toBeInTheDocument();
   expect(
-    screen.queryByText('Worker 状态不可用', { exact: true }),
+    screen.queryByText('任务服务状态不可用', { exact: true }),
   ).not.toBeInTheDocument();
 });
 
@@ -786,7 +796,7 @@ it('rejects Worker status protocol extensions without exposing identity', async 
   renderApp();
 
   expect(
-    await screen.findByText('Worker 状态不可用', { exact: true }),
+    await screen.findByText('任务服务状态不可用', { exact: true }),
   ).toBeInTheDocument();
   expect(screen.queryByText(/private-hostname/u)).not.toBeInTheDocument();
 });
@@ -797,7 +807,7 @@ it('rejects a running Worker status without a heartbeat timestamp', async () => 
   renderApp();
 
   expect(
-    await screen.findByText('Worker 状态不可用', { exact: true }),
+    await screen.findByText('任务服务状态不可用', { exact: true }),
   ).toBeInTheDocument();
 });
 
@@ -1030,6 +1040,8 @@ it('recovers both endpoint states after a bounded retry and manual recheck', asy
   available = true;
   const retry = screen.getByRole('button', { name: '重新检测' });
   await user.click(retry);
+  expect(retry).toHaveAttribute('aria-busy', 'true');
+  expect(retry).toHaveTextContent('重新检测');
   expect(retry).toBeDisabled();
   expect(releaseResponses).toHaveLength(3);
   act(() => {

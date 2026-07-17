@@ -117,12 +117,13 @@ it('preserves two out-of-order model test results and locks each active config',
   );
   render(<Harness api={client} initial={[first, second]} />);
   await userEvent.click(screen.getByRole('button', { name: '模型设置' }));
-  await userEvent.click(
-    screen.getByRole('button', { name: '测试 模型甲 连接' }),
-  );
-  expect(
-    screen.getByRole('button', { name: '测试 模型甲 连接' }),
-  ).toBeDisabled();
+  const firstTestButton = screen.getByRole('button', {
+    name: '测试 模型甲 连接',
+  });
+  await userEvent.click(firstTestButton);
+  expect(firstTestButton).toHaveAttribute('aria-busy', 'true');
+  expect(firstTestButton).toHaveTextContent('测试连接');
+  expect(firstTestButton).toBeDisabled();
   expect(screen.getByRole('button', { name: '禁用 模型甲' })).toBeDisabled();
   await userEvent.click(
     screen.getByRole('button', { name: '测试 模型乙 连接' }),
@@ -229,6 +230,9 @@ it('locks a pending save, moves focus to status, and prevents duplicate submissi
 
   const dialog = screen.getByRole('dialog', { name: '模型设置' });
   const status = within(dialog).getByRole('status');
+  const saveButton = screen.getByRole('button', { name: '保存模型配置' });
+  expect(saveButton).toHaveAttribute('aria-busy', 'true');
+  expect(saveButton).toHaveTextContent('保存模型配置');
   expect(dialog).toHaveAttribute('aria-busy', 'true');
   expect(status).toHaveTextContent('正在保存模型配置…');
   await waitFor(() => expect(status).toHaveFocus());
@@ -298,6 +302,25 @@ it('keeps disable confirmation cancel-safe and calls the API only explicitly', a
   await userEvent.click(screen.getByRole('button', { name: '禁用 模型甲' }));
   await userEvent.click(screen.getByRole('button', { name: '确认禁用' }));
   expect(client.disableModel).toHaveBeenCalledWith(item.id, item.revision);
+});
+
+it('keeps model disable on one stable busy button', async () => {
+  const item = model('a', '模型甲');
+  const pending = deferred<ModelConfig>();
+  const client = api();
+  vi.mocked(client.disableModel).mockReturnValue(pending.promise);
+  render(<Harness api={client} initial={[item]} />);
+  await userEvent.click(screen.getByRole('button', { name: '模型设置' }));
+  await userEvent.click(screen.getByRole('button', { name: '禁用 模型甲' }));
+  await userEvent.click(screen.getByRole('button', { name: '确认禁用' }));
+
+  const button = screen.getByRole('button', { name: '禁用 模型甲' });
+  expect(button).toHaveAttribute('aria-busy', 'true');
+  expect(button).toHaveTextContent('禁用');
+  expect(button).toBeDisabled();
+  expect(screen.getAllByTestId('async-action-spinner')).toHaveLength(1);
+  await userEvent.click(button);
+  expect(client.disableModel).toHaveBeenCalledOnce();
 });
 
 it('applies provider defaults while preserving same-provider edit values', async () => {

@@ -30,6 +30,7 @@ export type SystemStatus = {
   readonly worker: WorkerState;
   readonly workerLastSeenAt: string | null;
   readonly recentTasks: readonly RecentTask[];
+  readonly isRetrying: boolean;
   readonly isRetryDisabled: boolean;
   readonly checkedAt: number | null;
   readonly retry: () => Promise<void>;
@@ -264,6 +265,7 @@ export function useSystemStatus(): SystemStatus {
     worker: workerState(health, workerQuery),
     workerLastSeenAt: workerQuery.data?.lastSeenAt ?? null,
     recentTasks: tasksQuery.data ?? [],
+    isRetrying: isManualRetrying,
     isRetryDisabled: isInitialPending || isManualRetrying,
     checkedAt: checkedAt > 0 ? checkedAt : null,
     retry: async () => {

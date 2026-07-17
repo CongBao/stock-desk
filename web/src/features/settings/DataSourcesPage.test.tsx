@@ -69,6 +69,7 @@ it('renders source cards, safe token state, priorities, and TDX path', async () 
   expect(
     screen.getAllByRole('button', { name: /^上移/u }).length,
   ).toBeGreaterThan(0);
+  expect(document.body.textContent).not.toMatch(/服务端配置|服务端加密/u);
 });
 
 it('reorders with accessible buttons and saves public settings plus a cleared token', async () => {
@@ -216,9 +217,13 @@ it('aborts initial and diagnostic requests on unmount without late updates', asy
     <DataSourcesPage api={createApi({ testSource: api.testSource })} />,
   );
   await screen.findByDisplayValue('/safe/vipdoc');
-  await userEvent.click(
-    screen.getByRole('button', { name: '测试 Tushare 连接' }),
-  );
+  const testButton = screen.getByRole('button', {
+    name: '测试 Tushare 连接',
+  });
+  await userEvent.click(testButton);
+  expect(testButton).toHaveAttribute('aria-busy', 'true');
+  expect(testButton).toHaveTextContent('测试 Tushare 连接');
+  expect(screen.getAllByTestId('async-action-spinner')).toHaveLength(1);
   second.unmount();
   expect(signals[1]?.aborted).toBe(true);
 
@@ -247,7 +252,11 @@ it('keeps path priority and token edits made while an older save is pending', as
   await user.clear(path);
   await user.type(path, '/revision-a/vipdoc');
   await user.type(screen.getByLabelText('Tushare Token'), 'revision-a-token');
-  await user.click(screen.getByRole('button', { name: '保存数据源设置' }));
+  const saveButton = screen.getByRole('button', { name: '保存数据源设置' });
+  await user.click(saveButton);
+  expect(saveButton).toHaveAttribute('aria-busy', 'true');
+  expect(saveButton).toHaveTextContent('保存数据源设置');
+  expect(screen.getAllByTestId('async-action-spinner')).toHaveLength(1);
   await waitFor(() => expect(api.savePublic).toHaveBeenCalledOnce());
 
   await user.click(

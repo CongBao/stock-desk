@@ -103,7 +103,7 @@ describe('ProcessRail', () => {
       within(items[1]).getByText('失败代码：provider_timeout'),
     ).toBeInTheDocument();
     expect(screen.getByText('阶段重试子运行')).toBeInTheDocument();
-    expect(screen.getByText('父运行保持不可变')).toBeInTheDocument();
+    expect(screen.getByText('父任务保持不变')).toBeInTheDocument();
     expect(screen.getByText('看空论证')).toBeInTheDocument();
     expect(screen.getByText('运行前暂未生成')).toBeInTheDocument();
 

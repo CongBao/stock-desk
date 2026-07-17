@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 
+import { AsyncActionButton } from '../../shared/components/AsyncActionButton';
 import {
   sourceSettingsApi,
   sourceCategories,
@@ -18,7 +19,7 @@ const sourceMetadata = [
     name: 'Tushare',
     kind: '主数据源',
     description:
-      '覆盖行情、证券目录、交易日历和严格回测状态（含历史涨跌停证据）；需要服务端安全保存 Token。',
+      '覆盖行情、证券目录、交易日历和严格回测状态（含历史涨跌停证据）；需要安全保存 Token。',
   },
   {
     id: 'akshare',
@@ -414,7 +415,7 @@ export function DataSourcesPage({
                 <span>01 / CONNECTIONS</span>
                 <h3 id="source-overview-title">数据源连接</h3>
               </div>
-              <p>检测只读取服务端配置，浏览器不会取回任何明文 Token。</p>
+              <p>检测只读取本地配置，不会显示任何明文 Token。</p>
             </div>
             <div className="source-card-grid">
               {sourceMetadata.map((source) => {
@@ -483,17 +484,18 @@ export function DataSourcesPage({
                       </label>
                     ) : null}
 
-                    <button
+                    <AsyncActionButton
                       type="button"
                       className="source-test-button"
+                      pending={isTesting}
                       disabled={isTesting || !canTestConnections}
                       aria-describedby={
                         canTestConnections ? undefined : persistenceHelpId
                       }
                       onClick={() => testConnection(source.id)}
                     >
-                      {isTesting ? '检测中…' : `测试 ${source.name} 连接`}
-                    </button>
+                      {`测试 ${source.name} 连接`}
+                    </AsyncActionButton>
                     <span id={persistenceHelpId} className="visually-hidden">
                       当前配置尚未成功保存，请先保存后再检测连接。
                     </span>
@@ -583,12 +585,16 @@ export function DataSourcesPage({
                   保存失败；已输入的 Token 未保留，请检查配置后重试。
                 </p>
               ) : (
-                <p>Token 只写入服务端加密存储，不会回填到当前页面。</p>
+                <p>Token 只写入本地加密存储，不会显示在当前页面。</p>
               )}
             </div>
-            <button type="submit" disabled={saveState === 'saving'}>
-              {saveState === 'saving' ? '正在保存…' : '保存数据源设置'}
-            </button>
+            <AsyncActionButton
+              type="submit"
+              pending={saveState === 'saving'}
+              disabled={saveState === 'saving'}
+            >
+              保存数据源设置
+            </AsyncActionButton>
           </footer>
         </form>
       )}

@@ -253,6 +253,7 @@ it('shows a complete report and synchronizes a selected claim with persisted evi
 
   expect(await screen.findByText('看多')).toBeInTheDocument();
   expect(screen.getByText('78%')).toBeInTheDocument();
+  expect(document.body.textContent).not.toMatch(/不可变/u);
   await userEvent.click(
     screen.getByRole('button', { name: /盈利质量持续改善/u }),
   );
@@ -263,16 +264,22 @@ it('shows a complete report and synchronizes a selected claim with persisted evi
 });
 
 it('retries a failed partial module and follows the child run', async () => {
+  const pending = deferred<Awaited<ReturnType<AnalysisApi['retryStage']>>>();
   const client = api({
     getReport: vi.fn().mockResolvedValue(report('partial')),
+    retryStage: vi.fn(() => pending.promise),
   });
   render(<AnalysisPage api={client} />);
   await userEvent.click(
     await screen.findByRole('button', { name: /查看 600000.SH/u }),
   );
-  await userEvent.click(
-    await screen.findByRole('button', { name: '重试看空研究模块' }),
-  );
+  const retryButton = await screen.findByRole('button', {
+    name: '重试看空研究模块',
+  });
+  await userEvent.click(retryButton);
+  expect(retryButton).toHaveAttribute('aria-busy', 'true');
+  expect(retryButton).toHaveTextContent('重试看空研究模块');
+  expect(screen.getAllByTestId('async-action-spinner')).toHaveLength(1);
   await waitFor(() =>
     expect(client.retryStage).toHaveBeenCalledWith(
       runId,
@@ -280,6 +287,14 @@ it('retries a failed partial module and follows the child run', async () => {
       expect.anything(),
     ),
   );
+  pending.resolve({
+    runId: childRunId,
+    taskId: 'task-2',
+    parentRunId: runId,
+    requestedStage: 'bear',
+    status: 'queued',
+    snapshotId: digest('b'),
+  });
   await waitFor(() =>
     expect(client.getRun).toHaveBeenCalledWith(childRunId, expect.anything()),
   );
@@ -352,7 +367,9 @@ it('retries a transient polling failure and eventually loads the terminal report
   render(
     <AnalysisPage api={client} initialRunId={runId} pollIntervalMs={10} />,
   );
-  await vi.advanceTimersByTimeAsync(100);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(100);
+  });
   expect(await screen.findByText('部分模块未完成')).toBeInTheDocument();
   expect(getRun).toHaveBeenCalledTimes(2);
   vi.useRealTimers();
@@ -383,13 +400,28 @@ it('runs four-category preflight and starts with a verified model', async () => 
 
 it('polls a running analysis and can cancel it', async () => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
-  const client = api({ getRun: vi.fn().mockResolvedValue(detail('running')) });
+  const pending = deferred<AnalysisDetail>();
+  const client = api({
+    getRun: vi.fn().mockResolvedValue(detail('running')),
+    cancelRun: vi.fn(() => pending.promise),
+  });
   render(
     <AnalysisPage api={client} initialRunId={runId} pollIntervalMs={20} />,
   );
   expect(await screen.findByText('运行中')).toBeInTheDocument();
-  await userEvent.click(screen.getByRole('button', { name: '取消分析' }));
-  await waitFor(() => expect(client.cancelRun).toHaveBeenCalled());
+  const cancelButton = screen.getByRole('button', { name: '取消分析' });
+  await userEvent.click(cancelButton);
+  expect(cancelButton).toHaveAttribute('aria-busy', 'true');
+  expect(cancelButton).toHaveTextContent('取消分析');
+  expect(screen.getAllByTestId('async-action-spinner')).toHaveLength(1);
+  await userEvent.click(cancelButton);
+  expect(client.cancelRun).toHaveBeenCalledOnce();
+  pending.resolve(detail('cancelled'));
+  await waitFor(() =>
+    expect(
+      screen.queryByRole('button', { name: '取消分析' }),
+    ).not.toBeInTheDocument(),
+  );
   vi.useRealTimers();
 });
 
@@ -603,7 +635,7 @@ it('does not send a second cancel while cancellation is already requested', asyn
   const cancelling = { ...detail('running'), cancelRequested: true };
   const client = api({ getRun: vi.fn().mockResolvedValue(cancelling) });
   render(<AnalysisPage api={client} initialRunId={runId} />);
-  const cancel = await screen.findByRole('button', { name: '取消处理中' });
+  const cancel = await screen.findByRole('button', { name: '取消分析' });
   expect(cancel).toBeDisabled();
   cancel.removeAttribute('disabled');
   fireEvent.click(cancel);

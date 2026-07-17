@@ -157,3 +157,38 @@ it.each(['6', '1.5'])(
     expect(screen.getByRole('status')).toHaveTextContent('0 到 5 的整数');
   },
 );
+
+it('keeps preflight on one stable busy button and blocks duplicate clicks', async () => {
+  const pending = deferred<typeof preflightResult>();
+  const api = client();
+  vi.mocked(api.preflight).mockReturnValue(pending.promise);
+  render(panel(api, [verifiedModel]));
+  await userEvent.type(screen.getByLabelText('股票代码'), '600000.SH');
+
+  const button = screen.getByRole('button', { name: '运行预检' });
+  await userEvent.click(button);
+  expect(button).toHaveAttribute('aria-busy', 'true');
+  expect(button).toHaveTextContent('运行预检');
+  expect(button).toBeDisabled();
+  expect(screen.getAllByTestId('async-action-spinner')).toHaveLength(1);
+  await userEvent.click(button);
+  expect(api.preflight).toHaveBeenCalledOnce();
+});
+
+it('keeps analysis submission on one stable busy button', async () => {
+  const pending = deferred<Awaited<ReturnType<AnalysisApi['start']>>>();
+  const api = client();
+  vi.mocked(api.start).mockReturnValue(pending.promise);
+  render(panel(api, [verifiedModel]));
+  await userEvent.type(screen.getByLabelText('股票代码'), '600000.SH');
+  await userEvent.selectOptions(screen.getByLabelText('已验证模型'), modelId);
+  await userEvent.click(screen.getByRole('button', { name: '运行预检' }));
+  await screen.findByText('数据覆盖满足评级门槛');
+
+  const button = screen.getByRole('button', { name: '启动智能分析' });
+  await userEvent.click(button);
+  expect(button).toHaveAttribute('aria-busy', 'true');
+  expect(button).toHaveTextContent('启动智能分析');
+  expect(button).toBeDisabled();
+  expect(screen.getAllByTestId('async-action-spinner')).toHaveLength(1);
+});

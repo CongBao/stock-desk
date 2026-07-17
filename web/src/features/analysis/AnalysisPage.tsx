@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+import { AsyncActionButton } from '../../shared/components/AsyncActionButton';
 import { safeUserMessage } from '../../shared/safeUserMessage';
 import { AnalysisRunPanel } from './AnalysisRunPanel';
 import { ConclusionPanel } from './ConclusionPanel';
@@ -48,6 +49,7 @@ export function AnalysisPage({
     null,
   );
   const [retryingStage, setRetryingStage] = useState<string | null>(null);
+  const [cancelling, setCancelling] = useState(false);
   const [statusMessage, setStatusMessage] = useState('');
   const [drawer, setDrawer] = useState<'process' | 'evidence' | null>(null);
   const processButtonRef = useRef<HTMLButtonElement>(null);
@@ -184,7 +186,7 @@ export function AnalysisPage({
 
   const openRun = useCallback((id: string) => {
     setRunId(id);
-    setStatusMessage('正在打开不可变历史报告…');
+    setStatusMessage('正在打开历史报告…');
     document
       .querySelector<HTMLElement>('.analysis-report-workspace')
       ?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
@@ -232,6 +234,7 @@ export function AnalysisPage({
     )
       return;
     const controller = new AbortController();
+    setCancelling(true);
     try {
       const cancelled = await api.cancelRun(run.runId, {
         signal: controller.signal,
@@ -240,6 +243,8 @@ export function AnalysisPage({
       setStatusMessage('取消请求已记录；已持久化数据不会删除。');
     } catch (error) {
       setStatusMessage(safeUserMessage(error, '取消分析失败'));
+    } finally {
+      setCancelling(false);
     }
   }
 
@@ -283,7 +288,7 @@ export function AnalysisPage({
           <h2 data-page-heading tabIndex={-1}>
             智能分析
           </h2>
-          <p>以快照、九阶段研究流程和可追溯证据，形成不可变的辅助研究报告。</p>
+          <p>以快照、九阶段研究流程和可追溯证据，形成可复核的辅助研究报告。</p>
         </div>
         <span className="release-badge">Stage 4 · Analysis</span>
       </header>
@@ -321,13 +326,14 @@ export function AnalysisPage({
         </button>
         <strong>{run?.symbol ?? '尚未选择报告'}</strong>
         {cancellable ? (
-          <button
+          <AsyncActionButton
             type="button"
-            disabled={run.cancelRequested}
+            pending={cancelling}
+            disabled={run.cancelRequested || cancelling}
             onClick={() => void cancel()}
           >
-            {run.cancelRequested ? '取消处理中' : '取消分析'}
-          </button>
+            取消分析
+          </AsyncActionButton>
         ) : null}
         <button
           ref={evidenceButtonRef}

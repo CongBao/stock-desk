@@ -47,6 +47,7 @@ import { createDesktopBridge, type DesktopBridge } from './desktopBridge';
 import { createTauriAdapter } from './tauriAdapter';
 import { ThemeSelector } from './ThemeProvider';
 import { ModalDialog } from '../shared/ModalDialog';
+import { AsyncActionButton } from '../shared/components/AsyncActionButton';
 
 const tauriAdapter = createTauriAdapter();
 const defaultDesktopBridge: DesktopBridge =
@@ -72,11 +73,11 @@ const systemStateLabels = {
 } as const;
 
 const workerStateLabels: Record<WorkerState, string> = {
-  checking: 'Worker 检查中',
-  running: 'Worker 运行中',
-  not_detected: 'Worker 未检测',
-  unavailable: 'Worker 状态不可用',
-  api_offline: 'Worker：API 离线',
+  checking: '任务服务检查中',
+  running: '任务服务运行中',
+  not_detected: '任务服务未检测',
+  unavailable: '任务服务状态不可用',
+  api_offline: '任务服务：API 离线',
 };
 
 const productIdentity = {
@@ -251,13 +252,14 @@ function AboutDialog({
       </dl>
       <p>本地优先的个人 A 股分析工作台。</p>
       <div className="diagnostic-export-control">
-        <button
+        <AsyncActionButton
           type="button"
+          pending={diagnosticState === 'saving'}
           disabled={diagnosticState === 'saving'}
           onClick={() => void exportDiagnostics()}
         >
-          {diagnosticState === 'saving' ? '正在准备诊断包…' : '导出诊断包'}
-        </button>
+          导出诊断包
+        </AsyncActionButton>
         <p>
           诊断包仅保存到你选择的本机位置，不会自动上传，也不包含用户名、文件路径、会话凭证或原始日志。
         </p>

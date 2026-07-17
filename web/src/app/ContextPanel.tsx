@@ -1,6 +1,7 @@
 /* eslint-disable jsx-a11y/no-noninteractive-tabindex -- The independently scrollable context region must be keyboard focusable. */
 import { useEffect, useRef } from 'react';
 
+import { AsyncActionButton } from '../shared/components/AsyncActionButton';
 import type {
   EndpointState,
   SystemStatus,
@@ -142,8 +143,8 @@ export function ContextPanel({
             <dd>任务存储{endpointLabels[systemStatus.tasks]}</dd>
           </div>
           <div>
-            <dt className="visually-hidden">任务 Worker</dt>
-            <dd>任务 Worker：{workerLabels[systemStatus.worker]}</dd>
+            <dt className="visually-hidden">后台任务</dt>
+            <dd>后台任务：{workerLabels[systemStatus.worker]}</dd>
             {systemStatus.workerLastSeenAt === null ? null : (
               <dd className="worker-last-seen">
                 最近心跳：{formatTimestamp(systemStatus.workerLastSeenAt)}
@@ -156,14 +157,15 @@ export function ContextPanel({
             ? '最近检查：尚未完成'
             : `最近检查：${dateFormatter.format(systemStatus.checkedAt)}`}
         </p>
-        <button
+        <AsyncActionButton
           className="status-retry"
           type="button"
+          pending={systemStatus.isRetrying}
           disabled={systemStatus.isRetryDisabled}
           onClick={() => void systemStatus.retry()}
         >
           重新检测
-        </button>
+        </AsyncActionButton>
       </section>
 
       <section className="recent-tasks" aria-labelledby="recent-tasks-title">
