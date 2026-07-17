@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 
@@ -151,11 +151,11 @@ it('completes first run in four primary clicks and opens the default market', as
   const user = userEvent.setup();
   renderGate(client);
 
-  await user.click(await screen.findByRole('button', { name: '开始设置' }));
+  await user.click(await screen.findByRole('button', { name: '开始' }));
   await user.click(await screen.findByRole('button', { name: '继续' }));
   expect(screen.getByText('上证指数')).toBeInTheDocument();
   expect(screen.getByText('000001.SS')).toBeInTheDocument();
-  await user.click(screen.getByRole('button', { name: '准备并继续' }));
+  await user.click(screen.getByRole('button', { name: '加载行情' }));
   await user.click(await screen.findByRole('button', { name: '打开行情' }));
 
   expect(await screen.findByText('workspace:上证指数:000001.SS')).toBeVisible();
@@ -209,7 +209,7 @@ it('recovers persisted progress when a slow desktop request times out after comm
   const user = userEvent.setup();
   renderGate(client);
 
-  await user.click(await screen.findByRole('button', { name: '准备并继续' }));
+  await user.click(await screen.findByRole('button', { name: '加载行情' }));
 
   expect(
     await screen.findByRole(
@@ -240,7 +240,7 @@ it('resumes from a persisted step without replaying welcome', async () => {
   expect(
     await screen.findByRole('heading', { name: '选择一只股票' }),
   ).toBeVisible();
-  expect(screen.queryByRole('button', { name: '开始设置' })).toBeNull();
+  expect(screen.queryByRole('button', { name: '开始' })).toBeNull();
 });
 
 it('restores the persisted selection when onboarding is already complete', async () => {
@@ -265,11 +265,11 @@ it('keeps demo read-only and does not mark onboarding complete', async () => {
   const user = userEvent.setup();
   renderGate(client);
 
-  await user.click(await screen.findByRole('button', { name: '先看只读演示' }));
+  await user.click(await screen.findByRole('button', { name: '进入演示模式' }));
 
-  expect(await screen.findByText(/只读演示 · 设置尚未完成/u)).toBeVisible();
+  expect(await screen.findByText('演示模式 · 当前显示示例数据')).toBeVisible();
   expect(
-    screen.getByRole('button', { name: '退出演示并配置真实数据' }).parentElement
+    screen.getByRole('button', { name: '设置真实行情' }).parentElement
       ?.parentElement,
   ).toHaveClass('onboarding-notice-frame');
   expect(
@@ -294,13 +294,11 @@ it('restores persisted demo mode and can exit into a usable real-data setup', as
   const user = userEvent.setup();
   renderGate(client);
 
-  expect(await screen.findByText(/只读演示 · 设置尚未完成/u)).toBeVisible();
-  await user.click(
-    screen.getByRole('button', { name: '退出演示并配置真实数据' }),
-  );
+  expect(await screen.findByText('演示模式 · 当前显示示例数据')).toBeVisible();
+  await user.click(screen.getByRole('button', { name: '设置真实行情' }));
 
   expect(
-    await screen.findByRole('heading', { name: '准备行情数据' }),
+    await screen.findByRole('heading', { name: '选择数据源' }),
   ).toBeVisible();
   expect(screen.getByRole('button', { name: '继续' })).toBeEnabled();
   expect(client.runAction).toHaveBeenCalledWith('exit_demo');
@@ -317,7 +315,7 @@ it('opens the real Tushare and local TDX settings from advanced setup', async ()
     </MemoryRouter>,
   );
 
-  await user.click(await screen.findByRole('button', { name: '高级数据设置' }));
+  await user.click(await screen.findByRole('button', { name: '数据源设置' }));
 
   expect(
     await screen.findByText('location:/settings?focus=data-sources'),
@@ -446,7 +444,7 @@ it('can prepare and open the searched non-default stock', async () => {
   );
   await waitFor(() => expect(client.searchInstruments).toHaveBeenCalled());
   await user.keyboard('{Enter}');
-  await user.click(screen.getByRole('button', { name: '准备并继续' }));
+  await user.click(screen.getByRole('button', { name: '加载行情' }));
   await user.click(await screen.findByRole('button', { name: '打开行情' }));
 
   expect(client.synchronize).toHaveBeenCalledWith({
@@ -488,4 +486,55 @@ it('uses concise user language and shared readable error colors', async () => {
   expect(theme).not.toMatch(
     /\.onboarding-inline-error p,[\s\S]{0,100}#fde68a/u,
   );
+});
+
+it('keeps data-source failure actions outside the error and retries from the primary button', async () => {
+  const client = api(
+    onboardingState('data_preparation', {
+      error: {
+        code: 'provider_invalid_response',
+        actions: ['retry', 'switch_provider', 'advanced', 'demo'],
+      },
+    }),
+  );
+  const user = userEvent.setup();
+  renderGate(client);
+
+  const alert = await screen.findByRole('alert');
+  expect(within(alert).queryByRole('button')).toBeNull();
+  await user.click(screen.getByRole('button', { name: '重试' }));
+  expect(client.runAction).toHaveBeenCalledWith('retry');
+});
+
+it('uses concise labels without a decorative hero glyph or redundant data hints', async () => {
+  const client = api();
+  const user = userEvent.setup();
+  renderGate(client);
+
+  expect(await screen.findByText('首次设置')).toBeVisible();
+  expect(screen.queryByText('⌁')).toBeNull();
+  await user.click(screen.getByRole('button', { name: '开始' }));
+
+  expect(
+    await screen.findByRole('heading', { name: '选择数据源' }),
+  ).toBeVisible();
+  expect(screen.queryByText('默认选项适合大多数用户。')).toBeNull();
+  expect(screen.queryByText('继续时自动检查')).toBeNull();
+  expect(screen.getByRole('button', { name: '数据源设置' })).toBeEnabled();
+});
+
+it('shows a spinner on the clicked action without replacing its label', async () => {
+  const client = api();
+  vi.mocked(client.saveProgress).mockImplementation(
+    () => new Promise<OnboardingState>(() => undefined),
+  );
+  const user = userEvent.setup();
+  renderGate(client);
+
+  const start = await screen.findByRole('button', { name: '开始' });
+  await user.click(start);
+
+  expect(start).toHaveAttribute('aria-busy', 'true');
+  expect(start).toHaveTextContent('开始');
+  expect(within(start).getByTestId('async-action-spinner')).toBeVisible();
 });

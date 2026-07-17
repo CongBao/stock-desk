@@ -10,6 +10,7 @@ import {
 import { useLocation, useNavigate } from 'react-router-dom';
 
 import { useMarketStore } from '../market/marketStore';
+import { AsyncActionButton } from '../../shared/components/AsyncActionButton';
 import {
   onboardingApi,
   type OnboardingAction,
@@ -34,7 +35,7 @@ const stepOrder = [
   'synchronization',
 ] as const;
 
-const stepLabels = ['开始', '数据', '股票', '完成'] as const;
+const stepLabels = ['开始', '数据源', '股票', '完成'] as const;
 
 function safeDate(value: string | null): string {
   if (value === null) return '首次加载后显示';
@@ -74,9 +75,9 @@ function LoadError({
         <h1>暂时无法打开</h1>
         <p>请重试。如果问题仍然存在，可以查看帮助。</p>
         <div className="onboarding-actions">
-          <button type="button" disabled={busy} onClick={onRetry}>
-            {busy ? '正在重试…' : '重试'}
-          </button>
+          <AsyncActionButton pending={busy} type="button" onClick={onRetry}>
+            重试
+          </AsyncActionButton>
           <button className="secondary" type="button" onClick={onDiagnostics}>
             查看帮助
           </button>
@@ -286,6 +287,7 @@ function OnboardingWizard({
     initialState.instrument ?? DEFAULT_INSTRUMENT,
   );
   const [busy, setBusy] = useState(false);
+  const [pendingAction, setPendingAction] = useState<string | null>(null);
   const [actionError, setActionError] = useState(false);
   const headingRef = useRef<HTMLHeadingElement>(null);
 
@@ -316,10 +318,12 @@ function OnboardingWizard({
 
   const perform = useCallback(
     async (
+      actionId: string,
       operation: () => Promise<OnboardingState>,
       isRecoveryTarget: (state: OnboardingState) => boolean,
     ) => {
       setBusy(true);
+      setPendingAction(actionId);
       setActionError(false);
       try {
         setState(await operation());
@@ -336,6 +340,7 @@ function OnboardingWizard({
         }
       } finally {
         setBusy(false);
+        setPendingAction(null);
       }
     },
     [api, state.revision],
@@ -343,6 +348,7 @@ function OnboardingWizard({
 
   async function runAction(action: OnboardingAction) {
     setBusy(true);
+    setPendingAction(action);
     setActionError(false);
     try {
       const next = await api.runAction(action);
@@ -353,6 +359,7 @@ function OnboardingWizard({
       setActionError(true);
     } finally {
       setBusy(false);
+      setPendingAction(null);
     }
   }
 
@@ -365,7 +372,7 @@ function OnboardingWizard({
         <header className="onboarding-header">
           <div>
             <strong>Stock Desk</strong>
-            <p>首次使用设置</p>
+            <p>首次设置</p>
           </div>
         </header>
         <Stepper state={state} />
@@ -373,19 +380,18 @@ function OnboardingWizard({
         <div className="onboarding-content">
           {state.currentStep === 'welcome' ? (
             <>
-              <span className="onboarding-hero-icon" aria-hidden="true">
-                ⌁
-              </span>
               <h1 id="onboarding-title" ref={headingRef} tabIndex={-1}>
                 欢迎使用 Stock Desk
               </h1>
               <p className="onboarding-lead">选择一只股票后，就能查看行情。</p>
               <div className="onboarding-actions">
-                <button
+                <AsyncActionButton
                   type="button"
+                  pending={pendingAction === 'welcome-start'}
                   disabled={busy}
                   onClick={() =>
                     void perform(
+                      'welcome-start',
                       () =>
                         api.saveProgress({ currentStep: 'data_preparation' }),
                       (recovered) =>
@@ -393,16 +399,17 @@ function OnboardingWizard({
                     )
                   }
                 >
-                  开始设置
-                </button>
-                <button
+                  开始
+                </AsyncActionButton>
+                <AsyncActionButton
                   className="secondary"
                   type="button"
+                  pending={pendingAction === 'demo'}
                   disabled={busy}
                   onClick={() => void runAction('demo')}
                 >
-                  先看只读演示
-                </button>
+                  进入演示模式
+                </AsyncActionButton>
               </div>
             </>
           ) : null}
@@ -410,9 +417,8 @@ function OnboardingWizard({
           {state.currentStep === 'data_preparation' ? (
             <>
               <h1 id="onboarding-title" ref={headingRef} tabIndex={-1}>
-                准备行情数据
+                选择数据源
               </h1>
-              <p className="onboarding-lead">默认选项适合大多数用户。</p>
               <fieldset className="onboarding-source-list">
                 <legend>选择数据来源</legend>
                 {sources.length === 0 && !actionError ? (
@@ -435,27 +441,35 @@ function OnboardingWizard({
                       <strong>{source.label}</strong>
                       {source.recommended ? <em>推荐</em> : null}
                       <small>{source.description}</small>
-                      <small>
-                        {source.status === 'unavailable'
-                          ? '暂时不可用'
-                          : source.status === 'ready'
-                            ? '可用'
-                            : '继续时自动检查'}
-                      </small>
+                      {source.status === 'unavailable' ? (
+                        <small>暂时不可用</small>
+                      ) : source.status === 'ready' ? (
+                        <small>可用</small>
+                      ) : null}
                     </span>
                   </label>
                 ))}
               </fieldset>
               <div className="onboarding-actions">
-                <button
+                <AsyncActionButton
                   type="button"
+                  pending={
+                    pendingAction ===
+                    (state.error === null ? 'data-continue' : 'retry')
+                  }
                   disabled={
                     busy ||
-                    selectedSource === null ||
-                    selectedSource.status === 'unavailable'
+                    (state.error === null &&
+                      (selectedSource === null ||
+                        selectedSource.status === 'unavailable'))
                   }
-                  onClick={() =>
+                  onClick={() => {
+                    if (state.error !== null) {
+                      void runAction('retry');
+                      return;
+                    }
                     void perform(
+                      'data-continue',
                       () =>
                         api.saveProgress({
                           currentStep: 'instrument_selection',
@@ -463,19 +477,20 @@ function OnboardingWizard({
                         }),
                       (recovered) =>
                         recovered.currentStep === 'instrument_selection',
-                    )
-                  }
+                    );
+                  }}
                 >
-                  继续
-                </button>
-                <button
+                  {state.error === null ? '继续' : '重试'}
+                </AsyncActionButton>
+                <AsyncActionButton
                   className="secondary"
                   type="button"
+                  pending={pendingAction === 'advanced'}
                   disabled={busy}
                   onClick={() => void runAction('advanced')}
                 >
-                  高级数据设置
-                </button>
+                  数据源设置
+                </AsyncActionButton>
               </div>
             </>
           ) : null}
@@ -501,13 +516,15 @@ function OnboardingWizard({
                 onSelect={setInstrument}
               />
               <div className="onboarding-actions">
-                <button
+                <AsyncActionButton
                   type="button"
+                  pending={pendingAction === 'instrument-sync'}
                   disabled={
                     busy || (state.source?.id ?? selectedSourceId).length === 0
                   }
                   onClick={() =>
                     void perform(
+                      'instrument-sync',
                       () =>
                         api.synchronize({
                           sourceId: state.source?.id ?? selectedSourceId,
@@ -519,8 +536,8 @@ function OnboardingWizard({
                     )
                   }
                 >
-                  准备并继续
-                </button>
+                  加载行情
+                </AsyncActionButton>
               </div>
             </>
           ) : null}
@@ -564,11 +581,13 @@ function OnboardingWizard({
                 <p role="status">行情还没有准备好，请重试。</p>
               )}
               <div className="onboarding-actions">
-                <button
+                <AsyncActionButton
                   type="button"
+                  pending={pendingAction === 'complete'}
                   disabled={busy || state.sync?.status !== 'verified'}
                   onClick={() => {
                     setBusy(true);
+                    setPendingAction('complete');
                     setActionError(false);
                     void api
                       .complete(state.instrument?.symbol ?? instrument.symbol)
@@ -579,11 +598,14 @@ function OnboardingWizard({
                         );
                       })
                       .catch(() => setActionError(true))
-                      .finally(() => setBusy(false));
+                      .finally(() => {
+                        setBusy(false);
+                        setPendingAction(null);
+                      });
                   }}
                 >
                   打开行情
-                </button>
+                </AsyncActionButton>
               </div>
             </>
           ) : null}
@@ -591,45 +613,7 @@ function OnboardingWizard({
           {state.error !== null ? (
             <section className="onboarding-inline-error" role="alert">
               <strong>暂时无法加载行情</strong>
-              <p>请重试，或换一个数据来源。</p>
-              <div>
-                {state.error.actions.includes('retry') ? (
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => void runAction('retry')}
-                  >
-                    重试
-                  </button>
-                ) : null}
-                {state.error.actions.includes('switch_provider') ? (
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => void runAction('switch_provider')}
-                  >
-                    更换数据源
-                  </button>
-                ) : null}
-                {state.error.actions.includes('advanced') ? (
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => void runAction('advanced')}
-                  >
-                    其他设置
-                  </button>
-                ) : null}
-                {state.error.actions.includes('demo') ? (
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => void runAction('demo')}
-                  >
-                    查看演示
-                  </button>
-                ) : null}
-              </div>
+              <p>请重试。</p>
             </section>
           ) : null}
           {actionError ? (
@@ -667,11 +651,13 @@ export function OnboardingGate({
     const requestId = requestIdRef.current + 1;
     requestIdRef.current = requestId;
     setLoading(true);
-    setLoadFailed(false);
     void api
       .getState(controller.signal)
       .then((next) => {
-        if (requestIdRef.current === requestId) setState(next);
+        if (requestIdRef.current === requestId) {
+          setState(next);
+          setLoadFailed(false);
+        }
       })
       .catch(() => {
         if (requestIdRef.current === requestId && !controller.signal.aborted) {
@@ -710,7 +696,7 @@ export function OnboardingGate({
     void navigate('/market', { replace: true });
   }
 
-  if (loading) return <LoadingCard />;
+  if (loading && !loadFailed) return <LoadingCard />;
   if (loadFailed || state === null) {
     return (
       <LoadError
@@ -731,8 +717,9 @@ export function OnboardingGate({
             <span>
               高级数据设置 · 可在此配置 Tushare Token 或通达信本地 vipdoc 目录
             </span>
-            <button
+            <AsyncActionButton
               type="button"
+              pending={recoveryBusy}
               disabled={recoveryBusy}
               onClick={() => {
                 setRecoveryBusy(true);
@@ -748,7 +735,7 @@ export function OnboardingGate({
               }}
             >
               返回首次设置
-            </button>
+            </AsyncActionButton>
             {recoveryFailed ? (
               <span role="alert">暂时无法返回，请重试。</span>
             ) : null}
@@ -768,9 +755,10 @@ export function OnboardingGate({
         {state.demoMode ? (
           <div className="onboarding-notice-frame">
             <div className="onboarding-demo-banner" role="status">
-              <span>只读演示 · 设置尚未完成，重新启动后仍保持只读演示</span>
-              <button
+              <span>演示模式 · 当前显示示例数据</span>
+              <AsyncActionButton
                 type="button"
+                pending={recoveryBusy}
                 disabled={recoveryBusy}
                 onClick={() => {
                   setRecoveryBusy(true);
@@ -785,8 +773,8 @@ export function OnboardingGate({
                     .finally(() => setRecoveryBusy(false));
                 }}
               >
-                退出演示并配置真实数据
-              </button>
+                设置真实行情
+              </AsyncActionButton>
               {recoveryFailed ? (
                 <span role="alert">退出演示失败，请重试。</span>
               ) : null}
