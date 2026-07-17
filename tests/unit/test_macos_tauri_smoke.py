@@ -72,6 +72,12 @@ def test_shared_macos_support_validates_runtime_reported_inner_sidecar(
             "resource-tracker-start",
             f"{sidecar} -B -S -I -c from multiprocessing.resource_tracker import main",
         ),
+        47: macos_tauri_support.ProcessInfo(
+            47, 44, "unexpected-depth-3-start", os.fspath(sidecar)
+        ),
+        48: macos_tauri_support.ProcessInfo(
+            48, 47, "unexpected-depth-4-start", os.fspath(sidecar)
+        ),
     }
     monkeypatch.setattr(macos_tauri_support, "process_table", lambda: rows.copy())
     tree = macos_tauri_support.VerifiedProcessTree(42, host, tmp_path)
@@ -83,6 +89,8 @@ def test_shared_macos_support_validates_runtime_reported_inner_sidecar(
     assert tree.verified_sidecar_pid(44) is True
     assert tree.verified_sidecar_pid(45) is False
     assert tree.verified_sidecar_pid(46) is False
+    assert tree.verified_sidecar_pid(47) is False
+    assert tree.verified_sidecar_pid(48) is False
 
 
 def test_shared_macos_support_rejects_unknown_reused_or_non_sidecar_runtime_pid(

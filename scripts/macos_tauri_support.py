@@ -146,7 +146,7 @@ class VerifiedProcessTree:
         """Validate one runtime-reported sidecar PID against its live identity."""
 
         known = self._known.get(pid)
-        if pid == self._root_pid or known is None or known[2] < 2:
+        if pid == self._root_pid or known is None or known[2] != 2:
             return False
         rows = process_table()
         current = rows.get(pid)
@@ -162,7 +162,7 @@ class VerifiedProcessTree:
         return (
             parent is not None
             and parent_known is not None
-            and parent_known[2] == known[2] - 1
+            and parent_known[2] == 1
             and parent.start_time == parent_known[0]
             and parent.command == parent_known[1]
             and parent.command == current.command
