@@ -367,7 +367,9 @@ def _cleanup(context: HarnessContext) -> None:
 
 
 def _create_context(output: Path) -> HarnessContext:
-    temporary_root = Path(tempfile.mkdtemp(prefix="stock-desk-macos-full-product-"))
+    temporary_root = Path(
+        tempfile.mkdtemp(prefix="stock-desk-macos-full-product-")
+    ).resolve(strict=True)
     try:
         paths = HarnessPaths.create(temporary_root)
     except BaseException:

@@ -407,6 +407,37 @@ def test_context_creation_removes_partial_temporary_root_on_baseexception(
     assert not temporary_root.exists()
 
 
+def test_context_creation_canonicalizes_mkdtemp_symlink_ancestors_before_use(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    canonical_parent = tmp_path / "private" / "var"
+    canonical_parent.mkdir(parents=True)
+    alias_parent = tmp_path / "var"
+    alias_parent.symlink_to(canonical_parent, target_is_directory=True)
+    canonical_root = canonical_parent / "stock-desk-created-root"
+    canonical_root.mkdir()
+    aliased_root = alias_parent / canonical_root.name
+    monkeypatch.setattr(
+        macos_full_product_test.tempfile,
+        "mkdtemp",
+        lambda **_kwargs: os.fspath(aliased_root),
+    )
+
+    context = macos_full_product_test._create_context(tmp_path / "output")
+
+    assert context.paths.temporary_root == canonical_root
+    assert context.paths.local_data_root == canonical_root / "data"
+    assert context.paths.data_root == canonical_root / "data" / "Stock Desk" / "v1.1"
+    assert context.paths.app_root == canonical_root / "app"
+    assert context.paths.cargo == canonical_root / "cargo"
+
+    macos_full_product_test._cleanup(context)
+
+    assert not canonical_root.exists()
+    assert not aliased_root.exists()
+    assert alias_parent.is_symlink()
+
+
 @pytest.mark.parametrize("cleanup_mode", ["raises", "leaves-residual"])
 def test_context_creation_preserves_original_error_and_notes_cleanup_failure(
     monkeypatch: pytest.MonkeyPatch,
@@ -497,11 +528,12 @@ def _orchestration_fakes(
             calls.append(("source", expected)) or ("a" * 40, "b" * 40)
         ),
     )
-    monkeypatch.setattr(
-        macos_full_product_test.tempfile,
-        "mkdtemp",
-        lambda **_kwargs: str(temporary_root),
-    )
+
+    def mkdtemp(**_kwargs: object) -> str:
+        temporary_root.mkdir()
+        return os.fspath(temporary_root)
+
+    monkeypatch.setattr(macos_full_product_test.tempfile, "mkdtemp", mkdtemp)
 
     def build(paths: object, timeout_seconds: int, source_sha: str) -> None:
         calls.append(("build", paths, timeout_seconds, source_sha))
