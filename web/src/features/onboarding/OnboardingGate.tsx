@@ -551,9 +551,6 @@ function OnboardingWizard({
 
           {state.currentStep === 'synchronization' ? (
             <>
-              <span className="onboarding-success-icon" aria-hidden="true">
-                ✓
-              </span>
               <h1 id="onboarding-title" ref={headingRef} tabIndex={-1}>
                 {state.sync?.status === 'verified'
                   ? '可以开始使用了'

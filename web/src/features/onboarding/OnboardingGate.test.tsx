@@ -218,6 +218,8 @@ it('recovers persisted progress when a slow desktop request times out after comm
       { timeout: 4_000 },
     ),
   ).toBeVisible();
+  expect(document.querySelector('.onboarding-success-icon')).toBeNull();
+  expect(screen.getByRole('button', { name: '打开行情' })).toBeEnabled();
   expect(screen.queryByText('操作失败，请重试。')).toBeNull();
   expect(client.getState).toHaveBeenCalledTimes(4);
 });

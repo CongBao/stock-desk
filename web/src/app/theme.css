@@ -984,24 +984,6 @@ a {
   line-height: 1.7;
 }
 
-.onboarding-success-icon {
-  display: grid;
-  width: 56px;
-  height: 56px;
-  border: 1px solid rgba(56, 189, 248, 0.42);
-  border-radius: 14px;
-  color: var(--accent);
-  background: var(--accent-soft);
-  font-size: 30px;
-  place-items: center;
-}
-
-.onboarding-success-icon {
-  border-color: rgba(34, 197, 94, 0.4);
-  color: var(--status-success-text);
-  background: rgba(34, 197, 94, 0.1);
-}
-
 .onboarding-benefits {
   display: grid;
   gap: 10px;
