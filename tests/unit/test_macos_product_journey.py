@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass, replace
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -403,6 +404,10 @@ def _isolated_database(data_root: Path) -> Path:
                 dataset_version TEXT, ordinal INTEGER, timestamp TEXT,
                 open TEXT, high TEXT, low TEXT, close TEXT, volume INTEGER
             );
+            CREATE TABLE market_dataset_partition (
+                dataset_version TEXT, relative_path TEXT, row_count INTEGER,
+                byte_size INTEGER, physical_sha256 TEXT
+            );
             CREATE TABLE market_routing_manifest (
                 manifest_record_id TEXT, dataset_version TEXT, symbol TEXT,
                 manifest_json TEXT
@@ -566,6 +571,40 @@ def test_isolated_state_independently_confirms_product_evidence(tmp_path: Path) 
         "symbols": ["000001.SS", "600519.SH"],
         "trade_rows": 1,
     }
+
+
+def test_isolated_state_accepts_partition_backed_daily_bars(
+    tmp_path: Path,
+) -> None:
+    database = _isolated_database(tmp_path)
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE market_dataset_timestamp SET open = NULL, high = NULL, "
+            "low = NULL, close = NULL, volume = NULL"
+        )
+        for dataset_version in ("dataset-1", "dataset-2"):
+            relative_path = (
+                "layout=v1/category=bars/source=akshare/"
+                f"dataset={dataset_version}/part-00000.parquet"
+            )
+            partition = tmp_path / "market" / relative_path
+            partition.parent.mkdir(parents=True, exist_ok=True)
+            payload = f"{dataset_version}:ohlcv rows".encode()
+            partition.write_bytes(payload)
+            connection.execute(
+                "INSERT INTO market_dataset_partition VALUES (?, ?, 2, ?, ?)",
+                (
+                    dataset_version,
+                    relative_path,
+                    len(payload),
+                    "sha256:" + hashlib.sha256(payload).hexdigest(),
+                ),
+            )
+    evidence = validate_operator_evidence(valid_payload(), identity=IDENTITY)
+
+    result = validate_isolated_product_state(tmp_path, evidence)
+
+    assert result["daily_bar_rows"] == 4
 
 
 def test_isolated_state_accepts_akshare_basic_execution_evidence(

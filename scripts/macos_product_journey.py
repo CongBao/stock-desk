@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -524,6 +525,75 @@ def _json_object(value: object, label: str) -> Mapping[str, Any]:
     return decoded
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return "sha256:" + digest.hexdigest()
+
+
+def _validate_daily_bar_rows(
+    connection: sqlite3.Connection, data_root: Path, dataset_version: str
+) -> int:
+    """Validate either legacy inline OHLCV rows or partition-backed bars."""
+
+    inline_rows = connection.execute(
+        "SELECT COUNT(*) FROM market_dataset_timestamp "
+        "WHERE dataset_version = ? AND open IS NOT NULL "
+        "AND high IS NOT NULL AND low IS NOT NULL "
+        "AND close IS NOT NULL AND volume IS NOT NULL",
+        (dataset_version,),
+    ).fetchone()[0]
+    if type(inline_rows) is int and inline_rows > 0:
+        return inline_rows
+
+    index_rows = connection.execute(
+        "SELECT COUNT(*) FROM market_dataset_timestamp WHERE dataset_version = ?",
+        (dataset_version,),
+    ).fetchone()[0]
+    partitions = connection.execute(
+        "SELECT relative_path, row_count, byte_size, physical_sha256 "
+        "FROM market_dataset_partition WHERE dataset_version = ?",
+        (dataset_version,),
+    ).fetchall()
+    if type(index_rows) is not int or index_rows < 1 or not partitions:
+        raise MacOSJourneyError("isolated daily bars are empty")
+
+    partition_rows = 0
+    for partition in partitions:
+        relative_path = partition["relative_path"]
+        row_count = partition["row_count"]
+        byte_size = partition["byte_size"]
+        physical_sha256 = partition["physical_sha256"]
+        if (
+            not isinstance(relative_path, str)
+            or relative_path.startswith(("/", "../"))
+            or "/../" in relative_path
+            or type(row_count) is not int
+            or row_count < 1
+            or type(byte_size) is not int
+            or byte_size < 1
+            or not isinstance(physical_sha256, str)
+            or not physical_sha256.startswith("sha256:")
+        ):
+            raise MacOSJourneyError("isolated daily bar partition is invalid")
+        candidates = (data_root / relative_path, data_root / "market" / relative_path)
+        partition_path = next((path for path in candidates if path.is_file()), None)
+        if (
+            partition_path is None
+            or partition_path.is_symlink()
+            or partition_path.stat().st_size != byte_size
+            or _sha256_file(partition_path) != physical_sha256
+        ):
+            raise MacOSJourneyError("isolated daily bar partition is invalid")
+        partition_rows += row_count
+
+    if partition_rows < 1 or index_rows < partition_rows:
+        raise MacOSJourneyError("isolated daily bars are empty")
+    return partition_rows
+
+
 def validate_isolated_product_state(
     data_root: Path, evidence: JourneyEvidence
 ) -> dict[str, Any]:
@@ -568,15 +638,9 @@ def validate_isolated_product_state(
                     pass
                 elif symbol == evidence.symbols[-1]:
                     raise MacOSJourneyError("isolated K-line cutoff does not match")
-                row_count = connection.execute(
-                    "SELECT COUNT(*) FROM market_dataset_timestamp "
-                    "WHERE dataset_version = ? AND open IS NOT NULL "
-                    "AND high IS NOT NULL AND low IS NOT NULL "
-                    "AND close IS NOT NULL AND volume IS NOT NULL",
-                    (dataset["dataset_version"],),
-                ).fetchone()[0]
-                if type(row_count) is not int or row_count < 1:
-                    raise MacOSJourneyError("isolated daily bars are empty")
+                row_count = _validate_daily_bar_rows(
+                    connection, resolved_root, str(dataset["dataset_version"])
+                )
                 manifest_row = connection.execute(
                     "SELECT manifest_json FROM market_routing_manifest "
                     "WHERE dataset_version = ? AND symbol = ? LIMIT 1",
