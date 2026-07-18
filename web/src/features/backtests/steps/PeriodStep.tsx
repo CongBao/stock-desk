@@ -63,7 +63,10 @@ export function PeriodStep(props: PeriodStepProps) {
         <label>
           开始日期（上海时区，含）
           <input
-            type="date"
+            type="text"
+            inputMode="numeric"
+            pattern="\d{4}-\d{2}-\d{2}"
+            placeholder="YYYY-MM-DD"
             value={props.startDate}
             onChange={(event) =>
               props.onChange({ startDate: event.target.value })
@@ -73,7 +76,10 @@ export function PeriodStep(props: PeriodStepProps) {
         <label>
           结束日期（上海时区，不含）
           <input
-            type="date"
+            type="text"
+            inputMode="numeric"
+            pattern="\d{4}-\d{2}-\d{2}"
+            placeholder="YYYY-MM-DD"
             value={props.endDate}
             onChange={(event) =>
               props.onChange({ endDate: event.target.value })

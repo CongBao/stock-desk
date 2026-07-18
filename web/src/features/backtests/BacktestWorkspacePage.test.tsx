@@ -292,7 +292,41 @@ it('fails closed for unknown query keys without leaking them or applying a prefi
   ).toHaveTextContent('未选择');
 });
 
-it('fails closed when a prefilled symbol no longer resolves to a listed stock', async () => {
+it('accepts real provider instruments with unknown listing status in market prefill', async () => {
+  const unknownStatusMarketClient = {
+    ...marketClient,
+    searchInstruments: vi.fn().mockResolvedValue([
+      {
+        symbol: '600519.SH',
+        name: '贵州茅台',
+        instrumentKind: 'stock',
+        listingStatus: 'unknown',
+      },
+    ]),
+  } as unknown as MarketApi;
+  render(
+    <MemoryRouter
+      initialEntries={[
+        '/backtests?symbol=600519.SH&period=1d&adjustment=none&start=2025-07-18&end=2026-07-18',
+      ]}
+    >
+      <BacktestWorkspacePage
+        api={api()}
+        formulaClient={formulaClient}
+        marketClient={unknownStatusMarketClient}
+      />
+    </MemoryRouter>,
+  );
+
+  expect(await screen.findByText('600519.SH')).toBeVisible();
+  expect(screen.getByText('日线 · 不复权')).toBeVisible();
+  expect(screen.getByText('2025-07-18 → 2026-07-18')).toBeVisible();
+  expect(
+    screen.queryByText('行情预填参数无效或已失效，未应用任何预填内容。'),
+  ).not.toBeInTheDocument();
+});
+
+it('fails closed when a prefilled symbol resolves to a delisted stock', async () => {
   const staleMarketClient = {
     ...marketClient,
     searchInstruments: vi.fn().mockResolvedValue([

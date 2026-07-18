@@ -172,7 +172,7 @@ export function BacktestWorkspacePage({
               (item) =>
                 item.symbol === storedScope.symbol &&
                 item.instrumentKind === 'stock' &&
-                item.listingStatus === 'listed',
+                item.listingStatus !== 'delisted',
             ),
           );
       })
@@ -213,7 +213,7 @@ export function BacktestWorkspacePage({
           (item) =>
             item.symbol === symbol &&
             item.instrumentKind === 'stock' &&
-            item.listingStatus === 'listed',
+            item.listingStatus !== 'delisted',
         );
         setPrefillResolution({
           search: location.search,
