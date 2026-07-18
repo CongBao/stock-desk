@@ -384,9 +384,6 @@ async function completedEvidence(page, seed, formulaId, scope, period) {
       formula_engine_version: report.formula_engine_version,
       compatibility_version: report.compatibility_version,
       backtest_engine_version: report.backtest_engine_version,
-      execution_status_evidence_level:
-        report.execution_status_evidence_level,
-      warnings: report.warnings,
       symbol_count: report.provenance.symbol_count,
       runnable_count: report.provenance.runnable_count,
       gap_count: report.provenance.gap_count,

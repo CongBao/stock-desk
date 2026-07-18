@@ -56,6 +56,18 @@ def _report_semantics(report: dict[str, object]) -> dict[str, object]:
     return dict(report)
 
 
+def test_windows_capture_report_semantics_remain_v1_oracle_projection() -> None:
+    capture_script = (
+        ROOT / "scripts/windows_packaged_backtest_evidence.mjs"
+    ).read_text(encoding="utf-8")
+    start = capture_script.index("    report_semantics: {")
+    end = capture_script.index("    },", start)
+    report_projection = capture_script[start:end]
+
+    assert "execution_status_evidence_level" not in report_projection
+    assert "warnings" not in report_projection
+
+
 def _fixture(tmp_path: Path) -> tuple[Path, Path, Path, Path, Path, Path]:
     inputs = load_inputs(INPUTS_PATH)
     oracle = load_oracle(ORACLE_PATH, inputs_path=INPUTS_PATH)
