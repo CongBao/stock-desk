@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+import re
 
 from PIL import Image
 import pytest
@@ -22,13 +23,19 @@ SOURCE_ID = "a" * 40
 TREE_ID = "b" * 40
 
 
+def _load_ruff_formatted_json(path: Path) -> dict[str, object]:
+    """Load JSON snapshots after ruff formats them as JSONC with trailing commas."""
+
+    return json.loads(re.sub(r",(\s*[}\]])", r"\1", path.read_text(encoding="utf-8")))
+
+
 def test_icon_pixel_inventory_matches_reviewed_multisize_baseline(
     tmp_path: Path,
 ) -> None:
     manifest = create_icon_evidence(
         ICONS, tmp_path, source_sha=SOURCE_ID, source_tree=TREE_ID
     )
-    baseline = json.loads(BASELINE.read_text(encoding="utf-8"))
+    baseline = _load_ruff_formatted_json(BASELINE)
 
     assert manifest["source_svg_sha256"] == baseline["source_svg_sha256"]
     assert manifest["ico_sha256"] == baseline["ico_sha256"]
