@@ -287,6 +287,8 @@ a {
   height: 38px;
   place-items: center;
   border-radius: 9px;
+  background: var(--brand-tile-surface);
+  color: #fff;
 }
 
 .brand-mark img,
@@ -6449,6 +6451,13 @@ a {
 
   .app-shell {
     grid-template-columns: var(--collapsed-rail-width) minmax(0, 1fr);
+  }
+
+  .context-panel {
+    z-index: 80;
+    right: 12px;
+    left: calc(var(--collapsed-rail-width) + 12px);
+    width: auto;
   }
 
   .navigation-rail {

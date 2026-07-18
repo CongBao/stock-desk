@@ -179,7 +179,7 @@ test('first run wizard searches and opens a non-default stock', async ({
   });
 
   await page.goto('/market');
-  await page.getByRole('button', { name: '开始设置' }).click();
+  await page.getByRole('button', { name: '开始' }).click();
   await page.getByRole('button', { name: '继续' }).click();
   await page
     .getByRole('combobox', { name: '按代码、中文或拼音搜索证券' })
@@ -187,7 +187,7 @@ test('first run wizard searches and opens a non-default stock', async ({
   await page.getByRole('option', { name: /浦发银行/u }).click();
   await expect(page.getByText('浦发银行', { exact: true })).toBeVisible();
   await expect(page.getByText('600000.SH', { exact: true })).toBeVisible();
-  await page.getByRole('button', { name: '准备并继续' }).click();
+  await page.getByRole('button', { name: '加载行情' }).click();
   await expect(page.getByText('可以开始使用了')).toBeVisible();
   await page.getByRole('button', { name: '打开行情' }).click();
 
@@ -228,13 +228,11 @@ test('readonly demo notice stays in flow without covering controls at 200% equiv
 
   await page.setViewportSize({ width: 683, height: 384 });
   await page.goto('/market');
-  await page.getByRole('button', { name: '先看只读演示' }).click();
+  await page.getByRole('button', { name: '进入演示模式' }).click();
 
   const banner = page.locator('.onboarding-demo-banner');
   await expect(banner).toHaveCSS('position', 'relative');
-  const exitDemo = page.getByRole('button', {
-    name: '退出演示并配置真实数据',
-  });
+  const exitDemo = page.getByRole('button', { name: '设置真实行情' });
   const overlaps = await exitDemo.evaluate((target) => {
     const targetBox = target.getBoundingClientRect();
     return Array.from(

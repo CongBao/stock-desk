@@ -963,8 +963,9 @@ for (const theme of themeCases) {
         dialog = page.getByRole('dialog', { name: '确认安装更新' });
         await dialog.getByRole('button', { name: '确认下载并安装' }).click();
         await expect(
-          dialog.getByRole('button', { name: '正在请求…' }),
+          dialog.getByRole('button', { name: '确认下载并安装' }),
         ).toBeVisible();
+        await expect(dialog.getByTestId('async-action-spinner')).toBeVisible();
         await page.keyboard.press('Escape');
         await expect(dialog).toBeVisible();
         await resolveDesktopRequest(page, 'update');

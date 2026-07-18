@@ -45,7 +45,7 @@ test('Formula Studio keeps theme, focus and layout usable through 200% scaling',
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
   await expect(page.locator('.monaco-editor').first()).toHaveClass(/\bvs\b/u);
 
-  const demo = page.getByRole('button', { name: '先看只读演示' });
+  const demo = page.getByRole('button', { name: '进入演示模式' });
   if (await demo.isVisible()) await demo.click();
 
   const editor = page.getByRole('textbox', { name: '通达信公式代码' });

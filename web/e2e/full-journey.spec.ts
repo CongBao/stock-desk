@@ -295,6 +295,7 @@ test('complete public demo journey uses real API worker and frozen provenance', 
   await page.getByRole('button', { name: '提交回测' }).click();
   await page.getByRole('button', { name: '收起主导航' }).click();
   await expect(page.getByRole('button', { name: '展开主导航' })).toBeVisible();
+  await page.getByRole('button', { name: '打开上下文面板' }).click();
   await expect(page.getByRole('heading', { name: '近期任务' })).toBeVisible();
   await waitForBacktestReport(page);
   await expect(page.getByText('数据不足', { exact: true })).toBeVisible();
@@ -326,8 +327,10 @@ test('complete public demo journey uses real API worker and frozen provenance', 
   await expect(evidence).toContainText('synthetic');
   await page.getByRole('button', { name: '关闭证据' }).click();
 
-  await page.getByRole('button', { name: '打开上下文面板' }).click();
   const recent = page.locator('#context-panel');
+  if ((await recent.getAttribute('data-open')) !== 'true') {
+    await page.getByRole('button', { name: '打开上下文面板' }).click();
+  }
   await expect(recent.getByRole('heading', { name: '近期任务' })).toBeVisible();
   await expect(
     recent.getByRole('listitem', { name: /^backtest\.run /u }).first(),
