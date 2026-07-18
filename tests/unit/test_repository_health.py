@@ -2347,6 +2347,10 @@ def test_performance_target_ci_is_explicit_and_requirement_is_verified() -> None
     assert steps["Install Chromium for the performance shard"]["run"] == (
         "pnpm exec playwright install --with-deps chromium"
     )
+    assert (
+        steps["Prepare deterministic performance evidence once"]["continue-on-error"]
+        is True
+    )
     preserved = steps["Preserve first-attempt performance evidence"]
     assert preserved["if"] == (
         "always() && env.PYTHON_SHARD == 'acceptance-performance'"
@@ -2356,7 +2360,7 @@ def test_performance_target_ci_is_explicit_and_requirement_is_verified() -> None
         "path": "test-results/performance/current.json\n"
         "test-results/performance/browser-raw.json\n"
         "test-results/performance/first-attempt-failure.json\n",
-        "if-no-files-found": "error",
+        "if-no-files-found": "warn",
         "retention-days": 7,
     }
     assert acceptance["steps"].index(
