@@ -607,11 +607,15 @@ it('opens the drawer after the click settles and restores focus on Escape', asyn
 
   const toggle = screen.getByRole('button', { name: '打开上下文面板' });
   const panel = screen.getByRole('complementary', { name: '上下文状态' });
+  const shell = document.querySelector('.app-shell');
 
   expect(toggle).toHaveAttribute('aria-expanded', 'false');
   expect(toggle).toHaveAttribute('aria-controls', 'context-panel');
+  expect(toggle).toHaveAttribute('title', '打开上下文面板');
+  expect(toggle).not.toHaveTextContent('状态面板');
   expect(panel).toHaveAttribute('data-open', 'false');
   expect(panel).toHaveAttribute('tabindex', '0');
+  expect(shell).toHaveAttribute('data-context-open', 'false');
 
   await user.click(toggle);
 
@@ -619,13 +623,17 @@ it('opens the drawer after the click settles and restores focus on Escape', asyn
   await waitFor(() => expect(closeButton).toHaveFocus());
   expect(toggle).toHaveAttribute('aria-expanded', 'true');
   expect(toggle).toHaveAccessibleName('隐藏上下文面板');
+  expect(toggle).toHaveAttribute('title', '隐藏上下文面板');
   expect(panel).toHaveAttribute('data-open', 'true');
+  expect(shell).toHaveAttribute('data-context-open', 'true');
 
   await user.keyboard('{Escape}');
 
   expect(toggle).toHaveAttribute('aria-expanded', 'false');
   expect(toggle).toHaveAccessibleName('打开上下文面板');
+  expect(toggle).toHaveAttribute('title', '打开上下文面板');
   expect(panel).toHaveAttribute('data-open', 'false');
+  expect(shell).toHaveAttribute('data-context-open', 'false');
   expect(toggle).toHaveFocus();
 });
 

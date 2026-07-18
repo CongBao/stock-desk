@@ -412,6 +412,7 @@ function WorkspaceShell({
       <div
         className="app-shell"
         data-navigation-collapsed={isNavigationCollapsed}
+        data-context-open={isContextOpen}
         data-workspace-symbol={selectedInstrument?.symbol ?? ''}
         data-workspace-period={period}
         data-workspace-adjustment={adjustment}
@@ -482,10 +483,10 @@ function WorkspaceShell({
                 aria-controls="context-panel"
                 aria-expanded={isContextOpen}
                 aria-label={isContextOpen ? '隐藏上下文面板' : '打开上下文面板'}
+                title={isContextOpen ? '隐藏上下文面板' : '打开上下文面板'}
                 onClick={isContextOpen ? closeContextPanel : openContext}
               >
                 <span aria-hidden="true">◫</span>
-                状态面板
               </button>
             </div>
           </header>

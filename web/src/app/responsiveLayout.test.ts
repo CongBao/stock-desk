@@ -11,19 +11,17 @@ function mediaSlice(maxWidth: number, nextMaxWidth: number): string {
   return theme.slice(start, end);
 }
 
-it('keeps the 1201-1600 context drawer scoped to Formula Studio and analysis', () => {
+it('keeps the context panel as a collapsible global drawer by 1600px', () => {
   const desktop = mediaSlice(1600, 1200);
 
-  expect(desktop).toContain(".app-shell[data-workspace='formulas'] {");
-  expect(desktop).toContain(
-    ".app-shell[data-workspace='formulas'] .context-panel {",
-  );
-  expect(desktop).toContain(".app-shell[data-workspace='analysis'] {");
-  expect(desktop).toContain(
-    ".app-shell[data-workspace='analysis'] .context-panel {",
-  );
-  expect(desktop).not.toMatch(/\n\s*\.app-shell\s*\{/u);
-  expect(desktop).not.toMatch(/\n\s*\.context-panel\s*\{/u);
+  expect(desktop).toContain('.app-shell {');
+  expect(desktop).toContain(".app-shell[data-context-open='true']");
+  expect(desktop).toContain('.context-toggle');
+  expect(desktop).toContain('.context-panel {');
+  expect(desktop).toContain(".context-panel[data-open='true'] {");
+  expect(desktop).not.toContain(".app-shell[data-workspace='formulas'] {");
+  expect(desktop).not.toContain(".app-shell[data-workspace='tasks'] {");
+  expect(desktop).not.toContain(".app-shell[data-workspace='analysis'] {");
 });
 
 it('uses the global context drawer only at the 1200px tablet breakpoint', () => {
